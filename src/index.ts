@@ -1905,45 +1905,24 @@ async function main(): Promise<void> {
     },
   });
 
-  // Start the scheduled-task loop. Task 8 will replace the queue/group deps
-  // with a callback-based interface; for now we pass a minimal stub.
+  // Start the scheduled-task loop. Fired tasks are injected into the owner
+  // chat as inbound messages from "Scheduler"; the normal message loop picks
+  // them up and the running conversation handles them with full context.
   startSchedulerLoop({
-    registeredGroups: () => ({ [OWNER_JID]: { name: 'Owner', folder: 'owner', trigger: '', added_at: '', isMain: true, requiresTrigger: false } }) as any,
-    getSessions: () => ({}),
     queue: { enqueueTask: (_jid: string, _id: string, fn: () => Promise<void>) => { void fn(); } },
-    sendMessage: async (_jid: string, text: string) => {
-      const cleaned = formatOutbound(text);
-      if (!cleaned) return;
+    injectMessage: (_chatJid: string, text: string) => {
       storeMessage({
-        id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        id: `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         chat_jid: OWNER_JID,
-        sender: 'assistant',
-        sender_name: ASSISTANT_NAME,
-        content: cleaned,
+        sender: 'scheduler',
+        sender_name: 'Scheduler',
+        content: text,
         timestamp: new Date().toISOString(),
         is_from_me: false,
-        is_bot_message: true,
-      });
-      for (const ch of channels) {
-        try { await ch.sendMessage(OWNER_JID, cleaned); } catch (err) {
-          logger.warn({ channel: ch.name, err }, 'Task scheduler: channel send failed');
-        }
-      }
-    },
-    onTaskResult: (_task: unknown, result: string) => {
-      // Agent output arrives as the raw {"status","result"} JSON envelope —
-      // unwrap it so the notification shows the actual text, not JSON.
-      let text = result;
-      try {
-        const parsed = JSON.parse(result);
-        if (parsed && typeof parsed.result === 'string') text = parsed.result;
-      } catch { /* already plain text */ }
-      pushNotification('owner', {
-        type: 'task',
-        message: text.length > 120 ? text.slice(0, 120) + '...' : text,
+        is_bot_message: false,
       });
     },
-  } as any);
+  });
 
   startCalendarSyncPoller();
   // Kontact projection: mirror project deliverables to/from the shared

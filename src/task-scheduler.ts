@@ -1,20 +1,17 @@
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { SCHEDULER_POLL_INTERVAL, TIMEZONE, WORKSPACE_ROOT, AGENT_TIMEOUT } from './config.js';
+import { SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   deleteTask,
   getDueTasks,
-  getRouterState,
   getTaskById,
   logTaskRun,
   pruneTaskRunLogs,
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
-import { runAgent, type CallbackMap } from './agent-spawn.js';
-import { buildAgentCallbacks } from './index.js';
-import { resolveGroupFolderPath, type RegisteredGroup } from './group-folder.js';
+import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { ScheduledTask } from './types.js';
 
@@ -88,11 +85,13 @@ export interface SchedulerQueue {
 }
 
 export interface SchedulerDependencies {
-  registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: SchedulerQueue;
-  sendMessage: (jid: string, text: string, model?: string) => Promise<void>;
-  onTaskResult?: (task: ScheduledTask, result: string) => void;
+  /**
+   * Deliver a fired task's prompt into the chat as an inbound message. The
+   * running conversation picks it up on the next message-loop tick and handles
+   * it with full chat context — the scheduler never spawns its own agent.
+   */
+  injectMessage: (chatJid: string, text: string) => void;
 }
 
 async function runTask(
@@ -144,121 +143,31 @@ async function runTask(
 
   logger.info(
     { taskId: task.id, group: task.group_folder },
-    'Running scheduled task',
+    'Scheduled task fired — injecting prompt into chat',
   );
 
-  const groups = deps.registeredGroups();
-  const group = Object.values(groups).find(
-    (g) => g.folder === task.group_folder,
-  );
-
-  if (!group) {
-    logger.error(
-      { taskId: task.id, groupFolder: task.group_folder },
-      'Group not found for task',
-    );
-    logTaskRun({
-      task_id: task.id,
-      run_at: new Date().toISOString(),
-      duration_ms: Date.now() - startTime,
-      status: 'error',
-      result: null,
-      error: `Group not found: ${task.group_folder}`,
-    });
-    return;
-  }
-
-  // Per-task model overrides the global automation model preference.
-  // Strip 'local:' prefix — it's a UI convention from the dashboard dropdown,
-  // not a valid Ollama model name.
-  let automationModel =
-    task.model || getRouterState('automation:model') || '';
-  if (automationModel.startsWith('local:')) {
-    automationModel = automationModel.slice(6);
-  }
-
-  // For group context mode, use the group's current session id (if any).
-  const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
-
-  let result: string | null = null;
+  // Firing a task is just delivering its prompt to the running chat: the
+  // message loop treats it like any inbound message, so the orchestrator
+  // handles it with full conversation context and its normal tools.
   let error: string | null = null;
-
   try {
-    const output = await runAgent({
-      prompt,
-      workspaceRoot: WORKSPACE_ROOT,
-      sessionId: sessionId || `scheduled-${task.id}`,
-      model: automationModel || undefined,
-      timeoutMs: AGENT_TIMEOUT,
-      history: [],
-      callbacks: buildAgentCallbacks(),
-    });
-
-    if (output.error) {
-      error = output.error;
-    }
-    if (output.text) {
-      // Agent output sometimes arrives as the raw {"status","result"} JSON
-      // envelope — unwrap it here so chat, notifications, and last_result all
-      // get the actual text (single choke point for every delivery path).
-      let text = output.text;
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed.result === 'string') text = parsed.result;
-      } catch { /* already plain text */ }
-      output.text = text;
-      result = text;
-      // Forward result to user (sendMessage handles formatting)
-      await deps.sendMessage(task.chat_jid, output.text, automationModel || undefined);
-      if (deps.onTaskResult) deps.onTaskResult(task, output.text);
-      // If the task was created from a web-only JID, also send to the
-      // main channel so the user gets a real notification
-      if (task.chat_jid.startsWith('web:')) {
-        for (const [jid, g] of Object.entries(groups)) {
-          if (g.isMain && !jid.startsWith('web:')) {
-            await deps.sendMessage(jid, output.text, automationModel || undefined).catch(() => {});
-            break;
-          }
-        }
-      }
-    }
-
-    logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
-      'Task completed',
-    );
+    deps.injectMessage(task.chat_jid, prompt);
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
+    logger.error({ taskId: task.id, error }, 'Task prompt injection failed');
   }
-
-  // Retry once after 60s if the model was temporarily unavailable
-  if (error && (error.includes('overloaded') || error.includes('Bad Request') || error.includes('temporarily')) && !(task as any)._retried) {
-    logger.info({ taskId: task.id }, 'Retrying task in 60s after transient error');
-    await new Promise(r => setTimeout(r, 60_000));
-    (task as any)._retried = true;
-    return runTask(task, deps);
-  }
-
-  const durationMs = Date.now() - startTime;
 
   logTaskRun({
     task_id: task.id,
     run_at: new Date().toISOString(),
-    duration_ms: durationMs,
+    duration_ms: Date.now() - startTime,
     status: error ? 'error' : 'success',
-    result,
+    result: error ? null : 'Prompt injected into chat',
     error,
   });
 
   const nextRun = computeNextRun(task);
-  const resultSummary = error
-    ? `Error: ${error}`
-    : result
-      ? result.slice(0, 200)
-      : 'Completed';
+  const resultSummary = error ? `Error: ${error}` : 'Injected into chat';
 
   // One-time tasks are automatically deleted after completion
   if (task.schedule_type === 'once') {

@@ -381,7 +381,7 @@ function toolDetailLabel(name, args) {
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'set_user_email': return `Set email: ${short(args.email || '', 30)}`;
         case 'byte': return `📋 Byte: ${short(args.task || '', 50)}`;
-        case 'dexter': return `⏰ Dexter: ${short(args.task || '', 50)}`;
+        case 'dexter': return `🔎 Dexter: ${short(args.task || '', 50)}`;
         case 'atlas': return `🌍 Atlas: ${short(args.task || '', 50)}`;
         case 'artemis': return `🏹 Artemis: ${short(args.task || 'reviewing the conversation', 50)}`;
         case 'iris': return `✉️ Iris: ${short(args.task || '', 50)}`;
@@ -575,21 +575,18 @@ You are the domain expert. The task tells you WHAT the user needs — the HOW is
         delegate: 'dexter',
         label: 'Dexter',
         maxIterations: 200,
-        summary: 'anything time-based: reminders, follow-ups, sending or doing something later, scheduled/recurring tasks, and time-based automations (e.g. "send a survey in 3 days") — create, list, pause, resume, cancel or update them',
-        systemPrompt: `You are Dexter, the scheduling agent. Manage scheduled and recurring tasks.
+        summary: 'deep research: multi-source web research, comparisons, background briefs, and fact-finding that needs several searches cross-checked and synthesized into one answer. Use for "research X", "compare A and B", "give me a rundown on Y" — not for single quick lookups (atlas) and not for taking any action',
+        systemPrompt: `You are Dexter, the research agent. You receive a research question and answer it using web search and page fetching. You investigate; you never act — no purchases, no sign-ups, no messages, no file changes.
 
-You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: you know your tools better than the orchestrator does, so pick your own calls and order, and if the task prescribes steps that don't fit your tools, deliver the requested outcome your own way.
+You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: you decide what to search for, which sources to open, and when you have enough. If the task prescribes queries or URLs, treat them as hints, not instructions.
 
-1. List existing tasks before modifying — target the right one.
-2. NEVER create tasks with missing fields. Every scheduled task must have a title, a description of what should happen, and a specific time. Infer reasonable values if the orchestrator was vague — never leave fields blank.
-3. Call each tool once. Never repeat a successful call.
-4. All times are LOCAL. Use absolute timestamps like "2026-05-27T09:25:00" (no timezone suffix), computed from the current local time. Never use relative phrases like "in 5 minutes." Use cron for recurring, milliseconds for intervals.
-5. TIME ARITHMETIC — do it digit by digit and only change the units the offset touches. "In 1 minute" changes ONLY the minutes: 05:58:53 + 1 minute = 05:59:53 (the hour stays 05). "In 15 minutes" from 19:04:44 = 19:19:44. "In 2 hours" changes ONLY the hour. Carry over only when minutes pass 59. Before calling schedule_task, check: subtract the current time from your computed time — the difference MUST equal the requested offset. If it doesn't, recompute.
-6. The task prompt is executed later by an agent with NO memory of this conversation. Write it as a complete imperative instruction with all context baked in: "Send the user this reminder message: Time to stretch." — never a bare label like "Stretch reminder" or "Timer done". If the fired agent couldn't know what to do from the prompt alone, rewrite it.
-7. After your last tool call, confirm what was scheduled in one sentence, stating the exact date and time you set.
-8. You handle timed reminders and scheduled tasks ONLY. Todo lists, calendar events, and contacts belong to Iris — if your task is actually "add to a list" or "put on the calendar" rather than "fire at a time", say so in your reply instead of creating a scheduled task.`,
+1. Search first, then fetch. Run focused WebSearch queries, open the most promising results with WebFetch, and read enough of each source to quote it accurately.
+2. Cross-check. Any load-bearing fact (a number, a date, a claim that decides the answer) needs two independent sources or an explicit note that you found only one.
+3. Prefer primary sources — official docs, the vendor's own page, the paper itself — over blog summaries and SEO content. Note when sources conflict and say which you trust more and why.
+4. Do not pad. Stop searching when new results repeat what you already have.
+5. Report format: lead with the answer in one or two sentences, then the supporting detail, then a short source list (title + URL). Distinguish plainly between what the sources say and what you are inferring.
+6. If the question can't be answered from the web (paywalled, too recent, genuinely unknown), say exactly what you found, what's missing, and where the answer would likely be — never fabricate.`,
         toolsets: ['dexter-core'],
-        mcpServers: ['tasks', 'mcp-server-time'],
     },
     {
         delegate: 'atlas',
@@ -1381,6 +1378,9 @@ async function runNativeOllama(input: ContainerInput) {
         'read_job_result',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request', 'list_api_keys',
+        // Scheduling is orchestrator-owned (no dedicated agent): a cron/once/interval
+        // schedule plus a prompt injected into the chat at fire time.
+        'schedule_task', 'list_tasks',
     ]);
     const DYNAMIC_TOOL_TOP_K = 12;
     let activeToolDefs = fullToolDefs;
@@ -1510,7 +1510,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 Answer directly, with no tools, for plain conversation, advice, definitions, translation, and summaries. Casual and social messages — greetings, thanks, banter, opinions, check-ins, quick factual questions you already know, simple math, rewording — get a direct spoken answer with zero tool calls and zero delegation. Mentioning a topic in passing (weather, news, a project) is not a request to act on it; delegate only when the user actually wants something done or looked up. For anything that does need tools or live data, delegate to the right specialist:
 
 - **iris** — email: read, send, search, save
-- **dexter** — scheduling, reminders, recurring tasks, alarms
+- **dexter** — deep research: multi-source questions, comparisons, background briefs
 - **byte** — projects, deliverables, blockers, financials, work tasks
 - **artemis** — audit or second opinion on the conversation
 - **council** — high-stakes decisions where being wrong is costly (see below)
@@ -1519,21 +1519,31 @@ Answer directly, with no tools, for plain conversation, advice, definitions, tra
 Route by the user's cue words, not just the verb:
 - email, inbox, mail, message from someone, sender, subject, order confirmation, tracking number, shipping, receipt, invoice, draft, reply, unsubscribe, an address like name@domain → **iris**. If the thing they want lives in an email — even if the ask is "find", "extract", "save", or "pull out" — it is iris, never an atlas file search.
 - calendar, event, appointment, meeting, "what's on my schedule", contact, address book, phone number of someone, "add this person" → **iris** (calendar and contacts sync with the user's Kontact apps)
-- "add to my todo list", todo, checklist, "mark X done", "what's on my list" → **iris** (todos appear in the user's KOrganizer). A todo is a list item; a REMINDER that fires at a specific time is dexter. "Add a calendar event/appointment" is iris create_calendar_event, NOT a dexter reminder.
-- remind, remember to, alarm, later, tonight, tomorrow, in N minutes/hours/days, every day/week, at 9am, follow up, recurring → **dexter**
+- "add to my todo list", todo, checklist, "mark X done", "what's on my list" → **iris** (todos appear in the user's KOrganizer). A todo is a list item; a REMINDER that fires at a specific time is a schedule_task you create yourself. "Add a calendar event/appointment" is iris create_calendar_event, NOT a scheduled reminder.
+- remind, remember to, alarm, later, tonight, tomorrow, in N minutes/hours/days, every day/week, at 9am, follow up, recurring → **schedule it yourself** with schedule_task (see SCHEDULING)
+- research, "look into", compare options, pros and cons, "give me a rundown/brief on", anything needing several sources cross-checked → **dexter**
 - project, deliverable, milestone, blocker, priority, sprint, deadline, overdue, budget, expenses, hours, time tracking → **byte**
 - search, look up, browse, website, price (bitcoin, stocks, amazon), wikipedia, news, weather, scrape, download, open/play/pause something in the browser, run a command, install, generate or convert a document → **atlas**
 - "did you get that right", "double-check", "review what we did", second opinion on the conversation → **artemis**
 - a costly decision with real tradeoffs — architecture choices, "should we X or Y", monolith vs microservices, anything where a verdict is expensive to reverse → **council**
 
-"Do X every morning / every day / on a schedule / automatically" is a request to CREATE the recurring task via dexter, not to do X once right now. Delegate to dexter to set up the schedule; only also do X now if the user asks for a sample.
+"Do X every morning / every day / on a schedule / automatically" is a request to CREATE the recurring task with schedule_task, not to do X once right now. Create the schedule; only also do X now if the user asks for a sample.
+
+# SCHEDULING
+
+You handle scheduling yourself — there is no scheduling agent. A schedule is just two things: WHEN (schedule_type + schedule_value: a cron expression like "0 9 * * *", an interval in milliseconds, or a "once" absolute local timestamp like "2026-05-27T09:25:00" — never natural language) and WHAT (a text prompt). At fire time the prompt is injected into this chat as a new message from "Scheduler" and you handle it with your normal tools and full chat context.
+
+- Write the prompt as a complete imperative instruction to your future self: "Send the user this reminder: Time to stretch." — never a bare label like "Stretch reminder". Future-you sees only the prompt, so bake in every fact it needs.
+- Compute "once" timestamps from the current local time in your context, digit by digit, changing only the units the offset touches ("in 15 minutes" from 19:04 is 19:19, same hour). Verify: your computed time minus now must equal the requested offset.
+- Manage schedules with list_tasks, update_task, pause_task, resume_task, cancel_task. List before modifying so you target the right id.
+- When a message from "Scheduler" arrives, it is a fired schedule — execute its instruction; don't treat it as the user chatting.
 
 The delegates (iris, dexter, byte, atlas, artemis, council, atlas_background) are tools you call directly with a {task} — they are NOT skills; never activate_skill a delegate name.
 
 Anti-patterns (observed — do not repeat):
 - User asked about an email; the orchestrator called activate_skill('iris') and told the user the email tool was unavailable. Wrong — iris is a delegate tool, always available; call iris with a {task}.
 - "Find that email with order #48215 and pull out the tracking info" was sent to atlas as a filesystem search for "48215". Wrong — order confirmations live in the inbox; that is an iris task.
-- "Summarize my inbox every morning" was answered by summarizing the inbox once. Wrong — "every morning" means dexter creates the recurring task.
+- "Summarize my inbox every morning" was answered by summarizing the inbox once. Wrong — "every morning" means you create the recurring task with schedule_task.
 
 When in doubt, delegate to atlas. Only answer directly when no tools are needed. If the user asks what you can do or what tools you have, run the \`self-check\` skill (\`activate_skill('self-check')\`) and report what it finds.
 
@@ -1560,7 +1570,7 @@ Good: "Find the latest release version of domidoom/prometheus on GitHub and tell
 Emit multiple delegate calls in one turn when the requests are independent — they run in parallel. Serialize only when one result feeds the next.
 **Atlas is async by default:** calling atlas returns a job id immediately and the full result arrives later in your INBOX as a new turn — digest it in your own voice (report what matters, or silently use it to start the next task; never paste raw output — the user can ask, and you can read_job_result, if they want it verbatim). You are free to take new user messages while jobs run. Use atlas with mode:"blocking" ONLY when you cannot answer the current message without the result. Add urgent:true when the finished result should interrupt whatever you are doing instead of waiting for your turn to end.
 
-Split multi-domain requests across delegates — never stuff the whole request into one task. "Get the price and remind me tomorrow" is TWO calls: atlas fetches the price, then dexter gets a task containing the fetched number. Scheduling NEVER goes inside an atlas task (atlas has no scheduler and will improvise badly). And never re-delegate work a sub-agent already completed — take its result and move to the next step.
+Split multi-domain requests across delegates — never stuff the whole request into one task. "Get the price and remind me tomorrow" is TWO steps: atlas fetches the price, then YOU call schedule_task with a prompt containing the fetched number. Scheduling NEVER goes inside an atlas task (atlas has no scheduler and will improvise badly). And never re-delegate work a sub-agent already completed — take its result and move to the next step.
 
 # COUNCIL
 
@@ -2635,7 +2645,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // Enforce the block at execution time too, with a redirect that teaches
     // the correct path.
     if (opts?.orchestrator && (toolName.startsWith('mcp__') || toolName === 'Bash' || toolName === 'ping_user')) {
-        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email; dexter for scheduling. Call the delegate tool with a {task} argument.`;
+        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email; dexter for research. Call the delegate tool with a {task} argument. (Scheduling is yours directly — use schedule_task.)`;
     }
 
     // Pre-tool hooks — can block execution
@@ -2920,15 +2930,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         let task = args.task as string;
         if (!task) result = 'Error: task is required';
         else {
-            if (toolName === 'dexter') {
-                // Resolve the real local timezone, not UTC. The dockbox service
-                // runs without TZ in its env, so the old `process.env.TZ || 'UTC'`
-                // fallback made dexter schedule everything 7h off (in UTC). Node
-                // reads /etc/localtime via Intl, which gives America/Vancouver here.
-                const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-                const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-                task = `Current local time is ${localNow} (timezone ${tz}). Compute every absolute timestamp from this.\n\n${task}`;
-            }
             writeStatus({ phase: toolName, label: `${def.label}: ${task.slice(0, 50)}...`, ts: Date.now() });
             let tools = SUBAGENT_TOOL_DEFS.get(toolName)!;
             // Merge in this sub-agent's allow-listed MCP server tools (e.g.
