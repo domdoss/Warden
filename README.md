@@ -29,16 +29,20 @@ Each sub-agent has its own system prompt, its own toolset, and its own model. Th
 
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
-| **Atlas** | Cloud (large) | Shell, browser, files, web fetch, document conversion | Execution. Anything that touches the internet or runs commands. |
-| **Iris** | Cloud | Email (IMAP/SMTP), calendar (CalDAV), contacts (CardDAV) | Personal information management. |
-| **Dexter** | Cloud | Task scheduling, alarms, cron | Time-based automation. |
-| **Byte** | Cloud | Projects, deliverables, blockers, financials, time tracking | Work management. |
-| **Artemis** | Cloud | Read-only file access | Critical review. Audits conversations and decisions. |
-| **The Council** | 3× Cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
+| **Atlas** | Local or cloud | Shell, browser, desktop, files, web search/fetch, documents | Execution — anything that touches the internet or runs commands. |
+| **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos | Personal information management. |
+| **Dexter** | Local or cloud (local recommended) | Task scheduling, alarms, reminders | Time-based automation. |
+| **Byte** | Local or cloud (local recommended) | Projects, deliverables, blockers, work tasks, time tracking | Work management. |
+| **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
+| **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
+
+Every agent's model is picked in the dashboard — local Ollama or cloud, your call. Local and cloud run through the **same Ollama pipeline** (see [Hybrid Model Architecture](#hybrid-model-architecture)), so switching an agent between them needs no code or infrastructure change. Iris, Dexter, and Byte are light, structured-task agents — run them on a local model and save cloud spend for Atlas and the Council.
 
 ### Async by Default
 
 Atlas runs in the background. When the orchestrator delegates to Atlas, it gets a job ID back immediately and stays free to handle your next message. Results land in an **inbox** — the orchestrator drains it at turn end, digests what matters, and chains follow-up tasks. Urgent jobs can interrupt mid-turn. You're never stuck waiting for a long-running task to finish before you can keep talking.
+
+![Quick Actions panel: one-touch prompts for setup, review, write, and research](docs/screenshots/actions.png)
 
 ### Persistent Runner
 
@@ -60,11 +64,13 @@ This is reinforced at three layers: the orchestrator's system prompt, the Atlas 
 
 ### Fabric Pattern Integration
 
-Prometheus ships with 258 expert prompt patterns from the Fabric library. Every turn, the user's message is keyword-extracted and the top 5 most relevant patterns are injected into the system prompt by name and description. The orchestrator loads the full pattern on demand and bakes its framing into the Atlas task brief — giving the larger model the structure it needs without the orchestrator micromanaging the execution.
+Prometheus ships with hundreds of expert prompt patterns from the Fabric library. Every turn, the user's message is keyword-extracted and the top 5 most relevant patterns are injected into the system prompt by name and description. The orchestrator loads the full pattern on demand and bakes its framing into the Atlas task brief — giving the larger model the structure it needs without the orchestrator micromanaging the execution.
 
 ### Dynamic Tool Selection
 
-Not all 30+ tools go into every prompt. Keywords from the conversation are extracted and tools are ranked by relevance. Core routing tools (sub-agents, Read, Bash) are always included; everything else is surfaced only when relevant. This keeps the context window lean and the model focused.
+Prometheus is built to host many tools at once — the core set plus anything you add via skills and MCP servers — so the tool surface had to scale without bloating every prompt. Not all 30+ tools go into every turn. Keywords from the conversation are extracted and tools are ranked by relevance; the core routing tools (sub-agents, Read, Bash) are always included, and everything else is surfaced only when relevant. This keeps the context window lean, the model focused, and the system futureproof — add a new tool and it's available without rethinking the prompt.
+
+![Skills & MCP panel: dozens of toggled capabilities](docs/screenshots/skills.png)
 
 ### Defensive Loop Patterns
 
@@ -78,9 +84,15 @@ The tool loop has multiple circuit breakers to prevent common failure modes:
 
 The orchestrator writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` — no delegation needed. These files are loaded into context every turn. The heartbeat file is executed on schedule by the task scheduler, giving the agent persistent autonomous behavior.
 
+![Heartbeat panel: scheduled instructions the AI executes automatically](docs/screenshots/heartbeat.png)
+
 ### Context Compaction
 
 Long conversations are compacted by a Mercury summarization layer. Older turns are condensed into memory notes, keeping the active context window focused on what matters.
+
+### Self-Editing
+
+The agent can modify its own source. A built-in `self-edit` skill constrains edits to `src/` and `container/agent-runner/src/`, runs `npm run build`, gates on a successful compile, tells you what's changing, then restarts the service with `systemctl --user restart prometheus`. It refuses to touch `dist/`, configs, or the systemd unit, and never restarts on a failed build — so the agent can ship its own fixes without you opening a terminal.
 
 ---
 
@@ -94,15 +106,21 @@ Every model selection in the dashboard is per-role:
 
 | Role | Typical Model | Why |
 |------|-------------|-----|
-| **Orchestrator** | Local (granite, gemma) | Fast, cheap, always available. Only routes and supervises. |
-| **Atlas** | Cloud (deepseek, kimi, glm) | Heavy lifting. Internet access, shell commands, complex reasoning. |
-| **Iris/Dexter/Byte** | Cloud | Need reliability for structured tasks. |
+| **Orchestrator** | Local (gemma, granite) | Fast, cheap, always available. Only routes and supervises. |
+| **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. |
+| **Iris / Dexter / Byte** | Local (recommended) | Light, structured tasks. Run them local; save cloud for Atlas and the Council. |
 | **Council seats** | Cloud (3 different models) | Diverse perspectives for deliberation. |
-| **Sub-agent tools** | Configurable | Can use a different model for tool-calling sub-agents. |
+| **Sub-agent tools** | Configurable | Tool-calling sub-agents can use a different model. |
 
-### Local-First, Cloud-Fallback
+### One Pipeline, Local or Cloud
 
-The credential proxy (port 3001) handles all LLM routing. Containers never see real API keys. The proxy validates the per-container auth token, then forwards the Ollama-format request to `OLLAMA_URL` — local or cloud, same path. The agent-runner speaks Ollama's native HTTP API for everything.
+There is no separate infrastructure for cloud models. Ollama serves both local models (on your machine) and cloud models (remote Ollama-compatible endpoints) through the same HTTP API — so every agent can be flipped between local and cloud from the dashboard with no code or infrastructure change. You're just picking a model id. The credential proxy (port 3001) sits in front of it all so the agent never sees real API keys:
+1. Validates the per-container auth token
+2. Looks up and decrypts the user's API key
+3. Forwards local models directly to `localhost:11434`
+4. Translates to the cloud endpoint's format and injects the real key only at the proxy layer
+
+> The repo also ships format-translation artifacts (`ollama-translate.ts`, `anthropic-translate.ts`) for anyone who wants to wire in Anthropic or OpenAI endpoints. They are not part of the default request path — by default everything is Ollama, local and cloud.
 
 > The repo also ships format-translation artifacts (`ollama-translate.ts`, `anthropic-translate.ts`) for anyone who wants to wire in Anthropic or OpenAI endpoints. They are not part of the default request path — by default everything is Ollama, local and cloud.
 
@@ -116,7 +134,7 @@ All conversation history lives in a single SQLite store (`agent_sessions`), shar
 
 Prometheus connects to your actual Chrome via Playwright and the Chrome DevTools Protocol (port 9222). Your real profile — cookies, sessions, saved passwords, extensions — everything is intact.
 
-The browser tools operate on **DOM accessibility snapshots**, not screenshots. Each element gets a `[ref=e12]` identifier. The agent clicks, types, and navigates by ref — fast, precise, and cheap. Screenshots exist only for visual verification of end states.
+The browser tools operate on **DOM accessibility snapshots** and a complete set of DOM interaction tools. Each element gets a `[ref=e12]` identifier; the agent navigates, clicks, types, fills forms, selects dropdowns, hovers, switches tabs, takes screenshots, runs JavaScript with `browser_evaluate`, and waits for page state — all by ref or by URL. Screenshots exist for visual verification of end states.
 
 Chrome runs as a persistent process with its own watchdog. It survives agent restarts. Sign into Google once; the profile persists forever.
 
@@ -124,13 +142,22 @@ Chrome runs as a persistent process with its own watchdog. It survives agent res
 
 ## Desktop Control
 
-Prometheus controls your actual desktop — mouse movement, keystrokes, window management. Wayland via ydotool, X11 via xdotool. It discovers your display environment automatically, even when started from systemd with no `DISPLAY` set.
+Prometheus controls your actual desktop through built-in tools and MCP servers:
+
+- **Built-in:** screenshots via `spectacle` and input synthesis via `xdotool` (mouse click, type text, send key combos). This works on X11; Wayland coverage depends on your compositor's xdotool compatibility.
+- **KDE Plasma MCP server:** notifications, clipboard, opening URLs, reading current activity, KWin window verbs — all via D-Bus through the optional Plasma MCP server configured in `data/mcp-servers.json`.
+
+It discovers the display environment automatically, even when started from systemd with no `DISPLAY` set.
 
 ---
 
 ## Dashboard
 
-A full PWA at `http://localhost:3200` with:
+A full PWA at `http://localhost:3200`.
+
+![Settings panel: assistant name, model configuration per role, Ollama URL, and automation settings](docs/screenshots/settings.png)
+
+It includes:
 
 - **Chat** — the main conversation interface
 - **Projects** — deliverables, blockers, financials, time tracking
@@ -154,7 +181,9 @@ A full PWA at `http://localhost:3200` with:
 
 ## MCP Ecosystem
 
-Model Context Protocol servers give agents real capabilities:
+Model Context Protocol servers give agents real capabilities without touching core code:
+
+![MCP server panel: filesystem, fetch, shell, memory, SQLite, time, plasma, and more](docs/screenshots/mcp.png)
 
 | Server | Capability |
 |--------|-----------|
@@ -166,7 +195,7 @@ Model Context Protocol servers give agents real capabilities:
 | **Time** | Timezone-aware scheduling |
 | **Plasma** | KDE Plasma D-Bus (notifications, clipboard, windows) |
 
-MCP servers are configured in `data/mcp-servers.json` and can be toggled from the dashboard. Add new capabilities without touching core code.
+MCP servers are configured in `data/mcp-servers.json` and can be toggled from the dashboard.
 
 ---
 
@@ -189,7 +218,9 @@ Message from WhatsApp, continue on Telegram, check the dashboard — same contex
 |-------|-----------|
 | Runtime | Node.js 20+ with TypeScript |
 | Database | SQLite via better-sqlite3 |
-| Browser | Playwright (playwright-core) over CDP |
+| Browser | Playwright (playwright-core) over CDP, driving your real Chrome — DOM interaction (navigate, click, type, read, evaluate JS, screenshot) |
+| Desktop | xdotool + spectacle; optional KDE Plasma MCP |
+| Terminal | Live PTY shell (tmux `prometheus-shell`) |
 | LLM | Ollama (local + cloud) |
 | LLM Routing | Credential proxy with format translation for cloud endpoints |
 | Messaging | grammy (Telegram), Baileys (WhatsApp), Slack SDK |
@@ -225,6 +256,23 @@ open http://localhost:3200
 
 ---
 
+## Voice Assistant
+
+`voice/` is a voice-first desktop companion that turns Prometheus into a talk-to-it assistant. Press a button (or the global **F9** hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Prometheus server; the app is just ears, eyes, and a mouth.
+
+- Push-to-talk or global hotkey. One press starts a conversation; press again to interrupt.
+- Local STT (Whisper) and TTS (Kokoro) — audio is transcribed on device and discarded.
+- Hologram UI that reflects state (idle / listening / thinking / speaking).
+- Vision: capture a photo, describe a scene, read text (OCR), find objects.
+- Browser and desktop control, email, and a timer ("take a break for 10 minutes").
+- Talks to your existing Prometheus session — no new login.
+
+![Hologram voice assistant interface](docs/screenshots/voice.png)
+
+See `voice/README.md` for install and usage. Copy `voice/config/settings.example.yaml` to `voice/config/settings.yaml` (or run `python setup.py`) — `settings.yaml` holds your local server URL, user id, and an optional Cloudflare token, so it's gitignored and never committed.
+
+---
+
 ## Configuration
 
 All settings live in `data/env/env`:
@@ -245,6 +293,10 @@ Model selection is per-role via the dashboard — orchestrator, Atlas, sub-agent
 ## Why Prometheus?
 
 Most AI assistants live in the cloud. They see what you type, not what you see. They run on someone else's hardware, with someone else's model, under someone else's terms.
+
+![Safety warning modal shown on first dashboard launch](docs/screenshots/warning.png)
+
+*This warning is not a joke — Prometheus runs with the same access as your user account. Read it before you continue.*
 
 Prometheus runs on your machine. It uses your browser, your desktop, your files, your email. It works with local models through Ollama, so your data never leaves your hardware unless you choose to send it. And when you need more power, it reaches out to cloud models — all within the same conversation, with the same memory.
 

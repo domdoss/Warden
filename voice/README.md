@@ -1,120 +1,96 @@
-# Red Button Assistant
+# Prometheus Voice
 
-A voice-first accessibility assistant designed for blind users. One big red button on screen - tap it, speak, and the assistant responds.
+A desktop voice companion for Prometheus. Press a button, talk, listen — your agent replies out loud through a hologram-style interface.
 
-## Features
+## What it is
 
-- **Big Red Button**: Single-click or tap interface - no text, no menus
-- **Voice Conversation**: Natural 2-way dialogue via Whisper STT and TTS
-- **Vision**: Take photos, describe scenes, read text (OCR), find objects
-- **Gmail**: Send and read emails via voice
-- **Web Control**: Navigate websites via Playwright automation
-- **Timer**: "Take a break" functionality with timer wake
-- **Memory**: Imports existing Claude Code MD files
-- **Conversation**: Maintains context across sessions
+Prometheus Voice is a lightweight Python app that gives you a push-to-talk (or hotkey) interface to your Prometheus server. Speak naturally; it transcribes locally with Whisper, sends the text to your agent, and speaks the reply back with Kokoro TTS. All intelligence lives on Prometheus — this app is just ears, eyes, and a mouth.
+
+- **Push-to-talk or global hotkey (F9).** One press starts a conversation; press again to interrupt.
+- **Local voice processing.** Speech recognition (Whisper) and voice synthesis (Kokoro) run on your machine.
+- **Server-side brain.** All agent reasoning, tools, memory, and integrations happen on Prometheus.
+- **Hologram UI.** A frameless, transparent window that shows whether the assistant is idle, listening, thinking, or speaking.
+- **Vision.** Capture a photo, describe a scene, read text, find objects.
+- **Timer.** "Take a break for 10 minutes" and the assistant stays silent until the timer ends.
+- **Browser, desktop, email.** The full Prometheus toolset is available through voice.
 
 ## Requirements
 
-- Arch Linux (tested)
-- Python 3.9+
-- Local Ollama running at `http://localhost:11434`
-- USB microphone
-- USB speaker or audio output
-- USB webcam (for vision features)
+- OS: Linux (tested), macOS, or Windows
+- Python 3.10 or newer
+- A microphone and speakers
+- An existing Prometheus server (local or cloud)
 
-## Installation
+## Install
 
 ```bash
-cd red-button-assistant
-chmod +x autostart/install.sh
-./autostart/install.sh
+cd voice
+python setup.py
 ```
+
+The setup wizard will:
+
+1. Ask for your Prometheus base URL (`http://localhost:3200` for a local install).
+2. Open a browser where you're already signed in to Prometheus and ask you to paste the token it returns.
+3. Enter your Prometheus username and password.
+4. Pick the default group (chat) your voice turns land in.
+5. Download the Whisper speech-recognition model (one-time).
 
 ## Configuration
 
-1. Make sure Ollama is running and the configured models are pulled
-   (defaults: `gemma4:31b-cloud` for chat/vision, `glm-5.1:cloud` for tools).
-   Adjust them in `config/settings.yaml` under `dockbox` (`model`, `tools_model`, `vision_model`).
+Runtime config lives in `config/settings.yaml`. The setup wizard writes it for you. An example with no secrets is at `config/settings.example.yaml`. You can edit:
 
-2. (Optional) Import existing Claude memories:
+- Prometheus base URL and default chat (`dockbox` section)
+- Agent model / tools model / vision model (`dockbox` section)
+- TTS voice and audio devices (`audio` / `voice` sections)
+
+Re-run individual setup steps:
 
 ```bash
-cp -r ~/path/to/claude/memories/* data/md_imports/
+python setup.py --login     # re-authenticate
+python setup.py --group     # change default chat
 ```
-
-3. (Optional) Set up Gmail:
-   - Place `credentials.json` from Google Cloud Console in `config/`
-   - Run once to complete OAuth
 
 ## Usage
 
-### Run directly:
+Press the glowing button in the hologram window, or press **F9** anywhere on your system. Speak. A beep marks the start; stop talking and another beep marks the end. The hologram changes color while the agent thinks and speaks. Press again at any time to interrupt.
+
 ```bash
-python main.py
+python main.py      # main entry point
+python linux.py     # Linux-specific entry point
 ```
-
-### Run with virtual environment:
-```bash
-./red-button-launcher.sh
-```
-
-### Start via systemd:
-```bash
-systemctl --user start red-button
-```
-
-### Enable autostart:
-```bash
-systemctl --user enable red-button
-```
-
-## Voice Commands
-
-- **Tap button** → Speak → Assistant responds
-- **"Take a break for 10 minutes"** → Silent until timer ends or button pressed
-- **"What do you see?"** → Camera captures image, describes scene
-- **"Read this"** → OCR on camera view
-- **"Find my keys"** → Locates object, describes position
-- **"Check my email"** → Reads recent Gmail
-- **"Send an email to..."** → Composes and sends email
-- **"Search for..."** → Opens browser, searches web
-- **"What time is it?"** → System time/date
-- **"Goodbye"** → Returns to idle, waits for button
 
 ## Project Structure
 
 ```
-red-button-assistant/
-├── config/
-│   ├── settings.yaml         # App configuration
-│   └── credentials.json      # Gmail OAuth (optional)
-├── data/
-│   ├── conversation_history/ # Session logs
-│   ├── memories/             # User preferences
-│   └── md_imports/           # Imported Claude files
-├── voice/                    # STT/TTS/audio
-├── core/                     # Assistant, conversation, LLM
-├── tools/                    # Camera, Gmail, computer, etc.
-├── ui/                       # Big red button interface
-├── autostart/                # Installation scripts
-├── main.py                   # Entry point
+voice/
+├── config/             # App configuration
+│   ├── settings.example.yaml
+│   └── settings.yaml   # generated by setup.py
+├── core/               # Assistant, conversation, server client
+├── voice/              # STT/TTS/audio capture
+├── ui/                 # Hologram window and companion widgets
+├── dockbox_voice/      # Flutter mobile companion prototype
+├── main.py             # Main entry point
+├── linux.py            # Linux entry point
+├── setup.py            # First-run setup wizard
 └── requirements.txt
 ```
 
 ## Troubleshooting
 
 **No audio input:**
-- Check `arecord -l` for microphone
+- Check `arecord -l` for your microphone
 - Check `pavucontrol` for input settings
 
 **No camera:**
 - Check `v4l2-ctl --list-devices`
-- Ensure user has video group: `sudo usermod -a -G video $USER`
+- Ensure your user is in the `video` group: `sudo usermod -a -G video $USER`
 
-**Gmail not working:**
-- Ensure `config/credentials.json` exists
-- Run once interactively to complete OAuth
+**Assistant can't reach Prometheus:**
+- Verify `config/settings.yaml` has the right `base_url`
+- Re-run `python setup.py --login`
 
 ## License
 
-MIT License - Created for accessibility.
+MIT License
