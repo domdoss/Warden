@@ -1193,9 +1193,17 @@ async function startMessageLoop(): Promise<void> {
             // after the stop stay pending and start a fresh run.
             lastAgentTimestamp = stopMsg.timestamp;
             saveState();
+          } else {
+            // Any new user message during a run interrupts the current turn.
+            // The user is never left waiting on a stuck or slow model/tool call;
+            // their new input takes priority. Background Atlas jobs continue
+            // independently and report back via inbox.
+            const interruptMsg = messages[messages.length - 1];
+            logger.info({ ts: interruptMsg.timestamp }, 'New message mid-run — interrupting current turn');
+            killCurrentAgent();
+            lastAgentTimestamp = interruptMsg.timestamp;
+            saveState();
           }
-          // Non-stop messages queue as before: processOwnerMessages picks
-          // them up via lastAgentTimestamp once the current run resolves.
         }
       }
       if (!agentRunInFlight) {
