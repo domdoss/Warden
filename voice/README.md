@@ -1,95 +1,71 @@
 # Prometheus Voice
 
-A desktop voice companion for Prometheus. Press a button, talk, listen — your agent replies out loud through a hologram-style interface.
+A desktop voice thin client for your Prometheus server. Wake it, speak, and your agent replies out loud. All reasoning, tools, and memory live on the server — this app is just ears and a mouth with a hologram UI.
 
-## What it is
+## How it works
 
-Prometheus Voice is a lightweight Python app that gives you a push-to-talk (or hotkey) interface to your Prometheus server. Speak naturally; it transcribes locally with Whisper, sends the text to your agent, and speaks the reply back with Kokoro TTS. All intelligence lives on Prometheus — this app is just ears, eyes, and a mouth.
+- Local Whisper transcribes your speech; the text is sent to the server's `/api/messages`.
+- The agent's reply streams back over SSE and is spoken by Kokoro TTS.
+- A pywebview hologram window shows state (idle / listening / thinking / speaking).
 
-- **Push-to-talk or global hotkey (F9).** One press starts a conversation; press again to interrupt.
-- **Local voice processing.** Speech recognition (Whisper) and voice synthesis (Kokoro) run on your machine.
-- **Server-side brain.** All agent reasoning, tools, memory, and integrations happen on Prometheus.
-- **Hologram UI.** A frameless, transparent window that shows whether the assistant is idle, listening, thinking, or speaking.
-- **Vision.** Capture a photo, describe a scene, read text, find objects.
-- **Timer.** "Take a break for 10 minutes" and the assistant stays silent until the timer ends.
-- **Browser, desktop, email.** The full Prometheus toolset is available through voice.
+## Waking it
 
-## Requirements
+Three ways to start a conversation:
 
-- OS: Linux (tested), macOS, or Windows
-- Python 3.10 or newer
-- A microphone and speakers
-- An existing Prometheus server (local or cloud)
+- **Double clap** (or snap) — an always-on detector listens for two sharp transients in quick succession while idle. It pauses itself during conversation and TTS playback so the assistant can't wake itself.
+- **F9** — global hotkey, works anywhere on your system.
+- **Click the button** in the hologram window.
 
-## Install
+Speak after the beep; a second beep marks the end of your turn. Press/clap again at any time to interrupt.
+
+## Setup
+
+There is no setup wizard, no login, no user account, and no group selection. The app runs in no-auth single-server mode: one local Prometheus server, one implicit group.
 
 ```bash
 cd voice
-python setup.py
+pip install -r requirements.txt
+python single.py    # points the client at the local server, clears any stale auth
+python main.py
 ```
 
-The setup wizard will:
-
-1. Ask for your Prometheus base URL (`http://localhost:3200` for a local install).
-2. Open a browser where you're already signed in to Prometheus and ask you to paste the token it returns.
-3. Enter your Prometheus username and password.
-4. Pick the default group (chat) your voice turns land in.
-5. Download the Whisper speech-recognition model (one-time).
+`single.py` verifies the server is reachable and writes the base URL to the user config. `main.py` reads it on launch and boots straight in.
 
 ## Configuration
 
-Runtime config lives in `config/settings.yaml`. The setup wizard writes it for you. An example with no secrets is at `config/settings.example.yaml`. You can edit:
+Bundled defaults live in `config/settings.yaml`; per-user overrides are written to `~/.config/jarvis/config.yaml` (Linux/macOS) or `%APPDATA%\Jarvis\config.yaml` (Windows). Useful keys:
 
-- Prometheus base URL and default chat (`dockbox` section)
-- Agent model / tools model / vision model (`dockbox` section)
-- TTS voice and audio devices (`audio` / `voice` sections)
+- `dockbox.base_url` — the server (written by `single.py`)
+- `voice.whisper_model` — Whisper model size (default `base`)
+- `voice.clap_enabled` — turn the clap wake on/off (default on)
+- `voice.clap_threshold` / `voice.clap_crest` — clap sensitivity tuning
+- `audio.input_device` / `audio.playback_device` — explicit device indexes (auto-detected otherwise; PipeWire/pulse backends preferred for Bluetooth mics)
 
-Re-run individual setup steps:
+## Requirements
 
-```bash
-python setup.py --login     # re-authenticate
-python setup.py --group     # change default chat
-```
-
-## Usage
-
-Press the glowing button in the hologram window, or press **F9** anywhere on your system. Speak. A beep marks the start; stop talking and another beep marks the end. The hologram changes color while the agent thinks and speaks. Press again at any time to interrupt.
-
-```bash
-python main.py      # main entry point
-python linux.py     # Linux-specific entry point
-```
+- Python 3.10+
+- Microphone and speakers
+- A running Prometheus server on the local network
 
 ## Project Structure
 
 ```
 voice/
-├── config/             # App configuration
-│   ├── settings.example.yaml
-│   └── settings.yaml   # generated by setup.py
-├── core/               # Assistant, conversation, server client
-├── voice/              # STT/TTS/audio capture
-├── ui/                 # Hologram window and companion widgets
-├── dockbox_voice/      # Flutter mobile companion prototype
-├── main.py             # Main entry point
-├── linux.py            # Linux entry point
-├── setup.py            # First-run setup wizard
+├── config/             # Bundled default settings
+├── core/               # Config, server client, session store
+├── voice/              # STT, TTS, audio I/O, clap detector
+├── ui/                 # Hologram window
+├── main.py             # Entry point
+├── single.py           # One-shot server configurator
 └── requirements.txt
 ```
 
 ## Troubleshooting
 
-**No audio input:**
-- Check `arecord -l` for your microphone
-- Check `pavucontrol` for input settings
-
-**No camera:**
-- Check `v4l2-ctl --list-devices`
-- Ensure your user is in the `video` group: `sudo usermod -a -G video $USER`
-
-**Assistant can't reach Prometheus:**
-- Verify `config/settings.yaml` has the right `base_url`
-- Re-run `python setup.py --login`
+- **Clap wake too eager / deaf:** adjust `voice.clap_threshold` (int16 peak, default 9000) and `voice.clap_crest` (peak/RMS ratio, default 4.0).
+- **No audio in/out:** set `audio.input_device` / `audio.playback_device` explicitly; check `arecord -l`.
+- **"no server configured" on boot:** run `python single.py` first.
+- **Packaged (frozen) builds** log to `%APPDATA%\Jarvis\jarvis.log` instead of the console.
 
 ## License
 
