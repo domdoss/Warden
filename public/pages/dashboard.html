@@ -1,0 +1,3635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Prometheus</title>
+<meta property="og:title" content="Dashboard — Prometheus">
+<meta property="og:description" content="Your command center for the whole suite. Chat, projects, files, automations, calendar, vault — and everything your AI crew does — visible, searchable, and manageable from one dashboard.">
+<meta property="og:image" content="https://dockbox.dev/og-image.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Dashboard — Prometheus">
+<meta name="twitter:description" content="Your command center. Everything your organization does with AI — visible, searchable, and manageable from one dashboard.">
+<meta name="twitter:image" content="https://dockbox.dev/og-image.png">
+<meta name="description" content="Your command center for the whole suite. Chat, projects, files, automations, calendar, vault — and everything your AI crew does — visible, searchable, and manageable from one dashboard.">
+<link rel="canonical" href="https://dockbox.dev/pages/dashboard.html">
+<link rel="icon" type="image/png" href="/dockbox-logo.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "Dashboard — Prometheus",
+  "description": "Your command center. Everything your organization does with AI — visible, searchable, and manageable from one dashboard.",
+  "url": "https://dockbox.dev/pages/dashboard.html",
+  "isPartOf": { "@type": "WebSite", "name": "Prometheus", "url": "https://dockbox.dev" }
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=GFS+Didot&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ══ Reset & Variables ══ */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #e8edf5;
+  --bg-alt: #dce3ef;
+  --surface: #f5f7fb;
+  --white: #FFFFFF;
+  --stone-50: #edf1f8;
+  --stone-100: #dce3ef;
+  --stone-200: #c7d0e0;
+  --stone-400: #8994a8;
+  --stone-500: #64748b;
+  --stone-600: #475569;
+  --stone-900: #0f172a;
+  --accent: #2563eb;
+  --accent-dark: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-light: rgba(37,99,235,0.08);
+  --green: #16a34a;
+  --green-light: rgba(22,163,74,0.08);
+  --amber: #d97706;
+  --amber-light: rgba(217,119,6,0.08);
+  --red: #dc2626;
+  --red-light: rgba(220,38,38,0.08);
+  --purple: #7c3aed;
+  --purple-light: rgba(124,58,237,0.08);
+  --shadow-sm: 0 1px 3px rgba(15,23,42,0.06);
+  --shadow-md: 0 4px 20px rgba(15,23,42,0.08);
+  --shadow-lg: 0 16px 48px rgba(15,23,42,0.1), 0 2px 8px rgba(15,23,42,0.04);
+  --radius: 12px;
+  --radius-lg: 16px;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--stone-600);
+  line-height: 1.8;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+h1, h2, h3, h4 {
+  font-family: 'GFS Didot', Georgia, serif;
+  color: var(--stone-900);
+  line-height: 1.2;
+}
+
+h2 { font-weight: 700; }
+
+code, .mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.container-wide {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+section, footer { position: relative; z-index: 1; }
+
+.section-label {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
+/* ══ Navigation ══ */
+nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 100;
+  background: rgba(232,237,245,0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+
+nav .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 72px;
+}
+
+.logo {
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-icon { height: 42px; width: 42px; object-fit: contain; }
+
+.logo-text {
+  font-family: 'GFS Didot', Georgia, serif;
+  font-size: 1.6rem;
+  color: var(--stone-900);
+}
+
+.nav-links {
+  display: flex;
+  gap: 28px;
+  align-items: center;
+}
+
+.nav-links a {
+  color: var(--stone-900);
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.nav-links a:hover { color: var(--stone-700); }
+.nav-links a.active { color: var(--accent); font-weight: 600; }
+
+.btn-ghost {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 7px 18px;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s;
+  background: transparent;
+}
+
+.btn-ghost:hover {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+}
+
+.btn-solid {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(37,99,235,0.25), 0 1px 2px rgba(0,0,0,0.06);
+  border: none;
+  cursor: pointer;
+}
+
+.btn-solid:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 16px rgba(37,99,235,0.35), 0 1px 3px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+}
+
+/* ══ Hero ══ */
+.hero {
+  padding: 160px 0 80px;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: clamp(2.5rem, 5vw, 3.75rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+  margin-bottom: 24px;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.hero h1 span { color: var(--accent); }
+
+.hero-sub {
+  font-size: 1.15rem;
+  color: var(--stone-500);
+  max-width: 640px;
+  margin: 0 auto 40px;
+  line-height: 1.75;
+}
+
+.hero-ctas {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.hero-ctas .btn-solid {
+  padding: 12px 28px;
+  font-size: 1rem;
+}
+
+.hero-ctas .btn-ghost {
+  padding: 11px 28px;
+  font-size: 1rem;
+}
+
+/* ══ Two Dashboards Section ══ */
+.two-dashboards {
+  padding: 80px 0;
+}
+
+.two-dashboards .section-header {
+  text-align: center;
+  margin-bottom: 56px;
+}
+
+.two-dashboards .section-header h2 {
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  margin-bottom: 16px;
+}
+
+.two-dashboards .section-header p {
+  font-size: 1.1rem;
+  color: var(--stone-500);
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+
+.dash-card {
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  padding: 40px 36px;
+  border: 1px solid var(--stone-100);
+  box-shadow: var(--shadow-md);
+  transition: box-shadow 0.3s, transform 0.3s;
+}
+
+.dash-card:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-4px);
+}
+
+.dash-card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 20px;
+  font-size: 1.4rem;
+}
+
+.dash-card-icon.user-icon {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.dash-card-icon.admin-icon {
+  background: var(--purple-light);
+  color: var(--purple);
+}
+
+.dash-card h3 {
+  font-size: 1.5rem;
+  margin-bottom: 12px;
+}
+
+.dash-card p {
+  color: var(--stone-500);
+  margin-bottom: 20px;
+  line-height: 1.7;
+}
+
+.dash-card-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dash-card-features span {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: var(--stone-50);
+  color: var(--stone-600);
+}
+
+/* ══ Deep Dive Sections ══ */
+.deep-dive {
+  padding: 80px 0;
+}
+
+.deep-dive.alt-bg {
+  background: var(--bg-alt);
+}
+
+.deep-dive .section-header {
+  text-align: center;
+  margin-bottom: 64px;
+}
+
+.deep-dive .section-header h2 {
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  margin-bottom: 16px;
+}
+
+.deep-dive .section-header p {
+  font-size: 1.1rem;
+  color: var(--stone-500);
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* ══ View Card (mockup + text beside it) ══ */
+.view-showcase {
+  margin-bottom: 72px;
+}
+
+.view-showcase:last-child {
+  margin-bottom: 0;
+}
+
+.view-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 48px;
+  align-items: center;
+}
+
+.view-row.reverse {
+  grid-template-columns: 1fr 1.1fr;
+}
+
+.view-row.reverse .view-text {
+  order: -1;
+}
+
+.view-text h3 {
+  font-size: 1.6rem;
+  margin-bottom: 12px;
+}
+
+.view-text p {
+  color: var(--stone-500);
+  line-height: 1.75;
+  margin-bottom: 16px;
+}
+
+.view-text .feature-list {
+  list-style: none;
+  padding: 0;
+}
+
+.view-text .feature-list li {
+  padding: 6px 0;
+  font-size: 0.92rem;
+  color: var(--stone-600);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.view-text .feature-list li::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ══ Browser Mockup ══ */
+.browser-mockup {
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  border: 1px solid var(--stone-200);
+}
+
+.browser-chrome {
+  background: var(--stone-50);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--stone-200);
+}
+
+.browser-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.browser-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.browser-dots span:nth-child(1) { background: #ef4444; }
+.browser-dots span:nth-child(2) { background: #f59e0b; }
+.browser-dots span:nth-child(3) { background: #22c55e; }
+
+.browser-url {
+  flex: 1;
+  background: var(--white);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  color: var(--stone-400);
+  border: 1px solid var(--stone-200);
+}
+
+.browser-body {
+  padding: 0;
+  min-height: 280px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ══ Dashboard Mockup Internals ══ */
+.mock-app {
+  display: flex;
+  height: 340px;
+}
+
+.mock-app.tall {
+  height: 380px;
+}
+
+.mock-sidebar {
+  width: 200px;
+  background: #f8fafc;
+  border-right: 1px solid var(--stone-200);
+  padding: 16px 0;
+  flex-shrink: 0;
+}
+
+.mock-sidebar-narrow {
+  width: 56px;
+  background: var(--stone-900);
+  border-right: 1px solid rgba(255,255,255,0.08);
+  padding: 12px 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.mock-sidebar-narrow .sb-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: var(--stone-400);
+  cursor: default;
+  transition: background 0.15s;
+}
+
+.mock-sidebar-narrow .sb-icon.active {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+.mock-sidebar-narrow .sb-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.75rem;
+  margin-bottom: 12px;
+}
+
+.mock-sb-item {
+  padding: 7px 16px;
+  font-size: 0.72rem;
+  color: var(--stone-500);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.mock-sb-item.active {
+  color: var(--accent);
+  background: var(--accent-light);
+  font-weight: 600;
+}
+
+.mock-sb-item .sb-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--stone-200);
+}
+
+.mock-sb-item.active .sb-dot {
+  background: var(--accent);
+}
+
+.mock-sb-section {
+  padding: 12px 16px 4px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--stone-400);
+}
+
+.mock-content {
+  flex: 1;
+  padding: 16px 20px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.mock-content-white {
+  flex: 1;
+  padding: 16px 20px;
+  overflow: hidden;
+  background: #fff;
+}
+
+/* ── Stats row ── */
+.mock-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.mock-stat-card {
+  flex: 1;
+  background: var(--white);
+  border-radius: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--stone-100);
+}
+
+.mock-stat-label {
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--stone-400);
+  margin-bottom: 2px;
+}
+
+.mock-stat-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--stone-900);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.mock-stat-change {
+  font-size: 0.55rem;
+  font-weight: 600;
+}
+
+.mock-stat-change.up { color: var(--green); }
+.mock-stat-change.down { color: var(--red); }
+
+/* ── Activity feed ── */
+.mock-activity {
+  background: var(--white);
+  border-radius: 8px;
+  border: 1px solid var(--stone-100);
+  padding: 12px;
+}
+
+.mock-activity-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--stone-900);
+  margin-bottom: 10px;
+  font-family: 'Inter', sans-serif;
+}
+
+.mock-activity-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--stone-50);
+}
+
+.mock-activity-item:last-child { border-bottom: none; }
+
+.mock-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.mock-activity-text {
+  flex: 1;
+  font-size: 0.62rem;
+  color: var(--stone-600);
+}
+
+.mock-activity-text strong {
+  color: var(--stone-900);
+  font-weight: 600;
+}
+
+.mock-activity-time {
+  font-size: 0.55rem;
+  color: var(--stone-400);
+  flex-shrink: 0;
+}
+
+/* ── Chat mockup ── */
+.mock-chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.mock-chat-header {
+  padding: 10px 16px;
+  background: var(--white);
+  border-bottom: 1px solid var(--stone-200);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--stone-900);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mock-chat-header .status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.mock-chat-messages {
+  flex: 1;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.mock-msg {
+  max-width: 75%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 0.62rem;
+  line-height: 1.5;
+}
+
+.mock-msg.user {
+  background: var(--accent);
+  color: #fff;
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+
+.mock-msg.bot {
+  background: var(--white);
+  color: var(--stone-600);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+  border: 1px solid var(--stone-100);
+}
+
+.mock-msg .msg-name {
+  font-size: 0.52rem;
+  font-weight: 600;
+  margin-bottom: 2px;
+  opacity: 0.7;
+}
+
+.mock-msg.bot .msg-name { color: var(--accent); }
+
+.mock-chat-input {
+  padding: 10px 16px;
+  background: var(--white);
+  border-top: 1px solid var(--stone-200);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mock-chat-input .input-field {
+  flex: 1;
+  background: var(--stone-50);
+  border: 1px solid var(--stone-200);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 0.62rem;
+  color: var(--stone-400);
+}
+
+.mock-chat-input .send-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.mock-chat-input .send-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: #fff;
+}
+
+/* ── Session sidebar ── */
+.mock-sessions {
+  width: 180px;
+  background: #fff;
+  border-right: 1px solid var(--stone-200);
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+
+.mock-sessions-title {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--stone-900);
+  padding: 8px 12px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mock-session-item {
+  padding: 8px 12px;
+  font-size: 0.62rem;
+  color: var(--stone-500);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.mock-session-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mock-session-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--stone-200);
+  flex-shrink: 0;
+}
+
+.mock-session-item.active .mock-session-dot {
+  background: var(--accent);
+}
+
+/* ── Kanban mockup ── */
+.mock-kanban {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  padding-bottom: 4px;
+}
+
+.mock-kanban-col {
+  flex: 1;
+  background: var(--stone-50);
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid var(--stone-100);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mock-kanban-col-title {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--stone-500);
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--stone-200);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mock-kanban-col-title .count {
+  background: var(--stone-200);
+  color: var(--stone-600);
+  font-size: 0.52rem;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.mock-kanban-col:first-child .mock-kanban-col-title { border-bottom-color: var(--accent); }
+.mock-kanban-col:nth-child(2) .mock-kanban-col-title { border-bottom-color: var(--amber); }
+.mock-kanban-col:last-child .mock-kanban-col-title { border-bottom-color: var(--green); }
+
+.mock-task-card {
+  background: var(--white);
+  border-radius: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--stone-100);
+  font-size: 0.58rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+
+.mock-task-title {
+  font-weight: 600;
+  color: var(--stone-900);
+  margin-bottom: 4px;
+}
+
+.mock-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--stone-400);
+  font-size: 0.52rem;
+}
+
+.mock-priority {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.48rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mock-priority.high { background: var(--red-light); color: var(--red); }
+.mock-priority.medium { background: var(--amber-light); color: var(--amber); }
+.mock-priority.low { background: var(--accent-light); color: var(--accent); }
+
+.mock-task-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.42rem;
+  font-weight: 700;
+  color: #fff;
+  margin-left: auto;
+}
+
+/* ── File browser mockup ── */
+.mock-files {
+  display: flex;
+  height: 100%;
+}
+
+.mock-file-tree {
+  width: 160px;
+  background: var(--white);
+  border-right: 1px solid var(--stone-200);
+  padding: 10px 0;
+  flex-shrink: 0;
+}
+
+.mock-file-tree-item {
+  padding: 4px 12px;
+  font-size: 0.58rem;
+  color: var(--stone-500);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+}
+
+.mock-file-tree-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mock-file-tree-item .icon {
+  font-size: 0.65rem;
+}
+
+.mock-file-tree-item.indent {
+  padding-left: 28px;
+}
+
+.mock-file-list {
+  flex: 1;
+  padding: 12px;
+}
+
+.mock-file-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.mock-file-header-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--stone-900);
+}
+
+.mock-file-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mock-file-btn {
+  font-size: 0.52rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  cursor: default;
+}
+
+.mock-file-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.58rem;
+  gap: 10px;
+  transition: background 0.15s;
+}
+
+.mock-file-row:hover {
+  background: var(--stone-50);
+}
+
+.mock-file-icon {
+  font-size: 0.75rem;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.mock-file-name {
+  flex: 1;
+  color: var(--stone-900);
+  font-weight: 500;
+}
+
+.mock-file-size {
+  color: var(--stone-400);
+  font-size: 0.52rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.mock-file-badge {
+  font-size: 0.46rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mock-file-badge.clean { background: var(--green-light); color: var(--green); }
+.mock-file-badge.scrubbed { background: var(--purple-light); color: var(--purple); }
+
+/* ── Calendar mockup ── */
+.mock-calendar {
+  padding: 4px;
+}
+
+.mock-cal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.mock-cal-month {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--stone-900);
+}
+
+.mock-cal-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.mock-cal-nav-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid var(--stone-200);
+  background: var(--white);
+  font-size: 0.6rem;
+  color: var(--stone-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.mock-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.mock-cal-day-name {
+  font-size: 0.48rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--stone-400);
+  text-align: center;
+  padding: 4px 0;
+}
+
+.mock-cal-day {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 3px;
+  font-size: 0.52rem;
+  color: var(--stone-500);
+  cursor: default;
+  position: relative;
+}
+
+.mock-cal-day.today {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.mock-cal-day.has-event::after {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  position: absolute;
+  bottom: 3px;
+}
+
+.mock-cal-day.today.has-event::after {
+  background: #fff;
+}
+
+.mock-cal-day.empty { color: transparent; }
+
+/* ── Automations mockup ── */
+.mock-automation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mock-automation-item {
+  background: var(--white);
+  border-radius: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--stone-100);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mock-auto-toggle {
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  position: relative;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.mock-auto-toggle.on {
+  background: var(--accent);
+}
+
+.mock-auto-toggle.off {
+  background: var(--stone-200);
+}
+
+.mock-auto-toggle::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  top: 2px;
+  transition: left 0.2s;
+}
+
+.mock-auto-toggle.on::after { left: 14px; }
+.mock-auto-toggle.off::after { left: 2px; }
+
+.mock-auto-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.mock-auto-name {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--stone-900);
+}
+
+.mock-auto-schedule {
+  font-size: 0.52rem;
+  color: var(--stone-400);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.mock-auto-status {
+  font-size: 0.5rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.mock-auto-status.running { background: var(--green-light); color: var(--green); }
+.mock-auto-status.idle { background: var(--stone-50); color: var(--stone-400); }
+
+.mock-auto-last {
+  font-size: 0.48rem;
+  color: var(--stone-400);
+  flex-shrink: 0;
+  text-align: right;
+  min-width: 50px;
+}
+
+/* ── Actions mockup ── */
+.mock-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.mock-action-btn {
+  background: var(--white);
+  border-radius: 10px;
+  padding: 16px 12px;
+  border: 1px solid var(--stone-100);
+  text-align: center;
+  cursor: default;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.mock-action-btn:hover {
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.mock-action-icon {
+  font-size: 1.2rem;
+  margin-bottom: 6px;
+}
+
+.mock-action-label {
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: var(--stone-900);
+}
+
+.mock-action-desc {
+  font-size: 0.48rem;
+  color: var(--stone-400);
+  margin-top: 2px;
+}
+
+/* ── Admin system mockup ── */
+.mock-admin-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.mock-admin-stat {
+  background: var(--white);
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid var(--stone-100);
+}
+
+.mock-admin-stat-label {
+  font-size: 0.5rem;
+  color: var(--stone-400);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mock-admin-stat-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.mock-admin-stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--stone-900);
+}
+
+.mock-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.mock-health-dot.green { background: var(--green); }
+.mock-health-dot.amber { background: var(--amber); }
+
+/* ── Admin conversations table ── */
+.mock-conv-table {
+  background: var(--white);
+  border-radius: 8px;
+  border: 1px solid var(--stone-100);
+  overflow: hidden;
+}
+
+.mock-conv-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  gap: 12px;
+  border-bottom: 1px solid var(--stone-50);
+  font-size: 0.58rem;
+}
+
+.mock-conv-row:last-child { border-bottom: none; }
+
+.mock-conv-row.header {
+  background: var(--stone-50);
+  font-weight: 700;
+  color: var(--stone-500);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.5rem;
+}
+
+.mock-conv-group { width: 25%; color: var(--stone-900); font-weight: 600; }
+.mock-conv-channel { width: 15%; }
+.mock-conv-last { width: 30%; color: var(--stone-500); }
+.mock-conv-time { width: 15%; font-family: 'JetBrains Mono', monospace; color: var(--stone-400); font-size: 0.52rem; }
+.mock-conv-status { width: 15%; }
+
+.mock-channel-badge {
+  font-size: 0.46rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.mock-channel-badge.tg { background: #e0f2fe; color: #0284c7; }
+.mock-channel-badge.web { background: var(--accent-light); color: var(--accent); }
+
+/* ── User management mockup ── */
+.mock-user-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.mock-user-card {
+  background: var(--white);
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid var(--stone-100);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mock-user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.mock-user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.mock-user-name {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--stone-900);
+}
+
+.mock-user-sessions {
+  font-size: 0.5rem;
+  color: var(--stone-400);
+}
+
+.mock-user-edit {
+  font-size: 0.5rem;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: default;
+}
+
+/* ── Container control mockup ── */
+.mock-containers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mock-container-row {
+  background: var(--white);
+  border-radius: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--stone-100);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.58rem;
+}
+
+.mock-container-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  color: var(--stone-900);
+  flex: 1;
+}
+
+.mock-container-time {
+  color: var(--stone-400);
+  font-size: 0.52rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.mock-container-mem {
+  color: var(--stone-500);
+  font-size: 0.52rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.mock-kill-btn {
+  font-size: 0.48rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--red-light);
+  color: var(--red);
+  border: none;
+  font-weight: 700;
+  cursor: default;
+}
+
+.mock-status-badge {
+  font-size: 0.46rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+.mock-status-badge.running { background: var(--green-light); color: var(--green); }
+.mock-status-badge.idle { background: var(--stone-50); color: var(--stone-400); }
+
+/* ══ PWA Section ══ */
+.pwa-section {
+  padding: 80px 0;
+}
+
+.pwa-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  align-items: center;
+}
+
+.pwa-text h2 {
+  font-size: clamp(2rem, 3.5vw, 2.5rem);
+  margin-bottom: 16px;
+}
+
+.pwa-text p {
+  color: var(--stone-500);
+  margin-bottom: 24px;
+  line-height: 1.75;
+}
+
+.pwa-features {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pwa-feature {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.pwa-feature-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--accent-light);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.pwa-feature-text h4 {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--stone-900);
+  margin-bottom: 2px;
+}
+
+.pwa-feature-text p {
+  font-size: 0.85rem;
+  margin-bottom: 0;
+}
+
+/* Phone mockup */
+.phone-mockup {
+  max-width: 300px;
+  margin: 0 auto;
+  background: var(--stone-900);
+  border-radius: 36px;
+  padding: 12px;
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,0.05) inset;
+}
+
+.phone-screen {
+  background: var(--bg);
+  border-radius: 26px;
+  overflow: hidden;
+  aspect-ratio: 9/16;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-status-bar {
+  background: var(--white);
+  padding: 8px 16px 4px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.5rem;
+  font-weight: 600;
+  color: var(--stone-900);
+}
+
+.phone-notch {
+  width: 80px;
+  height: 22px;
+  background: var(--stone-900);
+  border-radius: 0 0 14px 14px;
+  margin: 0 auto;
+  position: relative;
+  top: -4px;
+}
+
+.phone-app-header {
+  background: var(--white);
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--stone-200);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.phone-app-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.55rem;
+  font-weight: 700;
+}
+
+.phone-app-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--stone-900);
+}
+
+.phone-content {
+  flex: 1;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.phone-card {
+  background: var(--white);
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid var(--stone-100);
+}
+
+.phone-card-title {
+  font-size: 0.5rem;
+  font-weight: 700;
+  color: var(--stone-900);
+  margin-bottom: 4px;
+}
+
+.phone-card-text {
+  font-size: 0.46rem;
+  color: var(--stone-500);
+}
+
+.phone-stat-row {
+  display: flex;
+  gap: 6px;
+}
+
+.phone-stat {
+  flex: 1;
+  text-align: center;
+}
+
+.phone-stat-val {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--stone-900);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.phone-stat-label {
+  font-size: 0.4rem;
+  color: var(--stone-400);
+  text-transform: uppercase;
+}
+
+.phone-nav-bar {
+  background: var(--white);
+  border-top: 1px solid var(--stone-200);
+  padding: 8px 0;
+  display: flex;
+  justify-content: space-around;
+}
+
+.phone-nav-item {
+  text-align: center;
+  font-size: 0.4rem;
+  color: var(--stone-400);
+}
+
+.phone-nav-item.active { color: var(--accent); }
+
+.phone-nav-item .nav-icon {
+  font-size: 0.8rem;
+  display: block;
+  margin-bottom: 1px;
+}
+
+/* ══ Live Workspace Section ══ */
+.live-workspace {
+  padding: 80px 0;
+}
+.live-workspace .section-header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+.live-workspace .section-header h2 {
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  margin-bottom: 16px;
+}
+.live-workspace .section-header p {
+  font-size: 1.1rem;
+  color: var(--stone-500);
+  max-width: 600px;
+  margin: 0 auto;
+}
+.workspace-mockup-wrap {
+  position: relative;
+  max-width: 1000px;
+  margin: 0 auto 40px;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(15,23,42,0.14), 0 4px 16px rgba(15,23,42,0.06), 0 0 0 1px rgba(15,23,42,0.04);
+}
+.workspace-mockup-wrap::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 22px;
+  background: linear-gradient(135deg, rgba(37,99,235,0.15), transparent 50%, rgba(124,58,237,0.1));
+  z-index: -1;
+}
+.workspace-mockup-glow {
+  position: absolute;
+  inset: -40px;
+  border-radius: 40px;
+  background: radial-gradient(ellipse at center, rgba(37,99,235,0.06) 0%, transparent 70%);
+  z-index: -2;
+  pointer-events: none;
+}
+.workspace-chrome {
+  background: var(--stone-50);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--stone-200);
+}
+.workspace-chrome .dots { display: flex; gap: 6px; }
+.workspace-chrome .dots span { width: 10px; height: 10px; border-radius: 50%; }
+.workspace-chrome .dots span:nth-child(1) { background: #ef4444; }
+.workspace-chrome .dots span:nth-child(2) { background: #f59e0b; }
+.workspace-chrome .dots span:nth-child(3) { background: #22c55e; }
+.workspace-chrome .wurl {
+  flex: 1;
+  background: var(--white);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  color: var(--stone-400);
+  border: 1px solid var(--stone-200);
+}
+.workspace-body {
+  display: flex;
+  height: 360px;
+  background: var(--bg);
+}
+.ws-sidebar {
+  width: 56px;
+  background: var(--stone-900);
+  border-right: 1px solid rgba(255,255,255,0.08);
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.ws-sidebar .ws-logo {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: var(--accent); display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 0.75rem; margin-bottom: 12px;
+}
+.ws-sidebar .ws-icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--stone-400); font-size: 0.75rem;
+}
+.ws-sidebar .ws-icon.active { background: rgba(255,255,255,0.1); color: #fff; }
+.ws-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--stone-200);
+  max-width: 420px;
+}
+.ws-chat-header {
+  padding: 10px 16px;
+  background: var(--white);
+  border-bottom: 1px solid var(--stone-200);
+  font-size: 0.72rem; font-weight: 600; color: var(--stone-900);
+  display: flex; align-items: center; gap: 8px;
+}
+.ws-chat-header .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.ws-chat-messages {
+  flex: 1; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 8px; overflow: hidden;
+}
+.ws-msg {
+  max-width: 80%; padding: 8px 12px; border-radius: 12px;
+  font-size: 0.62rem; line-height: 1.5;
+}
+.ws-msg.user { background: var(--accent); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+.ws-msg.bot { background: var(--white); color: var(--stone-600); align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid var(--stone-100); }
+.ws-msg .name { font-size: 0.52rem; font-weight: 600; margin-bottom: 2px; opacity: 0.7; }
+.ws-msg.bot .name { color: var(--accent); }
+.ws-chat-input {
+  padding: 10px 16px; background: var(--white); border-top: 1px solid var(--stone-200);
+  display: flex; gap: 8px; align-items: center;
+}
+.ws-chat-input .field {
+  flex: 1; background: var(--stone-50); border: 1px solid var(--stone-200);
+  border-radius: 8px; padding: 7px 12px; font-size: 0.62rem; color: var(--stone-400);
+}
+.ws-terminal {
+  flex: 1;
+  background: #1e1e2e;
+  display: flex;
+  flex-direction: column;
+}
+.ws-terminal-header {
+  padding: 8px 14px;
+  background: #181825;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  display: flex; align-items: center; gap: 10px;
+}
+.ws-terminal-header .tab {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.58rem; padding: 3px 10px; border-radius: 4px; cursor: default;
+}
+.ws-terminal-header .tab.active { background: rgba(255,255,255,0.08); color: #cdd6f4; }
+.ws-terminal-header .tab.inactive { color: #585b70; }
+.ws-terminal-body {
+  flex: 1; padding: 12px 14px; overflow: hidden;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.58rem; line-height: 1.8; color: #a6adc8;
+}
+.ws-terminal-body .prompt { color: #89b4fa; }
+.ws-terminal-body .cmd { color: #cdd6f4; }
+.ws-terminal-body .out { color: #a6adc8; }
+.ws-terminal-body .ok { color: #a6e3a1; }
+.ws-terminal-body .warn { color: #f9e2af; }
+.workspace-bullets {
+  display: flex;
+  gap: 32px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 32px;
+}
+.workspace-bullet {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 300px;
+}
+.workspace-bullet .bullet-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0; margin-top: 7px;
+}
+.workspace-bullet p {
+  font-size: 0.92rem; color: var(--stone-600); line-height: 1.5;
+}
+.workspace-cta {
+  text-align: center;
+}
+@media (max-width: 768px) {
+  .workspace-body { flex-direction: column; height: auto; }
+  .ws-sidebar { flex-direction: row; width: 100%; height: 42px; padding: 0 8px; }
+  .ws-sidebar .ws-logo { margin-bottom: 0; margin-right: 8px; }
+  .ws-chat { max-width: 100%; }
+  .ws-terminal { min-height: 160px; }
+  .workspace-bullets { flex-direction: column; align-items: center; }
+}
+
+/* ══ CTA Section ══ */
+.cta-section {
+  padding: 80px 0 100px;
+}
+
+.cta-card {
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  padding: 64px 48px;
+  text-align: center;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--stone-100);
+}
+
+.cta-card h2 {
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  margin-bottom: 16px;
+}
+
+.cta-card p {
+  font-size: 1.1rem;
+  color: var(--stone-500);
+  max-width: 520px;
+  margin: 0 auto 32px;
+  line-height: 1.75;
+}
+
+.cta-buttons {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.cta-buttons .btn-solid {
+  padding: 12px 32px;
+  font-size: 1rem;
+}
+
+.cta-buttons .btn-ghost {
+  padding: 11px 32px;
+  font-size: 1rem;
+}
+
+/* ══ Footer ══ */
+footer {
+  padding: 56px 0;
+  background: var(--bg);
+  border-top: 1px solid rgba(0,0,0,0.06);
+  position: relative;
+  z-index: 1;
+}
+
+.footer-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 40px;
+  margin-bottom: 32px;
+}
+
+.footer-brand .logo { display: inline-block; margin-bottom: 8px; }
+.footer-brand p { font-size: 0.85rem; color: var(--stone-500); opacity: 0.8; }
+
+.footer-col h4 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--stone-900);
+  margin-bottom: 12px;
+}
+
+.footer-col a {
+  display: block;
+  color: var(--stone-500);
+  text-decoration: none;
+  font-size: 0.875rem;
+  margin-bottom: 8px;
+  transition: color 0.2s;
+}
+
+.footer-col a:hover { color: var(--accent); }
+
+.footer-bottom {
+  padding-top: 24px;
+  border-top: 1px solid var(--stone-100);
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--stone-400);
+}
+
+.footer-bottom a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.footer-bottom a:hover { text-decoration: underline; }
+
+/* ══ Animations ══ */
+.fade-in {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-in { opacity: 1; transform: none; transition: none; }
+}
+
+/* ══ Streaming cursor animation ══ */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 1px;
+  height: 0.65em;
+  background: var(--accent);
+  margin-left: 1px;
+  animation: blink 1s infinite;
+}
+
+/* ══ Hamburger & Mobile Menu ══ */
+.hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--stone-200);
+  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  font-size: 1.3rem;
+  cursor: pointer;
+  color: var(--stone-600);
+  transition: border-color 0.15s;
+}
+.hamburger:hover { border-color: var(--stone-400); }
+.mobile-menu {
+  display: none;
+  position: fixed;
+  top: 72px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(232,237,245,0.97);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  z-index: 999;
+  padding: 32px 24px;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+.mobile-menu.open { display: flex; }
+.mobile-menu a {
+  display: block;
+  padding: 14px 16px;
+  color: var(--stone-700);
+  text-decoration: none;
+  font-size: 1.05rem;
+  font-weight: 500;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+.mobile-menu a:hover { background: rgba(0,0,0,0.04); }
+.mobile-menu .btn-ghost {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  text-align: center;
+  margin-top: 12px;
+}
+.mobile-menu .btn-solid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  text-align: center;
+  margin-top: 8px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(37,99,235,0.25);
+}
+.mobile-menu .btn-solid:hover { background: var(--accent-hover); }
+
+/* ══ Responsive ══ */
+@media (max-width: 768px) {
+  .hero { padding: 120px 0 60px; }
+  .dashboard-cards { grid-template-columns: 1fr; }
+  .view-row, .view-row.reverse { grid-template-columns: 1fr; gap: 32px; }
+  .view-row.reverse .view-text { order: 0; }
+  .pwa-grid { grid-template-columns: 1fr; }
+  .phone-mockup { margin-top: 32px; }
+  .mock-app { height: auto; min-height: 240px; }
+  .mock-sidebar, .mock-sessions { display: none; }
+  .mock-sidebar-narrow { width: 42px; }
+  .mock-admin-stats { grid-template-columns: repeat(2, 1fr); }
+  .mock-actions-grid { grid-template-columns: repeat(2, 1fr); }
+  .mock-user-grid { grid-template-columns: 1fr; }
+  .footer-grid { grid-template-columns: 1fr; gap: 24px; }
+  .nav-links { display: none; }
+  .hamburger { display: flex; }
+  .cta-card { padding: 40px 24px; }
+  .hero-ctas { flex-direction: column; align-items: center; }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .view-row, .view-row.reverse { grid-template-columns: 1fr; gap: 32px; }
+  .view-row.reverse .view-text { order: 0; }
+  .mock-sidebar { width: 160px; }
+  .mock-sessions { width: 140px; }
+}
+</style>
+<link href="https://assets.calendly.com/assets/external/widget.css" rel="stylesheet">
+<script src="https://assets.calendly.com/assets/external/widget.js" type="text/javascript"></script>
+<script>
+// Robust Calendly opener: waits for widget.js, retries gracefully,
+// falls back to opening the scheduling page directly.
+(function() {
+  var CAL_URL = 'https://calendly.com/dom-doss/check-in';
+  var waiting = false;
+  function calendlyReady() {
+    return typeof window.Calendly !== 'undefined' && typeof window.Calendly.initPopupWidget === 'function';
+  }
+  function tryOpen() {
+    try {
+      window.Calendly.initPopupWidget({ url: CAL_URL });
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+  window.openCalendly = function() {
+    if (calendlyReady()) {
+      if (!tryOpen()) setTimeout(tryOpen, 600); // one graceful retry
+      return false;
+    }
+    if (waiting) return false; // already polling from a previous click
+    waiting = true;
+    var tries = 0;
+    var timer = setInterval(function() {
+      tries++;
+      if (calendlyReady()) {
+        clearInterval(timer);
+        waiting = false;
+        if (!tryOpen()) setTimeout(tryOpen, 600);
+      } else if (tries >= 100) { // ~10s: widget script never loaded
+        clearInterval(timer);
+        waiting = false;
+        window.open(CAL_URL, '_blank', 'noopener');
+      }
+    }, 100);
+    return false;
+  };
+})();
+</script>
+</head>
+<body>
+
+<!-- ══ Navigation ══ -->
+<nav>
+  <div class="container">
+    <a href="/" class="logo"><img src="/dockbox-logo.png" alt="" class="logo-icon"><span class="logo-text">Prometheus</span></a>
+    <div class="nav-links">
+      <a href="/pages/product.html">Product</a>
+      <a href="/pages/security.html">Security</a>
+      <a href="/pages/pricing.html">Pricing</a>
+      <a href="/pages/dashboard.html" class="active">Dashboard</a>
+      <a href="/pages/solutions.html">Solutions</a>
+      <a href="/pages/docs.html">Docs</a>
+      <a href="/pages/blog.html">Blog</a>
+      <a href="/login" class="btn-ghost">Log In</a>
+      <a href="" onclick="return openCalendly();" class="btn-ghost">Book a Demo</a>
+      <a href="/signup" class="btn-solid">Start Free Trial</a>
+    </div>
+    <button class="hamburger" onclick="document.getElementById('mobileMenu').classList.toggle('open'); this.textContent = this.textContent.trim() === '☰' ? '✕' : '☰'" aria-label="Menu">☰</button>
+  </div>
+</nav>
+<div class="mobile-menu" id="mobileMenu">
+  <a href="/pages/product.html">Product</a>
+  <a href="/pages/voice.html">Voice</a>
+  <a href="/pages/solutions.html">Solutions</a>
+  <a href="/pages/security.html">Security</a>
+  <a href="/pages/pricing.html">Pricing</a>
+  <a href="/pages/dashboard.html">Dashboard</a>
+  <a href="/pages/docs.html">Docs</a>
+  <a href="/pages/blog.html">Blog</a>
+  <a href="/login" class="btn-ghost">Log In</a>
+  <a href="" onclick="return openCalendly();" class="btn-ghost">Book a Demo</a>
+  <a href="/signup" class="btn-solid">Start Free Trial →</a>
+</div>
+
+<!-- ══ Hero ══ -->
+<section class="hero">
+  <div class="container">
+    <span class="section-label">Dashboard</span>
+    <h1>Your <span>command center.</span></h1>
+    <p class="hero-sub">Every app in the suite &mdash; chat, projects, files, automations, calendar, and vault &mdash; plus everything the AI crew does, visible, searchable, and manageable from one dashboard. Two interfaces, one suite, total clarity.</p>
+    <div class="hero-ctas">
+      <a href="/demo-user/" class="btn-solid">Try User Demo</a>
+      <a href="/demo-admin/" class="btn-ghost">Try Admin Demo</a>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Two Dashboards ══ -->
+<section class="two-dashboards fade-in">
+  <div class="container">
+    <div class="section-header">
+      <span class="section-label">Two Interfaces</span>
+      <h2>Built for everyone on your team</h2>
+      <p>Team members get a focused workspace. Admins get full system oversight. Same platform, different lenses.</p>
+    </div>
+    <div class="dashboard-cards">
+      <div class="dash-card">
+        <div class="dash-card-icon user-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <h3>User Dashboard</h3>
+        <p>Your personal AI workspace. Chat with sessions, manage tasks, browse files, set up automations, and take quick actions &mdash; all from one clean interface.</p>
+        <div class="dash-card-features">
+          <span>Chat</span>
+          <span>Projects</span>
+          <span>Files</span>
+          <span>Automations</span>
+          <span>Calendar</span>
+          <span>Vault</span>
+          <span>Voice</span>
+          <span>Notifications</span>
+        </div>
+      </div>
+      <div class="dash-card">
+        <div class="dash-card-icon admin-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <h3>Admin Dashboard</h3>
+        <p>Full system oversight. See every conversation, manage users and permissions, control running containers, configure groups, and monitor system health in real time.</p>
+        <div class="dash-card-features">
+          <span>System Overview</span>
+          <span>All Conversations</span>
+          <span>User Management</span>
+          <span>File Management</span>
+          <span>Container Control</span>
+          <span>Settings</span>
+          <span>Task Scheduling</span>
+          <span>Privacy Vault</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ User Dashboard Deep Dive ══ -->
+<section class="deep-dive alt-bg">
+  <div class="container-wide">
+    <div class="section-header fade-in">
+      <span class="section-label">User Dashboard</span>
+      <h2>Your AI workspace, every angle</h2>
+      <p>Seven views designed around how you actually work. Chat, plan, organize, automate, act.</p>
+    </div>
+
+    <!-- Home / Overview -->
+    <div class="view-showcase fade-in">
+      <div class="view-row">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon active" title="Home">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon" title="Chat">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon" title="Tasks">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon" title="Files">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon" title="Calendar">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon" title="Automations">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon" title="Actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div class="mock-content">
+                <div class="mock-stats">
+                  <div class="mock-stat-card">
+                    <div class="mock-stat-label">Active Sessions</div>
+                    <div class="mock-stat-value">3</div>
+                    <div class="mock-stat-change up">+1 this week</div>
+                  </div>
+                  <div class="mock-stat-card">
+                    <div class="mock-stat-label">Open Tasks</div>
+                    <div class="mock-stat-value">12</div>
+                    <div class="mock-stat-change down">4 due today</div>
+                  </div>
+                  <div class="mock-stat-card">
+                    <div class="mock-stat-label">Messages Today</div>
+                    <div class="mock-stat-value">47</div>
+                    <div class="mock-stat-change up">+12 vs avg</div>
+                  </div>
+                </div>
+                <div class="mock-activity">
+                  <div class="mock-activity-title">Recent Activity</div>
+                  <div class="mock-activity-item">
+                    <div class="mock-avatar" style="background: var(--accent);">D</div>
+                    <div class="mock-activity-text"><strong>Prometheus</strong> completed task "Generate Q1 report"</div>
+                    <div class="mock-activity-time">2m ago</div>
+                  </div>
+                  <div class="mock-activity-item">
+                    <div class="mock-avatar" style="background: #8b5cf6;">S</div>
+                    <div class="mock-activity-text"><strong>Sarah</strong> assigned you "Review API docs"</div>
+                    <div class="mock-activity-time">15m ago</div>
+                  </div>
+                  <div class="mock-activity-item">
+                    <div class="mock-avatar" style="background: var(--green);">A</div>
+                    <div class="mock-activity-text"><strong>Automation</strong> ran "Daily standup summary"</div>
+                    <div class="mock-activity-time">1h ago</div>
+                  </div>
+                  <div class="mock-activity-item">
+                    <div class="mock-avatar" style="background: #ec4899;">M</div>
+                    <div class="mock-activity-text"><strong>Mike</strong> uploaded 3 files to shared/designs</div>
+                    <div class="mock-activity-time">2h ago</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Home &amp; Overview</h3>
+          <p>Your day at a glance. See active sessions, pending tasks, and message volume. The activity feed keeps you in the loop on what your AI and your team have been doing.</p>
+          <ul class="feature-list">
+            <li>Real-time stats cards with trend indicators</li>
+            <li>Chronological activity feed across all sessions</li>
+            <li>Quick actions to jump into chat or create tasks</li>
+            <li>At-a-glance view of what needs your attention</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat -->
+    <div class="view-showcase fade-in">
+      <div class="view-row reverse">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard#chat</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app tall">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div class="mock-sessions">
+                <div class="mock-sessions-title">Sessions</div>
+                <div class="mock-session-item active">
+                  <div class="mock-session-dot"></div>
+                  Engineering
+                </div>
+                <div class="mock-session-item">
+                  <div class="mock-session-dot"></div>
+                  Marketing
+                </div>
+                <div class="mock-session-item">
+                  <div class="mock-session-dot"></div>
+                  Research
+                </div>
+                <div class="mock-session-item">
+                  <div class="mock-session-dot"></div>
+                  Personal
+                </div>
+              </div>
+              <div class="mock-chat-area">
+                <div class="mock-chat-header">
+                  <div class="status-dot"></div>
+                  Engineering
+                  <span style="margin-left: auto; font-weight: 400; color: var(--stone-400); font-size: 0.6rem;">Session active</span>
+                </div>
+                <div class="mock-chat-messages">
+                  <div class="mock-msg user">
+                    <div class="msg-name">You</div>
+                    Can you review the pull request for the auth refactor? Focus on the token rotation logic.
+                  </div>
+                  <div class="mock-msg bot">
+                    <div class="msg-name">Prometheus</div>
+                    I've reviewed PR #247. The token rotation looks solid, but I found two issues:<br><br>
+                    1. The refresh window overlaps with the expiry check in <code style="font-size: 0.55rem; background: var(--stone-50); padding: 1px 3px; border-radius: 2px;">auth/rotate.ts:84</code><br>
+                    2. Missing error handler for concurrent rotation requests<br><br>
+                    I've left inline comments on both. Want me to draft a fix?<span class="typing-cursor"></span>
+                  </div>
+                  <div class="mock-msg user">
+                    Yes, draft the fix and create a task to track it.
+                  </div>
+                  <div class="mock-msg bot">
+                    <div class="msg-name">Prometheus</div>
+                    Done. I've created the fix in <code style="font-size: 0.55rem; background: var(--stone-50); padding: 1px 3px; border-radius: 2px;">auth/rotate.ts</code> and added a work task "Fix token rotation race condition" assigned to you with high priority.
+                  </div>
+                </div>
+                <div class="mock-chat-input">
+                  <div class="input-field">Message Engineering...</div>
+                  <div class="send-btn">
+                    <svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Chat</h3>
+          <p>A full conversational interface with your AI sessions. Switch between sessions in the sidebar, send messages with file attachments, and watch responses stream in real time.</p>
+          <ul class="feature-list">
+            <li>Session picker sidebar for quick switching</li>
+            <li>Real-time streaming responses with live output</li>
+            <li>File attachments and voice messages</li>
+            <li>Code blocks with syntax highlighting</li>
+            <li>Create tasks and automations directly from chat</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Kanban Tasks -->
+    <div class="view-showcase fade-in">
+      <div class="view-row">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard#tasks</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div class="mock-content">
+                <div class="mock-kanban">
+                  <div class="mock-kanban-col">
+                    <div class="mock-kanban-col-title">To Do <span class="count">4</span></div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Fix token rotation race condition</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority high">High</span>
+                        <span>Due Mar 28</span>
+                        <div class="mock-task-avatar" style="background: var(--accent);">G</div>
+                      </div>
+                    </div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Review API docs for v2 endpoints</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority medium">Med</span>
+                        <span>Due Mar 30</span>
+                        <div class="mock-task-avatar" style="background: #8b5cf6;">S</div>
+                      </div>
+                    </div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Set up monitoring for prod containers</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority low">Low</span>
+                        <span>Due Apr 5</span>
+                        <div class="mock-task-avatar" style="background: var(--accent);">G</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="mock-kanban-col">
+                    <div class="mock-kanban-col-title">In Progress <span class="count">2</span></div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Migrate user auth to OAuth 2.0</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority high">High</span>
+                        <span>Due Mar 27</span>
+                        <div class="mock-task-avatar" style="background: #ec4899;">M</div>
+                      </div>
+                    </div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Write integration tests for email</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority medium">Med</span>
+                        <span>Due Apr 1</span>
+                        <div class="mock-task-avatar" style="background: var(--green);">A</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="mock-kanban-col">
+                    <div class="mock-kanban-col-title">Done <span class="count">6</span></div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Deploy credential proxy update</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority medium">Med</span>
+                        <span>Completed</span>
+                        <div class="mock-task-avatar" style="background: var(--accent);">G</div>
+                      </div>
+                    </div>
+                    <div class="mock-task-card">
+                      <div class="mock-task-title">Generate Q1 financial report</div>
+                      <div class="mock-task-meta">
+                        <span class="mock-priority low">Low</span>
+                        <span>Completed</span>
+                        <div class="mock-task-avatar" style="background: #8b5cf6;">S</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Tasks &amp; Kanban</h3>
+          <p>A drag-and-drop kanban board that keeps your work visible. Create tasks from the dashboard or through chat. Assign team members, set priorities, and track due dates.</p>
+          <ul class="feature-list">
+            <li>Three-column kanban: To Do, In Progress, Done</li>
+            <li>Priority badges (Low, Medium, High, Urgent)</li>
+            <li>Assignee avatars with color coding</li>
+            <li>Create tasks through chat or the dashboard</li>
+            <li>Due date tracking with overdue warnings</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Files -->
+    <div class="view-showcase fade-in">
+      <div class="view-row reverse">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard#files</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div style="flex: 1; display: flex; overflow: hidden;">
+                <div class="mock-file-tree">
+                  <div class="mock-file-tree-item active"><span class="icon">&#128194;</span> engineering</div>
+                  <div class="mock-file-tree-item indent"><span class="icon">&#128194;</span> src</div>
+                  <div class="mock-file-tree-item indent"><span class="icon">&#128194;</span> docs</div>
+                  <div class="mock-file-tree-item indent"><span class="icon">&#128194;</span> reports</div>
+                  <div class="mock-file-tree-item"><span class="icon">&#128194;</span> marketing</div>
+                  <div class="mock-file-tree-item"><span class="icon">&#128194;</span> research</div>
+                  <div class="mock-file-tree-item"><span class="icon">&#128274;</span> vault</div>
+                </div>
+                <div class="mock-file-list">
+                  <div class="mock-file-header">
+                    <div class="mock-file-header-title">engineering/</div>
+                    <div class="mock-file-actions">
+                      <button class="mock-file-btn">Upload</button>
+                      <button class="mock-file-btn" style="background: var(--stone-500);">New Folder</button>
+                    </div>
+                  </div>
+                  <div class="mock-file-row">
+                    <div class="mock-file-icon">&#128196;</div>
+                    <div class="mock-file-name">auth-refactor-notes.md</div>
+                    <div class="mock-file-badge clean">Clean</div>
+                    <div class="mock-file-size">12.4 KB</div>
+                  </div>
+                  <div class="mock-file-row">
+                    <div class="mock-file-icon">&#128196;</div>
+                    <div class="mock-file-name">q1-financials.xlsx</div>
+                    <div class="mock-file-badge scrubbed">Scrubbed</div>
+                    <div class="mock-file-size">284 KB</div>
+                  </div>
+                  <div class="mock-file-row">
+                    <div class="mock-file-icon">&#128196;</div>
+                    <div class="mock-file-name">deployment-checklist.md</div>
+                    <div class="mock-file-badge clean">Clean</div>
+                    <div class="mock-file-size">3.2 KB</div>
+                  </div>
+                  <div class="mock-file-row">
+                    <div class="mock-file-icon">&#128444;&#65039;</div>
+                    <div class="mock-file-name">architecture-diagram.png</div>
+                    <div class="mock-file-badge clean">Clean</div>
+                    <div class="mock-file-size">1.8 MB</div>
+                  </div>
+                  <div class="mock-file-row">
+                    <div class="mock-file-icon">&#128196;</div>
+                    <div class="mock-file-name">api-keys-backup.json</div>
+                    <div class="mock-file-badge scrubbed">Scrubbed</div>
+                    <div class="mock-file-size">956 B</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Files</h3>
+          <p>A full file browser for every session's workspace. Upload, download, rename, and organize. Scrub status badges show you which files have been sanitized &mdash; with originals safe in the vault.</p>
+          <ul class="feature-list">
+            <li>Folder tree navigation with nested directories</li>
+            <li>Upload, download, rename, and delete operations</li>
+            <li>Scrub status badges (Clean / Scrubbed)</li>
+            <li>Vault access for scrubbed originals</li>
+            <li>Works across all assigned sessions</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Calendar -->
+    <div class="view-showcase fade-in">
+      <div class="view-row">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard#calendar</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div class="mock-content-white" style="padding: 20px 24px;">
+                <div class="mock-calendar">
+                  <div class="mock-cal-header">
+                    <div class="mock-cal-month">March 2026</div>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                      <span style="font-size: 0.55rem; color: var(--accent); font-weight: 600; cursor: default;">+ New Event</span>
+                      <span style="font-size: 0.5rem; color: var(--stone-400); font-family: 'JetBrains Mono', monospace; background: var(--stone-50); padding: 2px 6px; border-radius: 3px;">iCal URL</span>
+                      <div class="mock-cal-nav">
+                        <div class="mock-cal-nav-btn">&lsaquo;</div>
+                        <div class="mock-cal-nav-btn">&rsaquo;</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="mock-cal-grid">
+                    <div class="mock-cal-day-name">Sun</div>
+                    <div class="mock-cal-day-name">Mon</div>
+                    <div class="mock-cal-day-name">Tue</div>
+                    <div class="mock-cal-day-name">Wed</div>
+                    <div class="mock-cal-day-name">Thu</div>
+                    <div class="mock-cal-day-name">Fri</div>
+                    <div class="mock-cal-day-name">Sat</div>
+                    <div class="mock-cal-day">1</div>
+                    <div class="mock-cal-day has-event">2</div>
+                    <div class="mock-cal-day">3</div>
+                    <div class="mock-cal-day">4</div>
+                    <div class="mock-cal-day has-event">5</div>
+                    <div class="mock-cal-day">6</div>
+                    <div class="mock-cal-day">7</div>
+                    <div class="mock-cal-day">8</div>
+                    <div class="mock-cal-day has-event">9</div>
+                    <div class="mock-cal-day">10</div>
+                    <div class="mock-cal-day">11</div>
+                    <div class="mock-cal-day">12</div>
+                    <div class="mock-cal-day has-event">13</div>
+                    <div class="mock-cal-day">14</div>
+                    <div class="mock-cal-day">15</div>
+                    <div class="mock-cal-day">16</div>
+                    <div class="mock-cal-day has-event">17</div>
+                    <div class="mock-cal-day">18</div>
+                    <div class="mock-cal-day">19</div>
+                    <div class="mock-cal-day has-event">20</div>
+                    <div class="mock-cal-day">21</div>
+                    <div class="mock-cal-day">22</div>
+                    <div class="mock-cal-day has-event">23</div>
+                    <div class="mock-cal-day">24</div>
+                    <div class="mock-cal-day">25</div>
+                    <div class="mock-cal-day">26</div>
+                    <div class="mock-cal-day today has-event">27</div>
+                    <div class="mock-cal-day">28</div>
+                    <div class="mock-cal-day">29</div>
+                    <div class="mock-cal-day has-event">30</div>
+                    <div class="mock-cal-day">31</div>
+                    <div class="mock-cal-day empty">.</div>
+                    <div class="mock-cal-day empty">.</div>
+                    <div class="mock-cal-day empty">.</div>
+                    <div class="mock-cal-day empty">.</div>
+                  </div>
+                </div>
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                  <div style="flex: 1; background: var(--accent-light); border-radius: 6px; padding: 8px 10px; border-left: 3px solid var(--accent);">
+                    <div style="font-size: 0.55rem; font-weight: 700; color: var(--accent);">10:00 AM &mdash; Sprint Planning</div>
+                    <div style="font-size: 0.48rem; color: var(--stone-500);">Engineering session &middot; 1 hour</div>
+                  </div>
+                  <div style="flex: 1; background: var(--purple-light); border-radius: 6px; padding: 8px 10px; border-left: 3px solid var(--purple);">
+                    <div style="font-size: 0.55rem; font-weight: 700; color: var(--purple);">2:00 PM &mdash; Quarterly Review</div>
+                    <div style="font-size: 0.48rem; color: var(--stone-500);">Marketing session &middot; 2 hours</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Calendar</h3>
+          <p>A monthly calendar view that surfaces events created through chat or automations. Subscribe with your existing calendar app using the iCal URL &mdash; no switching tools.</p>
+          <ul class="feature-list">
+            <li>Monthly calendar with event dot indicators</li>
+            <li>Create events through chat or the dashboard</li>
+            <li>iCal subscription URL for Google Calendar and Outlook</li>
+            <li>Color-coded events by session</li>
+            <li>Today's agenda at a glance</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Automations -->
+    <div class="view-showcase fade-in">
+      <div class="view-row reverse">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard#automations</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div class="mock-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                  <div style="font-size: 0.75rem; font-weight: 700; color: var(--stone-900);">Automations</div>
+                  <button class="mock-file-btn">+ New Automation</button>
+                </div>
+                <div class="mock-automation-list">
+                  <div class="mock-automation-item">
+                    <div class="mock-auto-toggle on"></div>
+                    <div class="mock-auto-info">
+                      <div class="mock-auto-name">Daily standup summary</div>
+                      <div class="mock-auto-schedule">0 9 * * 1-5</div>
+                    </div>
+                    <div class="mock-auto-status running">Running</div>
+                    <div class="mock-auto-last">Last: 9:00 AM</div>
+                  </div>
+                  <div class="mock-automation-item">
+                    <div class="mock-auto-toggle on"></div>
+                    <div class="mock-auto-info">
+                      <div class="mock-auto-name">Weekly metrics report</div>
+                      <div class="mock-auto-schedule">0 8 * * 1</div>
+                    </div>
+                    <div class="mock-auto-status idle">Idle</div>
+                    <div class="mock-auto-last">Last: Mon 8 AM</div>
+                  </div>
+                  <div class="mock-automation-item">
+                    <div class="mock-auto-toggle on"></div>
+                    <div class="mock-auto-info">
+                      <div class="mock-auto-name">Check inbox for urgent emails</div>
+                      <div class="mock-auto-schedule">*/30 * * * *</div>
+                    </div>
+                    <div class="mock-auto-status idle">Idle</div>
+                    <div class="mock-auto-last">Last: 10:30 AM</div>
+                  </div>
+                  <div class="mock-automation-item">
+                    <div class="mock-auto-toggle off"></div>
+                    <div class="mock-auto-info">
+                      <div class="mock-auto-name">Nightly database backup verification</div>
+                      <div class="mock-auto-schedule">0 2 * * *</div>
+                    </div>
+                    <div class="mock-auto-status idle">Disabled</div>
+                    <div class="mock-auto-last">Last: 3 days ago</div>
+                  </div>
+                  <div class="mock-automation-item">
+                    <div class="mock-auto-toggle on"></div>
+                    <div class="mock-auto-info">
+                      <div class="mock-auto-name">Scrub new uploads for personal info</div>
+                      <div class="mock-auto-schedule">0 */4 * * *</div>
+                    </div>
+                    <div class="mock-auto-status idle">Idle</div>
+                    <div class="mock-auto-last">Last: 8:00 AM</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Automations</h3>
+          <p>Schedule recurring AI tasks with cron expressions. Toggle them on and off, see run history, and create new automations from the dashboard or through a chat message.</p>
+          <ul class="feature-list">
+            <li>Cron, interval, and one-time schedules</li>
+            <li>Enable/disable toggle with instant effect</li>
+            <li>Run history with duration and status logs</li>
+            <li>Create automations via chat or dashboard</li>
+            <li>Monitor which automations are currently running</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="view-showcase fade-in">
+      <div class="view-row">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/dashboard#actions</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar-narrow">
+                <div class="sb-logo">D</div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <div class="sb-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </div>
+                <div class="sb-icon active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+              </div>
+              <div class="mock-content-white" style="padding: 24px;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: var(--stone-900); margin-bottom: 16px;">Quick Actions</div>
+                <div class="mock-actions-grid">
+                  <div class="mock-action-btn">
+                    <div class="mock-action-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+                    </div>
+                    <div class="mock-action-label">Voice Message</div>
+                    <div class="mock-action-desc">Record &amp; transcribe</div>
+                  </div>
+                  <div class="mock-action-btn">
+                    <div class="mock-action-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                    </div>
+                    <div class="mock-action-label">Compose Email</div>
+                    <div class="mock-action-desc">Draft &amp; send</div>
+                  </div>
+                  <div class="mock-action-btn">
+                    <div class="mock-action-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    </div>
+                    <div class="mock-action-label">Ping Team</div>
+                    <div class="mock-action-desc">Notify members</div>
+                  </div>
+                  <div class="mock-action-btn">
+                    <div class="mock-action-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                    </div>
+                    <div class="mock-action-label">New Document</div>
+                    <div class="mock-action-desc">Create from template</div>
+                  </div>
+                  <div class="mock-action-btn">
+                    <div class="mock-action-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    </div>
+                    <div class="mock-action-label">Quick Reminder</div>
+                    <div class="mock-action-desc">Set a timer</div>
+                  </div>
+                  <div class="mock-action-btn">
+                    <div class="mock-action-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--stone-600)" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </div>
+                    <div class="mock-action-label">Clipboard</div>
+                    <div class="mock-action-desc">Paste &amp; process</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Actions</h3>
+          <p>One-tap shortcuts for things you do often. Record a voice message and have it transcribed, compose an email, ping your team, or create a document &mdash; all without typing a prompt.</p>
+          <ul class="feature-list">
+            <li>Voice recording with automatic transcription</li>
+            <li>Email compose with AI-assisted drafting</li>
+            <li>Team notifications and pings</li>
+            <li>Quick document creation from templates</li>
+            <li>Reminders and clipboard processing</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Admin Dashboard Deep Dive ══ -->
+<section class="deep-dive">
+  <div class="container-wide">
+    <div class="section-header fade-in">
+      <span class="section-label">Admin Dashboard</span>
+      <h2>Full system oversight</h2>
+      <p>Everything that happens across your Prometheus instance, from every conversation to every running container.</p>
+    </div>
+
+    <!-- System Overview -->
+    <div class="view-showcase fade-in">
+      <div class="view-row">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/admin</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar">
+                <div class="mock-sb-section">Admin</div>
+                <div class="mock-sb-item active"><span class="sb-dot"></span> Overview</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Conversations</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Users</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Containers</div>
+                <div class="mock-sb-section">Manage</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Groups</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Tasks</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Files</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Vault</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Settings</div>
+              </div>
+              <div class="mock-content">
+                <div class="mock-admin-stats">
+                  <div class="mock-admin-stat">
+                    <div class="mock-admin-stat-label">Uptime</div>
+                    <div class="mock-admin-stat-row">
+                      <div class="mock-admin-stat-value">14d 7h</div>
+                      <div class="mock-health-dot green"></div>
+                    </div>
+                  </div>
+                  <div class="mock-admin-stat">
+                    <div class="mock-admin-stat-label">Active Groups</div>
+                    <div class="mock-admin-stat-row">
+                      <div class="mock-admin-stat-value">8</div>
+                    </div>
+                  </div>
+                  <div class="mock-admin-stat">
+                    <div class="mock-admin-stat-label">Scheduled Tasks</div>
+                    <div class="mock-admin-stat-row">
+                      <div class="mock-admin-stat-value">23</div>
+                    </div>
+                  </div>
+                  <div class="mock-admin-stat">
+                    <div class="mock-admin-stat-label">Messages (24h)</div>
+                    <div class="mock-admin-stat-row">
+                      <div class="mock-admin-stat-value">342</div>
+                    </div>
+                  </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                  <div class="mock-activity" style="padding: 10px;">
+                    <div class="mock-activity-title">Active Containers</div>
+                    <div class="mock-activity-item">
+                      <div class="mock-health-dot green" style="flex-shrink: 0;"></div>
+                      <div class="mock-activity-text"><strong style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem;">engineering</strong></div>
+                      <div class="mock-activity-time" style="font-family: 'JetBrains Mono', monospace;">2m 14s</div>
+                    </div>
+                    <div class="mock-activity-item">
+                      <div class="mock-health-dot green" style="flex-shrink: 0;"></div>
+                      <div class="mock-activity-text"><strong style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem;">marketing</strong></div>
+                      <div class="mock-activity-time" style="font-family: 'JetBrains Mono', monospace;">0m 47s</div>
+                    </div>
+                    <div class="mock-activity-item">
+                      <div class="mock-health-dot amber" style="flex-shrink: 0;"></div>
+                      <div class="mock-activity-text"><strong style="font-family: 'JetBrains Mono', monospace; font-size: 0.55rem;">research</strong></div>
+                      <div class="mock-activity-time" style="font-family: 'JetBrains Mono', monospace;">12m 03s</div>
+                    </div>
+                  </div>
+                  <div class="mock-activity" style="padding: 10px;">
+                    <div class="mock-activity-title">System Health</div>
+                    <div class="mock-activity-item">
+                      <div class="mock-health-dot green" style="flex-shrink: 0;"></div>
+                      <div class="mock-activity-text">API Proxy</div>
+                      <div class="mock-activity-time" style="color: var(--green); font-weight: 600;">Healthy</div>
+                    </div>
+                    <div class="mock-activity-item">
+                      <div class="mock-health-dot green" style="flex-shrink: 0;"></div>
+                      <div class="mock-activity-text">Database</div>
+                      <div class="mock-activity-time" style="color: var(--green); font-weight: 600;">Healthy</div>
+                    </div>
+                    <div class="mock-activity-item">
+                      <div class="mock-health-dot green" style="flex-shrink: 0;"></div>
+                      <div class="mock-activity-text">Task Scheduler</div>
+                      <div class="mock-activity-time" style="color: var(--green); font-weight: 600;">Healthy</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>System Overview</h3>
+          <p>KPI cards, health indicators, and active container status. Everything you need to know about your Prometheus instance at a glance &mdash; uptime, groups, tasks, and message volume.</p>
+          <ul class="feature-list">
+            <li>Real-time uptime and health monitoring</li>
+            <li>Active container list with runtime duration</li>
+            <li>System health checks for every component</li>
+            <li>Message volume and task count metrics</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- All Conversations -->
+    <div class="view-showcase fade-in">
+      <div class="view-row reverse">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/admin#conversations</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar">
+                <div class="mock-sb-section">Admin</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Overview</div>
+                <div class="mock-sb-item active"><span class="sb-dot"></span> Conversations</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Users</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Containers</div>
+                <div class="mock-sb-section">Manage</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Groups</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Tasks</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Files</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Vault</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Settings</div>
+              </div>
+              <div class="mock-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                  <div style="font-size: 0.72rem; font-weight: 700; color: var(--stone-900);">All Conversations</div>
+                  <div class="input-field" style="width: 200px; font-size: 0.58rem; padding: 5px 10px; background: var(--white); border: 1px solid var(--stone-200); border-radius: 6px; color: var(--stone-400);">Search messages...</div>
+                </div>
+                <div class="mock-conv-table">
+                  <div class="mock-conv-row header">
+                    <div class="mock-conv-group">Group</div>
+                    <div class="mock-conv-channel">Channel</div>
+                    <div class="mock-conv-last">Last Message</div>
+                    <div class="mock-conv-time">Time</div>
+                    <div class="mock-conv-status">Status</div>
+                  </div>
+                  <div class="mock-conv-row">
+                    <div class="mock-conv-group">Engineering</div>
+                    <div class="mock-conv-channel"><span class="mock-channel-badge web">WEB</span></div>
+                    <div class="mock-conv-last">I've reviewed PR #247. The token rotation...</div>
+                    <div class="mock-conv-time">11:42 AM</div>
+                    <div class="mock-conv-status"><span class="mock-status-badge running">Active</span></div>
+                  </div>
+                  <div class="mock-conv-row">
+                    <div class="mock-conv-group">Marketing</div>
+                    <div class="mock-conv-channel"><span class="mock-channel-badge tg">TG</span></div>
+                    <div class="mock-conv-last">The Q1 campaign results are ready for...</div>
+                    <div class="mock-conv-time">11:38 AM</div>
+                    <div class="mock-conv-status"><span class="mock-status-badge running">Active</span></div>
+                  </div>
+                  <div class="mock-conv-row">
+                    <div class="mock-conv-group">Research</div>
+                    <div class="mock-conv-channel"><span class="mock-channel-badge web">WEB</span></div>
+                    <div class="mock-conv-last">Found 3 relevant papers on transformer...</div>
+                    <div class="mock-conv-time">11:15 AM</div>
+                    <div class="mock-conv-status"><span class="mock-status-badge idle">Idle</span></div>
+                  </div>
+                  <div class="mock-conv-row">
+                    <div class="mock-conv-group">Personal</div>
+                    <div class="mock-conv-channel"><span class="mock-channel-badge tg">TG</span></div>
+                    <div class="mock-conv-last">Your grocery list for this week is ready...</div>
+                    <div class="mock-conv-time">10:22 AM</div>
+                    <div class="mock-conv-status"><span class="mock-status-badge idle">Idle</span></div>
+                  </div>
+                  <div class="mock-conv-row">
+                    <div class="mock-conv-group">Finance</div>
+                    <div class="mock-conv-channel"><span class="mock-channel-badge web">WEB</span></div>
+                    <div class="mock-conv-last">Monthly reconciliation complete. 2 items...</div>
+                    <div class="mock-conv-time">9:45 AM</div>
+                    <div class="mock-conv-status"><span class="mock-status-badge idle">Idle</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>All Conversations</h3>
+          <p>Every chat across every group, all in one place. See which sessions are active, search messages globally, and click into any conversation to see the full history.</p>
+          <ul class="feature-list">
+            <li>See every group's chat in a single table</li>
+            <li>Channel badges (Telegram, Web)</li>
+            <li>Global message search across all groups</li>
+            <li>Active/idle status indicators</li>
+            <li>Click to open full conversation view</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- User Management -->
+    <div class="view-showcase fade-in">
+      <div class="view-row">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/admin#users</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar">
+                <div class="mock-sb-section">Admin</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Overview</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Conversations</div>
+                <div class="mock-sb-item active"><span class="sb-dot"></span> Users</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Containers</div>
+                <div class="mock-sb-section">Manage</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Groups</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Tasks</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Files</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Vault</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Settings</div>
+              </div>
+              <div class="mock-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                  <div style="font-size: 0.72rem; font-weight: 700; color: var(--stone-900);">User Management</div>
+                  <button class="mock-file-btn">+ Add User</button>
+                </div>
+                <div class="mock-user-grid">
+                  <div class="mock-user-card">
+                    <div class="mock-user-avatar" style="background: var(--accent);">G</div>
+                    <div class="mock-user-info">
+                      <div class="mock-user-name">Gavriel</div>
+                      <div class="mock-user-sessions">engineering, marketing, research, personal</div>
+                    </div>
+                    <div class="mock-user-edit">Edit</div>
+                  </div>
+                  <div class="mock-user-card">
+                    <div class="mock-user-avatar" style="background: #8b5cf6;">S</div>
+                    <div class="mock-user-info">
+                      <div class="mock-user-name">Sarah</div>
+                      <div class="mock-user-sessions">engineering, research</div>
+                    </div>
+                    <div class="mock-user-edit">Edit</div>
+                  </div>
+                  <div class="mock-user-card">
+                    <div class="mock-user-avatar" style="background: #ec4899;">M</div>
+                    <div class="mock-user-info">
+                      <div class="mock-user-name">Mike</div>
+                      <div class="mock-user-sessions">marketing</div>
+                    </div>
+                    <div class="mock-user-edit">Edit</div>
+                  </div>
+                  <div class="mock-user-card">
+                    <div class="mock-user-avatar" style="background: var(--green);">A</div>
+                    <div class="mock-user-info">
+                      <div class="mock-user-name">Alex</div>
+                      <div class="mock-user-sessions">engineering, finance</div>
+                    </div>
+                    <div class="mock-user-edit">Edit</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>User Management</h3>
+          <p>Create user accounts, assign them to specific sessions, and set permissions. Each user gets a color-coded avatar and sees only the sessions they have access to.</p>
+          <ul class="feature-list">
+            <li>Create and manage user accounts</li>
+            <li>Assign users to specific sessions</li>
+            <li>Color-coded avatars for quick identification</li>
+            <li>Password management and session control</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Container Control -->
+    <div class="view-showcase fade-in">
+      <div class="view-row reverse">
+        <div class="browser-mockup">
+          <div class="browser-chrome">
+            <div class="browser-dots"><span></span><span></span><span></span></div>
+            <div class="browser-url">app.dockbox.dev/admin#containers</div>
+          </div>
+          <div class="browser-body">
+            <div class="mock-app">
+              <div class="mock-sidebar">
+                <div class="mock-sb-section">Admin</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Overview</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Conversations</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Users</div>
+                <div class="mock-sb-item active"><span class="sb-dot"></span> Containers</div>
+                <div class="mock-sb-section">Manage</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Groups</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Tasks</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Files</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Vault</div>
+                <div class="mock-sb-item"><span class="sb-dot"></span> Settings</div>
+              </div>
+              <div class="mock-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                  <div style="font-size: 0.72rem; font-weight: 700; color: var(--stone-900);">Running Containers</div>
+                  <div style="font-size: 0.55rem; color: var(--stone-400);">3 of 8 slots used</div>
+                </div>
+                <div class="mock-containers">
+                  <div class="mock-container-row">
+                    <div class="mock-health-dot green"></div>
+                    <div class="mock-container-name">dockbox-engineering-a7f3</div>
+                    <div class="mock-container-mem">245 MB</div>
+                    <div class="mock-container-time">2m 14s</div>
+                    <button class="mock-kill-btn">KILL</button>
+                  </div>
+                  <div class="mock-container-row">
+                    <div class="mock-health-dot green"></div>
+                    <div class="mock-container-name">dockbox-marketing-b2e1</div>
+                    <div class="mock-container-mem">189 MB</div>
+                    <div class="mock-container-time">0m 47s</div>
+                    <button class="mock-kill-btn">KILL</button>
+                  </div>
+                  <div class="mock-container-row">
+                    <div class="mock-health-dot amber"></div>
+                    <div class="mock-container-name">dockbox-research-c9d4</div>
+                    <div class="mock-container-mem">512 MB</div>
+                    <div class="mock-container-time">12m 03s</div>
+                    <button class="mock-kill-btn">KILL</button>
+                  </div>
+                </div>
+                <div style="margin-top: 16px; background: var(--white); border-radius: 8px; padding: 12px; border: 1px solid var(--stone-100);">
+                  <div style="font-size: 0.62rem; font-weight: 700; color: var(--stone-900); margin-bottom: 8px;">Container Limits</div>
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="flex: 1; height: 6px; background: var(--stone-100); border-radius: 3px; overflow: hidden;">
+                      <div style="width: 37.5%; height: 100%; background: var(--accent); border-radius: 3px;"></div>
+                    </div>
+                    <div style="font-size: 0.52rem; color: var(--stone-500); font-family: 'JetBrains Mono', monospace;">3/8</div>
+                  </div>
+                  <div style="display: flex; gap: 16px; margin-top: 8px;">
+                    <div style="font-size: 0.5rem; color: var(--stone-400);">Timeout: <span style="color: var(--stone-600); font-family: 'JetBrains Mono', monospace;">30 min</span></div>
+                    <div style="font-size: 0.5rem; color: var(--stone-400);">Idle timeout: <span style="color: var(--stone-600); font-family: 'JetBrains Mono', monospace;">30 min</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="view-text">
+          <h3>Container Control</h3>
+          <p>See every running container in real time. Monitor memory usage, uptime, and kill stuck containers with one click. A progress bar shows how many of your concurrent slots are in use.</p>
+          <ul class="feature-list">
+            <li>Live list of all running containers</li>
+            <li>Memory usage and runtime tracking</li>
+            <li>One-click kill for stuck containers</li>
+            <li>Concurrency limit visualization</li>
+            <li>Timeout and idle timeout configuration</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ PWA / Mobile Section ══ -->
+<section class="pwa-section alt-bg fade-in">
+  <div class="container">
+    <div class="pwa-grid">
+      <div class="pwa-text">
+        <span class="section-label">Mobile Ready</span>
+        <h2>Works everywhere you do</h2>
+        <p>Prometheus works as a Progressive Web App. Install it on your phone's home screen and get the full dashboard experience with push notifications &mdash; no app store required.</p>
+        <div class="pwa-features">
+          <div class="pwa-feature">
+            <div class="pwa-feature-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </div>
+            <div class="pwa-feature-text">
+              <h4>Install on Home Screen</h4>
+              <p>Add to your phone like a native app. Full-screen, no browser chrome.</p>
+            </div>
+          </div>
+          <div class="pwa-feature">
+            <div class="pwa-feature-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            </div>
+            <div class="pwa-feature-text">
+              <h4>Push Notifications</h4>
+              <p>Get notified when tasks complete, new messages arrive, or automations finish.</p>
+            </div>
+          </div>
+          <div class="pwa-feature">
+            <div class="pwa-feature-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </div>
+            <div class="pwa-feature-text">
+              <h4>Responsive Design</h4>
+              <p>Adapts to any screen size. Phone, tablet, laptop, or ultrawide monitor.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="phone-mockup">
+        <div class="phone-screen">
+          <div class="phone-status-bar">
+            <span>9:41</span>
+            <span style="font-size: 0.6rem; letter-spacing: -0.02em;">&#9679;&#9679;&#9679;&#9679; Wi-Fi &#128267;</span>
+          </div>
+          <div class="phone-notch"></div>
+          <div class="phone-app-header">
+            <div class="phone-app-logo">D</div>
+            <div class="phone-app-title">Prometheus</div>
+          </div>
+          <div class="phone-content">
+            <div class="phone-card">
+              <div class="phone-stat-row">
+                <div class="phone-stat">
+                  <div class="phone-stat-val">3</div>
+                  <div class="phone-stat-label">Sessions</div>
+                </div>
+                <div class="phone-stat">
+                  <div class="phone-stat-val">12</div>
+                  <div class="phone-stat-label">Tasks</div>
+                </div>
+                <div class="phone-stat">
+                  <div class="phone-stat-val">47</div>
+                  <div class="phone-stat-label">Messages</div>
+                </div>
+              </div>
+            </div>
+            <div class="phone-card">
+              <div class="phone-card-title">Recent</div>
+              <div style="display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--stone-50);">
+                <div class="mock-avatar" style="width: 18px; height: 18px; font-size: 0.4rem; background: var(--accent);">D</div>
+                <div class="phone-card-text" style="flex: 1;">Completed "Generate Q1 report"</div>
+                <div style="font-size: 0.38rem; color: var(--stone-400);">2m</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--stone-50);">
+                <div class="mock-avatar" style="width: 18px; height: 18px; font-size: 0.4rem; background: #8b5cf6;">S</div>
+                <div class="phone-card-text" style="flex: 1;">Assigned "Review API docs"</div>
+                <div style="font-size: 0.38rem; color: var(--stone-400);">15m</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; padding: 4px 0;">
+                <div class="mock-avatar" style="width: 18px; height: 18px; font-size: 0.4rem; background: var(--green);">A</div>
+                <div class="phone-card-text" style="flex: 1;">Ran "Daily standup summary"</div>
+                <div style="font-size: 0.38rem; color: var(--stone-400);">1h</div>
+              </div>
+            </div>
+            <div class="phone-card">
+              <div class="phone-card-title">Quick Actions</div>
+              <div style="display: flex; gap: 6px; margin-top: 4px;">
+                <div style="flex: 1; background: var(--accent-light); border-radius: 6px; padding: 8px 4px; text-align: center;">
+                  <div style="font-size: 0.7rem;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  </div>
+                  <div style="font-size: 0.38rem; font-weight: 600; color: var(--accent);">Chat</div>
+                </div>
+                <div style="flex: 1; background: var(--purple-light); border-radius: 6px; padding: 8px 4px; text-align: center;">
+                  <div style="font-size: 0.7rem;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                  </div>
+                  <div style="font-size: 0.38rem; font-weight: 600; color: var(--purple);">Voice</div>
+                </div>
+                <div style="flex: 1; background: var(--green-light); border-radius: 6px; padding: 8px 4px; text-align: center;">
+                  <div style="font-size: 0.7rem;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+                  </div>
+                  <div style="font-size: 0.38rem; font-weight: 600; color: var(--green);">Tasks</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-nav-bar">
+            <div class="phone-nav-item active">
+              <span class="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+              </span>
+              Home
+            </div>
+            <div class="phone-nav-item">
+              <span class="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              </span>
+              Chat
+            </div>
+            <div class="phone-nav-item">
+              <span class="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+              </span>
+              Tasks
+            </div>
+            <div class="phone-nav-item">
+              <span class="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </span>
+              Actions
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Live Workspace ══ -->
+<section class="live-workspace fade-in">
+  <div class="container-wide">
+    <div class="section-header">
+      <span class="section-label">Live Workspace</span>
+      <h2>Chat, terminal, and browser &mdash; side by side</h2>
+      <p>Toggle the split pane to watch your AI work in real time. Every command runs in an isolated container.</p>
+    </div>
+
+    <div style="position: relative;">
+      <div class="workspace-mockup-glow"></div>
+      <div class="workspace-mockup-wrap">
+        <div class="workspace-chrome">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <div class="wurl">app.dockbox.dev/dashboard#chat</div>
+        </div>
+        <div class="workspace-body">
+          <!-- Sidebar -->
+          <div class="ws-sidebar">
+            <div class="ws-logo">D</div>
+            <div class="ws-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            </div>
+            <div class="ws-icon active">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <div class="ws-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11l3 3L22 4"/></svg>
+            </div>
+            <div class="ws-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <div class="ws-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </div>
+          </div>
+
+          <!-- Chat pane -->
+          <div class="ws-chat">
+            <div class="ws-chat-header">
+              <div class="dot"></div>
+              Engineering
+              <span style="margin-left:auto;font-weight:400;color:var(--stone-400);font-size:0.6rem;">Split pane active</span>
+            </div>
+            <div class="ws-chat-messages">
+              <div class="ws-msg user">
+                <div class="name">You</div>
+                Set up the new API endpoint, write tests, and deploy to staging.
+              </div>
+              <div class="ws-msg bot">
+                <div class="name">Prometheus</div>
+                On it. I'll scaffold the endpoint, add integration tests, then deploy. Watch the terminal pane for progress.
+              </div>
+              <div class="ws-msg user">
+                <div class="name">You</div>
+                Looks good so far. Skip the load test for now.
+              </div>
+              <div class="ws-msg bot">
+                <div class="name">Prometheus</div>
+                Understood &mdash; skipping load test. Tests passed, deploying to staging now.<span class="typing-cursor"></span>
+              </div>
+            </div>
+            <div class="ws-chat-input">
+              <div class="field">Message Engineering...</div>
+            </div>
+          </div>
+
+          <!-- Terminal pane -->
+          <div class="ws-terminal">
+            <div class="ws-terminal-header">
+              <div class="tab active">Terminal</div>
+              <div class="tab inactive">Browser</div>
+            </div>
+            <div class="ws-terminal-body">
+              <div><span class="prompt">~/project $ </span><span class="cmd">mkdir -p src/routes && touch src/routes/api-v2.ts</span></div>
+              <div><span class="prompt">~/project $ </span><span class="cmd">npm test -- --grep "api-v2"</span></div>
+              <div><span class="out">PASS  src/routes/api-v2.test.ts</span></div>
+              <div><span class="ok">  &#10003; GET /api/v2/users (12ms)</span></div>
+              <div><span class="ok">  &#10003; POST /api/v2/users (8ms)</span></div>
+              <div><span class="ok">  &#10003; Auth middleware rejects invalid tokens (3ms)</span></div>
+              <div><span class="out">Tests: 3 passed, 0 failed</span></div>
+              <div><span class="prompt">~/project $ </span><span class="cmd">deploy --env staging</span></div>
+              <div><span class="warn">Deploying to staging...</span></div>
+              <div><span class="ok">&#10003; Deployed successfully. URL: staging.app.dockbox.dev</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="workspace-bullets">
+      <div class="workspace-bullet">
+        <div class="bullet-dot"></div>
+        <p>Toggle the terminal pane to watch your AI work in real-time</p>
+      </div>
+      <div class="workspace-bullet">
+        <div class="bullet-dot"></div>
+        <p>Share a browser session &mdash; login once, let AI continue</p>
+      </div>
+      <div class="workspace-bullet">
+        <div class="bullet-dot"></div>
+        <p>Every command runs in an isolated container &mdash; your data stays safe</p>
+      </div>
+    </div>
+
+    <div class="workspace-cta">
+      <a href="/user/" class="btn-solid" style="padding:12px 32px;font-size:1rem;">Try it now</a>
+    </div>
+  </div>
+</section>
+
+<!-- ══ CTA Section ══ -->
+<section class="cta-section fade-in">
+  <div class="container">
+    <div class="cta-card">
+      <span class="section-label">Try It Now</span>
+      <h2>See it for yourself.</h2>
+      <p>Explore the full dashboard experience with our interactive demos. No account needed, no setup required.</p>
+      <div class="cta-buttons">
+        <a href="/demo-user/" class="btn-solid">User Dashboard Demo</a>
+        <a href="/demo-admin/" class="btn-ghost">Admin Dashboard Demo</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Footer ══ -->
+<footer>
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <span class="logo"><img src="/dockbox-logo.png" alt="" class="logo-icon"><span class="logo-text">Prometheus</span></span>
+        <p>The team collaboration suite with an AI crew built in. Secure, on your own server.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="/pages/product.html">Features</a>
+        <a href="/pages/solutions.html">Solutions</a>
+        <a href="/pages/security.html">Security</a>
+        <a href="/pages/pricing.html">Pricing</a>
+      </div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <a href="/pages/docs.html">Documentation</a>
+        <a href="/pages/blog.html">Blog</a>
+        <a href="/signup">Contact</a>
+        <a href="/login">Dashboard</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      &copy; 2026 Prometheus Labs.
+    </div>
+  </div>
+</footer>
+
+<script>
+/* Intersection Observer for fade-in animations */
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((entry) => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.fade-in').forEach((el) => observer.observe(el));
+</script>
+<script src="/v2/preregister.js"></script>
+</body>
+</html>

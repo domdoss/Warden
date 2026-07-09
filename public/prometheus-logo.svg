@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#ffffff"/>
+  <g transform="translate(256,240)">
+    <!-- Container/dock icon -->
+    <rect x="-120" y="-80" width="240" height="160" rx="20" fill="none" stroke="#2563eb" stroke-width="16"/>
+    <rect x="-80" y="-40" width="60" height="60" rx="8" fill="#2563eb" opacity="0.3"/>
+    <rect x="-10" y="-40" width="60" height="60" rx="8" fill="#2563eb" opacity="0.5"/>
+    <rect x="60" y="-40" width="60" height="60" rx="8" fill="#2563eb" opacity="0.2"/>
+    <rect x="-80" y="30" width="60" height="60" rx="8" fill="#2563eb" opacity="0.5"/>
+    <rect x="-10" y="30" width="60" height="60" rx="8" fill="#2563eb" opacity="0.8"/>
+    <rect x="60" y="30" width="60" height="60" rx="8" fill="#2563eb" opacity="0.4"/>
+    <!-- Base line (dock) -->
+    <rect x="-140" y="100" width="280" height="12" rx="6" fill="#2563eb"/>
+  </g>
+  <text x="256" y="440" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="64" font-weight="800" letter-spacing="-2" fill="#2563eb">prometheus</text>
+</svg>

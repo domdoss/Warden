@@ -1,0 +1,112 @@
+/* ============================================================
+   DOCKBOX ADMIN — Meridian token treatment
+   Loaded after /css/style.css. Fonts + color variables only;
+   no structural restyling of the admin dashboard.
+   Light = "Daylight" (default) / Dark = "Midnight"
+   ============================================================ */
+
+:root {
+  /* Daylight — slate-blue wash + cobalt→violet */
+  --color-bg: #eef1f7;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-hover: rgba(22, 26, 37, 0.04);
+  --color-surface-active: rgba(22, 26, 37, 0.08);
+  --color-primary: #3056f0;
+  --color-primary-hover: #2444d6;
+  --color-primary-light: rgba(48, 86, 240, 0.09);
+  --color-primary-medium: rgba(48, 86, 240, 0.18);
+  --color-secondary: #1e9e6a;
+  --color-secondary-light: rgba(30, 158, 106, 0.10);
+  --color-warning: #d9890b;
+  --color-warning-light: rgba(217, 137, 11, 0.10);
+  --color-error: #dc3d43;
+  --color-error-light: rgba(220, 61, 67, 0.10);
+  --color-text-primary: #14161c;
+  --color-text-secondary: #5b6170;
+  --color-text-tertiary: #9298a6;
+  --color-border: rgba(18, 22, 33, 0.09);
+  --color-border-light: rgba(18, 22, 33, 0.055);
+  --color-shadow: rgba(18, 22, 33, 0.05);
+  --color-shadow-lg: rgba(18, 22, 33, 0.12);
+  --color-backdrop: rgba(16, 18, 26, 0.40);
+  --color-sidebar-bg: rgba(255, 255, 255, 0.72);
+  --color-sidebar-hover: rgba(22, 26, 37, 0.04);
+  --color-sidebar-active: rgba(48, 86, 240, 0.09);
+  --color-topbar-bg: rgba(255, 255, 255, 0.72);
+  --color-chat-sent: #1c2030;
+  --color-chat-sent-text: #f4f5f8;
+  --color-chat-received: #ffffff;
+  --color-chat-received-text: #14161c;
+  --color-code-bg: rgba(18, 22, 33, 0.055);
+  --color-msg-actions-border: rgba(18, 22, 33, 0.09);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  --font-body: 'Instrument Sans', -apple-system, system-ui, sans-serif;
+  --font-heading: 'Bricolage Grotesque', 'Instrument Sans', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+[data-theme="dark"] {
+  /* Midnight — deep blue-black + periwinkle */
+  --color-bg: #0a0c14;
+  --color-surface: #161926;
+  --color-surface-elevated: #1b1f2e;
+  --color-surface-hover: rgba(255, 255, 255, 0.045);
+  --color-surface-active: rgba(255, 255, 255, 0.085);
+  --color-primary: #7d92ff;
+  --color-primary-hover: #94a6ff;
+  --color-primary-light: rgba(125, 146, 255, 0.11);
+  --color-primary-medium: rgba(125, 146, 255, 0.22);
+  --color-secondary: #3fce8f;
+  --color-secondary-light: rgba(63, 206, 143, 0.12);
+  --color-warning: #e8a33d;
+  --color-warning-light: rgba(232, 163, 61, 0.12);
+  --color-error: #f06a6f;
+  --color-error-light: rgba(240, 106, 111, 0.13);
+  --color-text-primary: #eceef2;
+  --color-text-secondary: #9aa1b0;
+  --color-text-tertiary: #5e6471;
+  --color-border: rgba(255, 255, 255, 0.085);
+  --color-border-light: rgba(255, 255, 255, 0.05);
+  --color-shadow: rgba(0, 0, 0, 0.35);
+  --color-shadow-lg: rgba(0, 0, 0, 0.55);
+  --color-backdrop: rgba(4, 5, 8, 0.66);
+  --color-sidebar-bg: rgba(22, 24, 31, 0.72);
+  --color-sidebar-hover: rgba(255, 255, 255, 0.045);
+  --color-sidebar-active: rgba(125, 146, 255, 0.11);
+  --color-topbar-bg: rgba(22, 24, 31, 0.72);
+  --color-chat-sent: #232c4d;
+  --color-chat-sent-text: #e9ecf6;
+  --color-chat-received: #16181f;
+  --color-chat-received-text: #eceef2;
+  --color-code-bg: rgba(0, 0, 0, 0.32);
+  --color-msg-actions-border: rgba(255, 255, 255, 0.085);
+}
+
+/* Heading font carries the display face */
+h1, h2, h3, .view-title, .modal-title {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+/* Tinted ambient field — keeps admin coherent with the user shell */
+body {
+  background:
+    radial-gradient(1100px 720px at 10% -12%, rgba(64, 96, 245, 0.14), transparent 60%),
+    radial-gradient(900px 620px at 96% -8%, rgba(122, 61, 240, 0.09), transparent 55%),
+    var(--color-bg);
+  background-attachment: fixed;
+}
+[data-theme="dark"] body, body[data-theme="dark"] {
+  background:
+    radial-gradient(1000px 680px at 10% -12%, rgba(93, 118, 255, 0.18), transparent 60%),
+    radial-gradient(900px 620px at 96% -8%, rgba(140, 92, 246, 0.12), transparent 55%),
+    var(--color-bg);
+  background-attachment: fixed;
+}

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Coding Agent Deletes Entire Production Database in 9 Seconds — Prometheus Blog</title>
+<meta name="description" content="PocketOS CEO Jeremy Crane revealed how the AI coding agent Cursor deleted his company's entire production database in about 9 seconds. Lessons for AI infrastructure.">
+<meta property="og:title" content="AI Coding Agent Deletes Entire Production Database in 9 Seconds">
+<meta property="og:description" content="PocketOS CEO Jeremy Crane revealed how the AI coding agent Cursor deleted his company's entire production database in about 9 seconds.">
+<meta property="og:image" content="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=1200&q=80">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://dockbox.dev/pages/blog/cursor-deletes-production-database.html">
+<meta property="article:published_time" content="2026-05-06T08:00:00Z">
+<meta property="article:section" content="Infrastructure">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="AI Coding Agent Deletes Entire Production Database in 9 Seconds">
+<meta name="twitter:description" content="PocketOS CEO Jeremy Crane revealed how the AI coding agent Cursor deleted his company's entire production database in about 9 seconds.">
+<meta name="twitter:image" content="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=1200&q=80">
+<link rel="canonical" href="https://dockbox.dev/pages/blog/cursor-deletes-production-database.html">
+<link rel="icon" type="image/png" href="/dockbox-logo.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "AI Coding Agent Deletes Entire Production Database in 9 Seconds",
+  "description": "PocketOS CEO Jeremy Crane revealed how the AI coding agent Cursor deleted his company's entire production database in about 9 seconds.",
+  "image": "https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=1200&q=80",
+  "datePublished": "2026-05-06T08:00:00Z",
+  "dateModified": "2026-05-06T08:00:00Z",
+  "author": { "@type": "Organization", "name": "Prometheus Labs", "url": "https://dockbox.dev" },
+  "publisher": { "@type": "Organization", "name": "Prometheus Labs", "url": "https://dockbox.dev", "logo": { "@type": "ImageObject", "url": "https://dockbox.dev/dockbox-logo.png" } },
+  "mainEntityOfPage": { "@type": "WebPage", "@id": "https://dockbox.dev/pages/blog/cursor-deletes-production-database.html" },
+  "articleSection": "Infrastructure",
+  "wordCount": 1000
+}
+</script>
+<link rel="stylesheet" href="/v2/fonts/fonts.css">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #e8edf5; --bg-alt: #dce3ef; --surface: #f5f7fb; --white: #FFFFFF;
+  --stone-50: #edf1f8; --stone-100: #dce3ef; --stone-200: #c7d0e0; --stone-400: #8994a8;
+  --stone-500: #64748b; --stone-600: #475569; --stone-900: #0f172a;
+  --teal-50: rgba(37,99,235,0.06); --teal-100: rgba(37,99,235,0.12);
+  --teal-500: #2563eb; --teal-600: #2563eb; --teal-700: #1e40af; --teal-800: #1d4ed8;
+  --shadow-sm: 0 1px 3px rgba(15,23,42,0.06); --shadow-md: 0 4px 20px rgba(15,23,42,0.08);
+  --shadow-lg: 0 16px 48px rgba(15,23,42,0.1), 0 2px 8px rgba(15,23,42,0.04);
+  --radius: 12px; --radius-lg: 16px;
+}
+html { scroll-behavior: smooth; }
+body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; background: var(--bg); color: var(--stone-600); line-height: 1.8; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E"); pointer-events: none; z-index: 0; }
+h1, h2, h3, h4 { font-family: 'GFS Didot', 'Playfair Display', Georgia, serif; color: var(--stone-900); line-height: 1.2; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+section, footer { position: relative; z-index: 1; }
+nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; background: rgba(232,237,245,0.9); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid rgba(0,0,0,0.06); }
+nav .container { display: flex; align-items: center; justify-content: space-between; height: 72px; }
+.logo { text-decoration: none; display: flex; align-items: center; gap: 12px; }
+.logo-icon { height: 42px; width: 42px; object-fit: contain; }
+.logo-text { font-family: 'GFS Didot', Georgia, serif; font-size: 1.6rem; color: var(--stone-900); }
+.nav-links { display: flex; gap: 28px; align-items: center; }
+.nav-links a { color: var(--stone-900); text-decoration: none; font-size: 0.875rem; font-weight: 500; transition: color 0.2s; }
+.nav-links a:hover { color: var(--stone-700); }
+.nav-links a.active { color: var(--teal-600); font-weight: 600; }
+.btn-ghost { color: var(--teal-600); border: 1px solid var(--teal-600); padding: 7px 18px; border-radius: 10px; font-size: 0.875rem; font-weight: 600; text-decoration: none; transition: all 0.2s; background: transparent; }
+.btn-ghost:hover { background: var(--teal-50); color: var(--teal-700); }
+.btn-solid { display: inline-flex; align-items: center; gap: 8px; background: var(--teal-600); color: #fff; padding: 8px 20px; border-radius: 10px; font-size: 0.875rem; font-weight: 600; text-decoration: none; transition: all 0.2s; box-shadow: 0 2px 8px rgba(37,99,235,0.25); border: none; cursor: pointer; }
+.btn-solid:hover { background: var(--teal-700); transform: translateY(-1px); }
+.nav-links a.btn-solid { color: #fff; }
+.hamburger { display: none; background: none; border: 1px solid var(--stone-200); border-radius: 8px; cursor: pointer; padding: 8px 12px; color: var(--stone-600); font-size: 1.2rem; z-index: 1001; }
+.mobile-menu { display: none; position: fixed; top: 72px; left: 0; right: 0; bottom: 0; background: rgba(232,237,245,0.97); backdrop-filter: blur(20px); z-index: 999; padding: 32px 24px; flex-direction: column; gap: 8px; overflow-y: auto; }
+.mobile-menu.open { display: flex; }
+.mobile-menu a { display: block; padding: 14px 16px; color: var(--stone-700); text-decoration: none; font-size: 1.05rem; font-weight: 500; border-radius: 10px; }
+.mobile-menu .btn-ghost { color: var(--teal-600); border: 1px solid var(--teal-600); text-align: center; margin-top: 12px; }
+.mobile-menu .btn-solid { display: flex; align-items: center; justify-content: center; background: var(--teal-600); color: #fff; text-align: center; margin-top: 8px; padding: 12px 20px; border-radius: 10px; font-weight: 600; }
+
+.article-hero { padding: 130px 0 40px; max-width: 780px; margin: 0 auto; }
+.article-meta { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.article-category { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #7c3aed; background: rgba(124,58,237,0.08); padding: 4px 10px; border-radius: 6px; }
+.article-date, .article-reading-time { font-size: 0.85rem; color: var(--stone-400); }
+.article-hero h1 { font-size: 2.6rem; margin-bottom: 0; letter-spacing: -0.02em; line-height: 1.15; }
+.article-featured-image { width: 100%; max-width: 780px; margin: 32px auto 0; display: block; border-radius: var(--radius-lg); box-shadow: var(--shadow-md); height: 400px; object-fit: cover; }
+.article-body { max-width: 680px; margin: 48px auto 0; padding-bottom: 60px; }
+.article-body h2 { font-size: 1.6rem; margin: 40px 0 16px; }
+.article-body h3 { font-family: 'Inter', sans-serif; font-size: 1.15rem; font-weight: 600; margin: 32px 0 12px; }
+.article-body p { margin-bottom: 20px; font-size: 1.02rem; line-height: 1.85; }
+.article-body blockquote { border-left: 3px solid var(--teal-600); padding: 16px 24px; margin: 28px 0; background: var(--teal-50); border-radius: 0 var(--radius) var(--radius) 0; font-style: italic; color: var(--stone-600); }
+.article-body blockquote p { margin-bottom: 0; }
+.article-body ul, .article-body ol { margin: 0 0 20px 24px; }
+.article-body li { margin-bottom: 8px; font-size: 1.02rem; }
+.article-body a { color: var(--teal-600); text-decoration: underline; text-underline-offset: 2px; }
+.article-body a:hover { color: var(--teal-700); }
+.article-share { display: flex; align-items: center; gap: 12px; padding: 24px 0; border-top: 1px solid var(--stone-100); border-bottom: 1px solid var(--stone-100); margin: 40px 0; }
+.article-share span { font-size: 0.85rem; font-weight: 600; color: var(--stone-500); }
+.share-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; text-decoration: none; transition: all 0.2s; border: 1px solid var(--stone-200); color: var(--stone-600); background: var(--white); }
+.share-btn:hover { border-color: var(--teal-600); color: var(--teal-600); }
+.sources { background: var(--surface); border-radius: var(--radius); padding: 24px; margin: 32px 0; }
+.sources h3 { font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--stone-400); margin-bottom: 12px; }
+.sources ul { list-style: none; margin: 0; padding: 0; }
+.sources li { padding: 4px 0; }
+.sources a { font-size: 0.88rem; color: var(--teal-600); text-decoration: none; }
+.sources a:hover { text-decoration: underline; }
+.related-articles { padding: 60px 0; border-top: 1px solid var(--stone-100); }
+.related-articles h2 { text-align: center; font-size: 1.8rem; margin-bottom: 32px; }
+.related-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 780px; margin: 0 auto; }
+.related-card { background: var(--white); border-radius: var(--radius); padding: 24px; text-decoration: none; border: 1px solid rgba(0,0,0,0.04); transition: all 0.2s; }
+.related-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.related-card h4 { font-family: 'GFS Didot', Georgia, serif; font-size: 1.05rem; color: var(--stone-900); margin-bottom: 8px; line-height: 1.35; }
+.related-card p { font-size: 0.82rem; color: var(--stone-400); }
+footer { padding: 56px 0; background: var(--bg); border-top: 1px solid var(--stone-100); }
+.footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 40px; }
+.footer-brand .logo { display: inline-block; margin-bottom: 8px; }
+.footer-brand p { font-size: 0.85rem; color: var(--stone-500); opacity: 0.8; }
+.footer-col h4 { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--stone-400); margin-bottom: 12px; font-family: 'Inter', sans-serif; }
+.footer-col a { display: block; color: var(--stone-500); text-decoration: none; font-size: 0.875rem; padding: 3px 0; transition: color 0.2s; }
+.footer-col a:hover { color: var(--teal-600); }
+.footer-bottom { padding-top: 24px; border-top: 1px solid var(--stone-100); text-align: center; font-size: 0.8rem; color: var(--stone-400); margin-top: 32px; }
+@media (max-width: 768px) {
+  .article-hero h1 { font-size: 1.8rem; }
+  .article-hero { padding: 110px 24px 32px; }
+  .article-featured-image { margin: 24px 24px 0; width: calc(100% - 48px); height: 240px; }
+  .article-body { padding: 32px 24px 48px; }
+  .related-grid { grid-template-columns: 1fr; padding: 0 24px; }
+  .footer-grid { grid-template-columns: 1fr; gap: 24px; }
+  .nav-links { display: none; }
+  .hamburger { display: flex; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="/" class="logo"><img src="/dockbox-logo-sm.png" alt="Prometheus" width="42" height="42" class="logo-icon"><span class="logo-text">Prometheus</span></a>
+    <div class="nav-links">
+      <a href="/pages/product.html">Product</a>
+      <a href="/pages/solutions.html">Solutions</a>
+      <a href="/pages/security.html">Security</a>
+      <a href="/pages/pricing.html">Pricing</a>
+      <a href="/pages/docs.html">Docs</a>
+      <a href="/pages/blog.html" class="active">Blog</a>
+      <a href="/login" class="btn-ghost">Log In</a>
+      <a href="/signup" class="btn-solid">Start Free Trial</a>
+    </div>
+    <button class="hamburger" onclick="document.getElementById('mobileMenu').classList.toggle('open'); this.textContent = this.textContent.trim() === '☰' ? '✕' : '☰'" aria-label="Menu">☰</button>
+  </div>
+</nav>
+<div class="mobile-menu" id="mobileMenu">
+  <a href="/pages/product.html">Product</a>
+  <a href="/pages/solutions.html">Solutions</a>
+  <a href="/pages/security.html">Security</a>
+  <a href="/pages/pricing.html">Pricing</a>
+  <a href="/pages/docs.html">Docs</a>
+  <a href="/pages/blog.html">Blog</a>
+  <a href="/login" class="btn-ghost">Log In</a>
+  <a href="/signup" class="btn-solid">Start Free Trial</a>
+</div>
+
+<main>
+
+<div class="container">
+  <div class="article-hero">
+    <div class="article-meta">
+      <span class="article-category">Infrastructure</span>
+      <span class="article-date">May 6, 2026</span>
+      <span class="article-reading-time">7 min read</span>
+    </div>
+    <h1>AI Coding Agent Deletes Entire Production Database in 9 Seconds</h1>
+  </div>
+</div>
+
+<img src="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=1200&q=80" alt="Server room with rows of equipment illuminated by blue LED lighting" class="article-featured-image">
+
+<article class="article-body">
+
+<p>On April 25, 2026, Jeremy Crane, founder and CEO of PocketOS, a company that primarily serves car rental companies, shared an in-depth post on X explaining how the AI coding agent Cursor deleted his company's entire production database in approximately nine seconds. The data has since been restored thanks to PocketOS's infrastructure provider, Railway, but the incident sparked an industry-wide conversation about the risks of giving AI agents access to production systems.</p>
+
+<blockquote>
+  <p>"I'm still extremely bullish on AI, and I still will absolutely use it every day for everything we're doing. I think you'd be stupid not to. But this was a wake-up call about permissions." -- Jeremy Crane, CEO of PocketOS</p>
+</blockquote>
+
+<p>The incident was <a href="https://abcnews.com/GMA/News/rogue-ai-agent-haywire-tech-company-ceo-bullish/story?id=132473181" target="_blank" rel="noopener">covered by ABC News and Good Morning America</a>, elevating what could have been a niche developer incident into a mainstream news story about AI safety and infrastructure reliability.</p>
+
+<h2>What Happened</h2>
+
+<p>The details are both mundane and terrifying. Crane was using Cursor, a popular AI-powered code editor, to work on a development task. The agent, in the course of executing its task, ran a destructive database command against the production database rather than the development environment. The entire production database -- containing customer data, rental agreements, and operational records -- was dropped in about nine seconds.</p>
+
+<p>Nine seconds. That is the window between "everything is fine" and "catastrophic data loss." No human could have intervened in that timeframe, even if they were watching the agent's every action in real time.</p>
+
+<h3>Why backups saved the day</h3>
+
+<p>PocketOS was fortunate. Railway, their infrastructure provider, maintained automated backups that allowed the data to be restored. But not every organization has that safety net. Many startups and small businesses run production databases without point-in-time recovery configured, and even those that do may face hours or days of downtime during restoration.</p>
+
+<h2>The Deeper Problem: Environment Isolation</h2>
+
+<p>The root cause of this incident was not a bug in Cursor. It was an architectural failure: the AI agent had credentials that could reach the production database. In a properly isolated environment, an AI coding agent should never have the ability to connect to production infrastructure, let alone execute destructive commands against it.</p>
+
+<p>This is a systemic problem across the industry. Developers routinely give AI coding agents access to their full development environment, which often includes production database connection strings, API keys for live services, and credentials for cloud infrastructure. The agent does not distinguish between development and production -- it sees credentials and uses them.</p>
+
+<ul>
+  <li><strong>Connection string leakage.</strong> Environment variables containing production database URLs are accessible to AI agents running in the same terminal session.</li>
+  <li><strong>No command filtering.</strong> Most AI coding agents can execute arbitrary shell commands without any filtering for destructive operations like DROP DATABASE, rm -rf, or terraform destroy.</li>
+  <li><strong>Implicit trust.</strong> Developers trust AI agents the same way they trust their IDE -- as a passive tool. But AI agents are active participants that make decisions about what commands to run.</li>
+  <li><strong>Speed outpaces oversight.</strong> AI agents execute commands at machine speed. By the time a developer sees the destructive command in their terminal, the damage is already done.</li>
+</ul>
+
+<h2>The Industry Response</h2>
+
+<p>Crane's reaction was notable for its nuance. Rather than condemning AI tools, he acknowledged the incident as a failure of configuration and permissions, not of AI technology itself. His statement that he remains "extremely bullish" on AI reflects a reality that many organizations face: AI coding agents deliver genuine productivity gains, but the current deployment model -- giving agents broad access and hoping for the best -- is fundamentally unsafe.</p>
+
+<p>The incident prompted renewed calls for mandatory sandboxing of AI coding agents. Security researchers have long argued that AI agents should operate within constrained environments with no access to production resources, but the convenience of giving agents full access has consistently won out over security considerations.</p>
+
+<h2>What This Means for Your Organization</h2>
+
+<p>If your developers use AI coding agents (and statistically, they almost certainly do), you are exposed to the same risk that hit PocketOS. Here is what you should evaluate:</p>
+
+<ul>
+  <li><strong>Audit agent access.</strong> What credentials, environment variables, and connection strings are accessible to AI coding agents in your development environments?</li>
+  <li><strong>Enforce environment separation.</strong> Production credentials should never be present in any environment where an AI agent operates.</li>
+  <li><strong>Implement command allowlists.</strong> AI agents should only be able to execute explicitly approved commands, not arbitrary shell operations.</li>
+  <li><strong>Test your recovery.</strong> If your production database were dropped right now, how long would recovery take? Have you actually tested the restoration process?</li>
+  <li><strong>Consider read-only production access.</strong> If agents need to query production data for debugging, provide read-only replicas rather than read-write credentials.</li>
+</ul>
+
+<h2>How Prometheus Addresses This Threat</h2>
+
+<p>Prometheus's containerized architecture eliminates this class of risk entirely. Every AI agent runs in an isolated container with no access to production databases, no access to infrastructure credentials, and no ability to execute arbitrary system commands. The container defines a strict boundary: the agent can interact with the data and services explicitly provided to it, and nothing else.</p>
+
+<p>This is the difference between treating AI agents as trusted colleagues (the current industry default) and treating them as powerful but constrained tools that require explicit permission for every sensitive action. Prometheus takes the latter approach because, as the PocketOS incident demonstrates, the former approach is a ticking clock.</p>
+
+<div class="article-share">
+  <span>Share this article:</span>
+  <a href="https://twitter.com/intent/tweet?url=https://dockbox.dev/pages/blog/cursor-deletes-production-database.html&text=AI%20Coding%20Agent%20Deletes%20Entire%20Production%20Database%20in%209%20Seconds" target="_blank" rel="noopener" class="share-btn">Twitter</a>
+  <a href="https://www.linkedin.com/sharing/share-offsite/?url=https://dockbox.dev/pages/blog/cursor-deletes-production-database.html" target="_blank" rel="noopener" class="share-btn">LinkedIn</a>
+</div>
+
+<div class="sources">
+  <h3>Sources</h3>
+  <ul>
+    <li><a href="https://abcnews.com/GMA/News/rogue-ai-agent-haywire-tech-company-ceo-bullish/story?id=132473181" target="_blank" rel="noopener">ABC News -- 'Rogue' AI Agent Went Haywire at Tech Company</a></li>
+    <li><a href="https://www.goodmorningamerica.com/news/story/rogue-ai-agent-haywire-tech-company-ceo-bullish-132473181" target="_blank" rel="noopener">Good Morning America -- 'Rogue' AI Agent Went Haywire at Tech Company</a></li>
+    <li><a href="https://yourstory.com/ai-story/rogue-ai-agents-silicon-valley-fears-2026" target="_blank" rel="noopener">YourStory -- Rogue AI Agents Are Becoming Silicon Valley's Next Big Fear</a></li>
+  </ul>
+</div>
+
+</article>
+
+<section class="related-articles">
+  <h2>Related Articles</h2>
+  <div class="related-grid">
+    <a href="/pages/blog/meta-rogue-ai-agent-incident.html" class="related-card">
+      <h4>Meta's Rogue AI Agent Exposed Internal Data for Two Hours</h4>
+      <p>May 10, 2026</p>
+    </a>
+    <a href="/pages/blog/ai-jailbreak-attacks-surge-2026.html" class="related-card">
+      <h4>AI Jailbreak Attacks Surge: 70% Success Rate in Enterprise Tests</h4>
+      <p>April 28, 2026</p>
+    </a>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <span class="logo"><img src="/dockbox-logo-sm.png" alt="Prometheus" width="42" height="42" class="logo-icon"><span class="logo-text">Prometheus</span></span>
+        <p>Secure AI infrastructure for your organization.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="/pages/product.html">Features</a>
+        <a href="/pages/solutions.html">Solutions</a>
+        <a href="/pages/security.html">Security</a>
+        <a href="/pages/pricing.html">Pricing</a>
+      </div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <a href="/pages/docs.html">Documentation</a>
+        <a href="/pages/blog.html">Blog</a>
+        <a href="/signup">Contact</a>
+      </div>
+    </div>
+    <div class="footer-bottom">&copy; 2026 Prometheus Labs.</div>
+  </div>
+</footer>
+
+</body>
+</html>

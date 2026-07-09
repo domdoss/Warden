@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2563eb">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" href="/dockbox-logo.png">
+<link rel="apple-touch-icon" href="/dockbox-logo.png">
+<title>Prometheus - Login</title>
+<meta name="description" content="Prometheus - Secure AI Assistant Dashboard. Sign in to access your workspace.">
+<meta name="author" content="Prometheus">
+<meta name="robots" content="noindex, nofollow">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#f8fafc;--surface:#fff;--border:#e2e8f0;--text:#0f172a;--text2:#475569;--text3:#94a3b8;--accent:#2563eb;--accent-hover:#1d4ed8;--admin-color:#6366f1;--danger:#ef4444;--shadow:0 1px 3px rgba(0,0,0,0.08)}
+/* Dark mode disabled on login */
+/* Light mode only on login page */
+.theme-btn{position:fixed;top:16px;right:16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow)}
+.theme-btn:hover{color:var(--text)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.login-container{width:100%;max-width:480px;padding:24px;text-align:center}
+.login-logo{margin-bottom:32px}
+.login-logo h1{font-size:2rem;font-weight:800;color:var(--text);letter-spacing:-0.03em}
+.login-logo p{color:var(--text3);font-size:0.9rem;margin-top:4px}
+.user-grid{display:flex;flex-wrap:wrap;gap:16px;justify-content:center;margin-bottom:24px}
+.user-card{display:flex;flex-direction:column;align-items:center;gap:10px;padding:20px 16px;background:var(--surface);border:1px solid var(--border);border-radius:16px;cursor:pointer;width:130px;box-shadow:var(--shadow);transition:transform 0.15s,box-shadow 0.15s}
+.user-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.12)}
+.user-card:active{transform:scale(0.97)}
+.user-avatar{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:700;color:#fff}
+.user-avatar.admin{position:relative}
+.user-avatar.admin::after{content:'';position:absolute;bottom:-2px;right:-2px;width:18px;height:18px;background:var(--admin-color);border:2px solid var(--surface);border-radius:50%;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z'/%3E%3C/svg%3E");background-size:10px;background-repeat:no-repeat;background-position:center}
+.user-name{font-size:0.9rem;font-weight:600;color:var(--text)}
+.user-role{font-size:0.75rem;color:var(--text3)}
+
+/* Password modal */
+.modal-overlay{display:none;position:fixed;inset:0;z-index:1000}
+.modal-overlay.active{display:block}
+.modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,0.5)}
+.modal-box{position:relative;margin:20vh auto 0;background:var(--surface);border-radius:16px;max-width:360px;width:90%;padding:28px;box-shadow:0 16px 48px rgba(0,0,0,0.15);z-index:1}
+.modal-box h2{font-size:1.2rem;margin-bottom:16px;text-align:center}
+.modal-badge{text-align:center;margin-bottom:16px}
+.modal-badge .avatar{display:inline-flex;width:48px;height:48px;border-radius:50%;align-items:center;justify-content:center;font-weight:700;font-size:1.2rem;color:#fff}
+.modal-badge .name{margin-top:6px;font-weight:600;font-size:0.95rem}
+.pw-input{width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:1rem;margin-bottom:10px;background:var(--surface);color:var(--text);box-sizing:border-box}
+.pw-input:focus{outline:none;border-color:var(--accent)}
+.pw-error{color:var(--danger);font-size:0.85rem;min-height:1.2em;margin-bottom:8px}
+.pw-reqs{font-size:0.8rem;color:var(--text3);margin-bottom:8px}
+.pw-submit{width:100%;padding:10px;border:none;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;transition:background 0.15s}
+.pw-submit:hover{background:var(--accent-hover)}
+.pw-back{width:100%;margin-top:8px;padding:8px;border:none;background:transparent;color:var(--text3);cursor:pointer;font-size:0.85rem}
+.fs-toggle{display:none;position:fixed;bottom:12px;right:12px;z-index:9999;width:36px;height:36px;border:none;border-radius:8px;background:rgba(0,0,0,0.25);color:var(--text2);cursor:pointer;align-items:center;justify-content:center;opacity:0.7;transition:opacity 0.2s}
+.fs-toggle:hover,.fs-toggle:active{opacity:1}
+.fs-toggle svg{width:18px;height:18px}
+@media(max-width:768px){.fs-toggle{display:flex}}
+@media(display-mode:standalone){.fs-toggle{display:none}}
+</style>
+</head>
+<body>
+
+<button class="fs-toggle" id="fsToggle" title="Toggle fullscreen">
+  <svg id="fsExpand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+  <svg id="fsCompress" style="display:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+</button>
+
+
+<div class="login-container">
+  <div class="login-logo">
+    <img src="/dockbox-logo.png" alt="Prometheus" style="width:48px;height:48px;margin-bottom:8px">
+    <h1>Prometheus</h1>
+    <p>Select your account</p>
+  </div>
+  <div class="user-grid" id="userGrid">
+    <p style="color:var(--text3)">Loading...</p>
+  </div>
+</div>
+
+<div class="modal-overlay" id="pwModal">
+  <div class="modal-backdrop" onclick="closePwModal()"></div>
+  <div class="modal-box">
+    <h2 id="pwTitle">Enter Password</h2>
+    <div class="modal-badge" id="pwBadge"></div>
+    <form action="/api/login" method="POST" onsubmit="event.preventDefault();submitPw();">
+      <input type="password" class="pw-input" id="pwInput" placeholder="Password" autocomplete="current-password">
+      <input type="password" class="pw-input" id="pwConfirm" placeholder="Confirm password" autocomplete="new-password" aria-label="Confirm new password for account setup" style="display:none">
+      <p class="pw-reqs" id="pwReqs" style="display:none">At least 6 characters, one uppercase letter, one number, and one special character</p>
+      <p class="pw-error" id="pwError"></p>
+      <button type="submit" class="pw-submit" id="pwSubmitBtn">Login</button>
+    </form>
+    <button class="pw-back" onclick="requestPasswordReset()" id="forgotBtn" style="margin-top:4px;color:var(--accent);font-weight:500;">Forgot Password?</button>
+    <p id="forgotError" class="pw-error"></p>
+    <p id="forgotSuccess" style="color:#059669;font-size:13px;display:none;margin-bottom:8px;"></p>
+    <button class="pw-back" onclick="closePwModal()" id="passwordBackBtn">Back</button>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Detect company slug from URL path (/login/acme) or subdomain (acme.dockbox.dev)
+  function getCompanySlug() {
+    const pathMatch = location.pathname.match(/^\/login\/([a-z0-9-]+)/);
+    if (pathMatch) return pathMatch[1];
+    // Bare path: /beta → slug "beta"
+    const bareMatch = location.pathname.match(/^\/([a-z0-9-]+)\/?$/);
+    if (bareMatch && !['login','signup','admin','user','demo','landing','webdev','pages','js','css','v2'].includes(bareMatch[1])) return bareMatch[1];
+    const hostMatch = location.hostname.match(/^([a-z0-9-]+)\.dockbox\.dev$/);
+    if (hostMatch && !['www', 'app', 'api', 'admin'].includes(hostMatch[1])) return hostMatch[1];
+    return null;
+  }
+  const companySlug = getCompanySlug();
+
+  let pendingAccount = null; // { type: 'admin'|'user', id, name, color, has_password }
+  let pwMode = null; // 'login' | 'setup'
+  let tempSession = null;
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+  function escAttr(s) { return String(s).replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+  function getInitials(name) { return (name||'?').split(/\s+/).map(w=>w[0]).join('').toUpperCase().slice(0,2); }
+
+  async function loadAccounts() {
+    try {
+      const url = companySlug ? '/api/companies/' + companySlug + '/login-info' : '/api/login-info';
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('API returned ' + r.status);
+      const d = await r.json();
+      if (!d.admin && !d.company) throw new Error('Invalid login-info response');
+      const grid = document.getElementById('userGrid');
+      let html = '';
+
+      if (companySlug && d.company) {
+        // Company-branded login
+        const logo = document.querySelector('.login-logo');
+        let logoHtml = '';
+        if (d.company.logo_url) {
+          logoHtml += '<img src="' + esc(d.company.logo_url) + '" alt="' + esc(d.company.name) + '" style="width:48px;height:48px;margin-bottom:8px;border-radius:8px">';
+        }
+        logoHtml += '<h1>' + esc(d.company.name) + '</h1>';
+        logoHtml += '<p>Select your account</p>';
+        logo.innerHTML = logoHtml;
+
+        if (d.company.brand_color) {
+          document.documentElement.style.setProperty('--accent', d.company.brand_color);
+        }
+
+        // Only user cards (no admin)
+        if (d.users) {
+          for (const u of d.users) {
+            html += `<div class="user-card" onclick="selectAccount('user','${escAttr(u.id)}')">
+              <div class="user-avatar" style="background:${escAttr(u.color||'#2563eb')}">
+                ${esc(getInitials(u.name))}
+              </div>
+              <div class="user-name">${esc(u.name)}</div>
+              <div class="user-role">User</div>
+            </div>`;
+          }
+        }
+      } else {
+        // Default login (admin + all users)
+        html += `<div class="user-card" onclick="selectAccount('admin')">
+          <div class="user-avatar admin" style="background:${esc(d.admin.color)}">
+            ${esc(getInitials(d.admin.name))}
+          </div>
+          <div class="user-name">${esc(d.admin.name)}</div>
+          <div class="user-role">Administrator</div>
+        </div>`;
+
+        if (d.users) {
+          for (const u of d.users) {
+            html += `<div class="user-card" onclick="selectAccount('user','${escAttr(u.id)}')">
+              <div class="user-avatar" style="background:${escAttr(u.color||'#2563eb')}">
+                ${esc(getInitials(u.name))}
+              </div>
+              <div class="user-name">${esc(u.name)}</div>
+              <div class="user-role">User</div>
+            </div>`;
+          }
+        }
+      }
+
+      grid.innerHTML = html || '<p style="color:var(--text3)">No accounts configured.</p>';
+    } catch(e) {
+      console.error('loadAccounts error:', e);
+      document.getElementById('userGrid').innerHTML = '<p style="color:var(--text3)">Failed to load accounts.</p>';
+    }
+  }
+
+  window.selectAccount = async function(type, userId) {
+    if (type === 'admin') {
+      pendingAccount = { type: 'admin', id: 'admin', name: 'Admin', color: '#6366f1' };
+      showPwModal('login');
+      return;
+    }
+
+    try {
+      const r = await fetch('/api/users/' + encodeURIComponent(userId));
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.user) return;
+
+      pendingAccount = { type: 'user', id: d.user.id, name: d.user.name, color: d.user.color || '#2563eb', has_password: d.user.has_password };
+
+      if (!d.user.has_password) {
+        // First login - get temp session, then force password setup
+        const loginR = await fetch('/api/users/' + encodeURIComponent(userId) + '/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({})
+        });
+        const loginD = await loginR.json();
+        tempSession = loginD.session;
+        showPwModal('setup');
+      } else {
+        showPwModal('login');
+      }
+    } catch(e) {
+      console.error('selectAccount error:', e);
+    }
+  };
+
+  function showPwModal(mode) {
+    pwMode = mode;
+    const modal = document.getElementById('pwModal');
+    modal.classList.add('active');
+
+    const title = document.getElementById('pwTitle');
+    const badge = document.getElementById('pwBadge');
+    const confirm = document.getElementById('pwConfirm');
+    const reqs = document.getElementById('pwReqs');
+    const btn = document.getElementById('pwSubmitBtn');
+    const input = document.getElementById('pwInput');
+
+    document.getElementById('pwError').textContent = '';
+    input.value = '';
+
+    badge.innerHTML = `<div class="avatar" style="background:${esc(pendingAccount.color)}">${esc(getInitials(pendingAccount.name))}</div><div class="name">${esc(pendingAccount.name)}</div>`;
+
+    if (mode === 'setup') {
+      title.textContent = 'Create a Password';
+      confirm.style.display = '';
+      confirm.value = '';
+      reqs.style.display = '';
+      btn.textContent = 'Set Password';
+      input.placeholder = 'New password';
+      input.autocomplete = 'new-password';
+    } else {
+      title.textContent = 'Enter Password';
+      confirm.style.display = 'none';
+      reqs.style.display = 'none';
+      btn.textContent = 'Login';
+      input.placeholder = 'Password';
+      input.autocomplete = 'current-password';
+    }
+
+    setTimeout(() => input.focus(), 100);
+  }
+
+  window.closePwModal = function() {
+    document.getElementById('pwModal').classList.remove('active');
+    pendingAccount = null;
+    tempSession = null;
+    pwMode = null;
+  };
+
+  function validatePassword(pw) {
+    if (pw.length < 6) return 'Must be at least 6 characters';
+    if (!/[A-Z]/.test(pw)) return 'Must contain an uppercase letter';
+    if (!/[0-9]/.test(pw)) return 'Must contain a number';
+    if (!/[^A-Za-z0-9]/.test(pw)) return 'Must contain a special character';
+    return null;
+  }
+
+  window.submitPw = async function() {
+    const pw = document.getElementById('pwInput').value;
+    const errorEl = document.getElementById('pwError');
+
+    if (!pw) { errorEl.textContent = 'Password is required'; return; }
+
+    // Admin login
+    if (pendingAccount.type === 'admin') {
+      try {
+        const r = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ password: pw })
+        });
+        const d = await r.json();
+        if (d.error) { errorEl.textContent = d.error; return; }
+        localStorage.setItem('dockbox-admin-session', d.session);
+        localStorage.setItem('dockbox-view', 'home');
+        window.location.href = '/admin/';
+      } catch(e) {
+        errorEl.textContent = 'Login failed';
+      }
+      return;
+    }
+
+    // User password setup
+    if (pwMode === 'setup') {
+      const confirm = document.getElementById('pwConfirm').value;
+      const pwErr = validatePassword(pw);
+      if (pwErr) { errorEl.textContent = pwErr; return; }
+      if (pw !== confirm) { errorEl.textContent = 'Passwords do not match'; return; }
+
+      try {
+        const r = await fetch('/api/users/' + encodeURIComponent(pendingAccount.id) + '/set-password', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ session: tempSession, password: pw })
+        });
+        const d = await r.json();
+        if (d.error) { errorEl.textContent = d.error; return; }
+        localStorage.setItem('dockbox-user-id', pendingAccount.id);
+        localStorage.setItem('dockbox-user-session', d.session);
+        window.location.href = '/user/';
+      } catch(e) {
+        errorEl.textContent = 'Failed to set password';
+      }
+      return;
+    }
+
+    // User login
+    try {
+      const r = await fetch('/api/users/' + encodeURIComponent(pendingAccount.id) + '/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ password: pw })
+      });
+      const d = await r.json();
+      if (d.error) { errorEl.textContent = d.error; return; }
+      localStorage.setItem('dockbox-user-id', pendingAccount.id);
+      localStorage.setItem('dockbox-user-session', d.session);
+      window.location.href = '/user/';
+    } catch(e) {
+      errorEl.textContent = 'Login failed';
+    }
+  };
+
+  // Auto-login check on page load
+  async function checkExistingSession() {
+    // Check admin session
+    const adminSession = localStorage.getItem('dockbox-admin-session');
+    if (adminSession) {
+      try {
+        const r = await fetch('/api/admin/verify', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ session: adminSession })
+        });
+        const d = await r.json();
+        if (d.valid) { window.location.href = '/admin/'; return; }
+        localStorage.removeItem('dockbox-admin-session');
+      } catch(e) {}
+    }
+
+    // Check user session
+    const userId = localStorage.getItem('dockbox-user-id');
+    const userSession = localStorage.getItem('dockbox-user-session');
+    if (userId && userSession) {
+      try {
+        const r = await fetch('/api/users/' + encodeURIComponent(userId) + '/verify-session', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ session: userSession })
+        });
+        const d = await r.json();
+        if (d.valid) { window.location.href = '/user/'; return; }
+        localStorage.removeItem('dockbox-user-id');
+        localStorage.removeItem('dockbox-user-session');
+      } catch(e) {}
+    }
+
+    loadAccounts();
+  }
+
+  window.requestPasswordReset = async function() {
+    if (!pendingAccount || !pendingAccount.id) return;
+    var errorEl = document.getElementById('forgotError');
+    var successEl = document.getElementById('forgotSuccess');
+    var btn = document.getElementById('forgotBtn');
+    errorEl.textContent = '';
+    successEl.style.display = 'none';
+
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    try {
+      var r = await fetch('/api/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: pendingAccount.id })
+      });
+      var d = await r.json();
+      if (d.error) { errorEl.textContent = d.error; }
+      else {
+        var masked = d.masked_email || 'your email';
+        successEl.textContent = 'Reset link sent to ' + masked;
+        successEl.style.display = 'block';
+        btn.style.display = 'none';
+      }
+    } catch(e) { errorEl.textContent = 'Something went wrong. Try again.'; }
+    btn.disabled = false;
+    btn.textContent = 'Forgot Password?';
+  };
+
+  checkExistingSession();
+
+  // Fullscreen toggle
+  (function(){
+    var btn=document.getElementById('fsToggle'),ex=document.getElementById('fsExpand'),co=document.getElementById('fsCompress');
+    function update(){var fs=!!document.fullscreenElement;ex.style.display=fs?'none':'';co.style.display=fs?'':'none';}
+    btn.addEventListener('click',function(){
+      if(document.fullscreenElement){document.exitFullscreen();}
+      else{document.documentElement.requestFullscreen().catch(function(){});}
+    });
+    document.addEventListener('fullscreenchange',update);
+  })();
+
+  // Theme toggle
+  const saved = localStorage.getItem('dockbox-theme');
+  if (saved === 'dark') document.documentElement.classList.add('dark');
+  else if (saved === 'light') document.documentElement.classList.add('light');
+  function updateIcon() {
+    const isDark = document.documentElement.classList.contains('dark') || (!document.documentElement.classList.contains('light') && window.matchMedia('(prefers-color-scheme:dark)').matches);
+    var el = document.getElementById('themeIcon'); if (!el) return; el.innerHTML = isDark
+      ? '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>'
+      : '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';
+  }
+  updateIcon();
+  var themeBtn = document.getElementById('themeBtn'); if (themeBtn) themeBtn.addEventListener('click', function() {
+    const isDark = document.documentElement.classList.contains('dark') || (!document.documentElement.classList.contains('light') && window.matchMedia('(prefers-color-scheme:dark)').matches);
+    document.documentElement.classList.remove('dark', 'light');
+    if (isDark) { document.documentElement.classList.add('light'); localStorage.setItem('dockbox-theme', 'light'); }
+    else { document.documentElement.classList.add('dark'); localStorage.setItem('dockbox-theme', 'dark'); }
+    updateIcon();
+  });
+})();
+
+// Dynamic manifest for company-branded PWA
+(function() {
+  const slug = (function() {
+    const p = location.pathname.match(/^\/([a-z0-9-]+)\/?$/);
+    if (p && !['login','signup','admin','user','demo','landing','webdev','pages','js','css','v2'].includes(p[1])) return p[1];
+    return null;
+  })();
+  if (slug) {
+    const link = document.querySelector('link[rel="manifest"]');
+    if (link) link.href = '/api/companies/' + slug + '/manifest.json';
+  }
+})();
+</script>
+
+<div id="pwaInstallBanner" style="display:none;position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:9999;background:var(--surface,#fff);border:1px solid var(--border,#e2e8f0);border-radius:14px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,0.15);align-items:center;gap:12px;max-width:360px;width:calc(100% - 32px);">
+  <div style="flex:1;min-width:0">
+    <div style="font-weight:600;font-size:14px;color:var(--text,#0f172a)">Install App</div>
+    <div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:2px">Add to your home screen for quick access</div>
+  </div>
+  <button id="pwaInstallBtn" type="button" style="padding:8px 16px;background:var(--accent,#2563eb);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Install</button>
+  <button id="pwaInstallDismiss" type="button" style="padding:4px;background:none;border:none;cursor:pointer;color:var(--text3,#94a3b8);font-size:18px;line-height:1" title="Dismiss">&times;</button>
+</div>
+<script>
+(function() {
+  let deferredPrompt = null;
+  const banner = document.getElementById('pwaInstallBanner');
+  const btn = document.getElementById('pwaInstallBtn');
+  const dismiss = document.getElementById('pwaInstallDismiss');
+
+  const dismissed = localStorage.getItem('pwa-install-dismissed');
+  if (dismissed && Date.now() - parseInt(dismissed) < 7 * 24 * 60 * 60 * 1000) {
+    // Dismissed within last 7 days
+  } else {
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (banner) banner.style.display = 'flex';
+    });
+  }
+
+  if (btn) btn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    if (banner) banner.style.display = 'none';
+  });
+
+  if (dismiss) dismiss.addEventListener('click', () => {
+    if (banner) banner.style.display = 'none';
+    localStorage.setItem('pwa-install-dismissed', String(Date.now()));
+  });
+
+  window.addEventListener('appinstalled', () => {
+    if (banner) banner.style.display = 'none';
+    deferredPrompt = null;
+  });
+
+  if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+    if (banner) banner.style.display = 'none';
+  }
+})();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
+</body>
+</html>

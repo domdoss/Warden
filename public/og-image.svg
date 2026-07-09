@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="50%" stop-color="#131b33"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="42%" r="35%">
+      <stop offset="0%" stop-color="#2563eb" stop-opacity="0.2"/>
+      <stop offset="40%" stop-color="#3b82f6" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="50%" cy="42%" r="20%">
+      <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="textGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="50%" stop-color="#93c5fd"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0f172a" stop-opacity="0"/>
+      <stop offset="20%" stop-color="#2563eb" stop-opacity="0.4"/>
+      <stop offset="50%" stop-color="#3b82f6" stop-opacity="0.6"/>
+      <stop offset="80%" stop-color="#60a5fa" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="60"/>
+    </filter>
+    <filter id="textGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Subtle grid -->
+  <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+    <path d="M 64 0 L 0 0 0 64" fill="none" stroke="rgba(255,255,255,0.025)" stroke-width="1"/>
+  </pattern>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+
+  <!-- Glow effects -->
+  <ellipse cx="600" cy="270" rx="500" ry="300" fill="url(#glow)" filter="url(#blur)"/>
+  <ellipse cx="600" cy="270" rx="300" ry="200" fill="url(#glow2)" filter="url(#blur)"/>
+
+  <!-- Accent line -->
+  <rect x="200" y="370" width="800" height="2" fill="url(#line)" rx="1"/>
+
+  <!-- Text glow layer -->
+  <text x="600" y="290" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="120" font-weight="800" fill="#2563eb" opacity="0.3" filter="url(#textGlow)" letter-spacing="-4">Dockbox</text>
+
+  <!-- Main title -->
+  <text x="600" y="290" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="120" font-weight="800" fill="url(#textGrad)" letter-spacing="-4">Dockbox</text>
+
+  <!-- Tagline -->
+  <text x="600" y="420" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="32" font-weight="400" fill="#94a3b8" letter-spacing="1.5">Secure AI Infrastructure for Your Organization</text>
+
+  <!-- Feature pills -->
+  <rect x="310" y="460" width="130" height="32" rx="16" fill="rgba(37,99,235,0.15)" stroke="#2563eb" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="375" y="481" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#93c5fd">Self-Hosted</text>
+
+  <rect x="460" y="460" width="120" height="32" rx="16" fill="rgba(37,99,235,0.15)" stroke="#2563eb" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="520" y="481" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#93c5fd">Multi-Channel</text>
+
+  <rect x="600" y="460" width="100" height="32" rx="16" fill="rgba(37,99,235,0.15)" stroke="#2563eb" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="650" y="481" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#93c5fd">Private</text>
+
+  <rect x="720" y="460" width="160" height="32" rx="16" fill="rgba(37,99,235,0.15)" stroke="#2563eb" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="800" y="481" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#93c5fd">Deploy in Minutes</text>
+
+  <!-- Bottom accent dots -->
+  <circle cx="550" cy="540" r="3" fill="#2563eb" opacity="0.4"/>
+  <circle cx="580" cy="540" r="3" fill="#3b82f6" opacity="0.4"/>
+  <circle cx="610" cy="540" r="3" fill="#60a5fa" opacity="0.4"/>
+  <circle cx="640" cy="540" r="3" fill="#3b82f6" opacity="0.4"/>
+  <circle cx="670" cy="540" r="3" fill="#2563eb" opacity="0.4"/>
+</svg>

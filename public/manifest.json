@@ -1,0 +1,134 @@
+{
+  "name": "Prometheus — AI Assistant",
+  "short_name": "Prometheus",
+  "description": "Your personal AI assistant with shared terminal, browser, and workspace. Chat, build, and deploy from anywhere.",
+  "id": "dockbox-dashboard",
+  "start_url": "/user/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f0f2f5",
+  "theme_color": "#2563eb",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "business", "utilities"],
+  "iarc_rating_id": "",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Prometheus Dashboard"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Prometheus Mobile"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Chat",
+      "short_name": "Chat",
+      "url": "/user/#chat",
+      "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]
+    },
+    {
+      "name": "Files",
+      "short_name": "Files",
+      "url": "/user/#files",
+      "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]
+    },
+    {
+      "name": "Projects",
+      "short_name": "Projects",
+      "url": "/user/#projects",
+      "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]
+    },
+    {
+      "name": "Calendar",
+      "short_name": "Calendar",
+      "url": "/user/#calendar",
+      "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]
+    }
+  ],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "prefer_related_applications": false,
+  "related_applications": [],
+  "scope_extensions": [
+    {"origin": "https://*.dockbox.dev"}
+  ],
+  "file_handlers": [
+    {
+      "action": "/user/#files",
+      "accept": {
+        "text/*": [".txt", ".md", ".csv", ".json", ".xml", ".html", ".css", ".js", ".ts", ".py"],
+        "application/pdf": [".pdf"],
+        "image/*": [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"],
+        "application/zip": [".zip"]
+      }
+    }
+  ],
+  "protocol_handlers": [
+    {
+      "protocol": "web+dockbox",
+      "url": "/user/?action=%s"
+    }
+  ],
+  "share_target": {
+    "action": "/user/#chat",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "file",
+          "accept": ["*/*"]
+        }
+      ]
+    }
+  },
+  "edge_side_panel": {
+    "preferred_width": 480
+  },
+  "note_taking": {
+    "new_note_url": "/user/#chat"
+  },
+  "widgets": [
+    {
+      "name": "Prometheus Chat",
+      "description": "Quick access to your AI assistant",
+      "tag": "dockbox-chat",
+      "ms_ac_template": "widget/chat.json",
+      "screenshots": [{"src": "/icons/icon-512.png", "sizes": "512x512"}],
+      "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]
+    }
+  ]
+}

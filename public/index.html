@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Prometheus — Dashboard</title>
+<link rel="stylesheet" href="/css/style.css">
+<!-- Prefetch all help pages in parallel in the background so they open
+     instantly when the user clicks a help link. -->
+<link rel="prefetch" href="/help/not-a-chatbot.html">
+<link rel="prefetch" href="/help/agents.html">
+<link rel="prefetch" href="/help/council.html">
+<link rel="prefetch" href="/help/atlas.html">
+<link rel="prefetch" href="/help/skills.html">
+<link rel="prefetch" href="/help/settings.html">
+<link rel="prefetch" href="/help/safety.html">
+<script>
+/* Dark is the default; light is opt-in via localStorage('dockbox-theme'). */
+(function(){
+  try {
+    var t = localStorage.getItem('dockbox-theme');
+    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.setAttribute('data-theme', 'dark');
+  } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+})();
+</script>
+<link rel="stylesheet" href="/css/userdash-extras.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- Left rail: vertical icon nav -->
+  <nav class="rail" aria-label="Primary">
+    <div class="rail-logo" title="Prometheus">J</div>
+        <div class="rail-nav">
+      <!-- Communicate -->
+      <div class="rail-group-label">Comms</div>
+      <button class="rail-btn active" data-view="chat" data-tip="Chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <span class="rail-tip">Chat</span>
+      </button>
+      <button class="rail-btn" data-view="talk" data-tip="Talk">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        <span class="rail-tip">Talk</span>
+      </button>
+      <button class="rail-btn" data-view="email" data-tip="Email">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        <span class="rail-tip">Email</span>
+      </button>
+      <button class="rail-btn" data-view="sms" data-tip="SMS">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+        <span class="rail-tip">SMS</span>
+      </button>
+      <!-- Organize -->
+      <div class="rail-group-label">Org</div>
+      <button class="rail-btn" data-view="projects" data-tip="Projects">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span class="rail-tip">Projects</span>
+      </button>
+      <button class="rail-btn" data-view="calendar" data-tip="Calendar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span class="rail-tip">Calendar</span>
+      </button>
+      <!-- Automate -->
+      <div class="rail-group-label">Auto</div>
+      <button class="rail-btn" data-view="tasks" data-tip="Scheduled Tasks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span class="rail-tip">Scheduled Tasks</span>
+      </button>
+      <button class="rail-btn" data-view="heartbeat" data-tip="Heartbeat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span class="rail-tip">Heartbeat</span>
+      </button>
+      <button class="rail-btn" data-view="alarms" data-tip="Alarms">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        <span class="rail-tip">Alarms</span>
+      </button>
+      <!-- Configure -->
+      <div class="rail-group-label">Config</div>
+      <button class="rail-btn" data-view="vault" data-tip="Vault">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <span class="rail-tip">Vault</span>
+      </button>
+      <button class="rail-btn" data-view="apikeys" data-tip="API Keys">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        <span class="rail-tip">API Keys</span>
+      </button>
+      <button class="rail-btn" data-view="accounts" data-tip="Accounts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <span class="rail-tip">Accounts</span>
+      </button>
+      <button class="rail-btn" data-view="actions" data-tip="Actions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span class="rail-tip">Actions</span>
+      </button>
+      <!-- System -->
+      <div class="rail-group-label">System</div>
+      <button class="rail-btn" data-view="skills" data-tip="Skills">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span class="rail-tip">Skills</span>
+      </button>
+      <button class="rail-btn" data-view="activity" data-tip="Agent Activity">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span class="rail-tip">Agent Activity</span>
+      </button>
+      <button class="rail-btn" data-view="logs" data-tip="Process Logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <span class="rail-tip">Process Logs</span>
+      </button>
+    </div>
+    <div class="rail-footer">
+      <button class="rail-btn" id="btnAudit" data-tip="Run Audit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        <span class="rail-tip">Run Audit</span>
+      </button>
+      <button class="rail-btn" id="btnSettings" data-tip="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span class="rail-tip">Settings</span>
+      </button>
+      <button class="rail-btn" id="btnAddPage" data-tip="Add Dashboard Page (Beta)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+        <span class="rail-tip">Add Page</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main column -->
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="dot" id="statusDot"></span>
+        <span class="topbar-name" id="assistantName">PROMETHEUS</span>
+        <span class="topbar-stats" id="topbarStats">
+          <span><b>uptime</b> <span id="statUptime">--</span></span>
+          <span><b>cpu</b> <span id="statCpu">--</span></span>
+          <span><b>mem</b> <span id="statMem">--</span></span>
+          <span><b>tasks</b> <span id="statTasks">--</span></span>
+        </span>
+      </div>
+      <div class="spacer"></div>
+      <div class="topbar-actions">
+        <button class="tbtn" id="btnStop" title="Stop the running agent" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          Stop
+        </button>
+        <button class="tbtn" id="btnRestart" title="Restart server">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          Restart
+        </button>
+        <button class="tbtn" id="btnSwitchUser" title="Switch user">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>
+          <span id="switchUserLabel">User</span>
+        </button>
+        <button class="tbtn" id="btnHelp" title="Help">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          Help
+        </button>
+        <button class="tbtn" id="btnTheme" title="Toggle theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" id="themeIcon"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+      <!-- ===== Chat view ===== -->
+      <section class="view active" id="view-chat">
+        <div class="chat">
+          <div class="chat-meta-row" id="chatMetaRow">
+            <span class="chip" id="chipSession">owner@local</span>
+            <span class="chip" id="chipIdea">root</span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="btn btn-ghost btn-sm" id="btnNewThought" title="Start a fresh thought (clears cursor)">New Thought</button>
+          </div>
+
+          <div class="messages" id="messages">
+            <div class="msg-empty" id="msgEmpty">
+              <div class="big">J</div>
+              <div>Ready.</div>
+              <div class="hint">Type a request below. This is not a chatbot — give it something to <em>do</em>. <a href="/help/not-a-chatbot.html" target="_blank">Read more</a>.</div>
+            </div>
+          </div>
+
+          <div class="thinking-bar hidden" id="thinkingBar"></div>
+          <div class="verbose-bar idle" id="verboseBar">
+            <span class="live-dot"></span>
+            <span class="phase">idle</span>
+            <span class="tools"></span>
+          </div>
+
+          <div class="composer">
+            <div class="composer-tools">
+              <button class="btn btn-ghost btn-icon" id="btnAttach" title="Attach file">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <button class="btn btn-ghost btn-icon" id="btnVoice" title="Voice input">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              </button>
+              <input type="file" id="fileInput" hidden multiple>
+              <span class="spacer"></span>
+              <span class="dim mono" style="font-size:10px" id="attachBadge"></span>
+            </div>
+            <div class="composer-input-row">
+              <textarea id="chatInput" rows="1" placeholder="Message Prometheus — be specific, ask for action. Enter to send, Shift+Enter for newline."></textarea>
+              <button class="btn btn-primary" id="btnSend" title="Send">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Scheduled Tasks view ===== -->
+      <section class="view" id="view-tasks">
+        <div class="chat-meta-row">
+          <span class="chip">scheduled tasks</span>
+          <span class="spacer"></span>
+          <button class="btn btn-primary btn-sm" id="btnNewTask">+ New Task</button>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshTasks">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="task-form hidden" id="taskForm">
+            <div class="full">
+              <label>Prompt</label>
+              <textarea id="taskPrompt" placeholder="What should Prometheus do on this schedule?"></textarea>
+            </div>
+            <div>
+              <label>Schedule type</label>
+              <select class="select" id="taskType">
+                <option value="cron">cron</option>
+                <option value="interval">interval (ms)</option>
+                <option value="once">once (timestamp)</option>
+              </select>
+            </div>
+            <div>
+              <label>Schedule value</label>
+              <input class="input input-mono" id="taskValue" placeholder="0 9 * * *   OR   3600000   OR   2026-08-01T09:00:00Z">
+            </div>
+            <div>
+              <label>Group folder</label>
+              <select class="select" id="taskGroup"></select>
+            </div>
+            <div>
+              <label>Context mode</label>
+              <select class="select" id="taskCtx">
+                <option value="isolated">isolated</option>
+                <option value="continuous">continuous</option>
+              </select>
+            </div>
+            <div class="full row" style="justify-content:flex-end;gap:6px">
+              <button class="btn btn-ghost btn-sm" id="btnCancelTask">Cancel</button>
+              <button class="btn btn-primary btn-sm" id="btnSaveTask">Save Task</button>
+            </div>
+          </div>
+          <div class="task-list" id="taskList"></div>
+          <div class="task-bulk-actions">
+            <span class="dim">Bulk delete:</span>
+            <button class="btn btn-danger btn-sm" id="btnDeleteActiveTasks">Active</button>
+            <button class="btn btn-danger btn-sm" id="btnDeleteInactiveTasks">Inactive</button>
+            <button class="btn btn-danger btn-sm" id="btnDeleteAllTasks">All</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Accounts view ===== -->
+      <section class="view" id="view-accounts">
+        <div class="chat-meta-row">
+          <span class="chip">accounts</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshAccounts">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="accounts-grid">
+            <div class="account-section">
+              <div class="account-section-head">
+                <h3>Connected Accounts</h3>
+                <span class="dim">Google / Microsoft</span>
+              </div>
+              <div id="oauthActions" class="account-actions"></div>
+              <div id="oauthList" class="account-list"></div>
+            </div>
+            <div class="account-section">
+              <div class="account-section-head">
+                <h3>Channels</h3>
+                <span class="dim">Telegram / WhatsApp / Slack</span>
+              </div>
+              <div id="channelsList" class="account-list"></div>
+            </div>
+            <div class="account-section">
+              <div class="account-section-head">
+                <h3>Email (IMAP/SMTP)</h3>
+                <button class="btn btn-primary btn-sm" id="btnAddImapAccount">+ Add</button>
+              </div>
+              <div id="imapList" class="account-list"></div>
+            </div>
+            <div class="account-section">
+              <div class="account-section-head">
+                <h3>API Keys</h3>
+                <button class="btn btn-primary btn-sm" id="btnAddApiKey">+ Add</button>
+              </div>
+              <div id="apiKeyList" class="account-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Calendar view ===== -->
+      <section class="view" id="view-calendar">
+        <div class="chat-meta-row">
+          <span class="chip" id="calTitle">Calendar</span>
+          <span class="dim hidden" id="calKontactBadge" style="margin-left:6px">synced to Kontact via Radicale</span>
+          <span class="spacer"></span>
+          <button class="btn btn-primary btn-sm" id="btnCalNew">+ New Event</button>
+          <button class="btn btn-ghost btn-sm" id="btnCalExport">Export .ics</button>
+          <button class="btn btn-ghost btn-sm" id="calToday">Today</button>
+          <button class="btn btn-ghost btn-sm" id="calPrev">‹</button>
+          <button class="btn btn-ghost btn-sm" id="calNext">›</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="pim-cal-grid" id="calGrid"></div>
+          <div class="task-form hidden" id="calForm">
+            <div class="full"><label>Event form</label><span id="calFormTitle" class="dim"></span></div>
+            <div class="full"><label>Title</label><input class="input" id="calEvTitle" placeholder="Dentist appointment"></div>
+            <div><label>Start</label><input class="input input-mono" type="datetime-local" id="calEvStart"></div>
+            <div><label>End</label><input class="input input-mono" type="datetime-local" id="calEvEnd"></div>
+            <div class="full"><label>Location</label><input class="input" id="calEvLoc" placeholder="optional"></div>
+            <div class="full"><label>Description</label><textarea id="calEvDesc" rows="2" placeholder="optional"></textarea></div>
+            <div class="full row" style="justify-content:flex-end;gap:6px">
+              <button class="btn btn-danger btn-sm hidden" id="calEvDelete">Delete</button>
+              <button class="btn btn-ghost btn-sm" id="calEvCancel">Cancel</button>
+              <button class="btn btn-primary btn-sm" id="calEvSave">Save</button>
+            </div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="dim" id="calDayTitle" style="font-size:12px;margin-bottom:6px"></div>
+            <div id="calDayList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Email view ===== -->
+      <section class="view" id="view-email">
+        <div class="chat-meta-row">
+          <select class="select" id="emailAccountSelect" style="min-width:200px"><option value="">No accounts configured</option></select>
+          <span class="spacer"></span>
+          <button class="btn btn-primary btn-sm" id="btnEmailCompose">+ Compose</button>
+          <button class="btn btn-ghost btn-sm" id="btnEmailRefresh">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="task-form hidden" id="emailComposeForm">
+            <div class="full"><label>To</label><input class="input" id="emailTo" placeholder="name@example.com"></div>
+            <div class="full"><label>Subject</label><input class="input" id="emailSubject"></div>
+            <div class="full"><label>Body</label><textarea id="emailBody" rows="6"></textarea></div>
+            <div class="full row" style="justify-content:flex-end;gap:6px">
+              <button class="btn btn-ghost btn-sm" id="emailCancel">Cancel</button>
+              <button class="btn btn-primary btn-sm" id="emailSend">Send</button>
+            </div>
+          </div>
+          <div id="emailInbox"></div>
+        </div>
+      </section>
+
+      <!-- ===== Skills view ===== -->
+      <section class="view" id="view-skills">
+        <div class="chat-meta-row">
+          <span class="chip">skills &amp; mcp</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshSkills">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+
+          <div class="section-divider">MCP servers</div>
+          <p class="dim mono" style="font-size:11px">Toggle to enable/disable. Changes apply to the next agent invocation — no service restart needed.</p>
+          <div class="mcp-list" id="mcpList">
+            <div class="dim mono" style="font-size:11px">Loading…</div>
+          </div>
+          <details class="mcp-add-details" id="mcpAddDetails">
+            <summary class="btn btn-ghost btn-sm" style="display:inline-flex">+ Add MCP server</summary>
+            <div class="mcp-add-form">
+              <label>Name <input type="text" id="mcpAddName" placeholder="my-server" spellcheck="false"></label>
+              <label>Command <input type="text" id="mcpAddCommand" placeholder="npx" spellcheck="false"></label>
+              <label>Args <span class="dim">(space-separated)</span>
+                <input type="text" id="mcpAddArgs" placeholder="-y @some/mcp-server" spellcheck="false"></label>
+              <label>Env <span class="dim">(JSON, optional)</span>
+                <input type="text" id="mcpAddEnv" placeholder='{"KEY": "value"}' spellcheck="false"></label>
+              <label>Description <span class="dim">(optional)</span>
+                <input type="text" id="mcpAddDesc" placeholder="what it does" spellcheck="false"></label>
+              <div class="row">
+                <label class="inline"><input type="checkbox" id="mcpAddEnabled" checked> Enable now</label>
+                <span class="spacer"></span>
+                <button class="btn btn-ghost btn-sm" id="btnMcpAddCancel">Cancel</button>
+                <button class="btn btn-primary btn-sm" id="btnMcpAdd">Add server</button>
+              </div>
+              <div class="status mono" id="mcpAddStatus"></div>
+            </div>
+          </details>
+
+          <div class="section-divider" style="margin-top:24px">Installed features / skills</div>
+          <p class="dim mono" style="font-size:11px">Read-only status of built-in features and container skills. See <a href="/help/skills.html" target="_blank">Skills help</a>.</p>
+          <div class="skill-grid" id="skillGrid"></div>
+
+          <details class="mcp-add-details" id="skillAddDetails" style="margin-top:14px">
+            <summary class="btn btn-ghost btn-sm" style="display:inline-flex">+ New container skill</summary>
+            <div class="mcp-add-form">
+              <label>Name <span class="dim">(a-z 0-9 -)</span>
+                <input type="text" id="skillAddName" placeholder="my-skill" spellcheck="false"></label>
+              <label>Description
+                <input type="text" id="skillAddDesc" placeholder="one line summary" spellcheck="false"></label>
+              <label>When to use <span class="dim">(optional)</span>
+                <textarea id="skillAddWhen" rows="2" spellcheck="false"></textarea></label>
+              <label>Instructions <span class="dim">(optional, markdown)</span>
+                <textarea id="skillAddInstr" rows="4" spellcheck="false"></textarea></label>
+              <label>Example prompt <span class="dim">(optional)</span>
+                <input type="text" id="skillAddExample" placeholder="Do the thing." spellcheck="false"></label>
+              <div class="row">
+                <span class="spacer"></span>
+                <button class="btn btn-ghost btn-sm" id="btnSkillAddCancel">Cancel</button>
+                <button class="btn btn-primary btn-sm" id="btnSkillAdd">Create skill</button>
+              </div>
+              <div class="status mono" id="skillAddStatus"></div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ===== Activity view ===== -->
+      <section class="view" id="view-activity">
+        <div class="chat-meta-row">
+          <span class="chip">agent activity</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshActivity">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="section-divider">Live status</div>
+          <div class="kv-list" id="liveStatusKv"></div>
+          <div class="section-divider">Active agents</div>
+          <div class="activity-list" id="activityList"></div>
+          <div class="section-divider">Recent activity (last 20)</div>
+          <div class="activity-list" id="recentActivityList"></div>
+        </div>
+      </section>
+
+      <!-- ===== Process Logs view ===== -->
+      <section class="view" id="view-logs">
+        <div class="chat-meta-row">
+          <span class="chip">process logs</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshLogs">Refresh</button>
+          <span class="dim mono" style="font-size:10px">tail -n 200 dockbox.log</span>
+        </div>
+        <pre class="audit-log" id="processLogsContent" style="flex:1;min-height:0;max-height:none;border-radius:6px;margin:14px;">Loading...</pre>
+      </section>
+
+
+      <!-- Chat -->
+
+
+      <!-- SMS -->
+
+<!-- ==== ported view: sms ==== -->
+      <section class="view" id="view-sms">
+        <div class="sms-security-banner" id="smsSecurityBanner" style="display:none;padding:10px 16px;background:rgba(99,102,241,0.08);border-radius:10px;margin-bottom:16px;font-size:0.82rem;color:#6366f1;align-items:center;gap:8px">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          <span id="smsSecurityText">Read-Only Mode — Sending is disabled.</span>
+        </div>
+
+        <!-- Setup state (no accounts) -->
+        <div id="smsSetup" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 200px)">
+            <div style="max-width:460px;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:36px 32px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">
+              <div style="text-align:center;margin-bottom:28px">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                <h2 style="font-size:1.25rem;font-weight:700;color:var(--text);margin-bottom:6px">Connect Twilio SMS</h2>
+                <p style="color:var(--text3);font-size:0.88rem;line-height:1.5">Enter your Twilio credentials to send and receive SMS messages.</p>
+              </div>
+
+              <div style="margin-bottom:16px">
+                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Account Name</label>
+                <input type="text" id="smsSetupName" placeholder="e.g. Business SMS" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+              </div>
+              <div style="margin-bottom:16px">
+                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Account SID</label>
+                <input type="text" id="smsSetupSid" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;font-family:monospace;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+              </div>
+              <div style="margin-bottom:16px">
+                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Auth Token</label>
+                <input type="password" id="smsSetupToken" placeholder="Your auth token" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+              </div>
+              <div style="margin-bottom:16px">
+                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Phone Number</label>
+                <input type="text" id="smsSetupPhone" placeholder="+12025551234" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+              </div>
+              <div style="margin-bottom:20px">
+                <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;color:var(--text2);cursor:pointer">
+                  <input type="checkbox" id="smsSetupReadOnly" checked style="accent-color:var(--accent);width:16px;height:16px"> Read-only mode (disable sending)
+                </label>
+              </div>
+              <p id="smsSetupError" style="color:var(--danger);font-size:0.82rem;min-height:1.2em;margin-bottom:12px;text-align:center"></p>
+              <div style="display:flex;gap:10px">
+                <button onclick="UserDash.testSmsConnection()" style="flex:1;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);cursor:pointer;font-size:0.88rem;font-weight:500;transition:background 0.15s">Test Connection</button>
+                <button onclick="UserDash.saveSmsAccount()" style="flex:1;padding:10px 16px;border:none;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer;font-size:0.88rem;font-weight:600;box-shadow:0 2px 8px rgba(37,99,235,0.2);transition:background 0.15s">Save Account</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active state (has accounts) -->
+        <div id="smsActive" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+            <div class="view-title" style="margin:0">SMS Messages</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <select id="smsAccountSelect" onchange="UserDash.loadSmsMessages()" style="padding:7px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.82rem;background:var(--surface);color:var(--text)"></select>
+              <button onclick="UserDash.refreshSms()" title="Refresh" style="width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text2);cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center">&#x21bb;</button>
+              <button onclick="UserDash.showSmsSettings()" title="Settings" style="width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text2);cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center">&#x2699;</button>
+            </div>
+          </div>
+
+          <!-- Compose -->
+          <div id="smsCompose" style="margin-bottom:20px;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px">
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <input type="text" id="smsComposeTo" placeholder="To: +1234567890" style="flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+            </div>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="smsComposeBody" placeholder="Type a message..." style="flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')UserDash.sendSmsMessage()">
+              <button onclick="UserDash.sendSmsMessage()" id="smsSendBtn" style="padding:10px 20px;border:none;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer;font-size:0.88rem;font-weight:600;white-space:nowrap;box-shadow:0 2px 8px rgba(37,99,235,0.2);transition:background 0.15s">Send</button>
+            </div>
+            <p id="smsSendError" style="color:var(--danger);font-size:0.82rem;min-height:1em;margin-top:6px"></p>
+          </div>
+
+          <!-- Message list -->
+          <div id="smsMessageList" style="display:flex;flex-direction:column;gap:10px">
+            <p style="color:var(--text3);text-align:center;padding:32px">Loading messages...</p>
+          </div>
+        </div>
+
+        <!-- Settings modal (edit/delete account) -->
+        <div id="smsSettingsModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.45);backdrop-filter:blur(4px);align-items:center;justify-content:center">
+          <div style="background:var(--surface);border-radius:16px;padding:32px;max-width:440px;width:90%;margin:auto;position:relative;box-shadow:0 16px 48px rgba(0,0,0,0.15)">
+            <h3 style="margin-bottom:20px;font-size:1.15rem;font-weight:700;color:var(--text)">SMS Account Settings</h3>
+            <div id="smsSettingsContent"></div>
+            <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
+              <button onclick="UserDash.deleteSmsAccount()" style="padding:9px 18px;border:1px solid var(--danger);border-radius:10px;background:transparent;color:var(--danger);cursor:pointer;font-size:0.85rem;font-weight:500;transition:background 0.15s">Delete Account</button>
+              <button onclick="document.getElementById('smsSettingsModal').style.display='none'" style="padding:9px 18px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);cursor:pointer;font-size:0.85rem;font-weight:500;transition:background 0.15s">Close</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Projects -->
+
+<!-- ==== ported view: projects ==== -->
+      <section class="view" id="view-projects">
+        <!-- Project List -->
+        <div id="projectListView" style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+          <div class="view-header">
+            <h2 class="view-title">Projects</h2>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select id="projectGroupFilter" class="input" style="min-width:140px;height:32px;font-size:.8rem;padding:0 8px"></select>
+              <button class="btn btn-ghost btn-sm" id="btnProjectArchive">Archive</button>
+              <button class="btn btn-accent btn-sm" id="btnNewProject">+ New Project</button>
+            </div>
+          </div>
+          <div class="view-body-padded" style="overflow-y:auto">
+            <div class="project-list" id="projectList">
+              <div class="empty-state"><p class="empty-title">No projects yet</p></div>
+            </div>
+            <div class="project-archive-list hidden" id="projectArchiveList"></div>
+          </div>
+        </div>
+
+        <!-- Project Detail -->
+        <div id="projectDetailView" class="hidden" style="display:flex;flex-direction:column;height:100%;min-height:0;overflow-y:auto;padding:0 24px 24px">
+          <div class="project-detail-header">
+            <button class="btn btn-ghost btn-sm" id="btnBackToProjects">&larr; Back</button>
+            <h2 class="project-detail-name" id="projectDetailName"></h2>
+            <span class="project-status-badge" id="projectDetailStatus"></span>
+            <span class="project-code-badge" id="projectDetailCode"></span>
+          </div>
+          <div class="project-progress-wrap">
+            <div class="project-progress-bar">
+              <div class="project-progress-fill" id="projectProgressFill"></div>
+            </div>
+            <span class="project-progress-text" id="projectProgressText">0%</span>
+          </div>
+          <div class="project-detail-actions">
+            <button class="btn btn-ghost btn-sm" id="btnEditProject">Edit</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--success)" id="btnCompleteProject">Complete</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--warning)" id="btnArchiveProject">Archive</button>
+            <button class="btn btn-danger btn-sm" id="btnDeleteProject">Delete</button>
+          </div>
+          <div class="project-tabs">
+            <button class="project-tab active" data-ptab="overview">Overview</button>
+            <button class="project-tab" data-ptab="work-tasks">Tasks</button>
+            <button class="project-tab" data-ptab="deliverables">Deliverables</button>
+            <button class="project-tab" data-ptab="priorities">Priorities</button>
+            <button class="project-tab" data-ptab="financials">Financials</button>
+            <button class="project-tab" data-ptab="blockers">Blockers</button>
+            <button class="project-tab" data-ptab="timesheet">Timesheet</button>
+          </div>
+
+          <!-- Overview Tab -->
+          <div class="project-tab-content active" id="ptab-overview">
+            <div class="project-overview-grid" id="projectOverview"></div>
+          </div>
+
+          <!-- Work Tasks Tab -->
+          <div class="project-tab-content" id="ptab-work-tasks">
+            <div class="project-section-header">
+              <h3>Tasks</h3>
+              <button class="btn btn-accent btn-sm" id="btnAddWorkTask">+ Add Task</button>
+            </div>
+            <div id="projectWorkTasksList"></div>
+          </div>
+
+          <!-- Deliverables Tab -->
+          <div class="project-tab-content" id="ptab-deliverables">
+            <div class="project-section-header">
+              <h3>Deliverables</h3>
+              <button class="btn btn-accent btn-sm" id="btnAddDeliverable">+ Add</button>
+            </div>
+            <div id="deliverablesList"></div>
+          </div>
+
+          <!-- Priorities Tab -->
+          <div class="project-tab-content" id="ptab-priorities">
+            <div class="project-section-header">
+              <h3>Priorities</h3>
+              <button class="btn btn-accent btn-sm" id="btnAddPriority">+ Add</button>
+            </div>
+            <div id="prioritiesList"></div>
+          </div>
+
+          <!-- Financials Tab -->
+          <div class="project-tab-content" id="ptab-financials">
+            <div id="financialsContent"></div>
+          </div>
+
+          <!-- Blockers Tab -->
+          <div class="project-tab-content" id="ptab-blockers">
+            <div class="project-section-header">
+              <h3>Blockers</h3>
+              <button class="btn btn-accent btn-sm" id="btnAddBlocker">+ Add</button>
+            </div>
+            <div id="blockersList"></div>
+          </div>
+
+          <!-- Timesheet Tab -->
+          <div class="project-tab-content" id="ptab-timesheet">
+            <div class="project-section-header">
+              <h3>Timesheet</h3>
+              <button class="btn btn-accent btn-sm" id="btnAddTimeEntry">+ Log Time</button>
+            </div>
+            <div id="timesheetSummary"></div>
+            <div id="timesheetEntries"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Calendar -->
+
+
+    <!-- Alarms -->
+
+<!-- ==== ported view: alarms ==== -->
+    <section class="view" id="view-alarms">
+      <div class="view-header">
+        <h2 class="view-title">Alarms</h2>
+        <button class="btn btn-accent btn-sm" id="btn-new-alarm">+ New Alarm</button>
+      </div>
+      <div class="view-body-padded">
+        <div class="info-banner info-banner-subtle">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+          <span>Set reminders and deadlines. Alarms play a sound and show a notification when they fire.</span>
+        </div>
+        <div id="alarm-list"></div>
+      </div>
+    </section>
+
+      <!-- Quick Actions -->
+      <!-- API Keys -->
+
+<!-- ==== ported view: apikeys ==== -->
+      <section class="view" id="view-apikeys">
+        <div class="view-header">
+          <h2 class="view-title">Keys</h2>
+        </div>
+        <div class="view-body-padded">
+          <div class="usage-keys-section">
+            <h3 style="margin:0 0 12px;font-size:1rem">API Keys</h3>
+            <div class="apikey-form" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+              <div>
+                <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">Provider</label>
+                <select id="apiKeyType" class="input" style="width:100%">
+                  <optgroup label="Communication">
+                    <option value="twilio">Twilio</option>
+                    <option value="slack">Slack</option>
+                    <option value="sendgrid">SendGrid</option>
+                    <option value="mailgun">Mailgun</option>
+                    <option value="vonage">Vonage</option>
+                  </optgroup>
+                  <optgroup label="Meetings &amp; Calendar">
+                    <option value="zoom">Zoom</option>
+                    <option value="calendly">Calendly</option>
+                    <option value="google-calendar">Google Calendar</option>
+                    <option value="microsoft-graph">Microsoft 365 / Teams</option>
+                  </optgroup>
+                  <optgroup label="Project Management">
+                    <option value="jira">Jira</option>
+                    <option value="linear">Linear</option>
+                    <option value="asana">Asana</option>
+                    <option value="monday">Monday.com</option>
+                    <option value="clickup">ClickUp</option>
+                  </optgroup>
+                  <optgroup label="CRM &amp; Marketing">
+                    <option value="hubspot">HubSpot</option>
+                    <option value="salesforce">Salesforce</option>
+                    <option value="mailchimp">Mailchimp</option>
+                    <option value="activecampaign">ActiveCampaign</option>
+                  </optgroup>
+                  <optgroup label="Finance &amp; Commerce">
+                    <option value="quickbooks">QuickBooks</option>
+                    <option value="stripe">Stripe</option>
+                    <option value="square">Square</option>
+                    <option value="xero">Xero</option>
+                    <option value="freshbooks">FreshBooks</option>
+                    <option value="wave">Wave</option>
+                    <option value="shopify">Shopify</option>
+                  </optgroup>
+                  <optgroup label="Productivity">
+                    <option value="notion">Notion</option>
+                    <option value="airtable">Airtable</option>
+                    <option value="google-drive">Google Drive</option>
+                    <option value="google-sheets">Google Sheets</option>
+                    <option value="dropbox">Dropbox</option>
+                    <option value="zapier">Zapier</option>
+                  </optgroup>
+                  <optgroup label="Developer">
+                    <option value="github">GitHub</option>
+                    <option value="gitlab">GitLab</option>
+                    <option value="vercel">Vercel</option>
+                    <option value="cloudflare">Cloudflare</option>
+                  </optgroup>
+                  <optgroup label="Social Media">
+                    <option value="ayrshare">Ayrshare (Multi-Platform)</option>
+                    <option value="zernio">Zernio (Multi-Platform)</option>
+                    <option value="buffer">Buffer</option>
+                    <option value="twitter">X / Twitter</option>
+                    <option value="facebook">Facebook / Meta</option>
+                    <option value="instagram">Instagram Graph</option>
+                  </optgroup>
+                  <optgroup label="AI &amp; Media">
+                    <option value="augureai">Augure AI (Canadian LLM)</option>
+                    <option value="together">Together AI</option>
+                    <option value="replicate">Replicate</option>
+                    <option value="stability">Stability AI</option>
+                    <option value="openai-image">OpenAI / DALL-E</option>
+                    <option value="fal">fal.ai</option>
+                  </optgroup>
+                  <optgroup label="Website Logins">
+                    <option value="website-login">Website Login (URL + Username + Password)</option>
+                  </optgroup>
+                  <optgroup label="Other">
+                    <option value="custom">Custom / Other</option>
+                  </optgroup>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">Label</label>
+                <input type="text" id="apiKeyLabel" class="input" placeholder="e.g. My Kimi Key" style="width:100%">
+              </div>
+              <div style="grid-column:1/-1" id="apiKeyRow">
+                <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">API Key</label>
+                <input type="password" id="apiKeyInput" class="input" placeholder="Paste your API key..." style="width:100%">
+                <p id="apiKeyHint" style="font-size:11px;color:var(--text3,#94a3b8);margin-top:4px;display:none"></p>
+              </div>
+              <div id="websiteLoginFields" style="display:none;grid-column:1/-1">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                  <div>
+                    <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">Website URL</label>
+                    <input type="text" id="websiteLoginUrl" class="input" placeholder="https://example.com/login" style="width:100%">
+                  </div>
+                  <div>
+                    <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">Username / Email</label>
+                    <input type="text" id="websiteLoginUser" class="input" placeholder="user@example.com" style="width:100%">
+                  </div>
+                </div>
+                <div>
+                  <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">Password</label>
+                  <input type="password" id="websiteLoginPass" class="input" placeholder="Password" style="width:100%">
+                </div>
+                <p style="font-size:11px;color:var(--text3,#94a3b8);margin-top:4px">Credentials are encrypted and stored securely. Jarvis can use these to log into websites on your behalf.</p>
+              </div>
+              <div id="apiKeyBaseUrlRow">
+                <label style="font-size:12px;color:var(--text-tertiary);display:block;margin-bottom:4px">Base URL</label>
+                <input type="text" id="apiKeyBaseUrl" class="input" placeholder="https://api.example.com/v1" style="width:100%">
+              </div>
+              <div id="apiKeyDefaultModelRow" style="display:none">
+                <input type="hidden" id="apiKeyDefaultModel" value="">
+              </div>
+              <div id="apiKeyAuthFormatRow" style="display:none">
+                <input type="hidden" id="apiKeyAuthFormat" value="Bearer {key}">
+              </div>
+              <div style="grid-column:1/-1;display:flex;justify-content:flex-end">
+                <button class="btn btn-accent btn-sm" id="gwBtnAddApiKey">Add Key</button>
+              </div>
+            </div>
+            <div id="apiKeysList"></div>
+          </div>
+        </div>
+      </section>
+
+
+<!-- ==== ported view: actions ==== -->
+      <section class="view" id="view-actions">
+        <div class="view-header">
+          <h2 class="view-title">Quick Actions</h2>
+        </div>
+        <div class="view-body-padded">
+          <div class="info-banner info-banner-subtle">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>One-touch prompts. Click to customize and send to your assistant.</span>
+          </div>
+          <div class="actions-search">
+            <input type="text" id="actionsSearch" placeholder="Search actions..." class="actions-search-input">
+          </div>
+          <div id="actionsGrid"></div>
+        </div>
+      </section>
+
+      <!-- Connected Accounts -->
+
+<!-- ==== ported view: heartbeat ==== -->
+      <section class="view" id="view-heartbeat">
+        <div class="view-header">
+          <h2 class="view-title">Heartbeat</h2>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="model-select" id="heartbeatModelSelect" title="Model">
+              <option value="">Auto</option>
+            </select>
+            <label class="view-toggle-label">
+              <label class="toggle-switch"><input type="checkbox" id="heartbeatToggle"><span class="toggle-slider"></span></label> Enable
+            </label>
+            <button class="btn btn-accent btn-sm" id="btnSaveHeartbeat">Save</button>
+          </div>
+        </div>
+        <div class="view-body-padded">
+          <div class="info-banner">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            <div>
+              <strong>Runs every hour</strong> — the AI reads these instructions and executes them automatically.
+              <span id="heartbeatStatus" style="margin-left:4px"></span>
+            </div>
+          </div>
+          <div class="editor-card">
+            <div class="editor-card-header">
+              <span class="editor-card-label">Instructions</span>
+              <span class="editor-card-hint">Markdown supported</span>
+            </div>
+            <textarea id="heartbeatEditor" class="editor-textarea" placeholder="# Heartbeat Instructions
+
+Write what you want the AI to do periodically. For example:
+
+- Check my email and summarize anything new
+- Review TODO.md and remind me of overdue items
+- Update JOURNAL.md with a status entry"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- Vault -->
+
+<!-- ==== ported view: vault ==== -->
+      <section class="view" id="view-vault">
+        <div class="view-header">
+          <h2 class="view-title">Vault</h2>
+        </div>
+        <div class="view-body-padded" style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0">
+        <div class="info-banner info-banner-subtle" style="flex-shrink:0">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          <span>Files with personal information removed. Restore to put back the original.</span>
+        </div>
+        <div class="vault-layout" style="flex:1;overflow:hidden">
+          <div class="vault-list" id="vaultList">
+            <div class="empty-state"><p class="empty-title">No scrubbed files yet</p></div>
+          </div>
+          <div class="vault-detail hidden" id="vaultDetail">
+            <div class="vault-detail-header">
+              <span class="vault-detail-title" id="vaultDetailTitle"></span>
+              <div class="vault-detail-actions">
+                <button class="btn btn-primary btn-sm" id="btnVaultRestore">Restore</button>
+                <button class="btn btn-danger btn-sm" id="btnVaultDelete">Remove</button>
+                <button class="btn btn-ghost btn-sm" id="btnVaultClose">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="vault-tabs">
+              <button class="vault-tab active" data-tab="scrubbed">Scrubbed</button>
+              <button class="vault-tab" data-tab="mapping">Mapping</button>
+            </div>
+            <div class="vault-dict-bar" id="vaultDictBar">
+              <input type="text" class="vault-dict-input" id="vaultDictInput" placeholder="Type word to add to scrub dictionary...">
+              <button class="btn btn-accent btn-sm" id="btnVaultDictAdd">Add</button>
+              <span class="vault-dict-hint">Select text in the preview to quick-add</span>
+            </div>
+            <div class="vault-detail-body">
+              <pre class="vault-content" id="vaultScrubbedContent"></pre>
+              <div class="vault-mapping hidden" id="vaultMappingContent"></div>
+            </div>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <!-- Talk -->
+
+<!-- ==== ported view: talk ==== -->
+      <section class="view" id="view-talk">
+        <div class="talk-container">
+          <div class="talk-header">
+            <h2 class="talk-title">Talk</h2>
+            <div class="talk-controls">
+              <select id="talkModelSelect" class="talk-model-select" title="Model">
+              </select>
+              <select id="talkSessionSelect" class="talk-session-select" title="Chat session">
+                <option value="">Select session…</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="talk-stage">
+            <div class="talk-orb-wrap" id="talkOrbWrap">
+              <button class="talk-orb" id="talkOrb" aria-label="Push to talk">
+                <svg class="talk-orb-icon" id="talkOrbIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
+                  <path d="M19 10v2a7 7 0 01-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/>
+                  <line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+              </button>
+            </div>
+            <div class="talk-state-label" id="talkStateLabel">Tap to speak</div>
+          </div>
+
+          <div class="talk-transcript" id="talkTranscript">
+            <div class="talk-transcript-empty" id="talkTranscriptEmpty">
+              <svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" opacity="0.3"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+              <span>Conversation will appear here</span>
+            </div>
+          </div>
+
+          <div class="talk-footer">
+            <button class="talk-footer-btn" id="talkClearBtn" title="Clear conversation">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+              Clear
+            </button>
+            <button class="talk-footer-btn talk-footer-btn--conversation" id="talkConvBtn" title="Toggle continuous conversation mode">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+              Conversation
+            </button>
+            <label class="talk-tts-toggle" title="Read responses aloud">
+              <label class="toggle-switch"><input type="checkbox" id="talkTtsToggle" checked><span class="toggle-slider"></span></label>
+              <span class="talk-tts-label">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
+                Read aloud
+              </span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs (chat history browser) -->
+
+    </div>
+
+    <!-- Drawer (settings / activity / etc — currently used for Settings) -->
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <aside class="drawer" id="drawer" aria-label="Settings drawer">
+      <div class="drawer-header">
+        <span class="drawer-title" id="drawerTitle">Settings</span>
+        <button class="tbtn drawer-close" id="btnDrawerClose" title="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+    </aside>
+  </div>
+</div>
+
+<!-- ===== Help Modal ===== -->
+<div class="modal-overlay" id="helpModal">
+  <div class="modal help">
+    <div class="modal-header">
+      <span class="modal-title">How to use Prometheus</span>
+      <button class="modal-close" id="btnHelpClose" title="Close">&times;</button>
+    </div>
+    <div class="modal-body help-modal-body">
+
+      <div class="help-hero">
+        <div class="help-hero-icon" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v3"/><path d="M12 19v3"/><path d="M4.2 4.2l2.1 2.1"/><path d="M17.7 17.7l2.1 2.1"/><path d="M2 12h3"/><path d="M19 12h3"/><path d="M4.2 19.8l2.1-2.1"/><path d="M17.7 6.3l2.1-2.1"/>
+            <circle cx="12" cy="12" r="4"/>
+          </svg>
+        </div>
+        <div class="help-hero-copy">
+          <h2>This is not a chatbot.</h2>
+          <p>Prometheus is an autonomous agent system. It responds best to <strong>actionable requests</strong> — things you want <em>done</em>, not things you want to talk about.</p>
+        </div>
+        <a class="help-hero-cta" href="/help/not-a-chatbot.html" target="_blank">Read the full guide <span aria-hidden="true">→</span></a>
+      </div>
+
+      <div class="help-section-label"><span>01</span> The agents</div>
+      <div class="agent-grid">
+        <a class="agent-tile" href="/help/agents.html" target="_blank">
+          <div class="agent-tile-icon" style="--accent: var(--info);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <div class="agent-tile-body">
+            <h3>Atlas <small>browser + research</small></h3>
+            <p>Opens URLs, takes screenshots, fetches HTML, clicks buttons, reads pages.</p>
+          </div>
+        </a>
+        <a class="agent-tile" href="/help/agents.html" target="_blank">
+          <div class="agent-tile-icon" style="--accent: var(--warn);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </div>
+          <div class="agent-tile-body">
+            <h3>Byte <small>compute</small></h3>
+            <p>Runs python3 / bash / node one-liners and hands back stdout.</p>
+          </div>
+        </a>
+        <a class="agent-tile" href="/help/agents.html" target="_blank">
+          <div class="agent-tile-icon" style="--accent: var(--violet);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </div>
+          <div class="agent-tile-body">
+            <h3>Dexter <small>time + scheduling</small></h3>
+            <p>Date/time questions and recurring or one-shot scheduled tasks.</p>
+          </div>
+        </a>
+        <a class="agent-tile" href="/help/agents.html" target="_blank">
+          <div class="agent-tile-icon" style="--accent: var(--ok);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>
+          </div>
+          <div class="agent-tile-body">
+            <h3>Iris <small>email</small></h3>
+            <p>Inbox, unread counts, search, draft, and send (if enabled).</p>
+          </div>
+        </a>
+        <a class="agent-tile" href="/help/agents.html" target="_blank">
+          <div class="agent-tile-icon" style="--accent: var(--accent);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 9h1"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+          </div>
+          <div class="agent-tile-body">
+            <h3>Artemis <small>read-only auditor</small></h3>
+            <p>Reads files, greps, reviews code or conversation. Also seats The Council.</p>
+          </div>
+        </a>
+        <a class="agent-tile agent-tile-council" href="/help/council.html" target="_blank">
+          <div class="agent-tile-icon" style="--accent: var(--danger);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+          </div>
+          <div class="agent-tile-body">
+            <h3>The Council <small>3 seats deliberate</small></h3>
+            <div class="council-chips">
+              <span class="chip chip-skeptic">Skeptic</span>
+              <span class="chip chip-pragmatist">Pragmatist</span>
+              <span class="chip chip-synthesist">Synthesist</span>
+            </div>
+          </div>
+        </a>
+      </div>
+
+      <div class="help-section-label"><span>02</span> How to call The Council</div>
+      <div class="help-callout help-callout-info">
+        <div class="help-callout-icon" aria-hidden="true">⌘</div>
+        <div class="help-callout-body">
+          <p>Use the words <code>Convene The Council on this:</code> followed by a self-contained question. The seats can't see chat history, so include everything they need.</p>
+          <pre>Convene The Council on this: should I learn Rust or Go first given I already know Python and want to build backend services?</pre>
+          <p class="muted">Takes 1–3 min, 3–10× tokens. Runs in the background — Prometheus replies with an interim note, then pushes the verdict as a follow-up.</p>
+        </div>
+      </div>
+
+      <div class="help-section-label"><span>03</span> Asking Atlas</div>
+      <div class="help-callout help-callout-info">
+        <div class="help-callout-icon" aria-hidden="true">@</div>
+        <div class="help-callout-body">
+          <p>Say <code>Delegate to Atlas:</code> and describe the task. Multiple Atlas calls in the same turn run in <strong>parallel</strong>.</p>
+          <pre>Delegate to Atlas: open example.com and take a screenshot.
+In parallel, delegate to Atlas: (1) screenshot example.com, AND
+(2) fetch the title of example.org.</pre>
+        </div>
+      </div>
+
+      <div class="help-section-label"><span>04</span> Skills system</div>
+      <div class="help-callout help-callout-info">
+        <div class="help-callout-icon" aria-hidden="true">⚡</div>
+        <div class="help-callout-body">
+          <p>Save a workflow with <code>create_skill</code>. Later, just say the example prompt and Prometheus activates it. Manage with <code>list_skills</code> / <code>activate_skill</code> / <code>deactivate_skill</code>.</p>
+        </div>
+      </div>
+
+      <div class="help-section-label"><span>05</span> What works best</div>
+      <div class="help-tips">
+        <div class="tip"><span class="tip-num">→</span><div><strong>Be specific.</strong> Include the file path, URL, or input data.</div></div>
+        <div class="tip"><span class="tip-num">⇄</span><div><strong>Parallelize.</strong> "X AND Y in parallel" — independent tasks run concurrently.</div></div>
+        <div class="tip"><span class="tip-num">!</span><div><strong>Read BLOCKED messages.</strong> If a tool fails, Prometheus says <code>BLOCKED</code> — don't retry blindly.</div></div>
+        <div class="tip"><span class="tip-num">●</span><div><strong>Watch the verbose bar.</strong> Below the composer — shows what Prometheus is doing right now.</div></div>
+      </div>
+
+      <div class="help-section-label"><span>06</span> Settings worth knowing</div>
+      <div class="settings-grid">
+        <div class="settings-tile"><h4>Orchestrator</h4><p>The model that replies to you. Pick a strong one.</p></div>
+        <div class="settings-tile"><h4>Atlas / Artemis</h4><p>Research and review sub-agent model.</p></div>
+        <div class="settings-tile"><h4>Tools</h4><p>Iris / Byte / Dexter execution. Use a small local model.</p></div>
+        <div class="settings-tile"><h4>Council Seats</h4><p>Skeptic / Pragmatist / Synthesist. Different models = different perspectives. Blank inherits Atlas.</p></div>
+        <div class="settings-tile"><h4>num_ctx overrides</h4><p>Orchestrator / Atlas / Toolcall. Blank = model default.</p></div>
+        <div class="settings-tile"><h4>Thinking</h4><p>On / Max / Off. Global default, no per-chat override.</p></div>
+        <div class="settings-tile"><h4>Ollama URL</h4><p>Local daemon endpoint. Models populate all dropdowns.</p></div>
+      </div>
+
+      <div class="help-section-label"><span>07</span> Audit</div>
+      <div class="help-callout help-callout-info">
+        <div class="help-callout-icon" aria-hidden="true">✓</div>
+        <div class="help-callout-body">
+          <p>The <strong>Run audit</strong> button (left rail, bottom) kicks off 100 scenarios through the chat API. 15–45 min, Prometheus is busy the whole time. Log at <code>/tmp/audit-100-run.log</code> — paste it into Prometheus to fix, or use Claude Code if Prometheus is broken.</p>
+          <button class="btn btn-secondary btn-sm" onclick="openAuditModal();return false;">Open Audit dialog</button>
+        </div>
+      </div>
+
+      <div class="help-section-label"><span>08</span> Safety</div>
+      <div class="help-callout help-callout-danger">
+        <div class="help-callout-icon" aria-hidden="true">⚠</div>
+        <div class="help-callout-body">
+          <ul class="tight">
+            <li>Don't run Prometheus as admin.</li>
+            <li>Don't give it write access to important things — email, prod repos, keys.</li>
+            <li>Make backups before letting it touch anything you care about.</li>
+            <li>Don't run this on your only or work computer.</li>
+          </ul>
+          <a href="/help/safety.html" target="_blank">Read the full safety guide →</a>
+        </div>
+      </div>
+
+      <div class="help-deepdive">
+        <div class="help-section-label"><span>↗</span> Deep dives</div>
+        <div class="deepdive-grid">
+          <a href="/help/not-a-chatbot.html" target="_blank"><span>Not a chatbot</span><small>what Prometheus is and isn't</small></a>
+          <a href="/help/agents.html" target="_blank"><span>Agents</span><small>Atlas, Byte, Dexter, Iris, Artemis</small></a>
+          <a href="/help/council.html" target="_blank"><span>The Council</span><small>three-seat deliberation</small></a>
+          <a href="/help/atlas.html" target="_blank"><span>Asking Atlas</span><small>delegation patterns</small></a>
+          <a href="/help/skills.html" target="_blank"><span>Skills</span><small>create, activate, manage</small></a>
+          <a href="/help/safety.html" target="_blank"><span>Safety</span><small>guardrails and warnings</small></a>
+          <a href="/help/settings.html" target="_blank"><span>Settings</span><small>every option explained</small></a>
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary btn-sm" id="btnHelpDone">Got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Audit Modal ===== -->
+<div class="modal-overlay" id="auditModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Run Audit</span>
+      <button class="modal-close" id="btnAuditClose" title="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p>Runs <strong>100+ scenarios</strong> against Prometheus through the chat API — conversation, file ops, bash, skills, The Council, parallel Atlas, sub-agents, monitor, blocked paths, voice output, injection guards.</p>
+      <div class="warn"><strong>This takes 15–45 minutes.</strong> Prometheus will be busy the whole time; you won't be able to chat normally until the audit finishes.</div>
+      <p>When done, the log is at <code>/tmp/audit-100-run.log</code>. To fix failures:</p>
+      <ol>
+        <li>In Prometheus chat paste: <code>cat /tmp/audit-100-run.log</code> — then ask Prometheus to go through it, fix issues, and report back.</li>
+        <li>If Prometheus itself is broken, run a console agent runner (Claude Code) in the dockbox directory and paste the audit log there.</li>
+      </ol>
+      <h3>Live log</h3>
+      <pre class="audit-log" id="auditLogTail">(no audit running)</pre>
+      <div class="row" style="gap:10px">
+        <button class="btn btn-primary btn-sm" id="btnAuditStart">Start audit</button>
+        <button class="btn btn-ghost btn-sm" id="btnAuditRefresh">Refresh tail</button>
+        <span class="spacer"></span>
+        <span class="mono" id="auditStatus" style="font-size:11px;color:var(--text-faint)"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Switch User Modal ===== -->
+<div class="modal-overlay" id="switchUserModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <span class="modal-title">Switch User</span>
+      <button class="modal-close" id="btnSwitchUserClose" title="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="dim mono" style="font-size:11px">Single-user Prometheus. The "user" only affects <code>sender_name</code> on your outgoing messages and the avatar label. Backend state (chats, tasks, files) is shared.</p>
+      <div class="user-switch-list" id="userSwitchList"></div>
+      <h3>Add a new sender</h3>
+      <div class="row">
+        <input class="input" id="newSenderName" placeholder="Display name (e.g. Dominic)" style="flex:1;min-width:0">
+        <button class="btn btn-primary btn-sm" id="btnAddSender">Add</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== First-run Wizard Modal ===== -->
+<div class="modal-overlay" id="wizardModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <span class="modal-title">Welcome to Prometheus</span>
+      <button class="modal-close" id="btnWizardClose" title="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="wizardBody">
+      <div class="wizard-progress" id="wizardProgress">
+        <div class="step current"></div><div class="step"></div><div class="step"></div><div class="step"></div>
+      </div>
+      <div class="wizard-step" id="wizardStep"></div>
+    </div>
+    <div class="modal-footer">
+      <label class="wizard-dont-show" id="wizardDontShow">
+        <input type="checkbox" id="wizardDontShowInput"> Don't show again
+      </label>
+      <span class="spacer"></span>
+      <button class="btn btn-ghost btn-sm" id="btnWizardBack" style="display:none">Back</button>
+      <button class="btn btn-primary btn-sm" id="btnWizardNext">Next</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+
+<!-- ==== ported modal: previewModal ==== -->
+<div class="modal-overlay hidden" id="previewModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <span class="modal-title" id="previewTitle"></span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-accent btn-sm" id="btnPreviewScrub">Scrub</button>
+        <button class="btn btn-ghost btn-sm" id="btnPreviewDownload">Download</button>
+        <button class="btn btn-danger btn-sm" id="btnPreviewDelete">Delete</button>
+        <button class="modal-close" aria-label="Close dialog" id="btnClosePreview">&times;</button>
+      </div>
+    </div>
+    <div class="modal-body" id="previewBody"></div>
+  </div>
+</div>
+
+<!-- ==== ported modal: quickTaskModal ==== -->
+<div class="modal-overlay hidden" id="quickTaskModal">
+  <div class="modal-backdrop" onclick="UserDash.closeModal('quickTaskModal')"></div>
+  <div class="modal" role="dialog" aria-modal="true" style="max-width:440px">
+    <div class="modal-header">
+      <span class="modal-title" id="quickTaskModalTitle">Quick Task</span>
+      <button class="modal-close" aria-label="Close dialog" onclick="UserDash.closeModal('quickTaskModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="wt-field">
+        <label class="wt-field-label">Task</label>
+        <input type="text" class="wt-field-input" id="qtTitle" placeholder="What needs doing...">
+      </div>
+      <div class="wt-field">
+        <label class="wt-field-label">Assign To</label>
+        <select class="wt-field-input" id="qtAssignee"></select>
+      </div>
+      <div class="wt-field">
+        <label class="wt-field-label">Priority</label>
+        <select class="wt-field-input" id="qtPriority">
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <div class="wt-field">
+        <label class="wt-field-label">Due Date</label>
+        <input type="date" class="wt-field-input" id="qtDueDate">
+      </div>
+      <div class="wt-field">
+        <label class="wt-field-label">Notes</label>
+        <textarea class="wt-field-input wt-textarea" id="qtNotes" placeholder="Optional details..." rows="3"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer wt-modal-footer">
+      <button class="btn btn-ghost" onclick="UserDash.closeModal('quickTaskModal')">Cancel</button>
+      <button class="btn btn-accent" id="btnSaveQuickTask">Assign Task</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==== ported modal: projectItemModal ==== -->
+<div class="modal-overlay hidden" id="projectItemModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal" role="dialog" aria-modal="true" style="max-width:420px">
+    <div class="modal-header">
+      <span class="modal-title" id="projectItemModalTitle">Add Item</span>
+      <button class="modal-close" aria-label="Close dialog" onclick="UserDash.closeModal('projectItemModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="projectItemModalBody"></div>
+    <div class="modal-footer wt-modal-footer">
+      <button class="btn btn-ghost" onclick="UserDash.closeModal('projectItemModal')">Cancel</button>
+      <button class="btn btn-accent" id="btnSaveProjectItem">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==== ported modal: promptBuilderModal ==== -->
+<div class="modal-overlay hidden" id="promptBuilderModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal prompt-builder-modal" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <h3 id="promptBuilderTitle">Action</h3>
+      <button class="modal-close" aria-label="Close dialog" onclick="UserDash.closePromptBuilder()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="prompt-fields" id="promptFields"></div>
+      <div class="prompt-files-section">
+        <div class="prompt-files-header">
+          <span>Attach Files</span>
+        </div>
+        <input type="text" class="prompt-file-search" id="promptFileSearch" placeholder="Search your files..." oninput="UserDash.filterPromptFiles()">
+        <div class="prompt-file-list" id="promptFileList"></div>
+      </div>
+      <div class="prompt-preview-section">
+        <label class="prompt-preview-label">Preview</label>
+        <div class="prompt-preview" id="promptPreview"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="UserDash.closePromptBuilder()">Cancel</button>
+      <button class="btn btn-primary" onclick="UserDash.sendPrompt()">Send to Chat</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==== ported modal: setupWizardModal ==== -->
+<div class="modal-overlay hidden" id="setupWizardModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal prompt-builder-modal" role="dialog" aria-modal="true" style="max-width:520px">
+    <div class="modal-header">
+      <h3 id="setupWizardTitle">Welcome</h3>
+      <button class="modal-close" aria-label="Close dialog" onclick="UserDash.closeSetupWizard()">&times;</button>
+    </div>
+    <div class="modal-body" id="setupWizardBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="setupWizardBack" onclick="UserDash.setupWizardBack()" style="display:none">Back</button>
+      <button class="btn btn-primary" id="setupWizardNext" onclick="UserDash.setupWizardNext()">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==== ported modal: alarmModal ==== -->
+    <div class="modal-overlay hidden" id="alarmModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal" role="dialog" aria-modal="true" style="max-height:none;height:auto;max-width:420px">
+        <div class="modal-header">
+          <h3 id="alarm-modal-title">New Alarm</h3>
+          <button class="modal-close" aria-label="Close dialog" id="alarm-modal-close">&times;</button>
+        </div>
+        <div class="modal-body" style="flex:none;font-family:var(--font);font-size:0.9rem;white-space:normal;line-height:1.4">
+          <input type="hidden" id="alarm-edit-id">
+          <div class="form-group">
+            <label>Label</label>
+            <input type="text" id="alarm-label" class="form-input" placeholder="Alarm label" value="Alarm">
+          </div>
+          <div class="form-group">
+            <label>Time</label>
+            <input type="time" id="alarm-time" class="form-input" required>
+          </div>
+          <div class="form-group">
+            <label>Sound</label>
+            <select id="alarm-sound" class="form-input">
+              <option value="default">Default</option>
+              <option value="gentle">Gentle</option>
+              <option value="urgent">Urgent</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Repeat</label>
+            <select id="alarm-repeat" class="form-input">
+              <option value="once">Once</option>
+              <option value="daily">Daily</option>
+              <option value="weekdays">Weekdays</option>
+              <option value="weekends">Weekends</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="form-group" id="alarm-date-row">
+            <label>Date</label>
+            <input type="date" id="alarm-date" class="form-input">
+          </div>
+          <div id="repeat-days-row" style="display:none">
+            <label>Days</label>
+            <div class="alarm-day-picker">
+              <label class="alarm-day-chip"><input type="checkbox" value="mon">Mon</label>
+              <label class="alarm-day-chip"><input type="checkbox" value="tue">Tue</label>
+              <label class="alarm-day-chip"><input type="checkbox" value="wed">Wed</label>
+              <label class="alarm-day-chip"><input type="checkbox" value="thu">Thu</label>
+              <label class="alarm-day-chip"><input type="checkbox" value="fri">Fri</label>
+              <label class="alarm-day-chip"><input type="checkbox" value="sat">Sat</label>
+              <label class="alarm-day-chip"><input type="checkbox" value="sun">Sun</label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="alarm-modal-cancel">Cancel</button>
+          <button class="btn btn-primary" id="alarm-modal-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+<!-- ==== ported modal: scrubModal ==== -->
+<div class="modal-overlay hidden" id="scrubModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <span class="modal-title">Removing Personal Information</span>
+    </div>
+    <div class="modal-body" id="scrubProgress">Initializing...</div>
+  </div>
+</div>
+
+<script src="/js/pim.js"></script>
+<script src="/js/app.js"></script>
+<script src="/js/userdash-utils.js"></script>
+<script src="/js/userdash-extras.js"></script>
+</body>
+</html>
