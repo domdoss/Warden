@@ -381,7 +381,7 @@ function toolDetailLabel(name, args) {
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'set_user_email': return `Set email: ${short(args.email || '', 30)}`;
         case 'byte': return `📋 Byte: ${short(args.task || '', 50)}`;
-        case 'dexter': return `🔎 Dexter: ${short(args.task || '', 50)}`;
+        case 'dexter': return `⏰ Dexter: ${short(args.task || '', 50)}`;
         case 'atlas': return `🌍 Atlas: ${short(args.task || '', 50)}`;
         case 'artemis': return `🏹 Artemis: ${short(args.task || 'reviewing the conversation', 50)}`;
         case 'iris': return `✉️ Iris: ${short(args.task || '', 50)}`;
@@ -575,18 +575,21 @@ You are the domain expert. The task tells you WHAT the user needs — the HOW is
         delegate: 'dexter',
         label: 'Dexter',
         maxIterations: 200,
-        summary: 'deep research: multi-source web research, comparisons, background briefs, and fact-finding that needs several searches cross-checked and synthesized into one answer. Use for "research X", "compare A and B", "give me a rundown on Y" — not for single quick lookups (atlas) and not for taking any action',
-        systemPrompt: `You are Dexter, the research agent. You receive a research question and answer it using web search and page fetching. You investigate; you never act — no purchases, no sign-ups, no messages, no file changes.
+        summary: 'anything time-based: reminders, follow-ups, sending or doing something later, scheduled/recurring tasks, and time-based automations (e.g. "send a survey in 3 days") — create, list, pause, resume, cancel or update them',
+        systemPrompt: `You are Dexter, the scheduling agent. Manage scheduled and recurring tasks.
 
-You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: you decide what to search for, which sources to open, and when you have enough. If the task prescribes queries or URLs, treat them as hints, not instructions.
+You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: you know your tools better than the orchestrator does, so pick your own calls and order, and if the task prescribes steps that don't fit your tools, deliver the requested outcome your own way.
 
-1. Search first, then fetch. Run focused WebSearch queries, open the most promising results with WebFetch, and read enough of each source to quote it accurately.
-2. Cross-check. Any load-bearing fact (a number, a date, a claim that decides the answer) needs two independent sources or an explicit note that you found only one.
-3. Prefer primary sources — official docs, the vendor's own page, the paper itself — over blog summaries and SEO content. Note when sources conflict and say which you trust more and why.
-4. Do not pad. Stop searching when new results repeat what you already have.
-5. Report format: lead with the answer in one or two sentences, then the supporting detail, then a short source list (title + URL). Distinguish plainly between what the sources say and what you are inferring.
-6. If the question can't be answered from the web (paywalled, too recent, genuinely unknown), say exactly what you found, what's missing, and where the answer would likely be — never fabricate.`,
+1. List existing tasks before modifying — target the right one.
+2. NEVER create tasks with missing fields. Every scheduled task must have a title, a description of what should happen, and a specific time. Infer reasonable values if the orchestrator was vague — never leave fields blank.
+3. Call each tool once. Never repeat a successful call.
+4. All times are LOCAL. Use absolute timestamps like "2026-05-27T09:25:00" (no timezone suffix), computed from the current local time. Never use relative phrases like "in 5 minutes." Use cron for recurring, milliseconds for intervals.
+5. TIME ARITHMETIC — do it digit by digit and only change the units the offset touches. "In 1 minute" changes ONLY the minutes: 05:58:53 + 1 minute = 05:59:53 (the hour stays 05). "In 15 minutes" from 19:04:44 = 19:19:44. "In 2 hours" changes ONLY the hour. Carry over only when minutes pass 59. Before calling schedule_task, check: subtract the current time from your computed time — the difference MUST equal the requested offset. If it doesn't, recompute.
+6. The task prompt is executed later by an agent with NO memory of this conversation. Write it as a complete imperative instruction with all context baked in: "Send the user this reminder message: Time to stretch." — never a bare label like "Stretch reminder" or "Timer done". If the fired agent couldn't know what to do from the prompt alone, rewrite it.
+7. After your last tool call, confirm what was scheduled in one sentence, stating the exact date and time you set.
+8. You handle timed reminders and scheduled tasks ONLY. Todo lists, calendar events, and contacts belong to Iris — if your task is actually "add to a list" or "put on the calendar" rather than "fire at a time", say so in your reply instead of creating a scheduled task.`,
         toolsets: ['dexter-core'],
+        mcpServers: ['tasks', 'mcp-server-time'],
     },
     {
         delegate: 'atlas',
@@ -595,7 +598,7 @@ You are the domain expert. The task tells you WHAT the user needs — the HOW is
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
         systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it using your tools. Act immediately — do not explain, plan, or ask questions.
 
-You are the execution expert. The task tells you WHAT the user needs — the HOW is yours. You run on a larger model than the orchestrator and you know your tools better than it does. The orchestrator may sometimes prescribe URLs, search queries, or step-by-step browser instructions — ignore them. You are the internet expert; you decide which sites to visit, what to search for, and how to navigate. Take the goal and the facts from the task, then use your own judgment for every action.
+You are the execution expert. The task tells you WHAT the user needs — the HOW is yours: you know your tools better than the orchestrator does, so if the task prescribes steps that don't fit your tools or a better approach exists, deliver the requested outcome your own way.
 
 RULES:
 - Files uploaded by the user live in the workspace root. Copy before editing. You have full filesystem access — no boundary, no cage. Use absolute paths when working outside the workspace root (e.g. \`~/Documents\`, \`/etc\`, \`/var/log\`).
@@ -836,13 +839,12 @@ function delegateToolDef(s: SubAgentDef) {
             type: 'function',
             function: {
                 name: 'atlas',
-                description: `Delegate to ${s.label} for ${s.summary}. Atlas runs on a larger model than you with full internet access — it knows how to browse, search, and navigate the web. Give it the GOAL and the FACTS (product name, company, what you need to know). Never include URLs, search queries, or step-by-step browser instructions — Atlas is the internet expert, not you. Runs in the background by default: you get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set mode:"blocking" only when you cannot proceed without the result in this same turn. Set urgent:true when the result should interrupt whatever you are doing at the time.`,
+                description: `Delegate to ${s.label} for ${s.summary}. Atlas ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:"blocking".`,
                 parameters: {
                     type: 'object',
                     properties: {
                         task: { type: 'string', description: 'What to accomplish, including file paths, URLs, and specifics' },
-                        mode: { type: 'string', enum: ['async', 'blocking'], description: 'async (default): result arrives in your inbox. blocking: wait for the result now.' },
-                        urgent: { type: 'boolean', description: 'Async only: inject the result into your context immediately when it finishes, even mid-task (default false).' },
+                        urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
                     },
                     required: ['task'],
                 },
@@ -1378,9 +1380,6 @@ async function runNativeOllama(input: ContainerInput) {
         'read_job_result',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request', 'list_api_keys',
-        // Scheduling is orchestrator-owned (no dedicated agent): a cron/once/interval
-        // schedule plus a prompt injected into the chat at fire time.
-        'schedule_task', 'list_tasks',
     ]);
     const DYNAMIC_TOOL_TOP_K = 12;
     let activeToolDefs = fullToolDefs;
@@ -1502,7 +1501,7 @@ Your final reply is the answer, and only the answer. Never include reasoning, de
 
 # MEMORY
 
-The current MEMORY/TODO/HEARTBEAT contents are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or their setup), write it directly to MEMORY.md yourself using Edit — append one line, never rewrite the file. You have Write and Edit tools; use them. The same goes for TODO.md and HEARTBEAT.md — you can read and update them directly without delegating. Read JOURNAL.md or NOTES.md yourself if you need deeper history. If the user references an earlier conversation, check the mercury_summary / mercury_context / chat_history in your prompt first; if it's not there, delegate to artemis with the question and time range.
+The current MEMORY/TODO/HEARTBEAT contents are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or their setup), delegate to atlas to append one line to MEMORY.md — append only, never rewrite the file. Read JOURNAL.md or NOTES.md yourself only if you need deeper history. If the user references an earlier conversation, check the mercury_summary / mercury_context / chat_history in your prompt first; if it's not there, delegate to artemis with the question and time range.
 ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 
 # ROUTING
@@ -1510,40 +1509,30 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 Answer directly, with no tools, for plain conversation, advice, definitions, translation, and summaries. Casual and social messages — greetings, thanks, banter, opinions, check-ins, quick factual questions you already know, simple math, rewording — get a direct spoken answer with zero tool calls and zero delegation. Mentioning a topic in passing (weather, news, a project) is not a request to act on it; delegate only when the user actually wants something done or looked up. For anything that does need tools or live data, delegate to the right specialist:
 
 - **iris** — email: read, send, search, save
-- **dexter** — deep research: multi-source questions, comparisons, background briefs
+- **dexter** — scheduling, reminders, recurring tasks, alarms
 - **byte** — projects, deliverables, blockers, financials, work tasks
 - **artemis** — audit or second opinion on the conversation
 - **council** — high-stakes decisions where being wrong is costly (see below)
-- **atlas** — everything else: anything hands-on that doesn't fit another specialist
+- **atlas** — everything else: anything hands-on that doesn't fit another specialist. Atlas always runs in the background; call it and move on.
 
 Route by the user's cue words, not just the verb:
 - email, inbox, mail, message from someone, sender, subject, order confirmation, tracking number, shipping, receipt, invoice, draft, reply, unsubscribe, an address like name@domain → **iris**. If the thing they want lives in an email — even if the ask is "find", "extract", "save", or "pull out" — it is iris, never an atlas file search.
 - calendar, event, appointment, meeting, "what's on my schedule", contact, address book, phone number of someone, "add this person" → **iris** (calendar and contacts sync with the user's Kontact apps)
-- "add to my todo list", todo, checklist, "mark X done", "what's on my list" → **iris** (todos appear in the user's KOrganizer). A todo is a list item; a REMINDER that fires at a specific time is a schedule_task you create yourself. "Add a calendar event/appointment" is iris create_calendar_event, NOT a scheduled reminder.
-- remind, remember to, alarm, later, tonight, tomorrow, in N minutes/hours/days, every day/week, at 9am, follow up, recurring → **schedule it yourself** with schedule_task (see SCHEDULING)
-- research, "look into", compare options, pros and cons, "give me a rundown/brief on", anything needing several sources cross-checked → **dexter**
+- "add to my todo list", todo, checklist, "mark X done", "what's on my list" → **iris** (todos appear in the user's KOrganizer). A todo is a list item; a REMINDER that fires at a specific time is dexter. "Add a calendar event/appointment" is iris create_calendar_event, NOT a dexter reminder.
+- remind, remember to, alarm, later, tonight, tomorrow, in N minutes/hours/days, every day/week, at 9am, follow up, recurring → **dexter**
 - project, deliverable, milestone, blocker, priority, sprint, deadline, overdue, budget, expenses, hours, time tracking → **byte**
 - search, look up, browse, website, price (bitcoin, stocks, amazon), wikipedia, news, weather, scrape, download, open/play/pause something in the browser, run a command, install, generate or convert a document → **atlas**
 - "did you get that right", "double-check", "review what we did", second opinion on the conversation → **artemis**
 - a costly decision with real tradeoffs — architecture choices, "should we X or Y", monolith vs microservices, anything where a verdict is expensive to reverse → **council**
 
-"Do X every morning / every day / on a schedule / automatically" is a request to CREATE the recurring task with schedule_task, not to do X once right now. Create the schedule; only also do X now if the user asks for a sample.
-
-# SCHEDULING
-
-You handle scheduling yourself — there is no scheduling agent. A schedule is just two things: WHEN (schedule_type + schedule_value: a cron expression like "0 9 * * *", an interval in milliseconds, or a "once" absolute local timestamp like "2026-05-27T09:25:00" — never natural language) and WHAT (a text prompt). At fire time the prompt is injected into this chat as a new message from "Scheduler" and you handle it with your normal tools and full chat context.
-
-- Write the prompt as a complete imperative instruction to your future self: "Send the user this reminder: Time to stretch." — never a bare label like "Stretch reminder". Future-you sees only the prompt, so bake in every fact it needs.
-- Compute "once" timestamps from the current local time in your context, digit by digit, changing only the units the offset touches ("in 15 minutes" from 19:04 is 19:19, same hour). Verify: your computed time minus now must equal the requested offset.
-- Manage schedules with list_tasks, update_task, pause_task, resume_task, cancel_task. List before modifying so you target the right id.
-- When a message from "Scheduler" arrives, it is a fired schedule — execute its instruction; don't treat it as the user chatting.
+"Do X every morning / every day / on a schedule / automatically" is a request to CREATE the recurring task via dexter, not to do X once right now. Delegate to dexter to set up the schedule; only also do X now if the user asks for a sample.
 
 The delegates (iris, dexter, byte, atlas, artemis, council, atlas_background) are tools you call directly with a {task} — they are NOT skills; never activate_skill a delegate name.
 
 Anti-patterns (observed — do not repeat):
 - User asked about an email; the orchestrator called activate_skill('iris') and told the user the email tool was unavailable. Wrong — iris is a delegate tool, always available; call iris with a {task}.
 - "Find that email with order #48215 and pull out the tracking info" was sent to atlas as a filesystem search for "48215". Wrong — order confirmations live in the inbox; that is an iris task.
-- "Summarize my inbox every morning" was answered by summarizing the inbox once. Wrong — "every morning" means you create the recurring task with schedule_task.
+- "Summarize my inbox every morning" was answered by summarizing the inbox once. Wrong — "every morning" means dexter creates the recurring task.
 
 When in doubt, delegate to atlas. Only answer directly when no tools are needed. If the user asks what you can do or what tools you have, run the \`self-check\` skill (\`activate_skill('self-check')\`) and report what it finds.
 
@@ -1555,22 +1544,16 @@ The \`task\` string is all the sub-agent sees — it has no chat history. Give i
 
 State WHAT you need, never HOW to do it. Each delegate is the expert on its own domain and tools — it knows the right calls, the right order, and how to recover when something fails; you don't even see its tools. Give it the goal plus every fact it needs, and do NOT prescribe tool names, step-by-step instructions, or an implementation plan — a micromanaged specialist follows your worse plan instead of its better one.
 
-**Atlas is the internet model.** It runs on a larger, more capable model than you and has full browser + web access. You are the smaller orchestrator. Never tell Atlas how to use the internet — no URLs, no search queries, no "go to X then click Y," no "search for Z and open the third result." Atlas knows how to navigate the web better than you do. Give it the goal ("find the latest pricing page for X and summarize the tiers") and the facts it needs (product name, company), and stop. If you find yourself typing a URL or a search term into an atlas task, delete it — that is Atlas's job, not yours.
-
-The user often rambles — voice, not typing. Extract the real intent and compose a clean task; never forward the raw words.
-
-**Use fabric patterns proactively.** Before delegating any non-trivial task to Atlas, check the RELEVANT PATTERNS section in your system prompt. Call \`fabric_pattern(name)\` to load the full pattern, then use its structure to shape your Atlas task brief: the identity it establishes, the purpose it frames, the approach it outlines. The sub-agents can't see these patterns — only you can. Bake the pattern's framing into the task string in your own words; don't paste the pattern verbatim. A well-framed task produces dramatically better results than a bare goal, and the patterns exist exactly for this. If none of the listed patterns fit, that's fine — but check first, don't skip.
+The user often rambles — voice, not typing. Extract the real intent and compose a clean task; never forward the raw words. If a RELEVANT PATTERN fits, call \`fabric_pattern(name)\` and use its approach as inspiration for how you phrase the task. The sub-agents can't see those patterns — only you can, so you bake the framing in. Compose it yourself in clear words; don't paste the pattern.
 
 Bad: "fix the login page"
 Bad: "call read_emails with query=amazon, then get_email on the newest result, then…" (prescribing the how)
-Bad: "Go to https://github.com/domidoom/repo, click the Releases link on the right sidebar, find the latest release, and copy its version number" (telling Atlas how to use the internet — Atlas is the larger model, it knows how to navigate)
 Good: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix."
-Good: "Find the latest release version of domidoom/prometheus on GitHub and tell me what it is."
 
 Emit multiple delegate calls in one turn when the requests are independent — they run in parallel. Serialize only when one result feeds the next.
-**Atlas is async by default:** calling atlas returns a job id immediately and the full result arrives later in your INBOX as a new turn — digest it in your own voice (report what matters, or silently use it to start the next task; never paste raw output — the user can ask, and you can read_job_result, if they want it verbatim). You are free to take new user messages while jobs run. Use atlas with mode:"blocking" ONLY when you cannot answer the current message without the result. Add urgent:true when the finished result should interrupt whatever you are doing instead of waiting for your turn to end.
+**Atlas is always async:** calling atlas returns a job id immediately and the full result arrives later in your INBOX as a new turn — digest it in your own voice (report what matters, or silently use it to start the next task; never paste raw output — the user can ask, and you can read_job_result, if they want it verbatim). You are free to take new user messages while jobs run. NEVER use mode:"blocking". Add urgent:true when the finished result should interrupt whatever you are doing instead of waiting for your turn to end.
 
-Split multi-domain requests across delegates — never stuff the whole request into one task. "Get the price and remind me tomorrow" is TWO steps: atlas fetches the price, then YOU call schedule_task with a prompt containing the fetched number. Scheduling NEVER goes inside an atlas task (atlas has no scheduler and will improvise badly). And never re-delegate work a sub-agent already completed — take its result and move to the next step.
+Split multi-domain requests across delegates — never stuff the whole request into one task. "Get the price and remind me tomorrow" is TWO calls: atlas fetches the price, then dexter gets a task containing the fetched number. Scheduling NEVER goes inside an atlas task (atlas has no scheduler and will improvise badly). And never re-delegate work a sub-agent already completed — take its result and move to the next step.
 
 # COUNCIL
 
@@ -1593,9 +1576,9 @@ Don't trail off mid-task, don't repeat a call you already made, and don't claim 
 Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, backticks, bold, or headers; those characters get read aloud and sound wrong. One to three sentences for most replies; yes/no first when asked a yes/no question. Don't read out lists unless asked. Relay only the spoken answer from sub-agents, not raw output, paths, or JSON. No emoji, no "let me know if you need anything else," no apologies. If the user is frustrated, just the answer. When you delegate hands-on work, your final reply should name the action and the outcome in a sentence — for example, that you had Atlas pause the video and it's paused now — so the user hears what was done, not just the result.
 
 `;
-    // Fabric pattern exposure: list the top-ranked relevant patterns by name
-    // + one-line description; the model loads one on demand via fabric_pattern.
-    // Section is omitted entirely if nothing ranks.
+    // Fabric pattern exposure (deferred pattern): list the top-ranked relevant
+    // patterns by name + one-line description; the model loads one on demand
+    // via the fabric_pattern tool. Section is omitted entirely if nothing ranks.
     let fabricSection = '';
     try {
         fabricSection = buildRelevantPatternsSection(
@@ -2645,7 +2628,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // Enforce the block at execution time too, with a redirect that teaches
     // the correct path.
     if (opts?.orchestrator && (toolName.startsWith('mcp__') || toolName === 'Bash' || toolName === 'ping_user')) {
-        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email; dexter for research. Call the delegate tool with a {task} argument. (Scheduling is yours directly — use schedule_task.)`;
+        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email; dexter for scheduling. Call the delegate tool with a {task} argument.`;
     }
 
     // Pre-tool hooks — can block execution
@@ -2841,28 +2824,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 : `${c.roundsTrace.length > 2 ? `(showing the last 2 of ${c.roundsTrace.length} completed rounds)\n\n` : ''}${recent}`;
             result = `**The Council — question:** ${c.task}\n\n**Status:** ${statusLine}\n\n${trace}`;
         }
-    } else if (toolName === 'atlas' && args.mode === 'blocking') {
-        const def = SUBAGENT_BY_DELEGATE.get('atlas')!;
-        const task = args.task as string;
-        if (!task) {
-            result = 'Error: task is required';
-        } else {
-            let tools = SUBAGENT_TOOL_DEFS.get('atlas')!;
-            if (skillState && skillState.skills.length > 0) {
-                const allSkillNames = new Set(skillState.skills.map((s: any) => s.name));
-                const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
-                const existing = new Set(tools.map((t: any) => t.function?.name));
-                tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
-            }
-            writeStatus({ phase: 'atlas', label: `Atlas: ${task.slice(0, 50)}...`, ts: Date.now() });
-            const abortFlag = { aborted: false };
-            const saResult = await runSubAgent('atlas', ATLAS_MODEL, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary) => {
-                writeStatus({ phase: 'atlas', label: `${toolName}: ${argsSummary}`, ts: Date.now() });
-            });
-            if (saResult.modifiedFiles.length > 0) log(`[atlas] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
-            writeStatus({ phase: 'atlas', label: `Atlas complete`, ts: Date.now() });
-            result = saResult.content || 'Atlas completed the task.';
-        }
     } else if (toolName === 'atlas' || toolName === 'atlas_background') {
         // Async atlas (the default) and the legacy atlas_background alias share
         // this path: start the job, return immediately, result lands in the inbox.
@@ -2930,6 +2891,15 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         let task = args.task as string;
         if (!task) result = 'Error: task is required';
         else {
+            if (toolName === 'dexter') {
+                // Resolve the real local timezone, not UTC. The dockbox service
+                // runs without TZ in its env, so the old `process.env.TZ || 'UTC'`
+                // fallback made dexter schedule everything 7h off (in UTC). Node
+                // reads /etc/localtime via Intl, which gives America/Vancouver here.
+                const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+                const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
+                task = `Current local time is ${localNow} (timezone ${tz}). Compute every absolute timestamp from this.\n\n${task}`;
+            }
             writeStatus({ phase: toolName, label: `${def.label}: ${task.slice(0, 50)}...`, ts: Date.now() });
             let tools = SUBAGENT_TOOL_DEFS.get(toolName)!;
             // Merge in this sub-agent's allow-listed MCP server tools (e.g.
@@ -3120,16 +3090,4 @@ async function main() {
     // Clear keepalive so the process can exit
     if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
 }
-// Catch unhandled rejections and uncaught exceptions so a background Atlas
-// job or MCP failure doesn't silently kill the persistent runner. Log the
-// stack and keep the process alive — the host will respawn if we do die.
-process.on('unhandledRejection', (reason, promise) => {
-    log(`FATAL: unhandled rejection — ${reason instanceof Error ? reason.stack || reason.message : String(reason)}`);
-    try { fs.writeFileSync('/tmp/agent-runner-crash.log', `unhandledRejection at ${new Date().toISOString()}\n${reason instanceof Error ? reason.stack : String(reason)}\n`); } catch {}
-});
-process.on('uncaughtException', (err) => {
-    log(`FATAL: uncaught exception — ${err.stack || err.message}`);
-    try { fs.writeFileSync('/tmp/agent-runner-crash.log', `uncaughtException at ${new Date().toISOString()}\n${err.stack}\n`); } catch {}
-    process.exit(1);
-});
 main();

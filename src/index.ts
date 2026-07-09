@@ -8,7 +8,6 @@ import {
   AGENT_TIMEOUT,
   ASSISTANT_NAME,
   DATA_DIR,
-  GROUPS_DIR,
   OLLAMA_CHAT_MODEL,
   POLL_INTERVAL,
   TIMEZONE,
@@ -57,21 +56,7 @@ import {
   deleteProjectPriority,
   getProjectFinancials,
   updateProjectFinancials,
-  getWorkTasks,
-  createWorkTask,
-  updateWorkTask,
-  deleteWorkTask,
-  getAllUserApiKeys,
-  getActiveUserApiKeyByType,
-  getUserAlarms,
-  deleteAlarm,
-  startTimer,
-  stopTimer,
-  getActiveTimers,
-  addTimesheetEntry,
-  getUsers,
 } from './db.js';
-import { decryptApiKey } from './encryption.js';
 import { fetchEmails, sendEmail } from './email.js';
 import {
   listEvents, getEvent, upsertEvent, deleteEvent,
@@ -962,415 +947,6 @@ export function buildAgentCallbacks(): CallbackMap {
       }
     },
 
-    ipc: async (args: any) => {
-      try {
-        const type = typeof args?.type === 'string' ? args.type : '';
-        if (!type) return { ok: false, error: 'missing type' };
-
-        switch (type) {
-          // ── Fire-and-forget ──────────────────────────────────────────
-          case 'register_group': {
-            const { jid, name, folder, trigger } = args;
-            if (!jid || !name || !folder) return { ok: false, error: 'missing jid/name/folder' };
-            // Validate folder name safety
-            if (folder.includes('..') || folder.includes('/') || folder.includes('\\')) {
-              return { ok: false, error: 'invalid folder name' };
-            }
-            const groupDir = path.join(GROUPS_DIR, folder);
-            fs.mkdirSync(groupDir, { recursive: true });
-            setRouterState(`group:${jid}`, JSON.stringify({
-              name,
-              folder,
-              trigger_pattern: trigger || name,
-              added_at: new Date().toISOString(),
-            }));
-            logger.info({ jid, name, folder }, 'ipc: group registered');
-            return { ok: true };
-          }
-
-          case 'create_work_task': {
-            const { title, description, assigned_to, priority, due_date, created_by } = args;
-            if (!title || !created_by) return { ok: false, error: 'missing title or created_by' };
-            const allUsers = getUsers();
-            let assignedTo = assigned_to || undefined;
-            if (assignedTo && !assignedTo.startsWith('user-')) {
-              const match = allUsers.find((u: any) => u.name?.toLowerCase() === assignedTo.toLowerCase());
-              if (match) assignedTo = match.id;
-            }
-            let createdBy = created_by;
-            if (createdBy && !createdBy.startsWith('user-')) {
-              const match = allUsers.find((u: any) => u.name?.toLowerCase() === createdBy.toLowerCase());
-              if (match) createdBy = match.id;
-            }
-            const newTask = createWorkTask({
-              title,
-              description: description || '',
-              notes: args.notes || '',
-              priority: priority || 'medium',
-              assigned_to: assignedTo,
-              created_by: createdBy,
-              due_date: due_date || undefined,
-              project_id: args.projectId || undefined,
-            });
-            logger.info({ taskId: newTask.id }, 'ipc: work task created');
-            if (newTask.assigned_to) {
-              pushNotification(newTask.assigned_to, {
-                type: 'work_task',
-                message: `New task assigned: ${newTask.title}`,
-                taskId: newTask.id,
-              });
-            }
-            return { ok: true, task: newTask };
-          }
-
-          case 'update_work_task': {
-            const taskId = args.taskId || args.id;
-            if (!taskId) return { ok: false, error: 'missing taskId' };
-            const updates: any = {};
-            if (args.title !== undefined) updates.title = args.title;
-            if (args.description !== undefined) updates.description = args.description;
-            if (args.notes !== undefined) updates.notes = args.notes;
-            if (args.status !== undefined) updates.status = args.status;
-            if (args.priority !== undefined) updates.priority = args.priority;
-            if (args.assignedTo !== undefined || args.assigned_to !== undefined) {
-              let assignTo = args.assignedTo || args.assigned_to;
-              if (assignTo && !assignTo.startsWith('user-')) {
-                const allUsers = getUsers();
-                const match = allUsers.find((u: any) => u.name?.toLowerCase() === assignTo.toLowerCase());
-                if (match) assignTo = match.id;
-              }
-              updates.assigned_to = assignTo;
-            }
-            if (args.dueDate !== undefined || args.due_date !== undefined) updates.due_date = args.dueDate || args.due_date;
-            if (args.projectId !== undefined || args.project_id !== undefined) updates.project_id = args.projectId || args.project_id;
-            const updated = updateWorkTask(taskId, updates);
-            if (!updated) return { ok: false, error: 'work task not found' };
-            if (updates.assigned_to) {
-              pushNotification(updates.assigned_to, {
-                type: 'work_task',
-                message: `Task assigned to you: ${updated.title}`,
-                taskId: updated.id,
-              });
-            }
-            return { ok: true, task: updated };
-          }
-
-          case 'delete_work_task': {
-            const taskId = args.taskId || args.id;
-            if (!taskId) return { ok: false, error: 'missing taskId' };
-            deleteWorkTask(taskId);
-            return { ok: true };
-          }
-
-          case 'archive_project': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            if (!id) return { ok: false, error: 'missing projectId' };
-            const resolved = resolveProjectId(id) || id;
-            const ok = archiveProject(resolved);
-            return ok ? { ok: true } : { ok: false, error: 'project not found' };
-          }
-
-          case 'complete_project': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            if (!id) return { ok: false, error: 'missing projectId' };
-            const resolved = resolveProjectId(id) || id;
-            const ok = completeProject(resolved);
-            return ok ? { ok: true } : { ok: false, error: 'project not found' };
-          }
-
-          case 'delete_project': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            if (!id) return { ok: false, error: 'missing projectId' };
-            const resolved = resolveProjectId(id) || id;
-            const ok = deleteProject(resolved);
-            return ok ? { ok: true } : { ok: false, error: 'project not found' };
-          }
-
-          case 'add_deliverable': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            const name = typeof args?.name === 'string' ? args.name : '';
-            if (!name) return { ok: false, error: 'missing name' };
-            const resolved = resolveProjectId(id) || id;
-            const d = addProjectDeliverable(resolved, name, typeof args?.dueDate === 'string' ? args.dueDate : undefined);
-            void projectAllDeliverables().catch(() => {});
-            return { ok: true, data: d };
-          }
-
-          case 'toggle_deliverable': {
-            const id = typeof args?.deliverableId === 'string' ? args.deliverableId : '';
-            const d = toggleDeliverable(id);
-            if (!d) return { ok: false, error: 'deliverable not found' };
-            void projectAllDeliverables().catch(() => {});
-            return { ok: true, data: d };
-          }
-
-          case 'delete_deliverable': {
-            const id = typeof args?.deliverableId === 'string' ? args.deliverableId : '';
-            const ok = deleteDeliverable(id);
-            if (ok) void projectAllDeliverables().catch(() => {});
-            return ok ? { ok: true } : { ok: false, error: 'deliverable not found' };
-          }
-
-          case 'add_blocker': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            const desc = typeof args?.description === 'string' ? args.description : '';
-            if (!desc) return { ok: false, error: 'missing description' };
-            const resolved = resolveProjectId(id) || id;
-            const sev = typeof args?.severity === 'string' ? args.severity : 'medium';
-            const b = addProjectBlocker(resolved, desc, sev);
-            return { ok: true, data: b };
-          }
-
-          case 'delete_blocker': {
-            const id = typeof args?.blockerId === 'string' ? args.blockerId : '';
-            const ok = deleteBlocker(id);
-            return ok ? { ok: true } : { ok: false, error: 'blocker not found' };
-          }
-
-          case 'add_priority': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            const item = typeof args?.item === 'string' ? args.item : '';
-            if (!item) return { ok: false, error: 'missing item' };
-            const resolved = resolveProjectId(id) || id;
-            const impact = typeof args?.impact === 'string' ? args.impact : 'medium';
-            const p = addProjectPriority(resolved, item, impact);
-            return { ok: true, data: p };
-          }
-
-          case 'delete_priority': {
-            const id = typeof args?.priorityId === 'string' ? args.priorityId : '';
-            const ok = deleteProjectPriority(id);
-            return ok ? { ok: true } : { ok: false, error: 'priority not found' };
-          }
-
-          case 'update_project': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : (typeof args?.id === 'string' ? args.id : '');
-            if (!id) return { ok: false, error: 'missing projectId' };
-            const resolved = resolveProjectId(id) || id;
-            const updates: any = {};
-            if (typeof args?.name === 'string') updates.name = args.name;
-            if (typeof args?.description === 'string') updates.description = args.description;
-            if (typeof args?.status === 'string') updates.status = args.status;
-            if (typeof args?.dueDate === 'string') updates.due_date = args.dueDate;
-            if (typeof args?.projectCode === 'string') updates.project_code = args.projectCode;
-            const project = updateProject(resolved, updates);
-            if (!project) return { ok: false, error: 'project not found' };
-            return { ok: true, data: project };
-          }
-
-          case 'update_financials': {
-            const id = typeof args?.projectId === 'string' ? args.projectId : '';
-            if (!id) return { ok: false, error: 'missing projectId' };
-            const resolved = resolveProjectId(id) || id;
-            const updates: any = {};
-            if (typeof args?.budget === 'number') updates.budget = args.budget;
-            if (typeof args?.spent === 'number') updates.spent = args.spent;
-            if (typeof args?.revenue === 'number') updates.revenue = args.revenue;
-            if (typeof args?.notes === 'string') updates.notes = args.notes;
-            const f = updateProjectFinancials(resolved, updates);
-            return { ok: true, data: f };
-          }
-
-          case 'start_timer': {
-            const projectId = args.projectId;
-            if (!projectId) return { ok: false, error: 'missing projectId' };
-            let userId = args.userId || 'owner';
-            const allUsers = getUsers();
-            const userMatch = allUsers.find((u: any) => u.name?.toLowerCase() === userId.toLowerCase());
-            if (userMatch) userId = userMatch.id;
-            const timer = startTimer({ project_id: projectId, user_id: userId, description: args.description || '' });
-            return { ok: true, timer };
-          }
-
-          case 'stop_timer': {
-            let timerId = args.timerId;
-            if (!timerId) {
-              let userId = args.userId || 'owner';
-              const allUsers = getUsers();
-              const userMatch = allUsers.find((u: any) => u.name?.toLowerCase() === userId.toLowerCase());
-              if (userMatch) userId = userMatch.id;
-              const timers = getActiveTimers();
-              const mine = timers.find((t: any) => t.user_id === userId);
-              if (mine) timerId = mine.id;
-            }
-            if (!timerId) return { ok: false, error: 'no active timer found' };
-            const entry = stopTimer(timerId);
-            if (!entry) return { ok: false, error: 'timer not found or already stopped' };
-            return { ok: true, entry };
-          }
-
-          case 'log_time': {
-            const rawPid = args.projectId;
-            const hours = args.hours;
-            if (!rawPid || hours === undefined) return { ok: false, error: 'missing projectId or hours' };
-            const projectId = resolveProjectId(rawPid) || rawPid;
-            let userId = args.userId || 'owner';
-            const allUsers = getUsers();
-            const userMatch = allUsers.find((u: any) => u.name?.toLowerCase() === userId.toLowerCase());
-            if (userMatch) userId = userMatch.id;
-            const date = args.date || new Date().toISOString().split('T')[0];
-            const entry = addTimesheetEntry({ project_id: projectId, user_id: userId, date, hours, description: args.description || '' });
-            return { ok: true, entry };
-          }
-
-          case 'cancel_task': {
-            const id = typeof args?.task_id === 'string' ? args.task_id : (typeof args?.id === 'string' ? args.id : '');
-            if (!id) return { ok: false, error: 'missing task_id' };
-            deleteTask(id);
-            return { ok: true };
-          }
-
-          case 'pause_task': {
-            const id = typeof args?.task_id === 'string' ? args.task_id : (typeof args?.id === 'string' ? args.id : '');
-            if (!id) return { ok: false, error: 'missing task_id' };
-            updateTask(id, { status: 'paused' });
-            return { ok: true };
-          }
-
-          case 'resume_task': {
-            const id = typeof args?.task_id === 'string' ? args.task_id : (typeof args?.id === 'string' ? args.id : '');
-            if (!id) return { ok: false, error: 'missing task_id' };
-            updateTask(id, { status: 'active' });
-            return { ok: true };
-          }
-
-          case 'update_task': {
-            const id = typeof args?.task_id === 'string' ? args.task_id : (typeof args?.id === 'string' ? args.id : '');
-            if (!id) return { ok: false, error: 'missing task_id' };
-            const updates: any = {};
-            if (args?.prompt) updates.prompt = args.prompt;
-            if (args?.schedule_type) updates.schedule_type = args.schedule_type;
-            if (args?.schedule_value) updates.schedule_value = args.schedule_value;
-            updateTask(id, updates);
-            return { ok: true };
-          }
-
-          case 'delete_alarm': {
-            const alarmId = args.alarm_id || args.id;
-            if (!alarmId) return { ok: false, error: 'missing alarm_id' };
-            deleteAlarm(alarmId);
-            return { ok: true };
-          }
-
-          case 'refresh_email_cache': {
-            const accountId = args.accountId || undefined;
-            const limit = args.limit || 200;
-            const accounts = getEmailAccounts(null);
-            let resolvedAccountId = accountId;
-            if (resolvedAccountId && !accounts.some((a: any) => a.id === resolvedAccountId)) {
-              return { ok: false, error: 'account not available' };
-            }
-            if (!resolvedAccountId) {
-              if (accounts.length === 0) return { ok: false, error: 'no email accounts configured' };
-              resolvedAccountId = accounts[0].id;
-            }
-            const emails = await fetchEmails(resolvedAccountId, 'INBOX', limit, undefined, true);
-            const groupCacheDir = path.join(GROUPS_DIR, 'owner', 'email-cache');
-            fs.mkdirSync(groupCacheDir, { recursive: true });
-            const cacheFile = path.join(groupCacheDir, 'inbox.json');
-            const cacheData = {
-              fetchedAt: new Date().toISOString(),
-              accountId: resolvedAccountId,
-              count: emails.length,
-              emails,
-            };
-            fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
-            logger.info({ accountId: resolvedAccountId, count: emails.length }, 'ipc: email cache refreshed');
-            return { ok: true, count: emails.length, cachedAt: cacheData.fetchedAt };
-          }
-
-          // ── Needs result ──────────────────────────────────────────────
-          case 'list_api_keys': {
-            const keys = getAllUserApiKeys();
-            // Return safe info only (no encrypted secrets)
-            const safe = keys.map((k: any) => ({
-              id: k.id,
-              user_id: k.user_id,
-              key_type: k.key_type,
-              label: k.label,
-              base_url: k.base_url,
-              default_model: k.default_model,
-              is_active: k.is_active,
-            }));
-            return { ok: true, keys: safe };
-          }
-
-          case 'api_request': {
-            const { key_type, method, path: apiPath, headers, body, userId } = args;
-            if (!key_type || !apiPath) return { ok: false, error: 'missing key_type or path' };
-            if (!userId) return { ok: false, error: 'missing userId' };
-            const keyRow = getActiveUserApiKeyByType(userId, key_type);
-            if (!keyRow) return { ok: false, error: `no active API key found for type "${key_type}"` };
-            const apiKey = decryptApiKey(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
-            const baseUrl = keyRow.base_url || '';
-            const authFormat = keyRow.auth_header_format || 'Bearer {key}';
-            const authHeader = authFormat.replace('{key}', apiKey);
-            const url = apiPath.startsWith('http') ? apiPath : `${baseUrl.replace(/\/$/, '')}${apiPath.startsWith('/') ? '' : '/'}${apiPath}`;
-            const reqHeaders: Record<string, string> = {
-              'Authorization': authHeader,
-              'Content-Type': 'application/json',
-              ...(args.headers || {}),
-            };
-            const httpMod = url.startsWith('https') ? await import('https') : await import('http');
-            const result = await new Promise<{ status: number; statusText: string; body: string }>((resolve, reject) => {
-              const reqUrl = new URL(url);
-              const options = {
-                hostname: reqUrl.hostname,
-                port: reqUrl.port || (url.startsWith('https') ? 443 : 80),
-                path: reqUrl.pathname + reqUrl.search,
-                method: (method || 'GET').toUpperCase(),
-                headers: reqHeaders,
-              };
-              const req = httpMod.request(options, (res: any) => {
-                let data = '';
-                res.on('data', (chunk: string) => { data += chunk; });
-                res.on('end', () => resolve({ status: res.statusCode || 0, statusText: res.statusMessage || '', body: data }));
-              });
-              req.on('error', (err: Error) => reject(err));
-              if (body && ['POST', 'PUT', 'PATCH'].includes(options.method)) {
-                req.write(typeof body === 'string' ? body : JSON.stringify(body));
-              }
-              req.end();
-            });
-            return { ok: true, status: result.status, statusText: result.statusText, body: result.body };
-          }
-
-          case 'list_work_tasks': {
-            const userId = args.userId || args.assignedTo || undefined;
-            const tasks = userId ? getWorkTasks(userId) : getWorkTasks();
-            return { ok: true, tasks };
-          }
-
-          case 'get_cached_emails': {
-            const groupCacheDir = path.join(GROUPS_DIR, 'owner', 'email-cache');
-            const cacheFile = path.join(groupCacheDir, 'inbox.json');
-            if (!fs.existsSync(cacheFile)) {
-              return { ok: true, emails: [], cachedAt: null };
-            }
-            const cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
-            return { ok: true, emails: cacheData.emails || [], cachedAt: cacheData.fetchedAt || null };
-          }
-
-          case 'list_alarms': {
-            // Resolve userId from args or fall back to first user
-            let userId = args.user_id || args.userId;
-            if (!userId) {
-              const users = getUsers();
-              if (users.length > 0) userId = users[0].id;
-            }
-            if (!userId) return { ok: true, alarms: [] };
-            const alarms = getUserAlarms(userId);
-            return { ok: true, alarms };
-          }
-
-          default:
-            return { ok: false, error: `unknown ipc type: ${type}` };
-        }
-      } catch (err: any) {
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
   };
 }
 
@@ -1504,7 +1080,7 @@ async function processOwnerMessages(): Promise<void> {
     sessionId: 'owner',
     workspaceRoot: WORKSPACE_ROOT,
     history: pending,
-    timeoutMs: AGENT_TIMEOUT,
+    timeoutMs: 10 * 60 * 1000, // orchestrator turns must be short: Atlas is always async; a stuck model/tool call recovers in 10 min
     memoryContext,
     orchestratorModel: (getRouterState('orchestrator:model') || getRouterState('global:default_model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
@@ -1905,24 +1481,45 @@ async function main(): Promise<void> {
     },
   });
 
-  // Start the scheduled-task loop. Fired tasks are injected into the owner
-  // chat as inbound messages from "Scheduler"; the normal message loop picks
-  // them up and the running conversation handles them with full context.
+  // Start the scheduled-task loop. Task 8 will replace the queue/group deps
+  // with a callback-based interface; for now we pass a minimal stub.
   startSchedulerLoop({
+    registeredGroups: () => ({ [OWNER_JID]: { name: 'Owner', folder: 'owner', trigger: '', added_at: '', isMain: true, requiresTrigger: false } }) as any,
+    getSessions: () => ({}),
     queue: { enqueueTask: (_jid: string, _id: string, fn: () => Promise<void>) => { void fn(); } },
-    injectMessage: (_chatJid: string, text: string) => {
+    sendMessage: async (_jid: string, text: string) => {
+      const cleaned = formatOutbound(text);
+      if (!cleaned) return;
       storeMessage({
-        id: `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         chat_jid: OWNER_JID,
-        sender: 'scheduler',
-        sender_name: 'Scheduler',
-        content: text,
+        sender: 'assistant',
+        sender_name: ASSISTANT_NAME,
+        content: cleaned,
         timestamp: new Date().toISOString(),
         is_from_me: false,
-        is_bot_message: false,
+        is_bot_message: true,
+      });
+      for (const ch of channels) {
+        try { await ch.sendMessage(OWNER_JID, cleaned); } catch (err) {
+          logger.warn({ channel: ch.name, err }, 'Task scheduler: channel send failed');
+        }
+      }
+    },
+    onTaskResult: (_task: unknown, result: string) => {
+      // Agent output arrives as the raw {"status","result"} JSON envelope —
+      // unwrap it so the notification shows the actual text, not JSON.
+      let text = result;
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed && typeof parsed.result === 'string') text = parsed.result;
+      } catch { /* already plain text */ }
+      pushNotification('owner', {
+        type: 'task',
+        message: text.length > 120 ? text.slice(0, 120) + '...' : text,
       });
     },
-  });
+  } as any);
 
   startCalendarSyncPoller();
   // Kontact projection: mirror project deliverables to/from the shared
