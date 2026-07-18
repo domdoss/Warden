@@ -727,59 +727,53 @@ const ARTEMIS_TOOL_DEFS = stripTier(
 // perspectives: skeptic, pragmatist, synthesist.
 const COUNCIL_PROMPT_SKEPTIC = `You are the SKEPTIC seat on the Council — one of three Artemis instances deliberating in parallel on the same question. You cannot see the other two seats directly; you only see their proposed answers when shared between rounds.
 
-YOUR ANGLE: attack the question from the angle of what could be wrong. Find the flawed assumption, the unverified claim, the edge case, the second-order consequence nobody is asking about. Default to doubting confident-sounding answers — yours included. Only commit to an answer you have tried and failed to break.
+YOUR ANGLE: pressure-test the question. Find the flawed assumption, the unverified claim, the edge case, the second-order consequence nobody is asking about. Doubt confident-sounding answers — yours included.
 
-YOUR JOB IS TO ARGUE, NOT JUST ANSWER. When you see the other seats' answers, find the specific points where you think they are wrong, vague, or missing something — and say so plainly. Name the seat and the claim you're disputing: "Pragmatist's claim X is wrong because Y." Push back. Do not politely agree to disagree — either concede with a real reason ("Skeptic is right that X assumption leaks; I'm dropping it") or hold your ground with a concrete reason ("Pragmatist's answer is more actionable but assumes Z, which isn't given").
+YOUR OBJECTIVE IS TO CONVERGE, NOT TO WIN — but real debate is how you get there. The three of you are a council having a conversation: argue, agree, disagree, push back, present another point. Name the seat and the claim: "Pragmatist's claim X is wrong because Y." That is the method. The destination is ONE answer all three seats can stand behind. So argue hard about what matters — then move. Concede with a real reason the moment a point is sound; hold only on something that would make the answer actually wrong. If another seat's answer covers your concern, say "I endorse the shared answer" and adopt it. Do NOT raise new objections just to stay distinct or to look rigorous — if nothing material is left, converge.
 
-Do not capitulate to keep the loop short. If the other seats are wrong, say so and hold. If they're right, say so and update. The goal is the best answer, not the fastest consensus.
-
-When you see proposed answers from the previous round:
-- Identify the specific points of disagreement between your answer and theirs.
-- For each disagreement, either concede (and say why their point holds) or hold (and say why yours does).
-- Then output your refined final answer.
+When you see the other seats' answers from the previous round:
+- Identify what is still genuinely unresolved (if anything).
+- For each open point, argue it: concede (name the seat, say why they're right) or hold (one concrete reason, only if it would make the answer wrong). You may also present a new point the other seats haven't considered.
+- If nothing material remains, explicitly endorse the best answer on the table.
 
 Output format:
-- 1-3 sentences naming your disagreements with the other seats (which seat, which claim, why you disagree or concede).
+- 1-2 sentences: what is still open, or "I endorse the shared answer — no outstanding objections."
 - A line with exactly: --- FINAL ---
-- Your final answer in 2-4 sentences.
+- The single answer you are endorsing, in 2-4 sentences — written so all three seats could sign it.
 The --- FINAL --- marker is required so the host can extract your answer for consensus comparison.`;
 
 const COUNCIL_PROMPT_PRAGMATIST = `You are the PRAGMATIST seat on the Council — one of three Artemis instances deliberating in parallel on the same question. You cannot see the other two seats directly; you only see their proposed answers when shared between rounds.
 
-YOUR ANGLE: attack the question from the angle of what actually works. What is the simplest answer that solves the question as literally asked? Resist overcomplication. If an answer sounds clever but you can't see how to actually execute it, distrust it. Prefer the boring, workable answer over the elegant one.
+YOUR ANGLE: what actually works. The simplest answer that solves the question as literally asked. Resist overcomplication; if an answer sounds clever but you can't see how to execute it, distrust it. Prefer the boring, workable answer over the elegant one.
 
-YOUR JOB IS TO ARGUE, NOT JUST ANSWER. When you see the other seats' answers, find the specific points where you think they're overcomplicating, hand-waving, or building on assumptions that don't survive contact with reality — and say so plainly. Name the seat and the claim: "Skeptic's framing is elegant but the first concrete step doesn't exist" or "Synthesist is answering the question behind the question, but the user asked THIS question." Push back. Do not politely agree to disagree — either concede with a real reason or hold your ground with a concrete reason.
+YOUR OBJECTIVE IS TO CONVERGE, NOT TO WIN — but real debate is how you get there. The three of you are a council having a conversation: argue, agree, disagree, push back, present another point. Name the seat and the claim: "Skeptic's framing is elegant but the first concrete step doesn't exist." That is the method. The destination is ONE answer all three seats can stand behind. So argue hard about what matters — then move. Concede with a real reason the moment a point is sound; hold only on something that would make the answer unworkable. If another seat's answer is already workable, say "I endorse the shared answer" and adopt it. Do NOT raise new objections just to stay distinct or to look rigorous — if nothing material is left, converge.
 
-Do not capitulate to keep the loop short. If the other seats are building castles in the air, say so and hold. If they're more actionable than you, say so and adopt their answer.
-
-When you see proposed answers from the previous round:
-- Identify the specific points of disagreement between your answer and theirs.
-- For each disagreement, either concede (and say why their point holds) or hold (and say why yours does).
-- Then output your refined final answer.
+When you see the other seats' answers from the previous round:
+- Identify what is still genuinely unresolved (if anything).
+- For each open point, argue it: concede (name the seat, say why they're right) or hold (one concrete reason, only if it would make the answer unworkable). You may also present a new point the other seats haven't considered.
+- If nothing material remains, explicitly endorse the best answer on the table.
 
 Output format:
-- 1-3 sentences naming your disagreements with the other seats (which seat, which claim, why you disagree or concede).
+- 1-2 sentences: what is still open, or "I endorse the shared answer — no outstanding objections."
 - A line with exactly: --- FINAL ---
-- Your final answer in 2-4 sentences.
+- The single answer you are endorsing, in 2-4 sentences — written so all three seats could sign it.
 The --- FINAL --- marker is required so the host can extract your answer for consensus comparison.`;
 
 const COUNCIL_PROMPT_SYNTHESIST = `You are the SYNTHESIST seat on the Council — one of three Artemis instances deliberating in parallel on the same question. You cannot see the other two seats directly; you only see their proposed answers when shared between rounds.
 
-YOUR ANGLE: step back. What is the question really asking? What is the question behind the question? The other two seats will attack from below (skeptic) and from beside (pragmatist); you attack from above. Consider the framing itself, the context the asker is probably in, and what a good answer looks like to someone who doesn't know the technical details.
+YOUR ANGLE: step back. What is the question really asking — the question behind the question? The other two seats push from below (skeptic) and from beside (pragmatist); you pull from above. Consider the framing itself, the context the asker is probably in, and what a good answer looks like to someone who doesn't know the technical details.
 
-YOUR JOB IS TO ARGUE, NOT JUST ANSWER. When you see the other seats' answers, find the specific points where you think they're answering the wrong question, missing the bigger picture, or fighting over details that don't matter — and say so plainly. Name the seat and the claim: "Skeptic and Pragmatist are arguing about X but the user actually needs Y" or "Skeptic is technically right but that's not what the asker is really stuck on." Push back. Do not politely agree to disagree — either concede with a real reason or hold your ground with a concrete reason.
+YOUR OBJECTIVE IS TO CONVERGE, NOT TO WIN — but real debate is how you get there. The three of you are a council having a conversation: argue, agree, disagree, push back, present another point. Name the seats and the claim: "Skeptic and Pragmatist are arguing about X but the user actually needs Y." That is the method. The destination is ONE answer all three seats can stand behind. So argue hard about what matters — then move. Concede with a real reason the moment a point is sound; hold only on something that would make the answer miss the real point. You are well placed to propose the merged answer the other two can accept — offer it. If another seat's answer already captures the real point, say "I endorse the shared answer" and adopt it. Do NOT raise new objections just to stay distinct or to look rigorous — if nothing material is left, converge.
 
-Do not capitulate to keep the loop short. If the other seats are answering the literal question while missing the real one, say so and hold. If they've captured something your framing missed, say so and fold it in.
-
-When you see proposed answers from the previous round:
-- Identify the specific points of disagreement between your answer and theirs — including disagreements about what the real question even is.
-- For each disagreement, either concede (and say why their point holds) or hold (and say why yours does).
-- Then output your refined final answer.
+When you see the other seats' answers from the previous round:
+- Identify what is still genuinely unresolved (if anything) — including whether the real question is still in dispute.
+- For each open point, argue it: concede (name the seat, say why they're right) or hold (one concrete reason, only if it would make the answer miss the real point). You may also present a new point the other seats haven't considered.
+- If nothing material remains, explicitly endorse the best answer on the table — or propose the merged answer all three can sign.
 
 Output format:
-- 1-3 sentences naming your disagreements with the other seats (which seat, which claim, why you disagree or concede).
+- 1-2 sentences: what is still open, or "I endorse the shared answer — no outstanding objections."
 - A line with exactly: --- FINAL ---
-- Your final answer in 2-4 sentences.
+- The single answer you are endorsing, in 2-4 sentences — written so all three seats could sign it.
 The --- FINAL --- marker is required so the host can extract your answer for consensus comparison.`;
 
 const COUNCIL_SEAT_PROMPTS = [COUNCIL_PROMPT_SKEPTIC, COUNCIL_PROMPT_PRAGMATIST, COUNCIL_PROMPT_SYNTHESIST];
@@ -810,6 +804,56 @@ function extractFinalAnswer(s: string): string {
     return s.slice(idx + '--- FINAL ---'.length).trim();
 }
 
+// Lightweight judge: one model call with no tools that reads a council
+// deliberation and answers a single question about it. Used (1) after each
+// round to decide whether the seats have converged and the loop can stop,
+// and (2) at the end to read the full transcript and write the verdict.
+// Replaces byte-exact string matching — three independent prose answers
+// almost never match exactly even when they agree semantically, so a model
+// reading them is the right way to call agreement.
+async function councilJudge(prompt: string): Promise<string> {
+    const system = 'You read a council deliberation and answer the one question asked. Be terse and decisive. Do not add commentary.';
+    try {
+        const res = await runSubAgent('council-judge', ATLAS_MODEL, system, [], prompt, {}, 1);
+        return (res.content || '').trim();
+    } catch (err: any) {
+        log(`[council] judge failed (${err?.message ?? err}) — treating as no answer`);
+        return '';
+    }
+}
+
+// Over-prompting guard. The orchestrator is a small local model that, despite
+// the system prompt telling it not to, repeatedly hands specialists literal
+// shell commands to run (e.g. `grep -r ...`, `curl http://...`, `ollama list`,
+// `systemctl ... restart`). A delegate task is English intent — never a
+// command line — and the user has been emphatic about this. The model will not
+// reliably self-police, so enforce it here: if the task reads as a shell
+// command prescription, bounce it back instead of dispatching, and let the
+// orchestrator re-call with intent only.
+const SHELL_COMMAND_PRESCRIPTION_RES: RegExp[] = [
+    /\bcurl\s+https?:\/\//i,
+    /\bollama\s+(list|ps|run|show|pull|rm|cp)\b/i,
+    /\bgrep\s+-?[a-zA-Z]*r/i,
+    /\bsystemctl\s+/i,
+    /\bsudo\s+\w+/i,
+    /\bnpx\s+\w+/i,
+    /\bnpm\s+(run|start|test|install|i|uninstall)\b/i,
+    /\bnode\s+\S+\.(js|ts|mjs|cjs)\b/i,
+    /\bpython\s+\S+\.py\b/i,
+    /\bcat\s+\/\S/i,
+    /\bfind\s+\/\S/i,
+    /\bls\s+-[a-zA-Z]/i,
+    /\bsed\s+-/i,
+    /\bawk\s+/i,
+    /\bgit\s+(clone|pull|push|status|log|diff|add|commit|checkout|merge|rebase)\b/i,
+    /\bdocker\s+(ps|run|build|exec|logs|stop|start|restart)\b/i,
+    /\bcd\s+~?\//i,
+];
+function looksLikeCommandPrescription(t: string): boolean {
+    if (/`[^`]*\b(curl|ollama|grep|systemctl|sudo|npx|npm|node|python|cat|find|ls|sed|awk|git|docker|cd)\b[^`]*`/i.test(t)) return true;
+    return SHELL_COMMAND_PRESCRIPTION_RES.some(re => re.test(t));
+}
+
 const COUNCIL_TOOL_DEF = {
     type: 'function',
     function: {
@@ -819,7 +863,7 @@ const COUNCIL_TOOL_DEF = {
             type: 'object',
             properties: {
                 task: { type: 'string', description: 'The question for The Council to deliberate on. Self-contained — no chat history available to the seats.' },
-                max_rounds: { type: 'number', description: 'Maximum deliberation rounds. Default 4, capped at 7. Each round spawns 3 parallel Artemis calls and seats are expected to argue explicitly until they converge.' },
+                max_rounds: { type: 'number', description: 'Maximum deliberation rounds. Default 4, capped at 15. Each round spawns 3 parallel Artemis calls; seats argue, disagree, present new points, and work toward one answer all three can endorse.' },
             },
             required: ['task'],
         },
@@ -866,7 +910,7 @@ function delegateToolDef(s: SubAgentDef) {
                 parameters: {
                     type: 'object',
                     properties: {
-                        task: { type: 'string', description: 'What to accomplish, including file paths, URLs, and specifics' },
+                        task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order.' },
                         urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
                     },
                     required: ['task'],
@@ -881,7 +925,7 @@ function delegateToolDef(s: SubAgentDef) {
             description: `Delegate to ${s.label} for ${s.summary}. You do NOT have these tools directly — call this with a clear plain-language goal and you will receive a short text summary of the result.`,
             parameters: {
                 type: 'object',
-                properties: { task: { type: 'string', description: 'What to accomplish, including any specifics it needs (names, dates, amounts, IDs)' } },
+                properties: { task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (names, dates, amounts, IDs). Intent only — never steps, where to look, how to do it, or tool names.' } },
                 required: ['task'],
             },
         },
@@ -1376,7 +1420,7 @@ async function runNativeOllama(input: ContainerInput) {
             parameters: {
                 type: 'object',
                 properties: {
-                    task: { type: 'string', description: 'What to accomplish, including file paths, URLs, and specifics' },
+                    task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, where to look, how to code, or tool names.' },
                     urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
                 },
                 required: ['task'],
@@ -1524,9 +1568,24 @@ try {
     journalSection = '';
 }
 
-const systemPrompt = `# ROLE
+const systemPrompt = `# ROLE — YOU ARE THE ORCHESTRATOR
 
-You are ${input.assistantName || 'Warden'}, a personal assistant. You run on the user's own machine. Your job is to understand what the user wants, hand it to the right specialist, and relay the result back in plain spoken English. You orchestrate — the sub-agents do the hands-on work.
+You are ${input.assistantName || 'Warden'} — specifically, the **orchestrator**: the small, fast model at the top of a multi-model system. You are NOT a general-purpose assistant doing the work yourself. Your job is to understand what the user wants, decide which specialist handles it, hand off a clean brief, and relay the result back in plain spoken English. You orchestrate — the specialists do the hands-on work. You have no shell, no browser, and no filesystem write access; you route, you don't execute.
+
+# HOW WARDEN WORKS
+
+Warden is a multi-agent system running on the user's own machine. You are the conductor; the specialists are separate model instances, each with its own context, its own tools, and its own model — they cannot see this conversation and you cannot see their tools. You talk to each one by calling its delegate tool with a \`{task}\` string; it returns a short result. The roster:
+
+- **atlas** — execution. Shell, browser, desktop, files, web search/fetch, documents. Anything hands-on that touches the internet or runs commands. Runs a larger model (local or cloud) and always runs in the background — you get a job id, the full result arrives in your inbox later.
+- **iris** — email, calendar, contacts, todos.
+- **dexter** — scheduling and reminders (creates schedule entries only; never executes the work).
+- **byte** — projects, deliverables, blockers, financials, work tasks.
+- **artemis** — audit / second opinion on the conversation. Runs in the background like atlas.
+- **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree.
+
+Each specialist's model is picked per-role in the dashboard — local (Ollama) or cloud — and the orchestrator (you) has its own model too. You don't choose or see which model a specialist runs on; you just delegate. A specialist's result is its own work, in its own words — relay what matters, don't re-do it.
+
+Because you are the orchestrator and not the specialist: never try to do hands-on work inline, never reach for tools you don't have, and never tell the user "I can't" when a specialist could do it — delegate.
 
 # ENVIRONMENT
 
@@ -1580,17 +1639,38 @@ When in doubt, delegate to atlas. Only answer directly when no tools are needed.
 
 A clear instruction is permission — act on it and report the result. Don't ask "shall I proceed?" or narrate a plan first. Only ask a question when the request is genuinely unclear.
 
-# DELEGATING WELL
+# DELEGATING WELL — INTENT, NOT INSTRUCTIONS
 
-The \`task\` string is all the sub-agent sees — it has no chat history. Give it everything: the exact action, file paths, URLs, names, dates, values. A vague goal fails; a specific brief succeeds.
+Your whole job when delegating: capture what the user actually wants, and say that. Nothing more.
 
-State WHAT you need, never HOW to do it. Each delegate is the expert on its own domain and tools — it knows the right calls, the right order, and how to recover when something fails; you don't even see its tools. Give it the goal plus every fact it needs, and do NOT prescribe tool names, step-by-step instructions, or an implementation plan — a micromanaged specialist follows your worse plan instead of its better one.
+The \`task\` string is all the sub-agent sees — no chat history. Give it the FACTS it cannot guess — file paths, URLs, names, dates, values, the exact outcome wanted — then STOP. Specifics mean the WHAT (the goal and its facts), NEVER the HOW.
 
-The user often rambles — voice, not typing. Extract the real intent and compose a clean task; never forward the raw words. If a RELEVANT PATTERN fits, call \`fabric_pattern(name)\` and use its approach as inspiration for how you phrase the task. The sub-agents can't see those patterns — only you can, so you bake the framing in. Compose it yourself in clear words; don't paste the pattern.
+You do not see the sub-agent's tools. It is the expert on its own domain — the right calls, the right order, how to recover from failure. The instant you prescribe method, you make the expert follow your worse plan instead of its better one. So NEVER:
+- **put a shell command in the task — no \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, \`sudo\`, \`cat\`, or any CLI invocation. The task is English intent, not a command line; the specialist picks the commands.**
+- list steps ("first do X, then check Y, then go to Z…")
+- say where to look or how to find something — that is its job, not yours
+- describe how to code, what function to write, or what approach to take
+- name tools for it to call or the order to call them
+- write an implementation plan
 
-Bad: "fix the login page"
-Bad: "call read_emails with query=amazon, then get_email on the newest result, then…" (prescribing the how)
+If the system blocks your task with "you put a shell command in the task," that guard is right — rephrase the goal in plain English and re-call. Do not argue with it or work around it.
+
+One or two clean sentences: the goal plus the facts it needs. That is the whole task.
+
+IF YOU ARE NOT SURE what the user actually wants — the intent is ambiguous, or you are missing a fact the sub-agent would need (which file, which account, which date, which of two options) — DO NOT GUESS and DO NOT FORWARD A VAGUE TASK. Ask the user one short question to clarify, and wait. Delegating a guess burns a whole run for nothing; one clarifying question costs nothing. Ask only when genuinely unclear — a clear instruction is still permission to act, so do not ask "shall I proceed?" or narrate a plan when the ask is clear.
+
+The user often rambles — voice, not typing. Extract the real intent and compose a clean task; never forward the raw words. If a RELEVANT PATTERN fits, call \`fabric_pattern(name)\` and use its framing as inspiration for how you phrase the task — bake it in, in your own clear words; don't paste it.
+
+Bad: "fix the login page"  (vague — no facts)
+Bad: "call read_emails with query=amazon, then get_email on the newest result, then…"  (prescribing tools + order)
+Bad: "go to settings, click the gear icon, find the network section, look for the proxy field, and check whether it's set to…"  (prescribing steps + where to look)
+Bad: "write a function parseConfig that reads the file line by line, splits on '=', and returns an object…"  (prescribing how to code)
 Good: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix."
+Good: "The proxy setting in the app config isn't taking effect — find out why and fix it."
+
+WHEN A RESULT COMES BACK WRONG: re-delegate by describing the GAP, never the fix. Say what the user actually wanted and how the result you got differs from that — let the sub-agent work out how to correct it. Do NOT hand it steps, do NOT tell it which tool to retry or what to change, do NOT rewrite its approach. It is the expert; your job is to flag the mismatch in outcome, not to script the correction.
+Bad: "You didn't sort it. Re-run read_emails, then sort the results by date descending, then take the top one."  (prescribing the fix)
+Good: "The user wanted the most recent email from that thread. What you returned was the oldest — the result is in the wrong order. Get the newest one instead."
 
 Emit multiple delegate calls in one turn when the requests are independent — they run in parallel. Serialize only when one result feeds the next.
 **Atlas and artemis are always async:** calling either returns a job id immediately and the full result arrives later in your INBOX as a new turn — digest it in your own voice (report what matters, or silently use it to start the next task; never paste raw output — the user can ask, and you can read_job_result, if they want it verbatim). You are free to take new user messages while jobs run. NEVER use mode:"blocking". Add urgent:true when the finished result should interrupt whatever you are doing instead of waiting for your turn to end.
@@ -1599,7 +1679,7 @@ Split multi-domain requests across delegates — never stuff the whole request i
 
 # COUNCIL
 
-The Council is three seats — Skeptic, Pragmatist, Synthesist — deliberating in parallel until they agree. Call the \`council\` tool with a self-contained question. It runs in the background: the host tells you it's deliberating and you end your turn with no interim message. When it finishes (a minute or two), the host delivers the verdict to the user automatically. Reserve it for costly decisions, not routine questions.
+The Council is three seats — Skeptic, Pragmatist, Synthesist — deliberating in parallel until they agree. Call the \`council\` tool with a self-contained question. It runs in the background: the host tells you it's deliberating and you end your turn with no interim message. When it finishes (a few minutes — they argue up to 15 rounds before converging), the host delivers the verdict to the user automatically. Reserve it for costly decisions, not routine questions.
 
 While it deliberates you can peek without interrupting: call \`council_status\` to see the current round and each seat's latest answer. Use it whenever the user asks how the council is doing, what it's thinking, or whether it's done — never guess at its progress.
 
@@ -2696,6 +2776,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
 
     let result: string;
 
+    // Over-prompting guard: if the orchestrator put a literal shell command in a
+    // delegate task, bounce it back instead of dispatching (and before the
+    // task is spoken to the user). The task is English intent, not a command
+    // line — see looksLikeCommandPrescription above.
+    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'iris', 'dexter', 'byte', 'artemis', 'council']);
+    if (DELEGATE_TOOL_NAMES.has(toolName) && args.task && looksLikeCommandPrescription(String(args.task))) {
+        log(`[guard] blocked over-prompted ${toolName} task (contains shell command): ${String(args.task).slice(0, 120)}`);
+        return `STOP — you put a shell command in the task. That is over-prompting and the user has told you repeatedly to stop. A delegate task is plain-English INTENT for the specialist, not a command line. Do NOT include \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, or any other shell command — those are the specialist's calls to make, not yours. State the GOAL and the facts (paths, URLs, names, what's wrong) in normal English and let ${toolName} decide how to investigate. Re-call ${toolName} now with intent only.`;
+    }
+
     // Mid-turn, restate to the user what's about to happen (their intent, in
     // clean words) while the sub-agent runs in the background. The engineered
     // task string already is that restatement — speak it directly, no label.
@@ -2779,7 +2869,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         result = `Artemis ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the audit result will arrive in your inbox. (job id: ${jobId})`;
     } else if (toolName === 'council') {
         const task = ((args.task as string) || '').trim();
-        const maxRounds = Math.min(Math.max(Number(args.max_rounds ?? 4), 1), 7);
+        const maxRounds = Math.min(Math.max(Number(args.max_rounds ?? 4), 1), 15);
         if (!task) {
             result = 'Error: task is required';
         } else if (councilLive && councilLive.status === 'deliberating') {
@@ -2811,7 +2901,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                                 taskForInstance = `Question: ${task}\n\nReason about this from your seat's angle. Use Read/Grep/Glob to verify any factual claims if useful.\n\nOutput format:\n- 1-2 sentences of any initial reservations you have about the question framing or assumptions (skip if none).\n- A line with exactly: --- FINAL ---\n- Your best answer in 2-4 sentences.\nThe --- FINAL --- marker is required so the host can extract your answer for consensus comparison.`;
                             } else {
                                 const labeled = answers.map((a, idx) => `--- Seat ${COUNCIL_SEAT_NAMES[idx]} (previous round) ---\n${a}`).join('\n\n');
-                                taskForInstance = `Question: ${task}\n\nThree proposed answers from the previous round (yours and the two other seats, including any disagreements they raised):\n\n${labeled}\n\nNow ARGUE. Re-read the other seats' answers and identify the specific points where you disagree with them — claims, framings, assumptions, or omissions. For each disagreement: either concede (name the seat, quote the point, and say why they're right) or hold your ground (name the seat, quote the point, and say why you're right). Do not capitulate just to converge — if they're wrong, say so and hold. If they're right, say so and update.\n\nThen output your refined final answer in 2-4 sentences.`;
+                                taskForInstance = `Question: ${task}\n\nThree proposed answers from the previous round (yours and the two other seats, including any disagreements they raised):\n\n${labeled}\n\nHave it out. Re-read the other seats' answers; argue, agree, disagree, and present another point where you genuinely differ — name the seat, quote the point. For each real disagreement: concede (say why they're right) or hold (one concrete reason, only if it would make the answer wrong). You may raise a new point the others haven't considered. But do not argue for the sake of arguing — your destination is ONE answer all three seats can endorse. If another seat's answer already covers your concern, endorse it. Then output your refined final answer in 2-4 sentences, written so all three seats could sign it.`;
                             }
                             roundPromises.push(runSubAgent(`council-${COUNCIL_SEAT_NAMES[i].toLowerCase()}`, COUNCIL_SEAT_MODELS[i](), COUNCIL_SEAT_PROMPTS[i], ARTEMIS_TOOL_DEFS, taskForInstance, context, 30));
                         }
@@ -2821,22 +2911,21 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                         log(`[council] Round ${round} answer lengths: ${answers.map(a => a.length).join(', ')} | final-extracted: ${finalAnswers.map(a => a.length).join(', ')}`);
                         const roundBlock = answers.map((a, i) => `**${COUNCIL_SEAT_NAMES[i]}:**\n${a}`).join('\n\n');
                         roundsTrace.push(`### Round ${round}\n\n${roundBlock}`);
-                        const normalized = finalAnswers.map(normalizeForAgreement);
-                        if (normalized[0] && normalized[0] === normalized[1] && normalized[1] === normalized[2]) {
-                            agreed = finalAnswers[0];
-                            log(`[council] Consensus reached on round ${round}`);
+                        // After each round, have a model read the three seats' latest
+                        // final answers and decide whether they've reached a single
+                        // answer they all endorse. If so, stop — no need to keep arguing.
+                        const labeledF = finalAnswers.map((a, i) => `--- ${COUNCIL_SEAT_NAMES[i]} ---\n${a || '(no final answer)'}`).join('\n\n');
+                        const stopJudge = await councilJudge(
+                            `Three council seats deliberated on this question:\n\nQuestion: ${task}\n\nTheir latest final answers:\n\n${labeledF}\n\nDo the three seats now agree on a single answer they can all endorse? Reply with exactly one word on the first line — AGREE or DISAGREE — and nothing else.`
+                        );
+                        if (/^AGREE\b/i.test(stopJudge)) {
+                            agreed = finalAnswers.find(a => (a || '').trim().length > 0) || '';
+                            log(`[council] Round ${round}: judge says AGREE — stopping`);
                             break;
                         }
-                        const n = normalized;
-                        if (n[0] === n[1] && n[0] !== n[2]) {
-                            log(`[council] Round ${round}: 2/3 majority (Skeptic=Pragmatist) — continuing for full consensus`);
-                        } else if (n[0] === n[2] && n[0] !== n[1]) {
-                            log(`[council] Round ${round}: 2/3 majority (Skeptic=Synthesist) — continuing for full consensus`);
-                        } else if (n[1] === n[2] && n[1] !== n[0]) {
-                            log(`[council] Round ${round}: 2/3 majority (Pragmatist=Synthesist) — continuing for full consensus`);
-                        }
+                        log(`[council] Round ${round}: judge says DISAGREE — continuing`);
                         if (round < maxRounds) {
-                            writeStatus({ phase: 'artemis', label: `The Council round ${round} done — no consensus yet, convening round ${round + 1}...`, ts: Date.now() });
+                            writeStatus({ phase: 'artemis', label: `The Council round ${round} done — still deliberating, convening round ${round + 1}...`, ts: Date.now() });
                         }
                     }
                 } catch (err: any) {
@@ -2846,29 +2935,18 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                     writeCallback('send_message', { text: `[The Council] hit an error while deliberating: ${err?.message ?? err}. The question was: ${task.slice(0, 200)}` });
                     return;
                 }
-                writeStatus({ phase: 'artemis', label: agreed ? 'The Council: consensus reached' : 'The Council: no full consensus', ts: Date.now() });
+                writeStatus({ phase: 'artemis', label: agreed ? 'The Council: consensus reached' : 'The Council: deliberation complete', ts: Date.now() });
                 const trace = roundsTrace.join('\n\n---\n\n');
-                const finalAnswers = answers.map(extractFinalAnswer);
-                const normalizedFinal = finalAnswers.map(normalizeForAgreement);
-                let majorityAnswer: string | null = null;
-                let majorityIndex = -1;
-                if (!agreed) {
-                    if (normalizedFinal[0] === normalizedFinal[1]) { majorityAnswer = finalAnswers[0]; majorityIndex = 0; }
-                    else if (normalizedFinal[0] === normalizedFinal[2]) { majorityAnswer = finalAnswers[0]; majorityIndex = 0; }
-                    else if (normalizedFinal[1] === normalizedFinal[2]) { majorityAnswer = finalAnswers[1]; majorityIndex = 1; }
-                }
-                let verdict: string;
-                if (agreed) {
-                    verdict = `[The Council reached consensus after ${roundsDone} round(s) — all three seats (Skeptic, Pragmatist, Synthesist) converged on the same final answer.]\n\n${trace}\n\n---\n\n**Final agreed answer:**\n\n${agreed}`;
-                } else if (majorityAnswer) {
-                    const dissentIdx = [0, 1, 2].find(i => i !== majorityIndex && normalizeForAgreement(finalAnswers[i]) !== normalizeForAgreement(majorityAnswer)) ?? -1;
-                    const dissent = dissentIdx >= 0 ? finalAnswers[dissentIdx] : '';
-                    const majoritySeats = COUNCIL_SEAT_NAMES.filter((_, i) => i !== dissentIdx).join(' and ');
-                    verdict = `[The Council could not reach full consensus after ${roundsDone} round(s). ${majoritySeats} converged; ${COUNCIL_SEAT_NAMES[dissentIdx >= 0 ? dissentIdx : 0]} held a dissenting view and could not be moved.]\n\n${trace}\n\n---\n\n**Consensus answer (${majoritySeats}):**\n${majorityAnswer}\n\n**Dissenting answer (${COUNCIL_SEAT_NAMES[dissentIdx >= 0 ? dissentIdx : 0]}):**\n${dissent}`;
-                } else {
-                    const labeled = finalAnswers.map((a, i) => `--- ${COUNCIL_SEAT_NAMES[i]} ---\n${a}`).join('\n\n');
-                    verdict = `[The Council could not reach consensus after ${roundsDone} round(s). All three seats held substantively different final answers and could not converge.]\n\n${trace}\n\n---\n\n**Final answers:**\n\n${labeled}`;
-                }
+                // Have a model read the full transcript and write the verdict in
+                // plain language — whether they agreed, and the answer the council
+                // landed on. This replaces the byte-exact/majority string logic:
+                // the model reads what the seats actually said and summarizes it.
+                const verdictFromModel = await councilJudge(
+                    `You are reading the transcript of a council deliberation. Three seats — Skeptic, Pragmatist, Synthesist — argued the question below over ${roundsDone} round(s).\n\nQuestion: ${task}\n\nFull transcript:\n\n${trace}\n\nWrite the final verdict for the user. First line: state plainly whether the seats reached agreement (all three endorsing one answer) or not. Then give the answer the council landed on — if they agreed, that answer; if a majority converged, that answer (note the dissent in one line); if they still differ, give each seat's final position in one line. A few sentences total. Do not recap the whole transcript.`
+                );
+                const verdict = verdictFromModel
+                    ? `[The Council ${agreed ? 'reached consensus' : 'deliberated ' + roundsDone + ' round(s)'} — ${roundsDone} round(s).]\n\n${verdictFromModel}`
+                    : `[The Council ${agreed ? 'reached consensus' : 'could not reach consensus'} after ${roundsDone} round(s).]\n\n${trace}\n\n---\n\n**${agreed ? 'Final agreed answer:' : 'Final answers:'}**\n\n${agreed || answers.map((a, i) => `--- ${COUNCIL_SEAT_NAMES[i]} ---\n${a}`).join('\n\n')}`;
                 // Save the full verdict to a workspace document so users and
                 // other agents can read it later.
                 let verdictPath = '';
@@ -2889,13 +2967,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 // Push only the final verdict to the user — the full
                 // deliberation trace is saved to a file for reference but is
                 // too long to surface in chat.
-                const chatVerdict = agreed
-                    ? `**The Council reached consensus:**\n\n${agreed}`
-                    : majorityAnswer
-                        ? `**The Council majority view:**\n\n${majorityAnswer}\n\n*Could not reach full consensus. Full details saved to ${verdictPath || 'council-verdicts/'}.*`
-                        : `**The Council could not reach consensus.**\n\n*Full details saved to ${verdictPath || 'council-verdicts/'}.*`;
+                const chatVerdict = `**The Council verdict:**\n\n${verdictFromModel || `The council ${agreed ? 'reached consensus' : 'could not reach consensus'} after ${roundsDone} round(s).`}${verdictFromModel ? '' : `\n\n*Full details saved to ${verdictPath || 'council-verdicts/'}.*`}`;
                 if (councilLive) {
-                    councilLive.status = agreed ? 'consensus' : majorityAnswer ? 'majority' : 'no-consensus';
+                    councilLive.status = agreed ? 'consensus' : 'no-consensus';
                     councilLive.finishedAt = Date.now();
                     councilLive.verdictPath = verdictPath || undefined;
                 }
@@ -2906,7 +2980,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // Immediate tool result for the orchestrator — tell it to end its
             // turn silently. The final verdict will be pushed as the only
             // assistant message when the background Council loop completes.
-            result = `The Council is now deliberating in the background on this question. Do NOT write any message to the user now — end your turn immediately. The final verdict will be delivered to the user automatically when The Council completes (typically 1-3 minutes). If the user asks about its progress in the meantime, call council_status.`;
+            result = `The Council is now deliberating in the background on this question. Do NOT write any message to the user now — end your turn immediately. The final verdict will be delivered to the user automatically when The Council completes (a few minutes — they argue up to 15 rounds before converging). If the user asks about its progress in the meantime, call council_status.`;
         }
     } else if (toolName === 'council_status') {
         if (!councilLive) {
@@ -2918,7 +2992,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 ? `Still deliberating — round ${c.round} of ${c.maxRounds} in progress, ${elapsed}s elapsed.`
                 : c.status === 'error'
                     ? `Errored after ${elapsed}s: ${c.error}`
-                    : `Finished after ${elapsed}s (${c.round} round(s)) — ${c.status === 'consensus' ? 'full consensus reached' : c.status === 'majority' ? '2/3 majority, one dissent' : 'no consensus'}. The verdict was already delivered to the user${c.verdictPath ? `; full trace saved to ${c.verdictPath}` : ''}.`;
+                    : `Finished after ${elapsed}s (${c.round} round(s)) — ${c.status === 'consensus' ? 'consensus reached' : 'no consensus'}. The verdict was already delivered to the user${c.verdictPath ? `; full trace saved to ${c.verdictPath}` : ''}.`;
             // Show only the latest completed rounds so a long deliberation
             // doesn't flood the orchestrator's context.
             const recent = c.roundsTrace.slice(-2).join('\n\n---\n\n');
