@@ -1637,17 +1637,23 @@ async function handleOllamaTest(res: http.ServerResponse): Promise<void> {
       json(res, { ok: false, error: 'Ollama responded with ' + resp.status, friendlyNames });
       return;
     }
-    const data = (await resp.json()) as { models?: Array<{ name: string }> };
-    const models = (data.models || []).map((m: { name: string }) => m.name);
+    const data = (await resp.json()) as { models?: Array<{ name: string; size?: number }> };
+    const models: string[] = [];
+    const modelSizes: Record<string, number> = {};
+    for (const m of (data.models || [])) {
+      if (!m || !m.name) continue;
+      models.push(m.name);
+      if (typeof m.size === 'number' && m.size > 0) modelSizes[m.name] = m.size;
+    }
     const hasModel = models.some(
       (n: string) =>
         n === ollamaModel || n.startsWith(ollamaModel.split(':')[0]),
     );
     const thinkingConfig = readOllamaThinking();
-    json(res, { ok: true, model: ollamaModel, available: hasModel, models, friendlyNames, cloudModels: CLOUD_MODELS, thinking: thinkingConfig });
+    json(res, { ok: true, model: ollamaModel, available: hasModel, models, modelSizes, friendlyNames, cloudModels: CLOUD_MODELS, thinking: thinkingConfig });
   } catch {
     const thinkingConfig = readOllamaThinking();
-    json(res, { ok: false, error: 'Cannot reach Ollama at ' + ollamaUrl, friendlyNames, cloudModels: CLOUD_MODELS, thinking: thinkingConfig });
+    json(res, { ok: false, error: 'Cannot reach Ollama at ' + ollamaUrl, friendlyNames, modelSizes: {}, cloudModels: CLOUD_MODELS, thinking: thinkingConfig });
   }
 }
 

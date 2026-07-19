@@ -854,6 +854,20 @@ function looksLikeCommandPrescription(t: string): boolean {
     return SHELL_COMMAND_PRESCRIPTION_RES.some(re => re.test(t));
 }
 
+// Render a background job's step-by-step activity log (one line per tool call,
+// with a result preview) for the orchestrator. Used by agent_logs and
+// read_job_result so the orchestrator can see what an agent actually did
+// instead of re-running the work to find out.
+function formatActivityLog(log?: { t: number; tool: string; args: string; result?: string }[]): string {
+    if (!log || log.length === 0) return '\n\n(No step-by-step activity recorded for this job.)';
+    const lines = log.map((e, i) => {
+        const elapsed = i === 0 ? 0 : Math.round((e.t - log[0].t) / 1000);
+        const r = e.result ? ` → ${e.result.replace(/\n/g, ' ').slice(0, 120)}` : '';
+        return `[${i + 1}] +${elapsed}s ${e.tool}(${e.args || ''})${r}`;
+    });
+    return `\n\nStep-by-step activity (${log.length} call(s)):\n${lines.join('\n')}`;
+}
+
 const COUNCIL_TOOL_DEF = {
     type: 'function',
     function: {
@@ -972,6 +986,7 @@ interface BackgroundJob {
     lastActionAt: number;
     abortFlag: { aborted: boolean };
     status: 'running' | 'done' | 'errored' | 'aborted';
+    activityLog: { t: number; tool: string; args: string; result?: string }[];
 }
 const atlasBackgroundJobs = new Map<string, BackgroundJob>();
 // Emit a live verbose-status line summarizing the background jobs currently
@@ -990,6 +1005,70 @@ function emitAtlasJobsStatus() {
         ? `${head.agent}-${head.shortId}: ${head.lastAction} — ${head.toolCallCount} call(s), ${elapsed}s elapsed (last action ${sinceLast}s ago)`
         : `${running.length} jobs running — ${head.agent}-${head.shortId}: ${head.lastAction} (+${running.length - 1} more)`;
     writeStatus({ phase: head.agent, label, jobs: running.length, ts: Date.now() });
+}
+
+// ─── Direct Atlas passthrough ───────────────────────────────────────────
+// When the user asks to talk to Atlas directly, the orchestrator calls the
+// `atlas_direct` tool. That sets `atlasDirect.active` and the orchestrator's
+// turn ends. From then on, the idle loop routes the user's messages straight
+// to Atlas (a plain chat turn — Atlas asks questions, refines the task) until
+// the user exits ("back to Warden") or says go ("go"/"start"), at which point
+// Atlas is kicked off as a normal background job with the refined task and
+// the user is dropped back to normal orchestrator chat.
+let atlasDirect: { active: boolean; messages: { role: string; content: string }[] } | null = null;
+
+// Spawn an Atlas background job (used by the atlas delegate tool and by the
+// "go" exit from direct passthrough). Returns the job id.
+function spawnAtlasBackgroundJob(task: string, context: any, urgent: boolean): string {
+    const def = SUBAGENT_BY_DELEGATE.get('atlas')!;
+    const jobShortId = Math.random().toString(36).slice(2, 6);
+    const jobId = `atlas-${jobShortId}`;
+    let tools = SUBAGENT_TOOL_DEFS.get('atlas')!;
+    if (skillState && skillState.skills.length > 0) {
+        const allSkillNames = new Set(skillState.skills.map((s: any) => s.name));
+        const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
+        const existing = new Set(tools.map((t: any) => t.function?.name));
+        tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
+    }
+    const activeCount = atlasBackgroundJobs.size;
+    writeStatus({ phase: 'atlas', label: `Atlas ${jobShortId}: ${task.slice(0, 50)}...${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, ts: Date.now() });
+    const abortFlag = { aborted: false };
+    const jobRecord: BackgroundJob = {
+        promise: null as any, startedAt: Date.now(), agent: 'atlas', task, shortId: jobShortId,
+        toolCallCount: 0, lastAction: 'starting', lastActionAt: Date.now(), abortFlag,
+        status: 'running', activityLog: [],
+    };
+    const job = runSubAgent('atlas', ATLAS_MODEL, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
+        jobRecord.toolCallCount++;
+        jobRecord.lastAction = `${toolName}(${argsSummary})`;
+        jobRecord.lastActionAt = Date.now();
+        jobRecord.activityLog.push({ t: Date.now(), tool: toolName, args: argsSummary, result: resultPreview });
+        if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
+        emitAtlasJobsStatus();
+    })
+        .then(saResult => {
+            writeStatus({ phase: 'atlas', label: `Atlas ${jobShortId} complete`, ts: Date.now() });
+            if (jobRecord.status === 'running') jobRecord.status = 'done';
+            inbox.push({ jobId, agent: 'atlas', task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult: saResult.content || 'Atlas completed the task (no text output).', activityLog: jobRecord.activityLog });
+        })
+        .catch(err => {
+            if (jobRecord.status === 'running') jobRecord.status = 'errored';
+            inbox.push({ jobId, agent: 'atlas', task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
+        })
+        .finally(() => {
+            if (jobRecord.status === 'running') jobRecord.status = 'done';
+            // Refresh the jobs indicator: shows remaining running jobs, or
+            // emits a 0-count status so the dashboard clears when the last job
+            // finishes (emitAtlasJobsStatus no-ops when nothing is running, so
+            // emit an explicit zero here).
+            const remaining = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running').length;
+            writeStatus({ phase: remaining > 0 ? 'atlas' : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `Atlas ${jobShortId} complete`, jobs: remaining, ts: Date.now() });
+            setTimeout(() => { atlasBackgroundJobs.delete(jobId); }, 60000).unref?.();
+        });
+    jobRecord.promise = job;
+    atlasBackgroundJobs.set(jobId, jobRecord);
+    emitAtlasJobsStatus();
+    return jobId;
 }
 // Tool-calling sub-agent model (byte, dexter, iris) — from dashboard local:subagent_model.
 // The host always passes SUBAGENT_MODEL; the chain below is a last-resort default
@@ -1123,7 +1202,7 @@ async function runSubAgent(
     toolContext: any,
     maxIterations = 200,
     abortFlag?: { aborted: boolean },
-    onToolCall?: (toolName: string, argsSummary: string) => void,
+    onToolCall?: (toolName: string, argsSummary: string, resultPreview?: string) => void,
 ): Promise<{ content: string; modifiedFiles: string[] }> {
     const OLLAMA_URL = process.env.OLLAMA_URL || 'http://172.17.0.1:11434';
     const modifiedFiles = new Set<string>();
@@ -1319,16 +1398,27 @@ async function runSubAgent(
                                 return JSON.stringify(args).slice(0, 100);
                             } catch { return ''; }
                         })();
-                        onToolCall(name, argSummary);
-                    }
-                    try {
-                        const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
-                        const truncated = truncateToolResult(name, result);
-                        messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
-                        if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
-                            modifiedFiles.add(args.file_path);
-                    } catch (err: any) {
-                        messages.push({ role: 'tool', content: `Error: ${err.message}` });
+                        try {
+                            const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
+                            const truncated = truncateToolResult(name, result);
+                            messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
+                            if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
+                                modifiedFiles.add(args.file_path);
+                            onToolCall(name, argSummary, truncated.slice(0, 200));
+                        } catch (err: any) {
+                            messages.push({ role: 'tool', content: `Error: ${err.message}` });
+                            onToolCall(name, argSummary, `Error: ${err.message}`.slice(0, 200));
+                        }
+                    } else {
+                        try {
+                            const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
+                            const truncated = truncateToolResult(name, result);
+                            messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
+                            if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
+                                modifiedFiles.add(args.file_path);
+                        } catch (err: any) {
+                            messages.push({ role: 'tool', content: `Error: ${err.message}` });
+                        }
                     }
                 }
             } else {
@@ -1439,6 +1529,14 @@ async function runNativeOllama(input: ContainerInput) {
             },
         },
     };
+    const ATLAS_DIRECT_TOOL_DEF = {
+        type: 'function',
+        function: {
+            name: 'atlas_direct',
+            description: 'Hand the user straight to Atlas for a direct conversation. Use when the user explicitly asks to talk to Atlas directly, work with Atlas one-on-one, or refine a task with Atlas before it runs. After you call this, end your turn with one short line telling the user they are now talking to Atlas directly. From then on their messages go straight to Atlas (it can ask questions to get the task right) until they say "go" (Atlas starts the work in the background) or "back to Warden" (exit). You do NOT see or relay that conversation — Atlas runs it.',
+            parameters: { type: 'object', properties: {}, required: [] },
+        },
+    };
     const fullToolDefs = stripTier([
         ...registry.getDefinitions(
             registry.getAllToolNames().filter(n =>
@@ -1449,6 +1547,7 @@ async function runNativeOllama(input: ContainerInput) {
         COUNCIL_TOOL_DEF,
         COUNCIL_STATUS_TOOL_DEF,
         ATLAS_BACKGROUND_TOOL_DEF,
+        ATLAS_DIRECT_TOOL_DEF,
         READ_JOB_RESULT_TOOL_DEF,
     ]);
     // RAG-style dynamic tool selection: each turn, extract keywords from the
@@ -1462,6 +1561,7 @@ async function runNativeOllama(input: ContainerInput) {
         'council',
         'council_status',
         'atlas_background',
+        'atlas_direct',
         'read_job_result',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request', 'list_api_keys',
@@ -1614,6 +1714,7 @@ Answer directly, with no tools, for plain conversation, advice, definitions, tra
 - **artemis** — audit or second opinion on the conversation. Runs in the background like atlas: calling it returns a job id immediately and the audit arrives later in your INBOX as a new turn — end your turn after delegating, don't wait for it.
 - **council** — high-stakes decisions where being wrong is costly (see below)
 - **atlas** — everything else: anything hands-on that doesn't fit another specialist. Atlas always runs in the background; call it and move on.
+- **atlas_direct** — when the user explicitly asks to talk to Atlas directly ("let me talk to Atlas", "let me work with Atlas", "put me through to Atlas"): call \`atlas_direct\` and end your turn with one short line telling them they're now talking to Atlas directly. From then on their messages go straight to Atlas — you do NOT see or relay that conversation. Atlas asks them questions to get the task right, then they say "go" (Atlas starts the work) or "back to Warden" (exit). Do NOT call atlas_direct for ordinary work — only when the user explicitly asks for direct access.
 
 Route by the user's cue words, not just the verb:
 - email, inbox, mail, message from someone, sender, subject, order confirmation, tracking number, shipping, receipt, invoice, draft, reply, unsubscribe, an address like name@domain → **iris**. If the thing they want lives in an email — even if the ask is "find", "extract", "save", or "pull out" — it is iris, never an atlas file search.
@@ -1674,6 +1775,8 @@ Good: "The user wanted the most recent email from that thread. What you returned
 
 Emit multiple delegate calls in one turn when the requests are independent — they run in parallel. Serialize only when one result feeds the next.
 **Atlas and artemis are always async:** calling either returns a job id immediately and the full result arrives later in your INBOX as a new turn — digest it in your own voice (report what matters, or silently use it to start the next task; never paste raw output — the user can ask, and you can read_job_result, if they want it verbatim). You are free to take new user messages while jobs run. NEVER use mode:"blocking". Add urgent:true when the finished result should interrupt whatever you are doing instead of waiting for your turn to end.
+
+**You can see what your agents are doing.** You have three monitoring tools: \`list_running_agents\` (what's running right now — elapsed time, tool-call count, last action), \`agent_logs\` (the full step-by-step activity log of any job — every tool call it made, with a result preview, running or finished), and \`read_job_result\` (a finished job's final output, with its activity log). When you need to know whether a job succeeded, what it changed, or where it looked — READ ITS LOG with \`agent_logs\` or \`read_job_result\`. Do NOT re-delegate the same work to "double-check" it. That wastes a full run and tells the user you don't know what your own agents did. The log already has the answer.
 
 Split multi-domain requests across delegates — never stuff the whole request into one task. "Get the price and remind me tomorrow" is TWO calls: atlas fetches the price, then dexter gets a task containing the fetched number. Scheduling NEVER goes inside an atlas task (atlas has no scheduler and will improvise badly). And never re-delegate work a sub-agent already completed — take its result and move to the next step.
 
@@ -1765,6 +1868,14 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
     }
     // Main idle loop
     let isFirstUserTurn = true;
+    // True when the current turn was triggered by the inbox draining a finished
+    // background job (a "digest turn"), as opposed to a real user message or a
+    // monitor tick. Digest turns are spontaneous — no host turn is pending when
+    // they emit their OUTPUT — so the host's turn-output resolution can't
+    // deliver the reply. We route the reply through send_message instead (the
+    // same path the Council verdict uses), so the report-back actually reaches
+    // the user.
+    let turnWasInboxDigest = false;
     while (true) {
         // No per-turn flow-control reminder — the model replies when done and emits a
         // tool call when it needs one. (Completion guidance lives in the system prompt.)
@@ -2522,6 +2633,26 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
         } else {
             log('skipping success writeOutput — error output already written this turn');
         }
+        // Digest turns (inbox drained a finished background job) are spontaneous —
+        // no host turn is pending when they emit OUTPUT, so the reply above is
+        // dropped by the host. Route it through send_message so the report-back
+        // actually reaches the user, the same way the Council verdict is
+        // delivered. Skip when the orchestrator chose to say nothing (e.g. media
+        // playback success), and skip errored turns (the error path already spoke).
+        if (turnWasInboxDigest && !errorOutputWritten && outputContent && outputContent.trim()) {
+            try {
+                writeCallback('send_message', {
+                    type: 'message',
+                    chatJid: toolContext.chatJid,
+                    text: outputContent,
+                    groupFolder: toolContext.groupFolder,
+                    timestamp: new Date().toISOString(),
+                });
+                log(`[inbox] digest reply delivered via send_message (${outputContent.length} chars)`);
+            } catch (err: any) {
+                log(`[inbox] failed to deliver digest reply via send_message: ${err?.message ?? err}`);
+            }
+        }
         // Auto-send any files that were modified during tool execution but not attached
         const unsent = [...modifiedFiles].filter(f => !attachedFiles.has(f));
         for (const filePath of unsent) {
@@ -2546,6 +2677,13 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
         }
         modifiedFiles.clear();
         attachedFiles.clear();
+        // The host clears live status on OUTPUT_END (just above). If background
+        // jobs are still running, re-emit the jobs status immediately so the
+        // dashboard's running-jobs indicator doesn't blank out the moment the
+        // orchestrator's turn ends — it should stay on until the jobs finish.
+        // (Without this there's a dead zone between turn-end and the job's first
+        // tool call where the dashboard reads "idle" while Atlas is working.)
+        emitAtlasJobsStatus();
         // Persistent mode: wait for the next message via IPC instead of exiting.
         // While Atlas background jobs are running, race the IPC wait against a
         // recurring monitor tick. On each tick the orchestrator gets a synthetic
@@ -2557,17 +2695,100 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
         let monitorTickNumber = 0;
         let nextInput: string | null = null;
         while (nextInput === null) {
+            turnWasInboxDigest = false;
+            // Direct Atlas passthrough: while active, route the user's messages
+            // straight to Atlas until they exit or say go. Handled in the idle
+            // loop (not the orchestrator turn) so the orchestrator is untouched.
+            // Replies go via send_message because no host turn is pending here.
+            if (atlasDirect && atlasDirect.active) {
+                const atlasDirectSend = (text: string) => {
+                    try {
+                        writeCallback('send_message', {
+                            type: 'message',
+                            chatJid: toolContext.chatJid,
+                            text,
+                            groupFolder: toolContext.groupFolder,
+                            timestamp: new Date().toISOString(),
+                        });
+                    } catch (err: any) {
+                        log(`[atlas-direct] send_message failed: ${err?.message ?? err}`);
+                    }
+                };
+                while (atlasDirect && atlasDirect.active) {
+                    const ptCancel = { cancelled: false };
+                    const userMsg = await waitForIpcMessageWithTimeout(IDLE_TIMEOUT_MS, ptCancel);
+                    if (!userMsg) {
+                        log('[atlas-direct] idle timeout — exiting passthrough');
+                        atlasDirect = null;
+                        atlasDirectSend('Direct Atlas mode ended (idle timeout).');
+                        break;
+                    }
+                    const text = String(userMsg).trim();
+                    const exitMatch = /^(back to warden|exit|stop|nevermind|cancel|quit)\b/i.test(text)
+                        || /\b(back to warden|exit direct|leave atlas|back to normal)\b/i.test(text);
+                    const goMatch = /^(go|start|begin|do it|run it|that'?s? it|go ahead|kick it off|execute)\b/i.test(text);
+                    if (exitMatch) {
+                        atlasDirect = null;
+                        atlasDirectSend("Back to Warden — you're out of direct Atlas mode.");
+                        continue; // back to the idle loop's normal path
+                    }
+                    if (goMatch) {
+                        const transcript = atlasDirect.messages
+                            .map(m => `${m.role === 'user' ? 'User' : 'Atlas'}: ${m.content}`)
+                            .join('\n\n');
+                        const kickoffTask = `The user worked through this task with you one-on-one to get it right. Here is the full conversation:\n\n${transcript}\n\nNow execute the agreed task — the user has confirmed the details above. Proceed with your tools and report when done.`;
+                        const jobId = spawnAtlasBackgroundJob(kickoffTask, toolContext, false);
+                        atlasDirect = null;
+                        atlasDirectSend(`Atlas is starting on that now — I'll report back when it's done. (job ${jobId.slice('atlas-'.length)})`);
+                        continue; // back to the idle loop; Atlas runs in the background
+                    }
+                    // Chat turn: send the user's message to Atlas and speak its reply.
+                    atlasDirect.messages.push({ role: 'user', content: text });
+                    let reply = '';
+                    try {
+                        const atlasSys = SUBAGENT_BY_DELEGATE.get('atlas')!.systemPrompt;
+                        const ptMessages = [
+                            { role: 'system', content: atlasSys + '\n\nYou are in DIRECT MODE: talking to the user one-on-one, not via the orchestrator. Ask whatever questions you need to nail down exactly what they want — the goal, the specifics (paths, names, values), the constraints. Be concise and conversational, one or two short questions at a time. When the task is fully specified, tell the user to say "go" to start. Do NOT execute anything yet — this turn is only to get the task perfect.' },
+                            ...atlasDirect.messages,
+                        ];
+                        const resp = await fetch(CHAT_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                model: ATLAS_MODEL,
+                                messages: ptMessages,
+                                stream: false,
+                                keep_alive: -1,
+                                options: { num_predict: 1024, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL) },
+                            }),
+                        });
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            reply = (((data.message?.content || '') + '').trim()) || "I didn't catch that — can you say more about what you need?";
+                        } else {
+                            reply = `(Atlas chat error: HTTP ${resp.status})`;
+                        }
+                    } catch (err: any) {
+                        reply = `(Atlas chat error: ${err?.message ?? err})`;
+                    }
+                    atlasDirect.messages.push({ role: 'assistant', content: reply });
+                    atlasDirectSend(reply);
+                    // loop: wait for the next passthrough message
+                }
+                continue; // passthrough ended — back to the idle loop's normal path
+            }
             // Drain the inbox first: finished background jobs start an internal
             // digest turn immediately, before any waiting.
             const unreadItems = inbox.unread();
             if (unreadItems.length > 0) {
+                turnWasInboxDigest = true;
                 for (const item of unreadItems) inbox.markRead(item.jobId);
                 const lines = unreadItems.map(i => inbox.summaryLine(i)).join('\n');
                 const hasFailures = unreadItems.some(i => i.status === 'errored' || i.status === 'aborted');
                 const failureInstr = hasFailures
                     ? `\n\nOne or more jobs are marked [ERRORED] or [ABORTED]. For each: read its full output with read_job_result, work out why it failed, and retry it yourself by calling atlas with a reworked task prompt that addresses the failure (different approach, missing detail, corrected URL/path — whatever the output shows was wrong). Do not ask me first. EXCEPTION: if your recent context shows the same task has already failed twice, stop retrying and tell me what failed and why.`
                     : '';
-                nextInput = `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} arrived:\n${lines}\n\nFull outputs are available via read_job_result {job_id}. Digest these in your own voice: tell the user what matters (or nothing, if it only feeds later work), and start any follow-up tasks the results call for. Do not paste raw output verbatim. If a job's task was playing, pausing, or otherwise controlling media (YouTube, music, a video), send NOTHING to the user on success — the result is visible on their screen; speak up only if that job FAILED.${failureInstr}`;
+                nextInput = `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} arrived:\n${lines}\n\nFull outputs are available via read_job_result {job_id}. Digest these in your own voice: tell the user what matters (or nothing, if it only feeds later work), and start any follow-up tasks the results call for. Do not paste raw output verbatim. If a job's task was playing, pausing, or otherwise controlling media (YouTube, music, a video), send NOTHING to the user on success — the result is visible on their screen; speak up only if that job FAILED.${failureInstr}\n\nCONTINUING A CHAINED TASK: if this result is one step of a larger task the user asked for, DO NOT stop and wait for the user to prompt you. Immediately take the next step yourself — delegate the next sub-task to the right agent, or read_job_result for the full output if you need more detail first. The user should not have to say "and?" or "continue" to keep work moving. Only stop when the whole task is actually done or you are genuinely blocked.`;
                 log(`[inbox] draining ${unreadItems.length} item(s) into a digest turn`);
                 break;
             }
@@ -2626,7 +2847,7 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
                     const sinceLast = Math.round((Date.now() - j.lastActionAt) / 1000);
                     return `- ${j.agent}-${j.shortId}: ${elapsed}s elapsed, ${j.toolCallCount} tool call(s), last action ${sinceLast}s ago (${j.lastAction}). Task: "${j.task.slice(0, 160)}"`;
                 }).join('\n');
-                const synthetic = `[System monitor tick #${tickNum}] You have ${stillRunning.length} background job(s) still running:\n${jobLines}\n\nEvaluate each one without me asking: is it making progress, stuck, or doing the wrong thing? If it is stuck or doing the wrong thing, call stop_agent with its job id (e.g. atlas-XXXX) and tell me briefly what you stopped and why. If it looks fine, reply with one short sentence saying so and stop calling tools. Do not relay this tick to me as a regular message — only reply if you are stopping a job or have a real concern.`;
+                const synthetic = `[System monitor tick #${tickNum}] You have ${stillRunning.length} background job(s) still running:\n${jobLines}\n\nDefault: assume a job is fine and DO NOT stop it. Reading files (even via odd or repeated paths), trying different approaches, recovering from an error, or iterating on a search is PROGRESS — leave it alone. Only call stop_agent if a job is genuinely STUCK or LOOPING: no tool calls for a long stretch, or the SAME call repeating with no change. Do not stop a job just because a path looks strange or a step seems roundabout — the agent knows its tools better than you do. If everything looks fine, reply with one short sentence saying so and stop calling tools. Do not relay this tick to the user — only reply if you are stopping a job or have a real concern.`;
                 log(`[orchestrator-monitor] tick #${tickNum} fired with ${stillRunning.length} running job(s)`);
                 nextInput = synthetic;
                 break;
@@ -2816,6 +3037,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             lastActionAt: Date.now(),
             abortFlag,
             status: 'running',
+            activityLog: [],
         };
         const job = (async () => {
             writeIpcFile(TASKS_DIR, { type: 'get_chat_history', chatJid: context.chatJid, limit: 20, timestamp: new Date().toISOString() });
@@ -2825,10 +3047,12 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // exchange, not the oldest. Older messages drop off the top if over budget.
             const transcript = history ? JSON.stringify(history, null, 2).slice(-12000) : '(conversation history unavailable)';
             const auditTask = `${focus ? `Focus your audit on: ${focus}\n\n` : ''}Audit the following conversation (most recent messages last). Each entry has a sender_name and an is_bot_message flag — is_bot_message=1 is the AI assistant, otherwise it's the user.\n\n${transcript}`;
-            const artemisResult = await runSubAgent('artemis', ATLAS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, auditTask, context, def.maxIterations, abortFlag, (tName, argsSummary) => {
+            const artemisResult = await runSubAgent('artemis', ATLAS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, auditTask, context, def.maxIterations, abortFlag, (tName, argsSummary, resultPreview) => {
                 jobRecord.toolCallCount++;
                 jobRecord.lastAction = `${tName}(${argsSummary})`;
                 jobRecord.lastActionAt = Date.now();
+                jobRecord.activityLog.push({ t: Date.now(), tool: tName, args: argsSummary, result: resultPreview });
+                if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
                 emitAtlasJobsStatus();
             });
             if (artemisResult.modifiedFiles.length > 0) log(`[artemis] Tracked ${artemisResult.modifiedFiles.length} modified file(s): ${artemisResult.modifiedFiles.join(', ')}`);
@@ -3004,67 +3228,25 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     } else if (toolName === 'atlas' || toolName === 'atlas_background') {
         // Async atlas (the default) and the legacy atlas_background alias share
         // this path: start the job, return immediately, result lands in the inbox.
-        const def = SUBAGENT_BY_DELEGATE.get('atlas')!;
         const task = args.task as string;
         const urgent = args.urgent === true;
         if (!task) {
             result = 'Error: task is required';
         } else {
-            const jobShortId = Math.random().toString(36).slice(2, 6);
-            const jobId = `atlas-${jobShortId}`;
-            let tools = SUBAGENT_TOOL_DEFS.get('atlas')!;
-            if (skillState && skillState.skills.length > 0) {
-                const allSkillNames = new Set(skillState.skills.map((s: any) => s.name));
-                const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
-                const existing = new Set(tools.map((t: any) => t.function?.name));
-                tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
-            }
-            const activeCount = atlasBackgroundJobs.size;
-            writeStatus({ phase: 'atlas', label: `Atlas ${jobShortId}: ${task.slice(0, 50)}...${activeCount > 0 ? ` (${activeCount} running)` : ''}`, ts: Date.now() });
-            const abortFlag = { aborted: false };
-            const jobRecord: BackgroundJob = {
-                promise: null as any,
-                startedAt: Date.now(),
-                agent: 'atlas',
-                task,
-                shortId: jobShortId,
-                toolCallCount: 0,
-                lastAction: 'starting',
-                lastActionAt: Date.now(),
-                abortFlag,
-                status: 'running',
-            };
-            const job = runSubAgent('atlas', ATLAS_MODEL, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary) => {
-                jobRecord.toolCallCount++;
-                jobRecord.lastAction = `${toolName}(${argsSummary})`;
-                jobRecord.lastActionAt = Date.now();
-                emitAtlasJobsStatus();
-            })
-                .then(saResult => {
-                    writeStatus({ phase: 'atlas', label: `Atlas ${jobShortId} complete`, ts: Date.now() });
-                    if (jobRecord.status === 'running') jobRecord.status = 'done';
-                    inbox.push({
-                        jobId, agent: 'atlas', task, urgent,
-                        status: jobRecord.abortFlag.aborted ? 'aborted' : 'done',
-                        fullResult: saResult.content || 'Atlas completed the task (no text output).',
-                    });
-                })
-                .catch(err => {
-                    if (jobRecord.status === 'running') jobRecord.status = 'errored';
-                    inbox.push({
-                        jobId, agent: 'atlas', task, urgent,
-                        status: 'errored',
-                        fullResult: `Error: ${err?.message ?? err}`,
-                    });
-                })
-                .finally(() => {
-                    if (jobRecord.status === 'running') jobRecord.status = 'done';
-                    setTimeout(() => { atlasBackgroundJobs.delete(jobId); }, 60000).unref?.();
-                });
-            jobRecord.promise = job;
-            atlasBackgroundJobs.set(jobId, jobRecord);
-            emitAtlasJobsStatus();
+            const jobId = spawnAtlasBackgroundJob(task, context, urgent);
+            const jobShortId = jobId.slice('atlas-'.length);
             result = `Atlas ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
+        }
+    } else if (toolName === 'atlas_direct') {
+        // Enter direct Atlas passthrough mode. The orchestrator speaks a short
+        // "you're now talking to Atlas directly" line and ends its turn. After
+        // that, the idle loop routes the user's messages straight to Atlas
+        // until the user exits or says go.
+        if (atlasDirect && atlasDirect.active) {
+            result = 'Already in direct Atlas mode. End your turn and let the user talk to Atlas.';
+        } else {
+            atlasDirect = { active: true, messages: [] };
+            result = `Direct Atlas mode is on. Tell the user, in one short sentence, that they're now talking to Atlas directly — they can describe what they need and Atlas will ask questions to get it right, then say "go" to start or "back to Warden" to exit. Then end your turn immediately and do nothing else.`;
         }
     } else if (toolName === 'byte' || toolName === 'dexter' || toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
@@ -3108,8 +3290,32 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         } else {
             const item = inbox.get(jobId);
             result = item
-                ? `${item.jobId} (${item.agent}, ${item.status}) — task: "${item.task}"\n\n${item.fullResult}`
+                ? `${item.jobId} (${item.agent}, ${item.status}) — task: "${item.task}"\n\n${item.fullResult}${formatActivityLog(item.activityLog)}`
                 : `No stored result for "${jobId}". Results live for this runner session only — use read_job_result with no arguments to list what is available.`;
+        }
+    } else if (toolName === 'agent_logs') {
+        const jobId = String(args.job_id || '').trim();
+        if (!jobId) {
+            const running = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+            const recent = inbox.all().slice(-10);
+            const parts: string[] = [];
+            parts.push(running.length === 0
+                ? 'No background jobs currently running.'
+                : `Running now (${running.length}):\n${running.map(j => `- ${j.agent}-${j.shortId}: ${j.toolCallCount} call(s), last ${j.lastAction}`).join('\n')}`);
+            parts.push(recent.length === 0
+                ? 'No finished jobs yet.'
+                : `Recent finished jobs:\n${recent.map(i => `- ${i.jobId} (${i.agent}, ${i.status}): "${i.task.slice(0, 80)}"`).join('\n')}`);
+            result = parts.join('\n\n') + '\n\nPass a job_id to read that job\'s full step-by-step activity log.';
+        } else {
+            const job = atlasBackgroundJobs.get(jobId);
+            const log = job?.activityLog ?? inbox.get(jobId)?.activityLog;
+            const task = job?.task ?? inbox.get(jobId)?.task ?? '';
+            const status = job?.status ?? inbox.get(jobId)?.status;
+            if (!log && !job) {
+                result = `No job found with id "${jobId}". Call agent_logs with no arguments to list recent jobs.`;
+            } else {
+                result = `Activity log for ${jobId}${status ? ` (${status})` : ''}${task ? ` — task: "${task.slice(0, 140)}"` : ''}:${formatActivityLog(log)}`;
+            }
         }
     } else if (toolName === 'list_running_agents') {
         const entries = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');

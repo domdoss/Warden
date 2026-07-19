@@ -714,11 +714,13 @@
       STATE.cachedOllamaModels = d.models || [];
       STATE.cachedFriendlyNames = d.friendlyNames || {};
       STATE.cachedCloudModels = d.cloudModels || [];
+      STATE.cachedModelSizes = d.modelSizes || {};
       STATE.cachedThinking = d.thinking || {};
     } catch (e) {
       STATE.cachedOllamaModels = [];
       STATE.cachedFriendlyNames = {};
       STATE.cachedCloudModels = [];
+      STATE.cachedModelSizes = {};
       STATE.cachedThinking = {};
     }
   }
@@ -726,13 +728,29 @@
   function modelOption(value, label, selected) {
     return '<option value="' + escAttr(value) + '"' + (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
   }
+  function fmtModelSize(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    const gb = bytes / (1024 * 1024 * 1024);
+    if (gb >= 1) return (gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)) + ' GB';
+    const mb = bytes / (1024 * 1024);
+    return Math.round(mb) + ' MB';
+  }
   function buildModelOptions(models, fn, valueFn, opts) {
     opts = opts || {};
     if (!models.length) return '<option value="">No models</option>';
     const inheritOpt = opts.inherit ? '<option value="">(inherit)</option>' : '';
+    const sizes = STATE.cachedModelSizes || {};
     return inheritOpt + models.map(m => {
       const value = valueFn(m);
-      const label = fn[m] || (m.split(':')[0] || m);
+      // Show the full model name (with its :tag) so different variants are
+      // distinguishable — e.g. gemma4:e4b-it-q4_K_M vs gemma4:31b-cloud — plus
+      // the local size. A user-set friendly name still wins.
+      let label = fn[m];
+      if (!label) {
+        label = m;
+        const sz = fmtModelSize(sizes[m]);
+        if (sz) label += '  ·  ' + sz;
+      }
       return modelOption(value, label);
     }).join('');
   }

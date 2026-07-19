@@ -19,6 +19,7 @@ export interface InboxItem {
     urgent: boolean;
     read: boolean;
     finishedAt: number;
+    activityLog?: { t: number; tool: string; args: string; result?: string }[];
 }
 
 const items = new Map<string, InboxItem>();

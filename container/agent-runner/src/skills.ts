@@ -140,6 +140,21 @@ export function buildAlwaysOnTools(): Tool[] {
     {
       type: 'function',
       function: {
+        name: 'agent_logs',
+        description:
+          "Read a background agent's step-by-step activity log — every tool call it made, with a preview of each call's result. Works on a running job (live progress) or a finished one (what it actually did, in order). Use this when you need to know what an agent actually did — whether it succeeded, what it changed, where it looked — instead of asking it to re-run or re-check. Pass the job id (e.g. atlas-abcd); omit it to get a one-line list of recent jobs.",
+        parameters: {
+          type: 'object',
+          properties: {
+            job_id: { type: 'string', description: 'The job id (e.g. atlas-abcd). Omit to list recent jobs.' },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'install_mcp_server',
         description:
           'Register a new MCP server (written to data/mcp-servers.json). Available as a skill on the next turn.',
