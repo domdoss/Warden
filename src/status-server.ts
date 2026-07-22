@@ -476,31 +476,6 @@ function safePath(rel: string): string | null {
 }
 
 function serveStatic(res: http.ServerResponse, urlPath: string): void {
-  // /beta/ → preview the beta dashboard at public/beta/. Beta edits happen here
-  // before promotion to the live / root dashboard.
-  if (urlPath === '/beta' || urlPath === '/beta/' || urlPath.startsWith('/beta/')) {
-    const betaDir = path.join(STATIC_DIR, 'beta');
-    let rel = (urlPath === '/beta' || urlPath === '/beta/') ? '/index.html' : urlPath.slice('/beta'.length);
-    if (rel === '' || rel === '/') rel = '/index.html';
-    const filePath = path.join(betaDir, rel);
-    if (!filePath.startsWith(betaDir)) {
-      res.writeHead(403);
-      res.end('Forbidden');
-      return;
-    }
-    const ext = path.extname(filePath);
-    const mime = MIME[ext] || 'application/octet-stream';
-    fs.readFile(filePath, (err, data) => {
-      if (err) {
-        res.writeHead(404);
-        res.end('Not found');
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', ...SECURITY_HEADERS });
-      res.end(data);
-    });
-    return;
-  }
   // Single-user local dashboard: serve the actual chat dashboard at root.
   let rel = urlPath === '/' ? '/index.html' : urlPath;
   if (urlPath === '/login' || urlPath === '/signup' || urlPath === '/reset-password') {
