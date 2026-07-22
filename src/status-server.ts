@@ -3616,20 +3616,74 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
       if (pathname === '/api/calendar/events' && req.method === 'GET') {
+        const events = listCalendarEvents({
+          start: params.get('start') || undefined,
+          end: params.get('end') || undefined,
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ events: [] }));
+        res.end(JSON.stringify({ events }));
         return;
       }
       if (pathname === '/api/calendar/events' && req.method === 'POST') {
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, id: `evt-${Date.now()}` }));
+        try {
+          const body = parseJson(await parseBody(req)) as {
+            title: string; start_time: string; end_time?: string;
+            all_day?: boolean; location?: string; description?: string; color?: string;
+          };
+          if (!body.title || !body.start_time) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'title and start_time required' }));
+            return;
+          }
+          const id = createCalendarEvent({
+            title: body.title,
+            start_time: body.start_time,
+            end_time: body.end_time,
+            all_day: body.all_day,
+            location: body.location,
+            description: body.description,
+            color: body.color,
+          });
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, id }));
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
         return;
       }
       const calEventMatch = pathname.match(/^\/api\/calendar\/events\/([^/]+)$/);
-      if (calEventMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-        return;
+      if (calEventMatch) {
+        const eventId = decodeURIComponent(calEventMatch[1]);
+        if (req.method === 'PUT') {
+          try {
+            const body = parseJson(await parseBody(req)) as {
+              title?: string; start_time?: string; end_time?: string;
+              all_day?: boolean; location?: string; description?: string; color?: string;
+            };
+            updateCalendarEvent(eventId, {
+              ...body,
+              all_day: body.all_day !== undefined ? (body.all_day ? 1 : 0) : undefined,
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
+        if (req.method === 'DELETE') {
+          try {
+            deleteCalendarEvent(eventId);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
       }
       if (pathname === '/api/calendar/import' && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
