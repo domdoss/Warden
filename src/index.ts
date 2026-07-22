@@ -489,7 +489,14 @@ export function buildAgentCallbacks(): CallbackMap {
       try {
         const { listCalendarEvents } = await import('./db.js');
         const dbEvents = listCalendarEvents({ start: args?.start, end: args?.end });
-        const caldavEvents = await listEvents(args?.start, args?.end);
+        let caldavEvents: any[] = [];
+        try {
+          caldavEvents = await listEvents(args?.start, args?.end);
+        } catch (err: any) {
+          // Radicale/CalDAV often isn't running — fall back to DB events only
+          // instead of failing the whole list.
+          logger.warn({ err: String(err?.message ?? err) }, 'calendar: CalDAV unavailable, returning DB events only');
+        }
         // Merge: DB events first, then CalDAV (dedup by title+start)
         const seen = new Set<string>();
         const merged: any[] = [];

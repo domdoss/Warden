@@ -3645,7 +3645,7 @@ export function startStatusServer(d: StatusDeps): void {
           end: params.get('end') || undefined,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ events }));
+        res.end(JSON.stringify({ ok: true, data: { events } }));
         return;
       }
       if (pathname === '/api/calendar/events' && req.method === 'POST') {
