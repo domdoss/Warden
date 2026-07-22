@@ -314,6 +314,7 @@
           <span class="dim hidden" id="calKontactBadge" style="margin-left:6px">synced to Kontact via Radicale</span>
           <span class="spacer"></span>
           <button class="btn btn-primary btn-sm" id="btnCalNew">+ New Event</button>
+          <button class="btn btn-ghost btn-sm" id="btnCalSelect">Calendars</button>
           <button class="btn btn-ghost btn-sm" id="btnCalExport">Export .ics</button>
           <button class="btn btn-ghost btn-sm" id="calToday">Today</button>
           <button class="btn btn-ghost btn-sm" id="calPrev">‹</button>
@@ -1209,6 +1210,17 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
         <button class="btn btn-primary btn-sm" id="btnAddSender">Add</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ===== Generic Modal ===== -->
+<div class="modal-overlay" id="genericModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <span class="modal-title" id="genericModalTitle">Dialog</span>
+      <button class="modal-close" id="btnGenericModalClose" title="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="genericModalBody"></div>
   </div>
 </div>
 

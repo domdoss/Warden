@@ -124,6 +124,14 @@ export async function pullCalendarEvents(
     providerCalendars = [{ id: '', name: 'Default' }];
   }
 
+  // Filter out hidden calendars
+  let hiddenIds: Set<string> = new Set();
+  try {
+    const hidden = JSON.parse(account.hidden_calendars || '[]');
+    if (Array.isArray(hidden)) hiddenIds = new Set(hidden);
+  } catch { /* ignore parse errors */ }
+  providerCalendars = providerCalendars.filter(c => !hiddenIds.has(c.id));
+
   // Load existing events from this provider for this user
   const allUserEvents = listCalendarEvents({ assigned_to: account.user_id });
   const existingEvents = allUserEvents.filter(

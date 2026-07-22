@@ -672,7 +672,8 @@ RULES:
 3. NEVER claim, simulate, or pretend to have completed work. If a tool returns no results or an error, report exactly what happened and stop. Do not invent folder names, email counts, or outcomes.
 4. After your last tool call, write one plain-text confirmation: how many emails matched, which folder you wrote to, and the filenames. Include any failures verbatim.
 5. Do NOT redact email addresses, names, dates, or quoted content. Everything runs on-device — there is no privacy boundary to enforce. Use real names and real addresses.
-6. ACCOUNTS: the user may have multiple email accounts configured. Unless they name one, use the first enabled account as the default. When you send an email, state which account it was sent from. If no account is configured, say exactly that — never invent inbox contents.`,
+6. ACCOUNTS: the user may have multiple email accounts configured. Unless they name one, use the first enabled account as the default. When you send an email, state which account it was sent from. If no account is configured, say exactly that — never invent inbox contents.
+7. CALENDAR EVENTS: when listing or reporting calendar events, ALWAYS include the full date, start time, end time, and location (if any). Never report just the event name. Format times clearly for the user.`,
         toolsets: ['iris-core'],
         mcpServers: ['kmail', 'akonadi', 'kontact'],
     },

@@ -487,8 +487,49 @@ export function buildAgentCallbacks(): CallbackMap {
     // ─── Calendar (stateless CalDAV against local Radicale) ──────────────
     list_calendar_events: async (args: any) => {
       try {
-        const events = await listEvents(args?.start, args?.end);
-        return { ok: true, events };
+        const { listCalendarEvents } = await import('./db.js');
+        const dbEvents = listCalendarEvents({ start: args?.start, end: args?.end });
+        const caldavEvents = await listEvents(args?.start, args?.end);
+        // Merge: DB events first, then CalDAV (dedup by title+start)
+        const seen = new Set<string>();
+        const merged: any[] = [];
+        for (const e of dbEvents) {
+          const key = `${e.title}|${e.start_time || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push({
+            title: e.title,
+            start: e.start_time,
+            start_time: e.start_time,
+            end: e.end_time,
+            end_time: e.end_time,
+            all_day: e.all_day === 1,
+            location: e.location || '',
+            description: e.description || '',
+            calendar_source: e.calendar_source || 'google',
+            uid: e.ical_uid || e.id,
+            event_id: e.ical_uid || e.id,
+          });
+        }
+        for (const e of caldavEvents) {
+          const key = `${e.title}|${e.start || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push({
+            title: e.title,
+            start: e.start,
+            start_time: e.start,
+            end: e.end || null,
+            end_time: e.end || null,
+            all_day: e.allDay === true,
+            location: e.location || '',
+            description: e.description || '',
+            calendar_source: 'caldav',
+            uid: e.uid,
+            event_id: e.uid,
+          });
+        }
+        return { ok: true, events: merged };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
     create_calendar_event: async (args: any) => {

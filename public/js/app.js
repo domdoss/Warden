@@ -1162,6 +1162,86 @@
   // ============================================================= Accounts
   const ACCOUNTS = { oauthConfigured: { google: false, microsoft: false }, oauth: [], imap: [], keys: [], channels: [] };
 
+  async function showCalendarToggles(accountId) {
+    try {
+      const r = await api('/api/oauth/accounts/' + encodeURIComponent(accountId) + '/calendars');
+      if (!r.ok) { toast('Failed to load calendars', 'error'); return; }
+      const calendars = r.data.calendars || [];
+      let html = '<div style="max-height:400px;overflow-y:auto">';
+      html += '<p class="dim" style="margin:0 0 8px">Toggle which calendars to sync:</p>';
+      calendars.forEach(cal => {
+        html += '<label class="toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+          '<input type="checkbox" ' + (cal.hidden ? '' : 'checked') + ' data-cal-id="' + escAttr(cal.id) + '"> ' +
+          esc(cal.name || cal.id || 'Default') + '</label>';
+      });
+      html += '</div>';
+      html += '<div style="margin-top:12px;display:flex;gap:6px;justify-content:flex-end">' +
+        '<button class="btn btn-ghost btn-sm" id="btnCalToggleCancel">Cancel</button>' +
+        '<button class="btn btn-primary btn-sm" id="btnCalToggleSave">Save</button></div>';
+      showModal('Select Calendars', html);
+      $('btnCalToggleCancel').addEventListener('click', closeModal);
+      $('btnCalToggleSave').addEventListener('click', async () => {
+        const hidden = [];
+        document.querySelectorAll('[data-cal-id]').forEach(cb => {
+          if (!cb.checked) hidden.push(cb.dataset.calId);
+        });
+        try {
+          await putJson('/api/oauth/accounts/' + encodeURIComponent(accountId) + '/calendars', { hidden_calendars: hidden });
+          toast('Calendar selection saved', 'success');
+          closeModal();
+        } catch (e) { toast('Failed: ' + e.message, 'error'); }
+      });
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  // Calendar-pane selector: list every connected calendar account's calendars
+  // with show/hide toggles (hidden_calendars), saved per-account. Same mechanism
+  // as the per-account showCalendarToggles, but surfaced from the calendar view.
+  async function showAllCalendarToggles() {
+    const accts = (ACCOUNTS.oauth || []).filter(a => a.calendar_enabled);
+    if (!accts.length) { toast('No calendar accounts connected.', 'error'); return; }
+    let body = '<div style="max-height:60vh;overflow-y:auto">';
+    let any = false;
+    for (const a of accts) {
+      try {
+        const r = await api('/api/oauth/accounts/' + encodeURIComponent(a.id) + '/calendars');
+        const cals = (r && r.data && r.data.calendars) || [];
+        if (!cals.length) continue;
+        any = true;
+        body += '<h4 style="margin:10px 0 4px">' + esc(a.email || a.provider) + '</h4>';
+        cals.forEach(cal => {
+          body += '<label class="toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+            '<input type="checkbox" ' + (cal.hidden ? '' : 'checked') +
+            ' data-acct="' + escAttr(a.id) + '" data-cal-id="' + escAttr(cal.id) + '"> ' +
+            esc(cal.name || cal.id) + '</label>';
+        });
+      } catch (e) { /* skip account */ }
+    }
+    if (!any) { toast('No calendars found.', 'error'); return; }
+    body += '</div>';
+    body += '<div style="margin-top:12px;display:flex;gap:6px;justify-content:flex-end">' +
+      '<button class="btn btn-ghost btn-sm" id="btnCalToggleCancel">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" id="btnCalToggleSave">Save</button></div>';
+    showModal('Select Calendars', body);
+    $('btnCalToggleCancel').addEventListener('click', closeModal);
+    $('btnCalToggleSave').addEventListener('click', async () => {
+      const byAcct = {};
+      document.querySelectorAll('[data-cal-id]').forEach(cb => {
+        const aid = cb.dataset.acct;
+        if (!byAcct[aid]) byAcct[aid] = [];
+        if (!cb.checked) byAcct[aid].push(cb.dataset.calId);
+      });
+      try {
+        for (const aid of Object.keys(byAcct)) {
+          await putJson('/api/oauth/accounts/' + encodeURIComponent(aid) + '/calendars', { hidden_calendars: byAcct[aid] });
+        }
+        toast('Calendar selection saved', 'success');
+        closeModal();
+        if (window.PIM && window.PIM.refreshCalendar) window.PIM.refreshCalendar();
+      } catch (e) { toast('Failed: ' + e.message, 'error'); }
+    });
+  }
+
   async function refreshAccounts() {
     try {
       const settings = await api('/api/settings');
@@ -1227,6 +1307,7 @@
           '<div class="actions">' +
             '<label class="toggle"><input type="checkbox" data-field="email_enabled" ' + (a.email_enabled ? 'checked' : '') + '> Email</label>' +
             '<label class="toggle"><input type="checkbox" data-field="calendar_enabled" ' + (a.calendar_enabled ? 'checked' : '') + '> Cal</label>' +
+            '<button class="btn btn-ghost btn-sm btn-oauth-calendars">Calendars</button>' +
             '<button class="btn btn-danger btn-sm btn-oauth-disconnect">Disconnect</button>' +
           '</div></div>';
       }).join('');
@@ -1238,6 +1319,9 @@
             try { await patchJson('/api/oauth/accounts/' + encodeURIComponent(id), body); toast('Updated', 'success'); await refreshAccounts(); }
             catch (e) { toast('Failed: ' + e.message, 'error'); }
           });
+        });
+        card.querySelector('.btn-oauth-calendars').addEventListener('click', async () => {
+          await showCalendarToggles(id);
         });
         card.querySelector('.btn-oauth-disconnect').addEventListener('click', async () => {
           if (!confirm('Disconnect this account?')) return;
@@ -1317,9 +1401,9 @@
     let html = '';
     if (type === 'telegram') {
       html = '<div class="drawer-form">' +
-        '<p class="dim" style="font-size:11px;margin-bottom:10px">1. Message @BotFather on Telegram, send /newbot, and copy the API token. 2. Add the bot to a group or chat and send /chatid to get the chat ID. 3. Paste both below.</p>' +
+        '<p class="dim" style="font-size:11px;margin-bottom:10px">1. Message @BotFather on Telegram, send /newbot, and copy the API token. 2. Paste it below and click Connect. 3. Send /start to your bot on Telegram to pair.</p>' +
         '<label>Bot token</label><input type="password" class="input" id="chToken" value="" placeholder="123456:ABC...">' +
-        '<label>Chat ID</label><input class="input" id="chChatId" value="' + escAttr(ch?.chatId || '') + '" placeholder="-1001234567890">' +
+        (ch?.chatId ? '<p class="dim" style="font-size:11px;margin:4px 0">Paired chat: <code>' + esc(ch.chatId) + '</code></p>' : '<p class="dim" style="font-size:11px;margin:4px 0">Not paired yet — send /start to your bot on Telegram</p>') +
         '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><button class="btn btn-primary btn-sm" id="btnSaveChannel">Connect</button></div>' +
       '</div>';
     } else if (type === 'slack') {
@@ -1347,7 +1431,10 @@
     const token = $('chToken').value.trim();
     if (!token) { toast('Token required', 'warn'); return; }
     const body = { token };
-    if (type === 'telegram') body.chatId = $('chChatId').value.trim();
+    if (type === 'telegram') {
+      const chatId = $('chChatId')?.value?.trim();
+      if (chatId) body.chatId = chatId;
+    }
     if (type === 'slack') body.channelId = $('chChannelId').value.trim();
     try {
       const d = await postJson('/api/channels/' + type, body);
@@ -1768,6 +1855,13 @@
   }
 
   // ============================================================= Help modal
+  function showModal(title, bodyHtml) {
+    $('genericModalTitle').textContent = title;
+    $('genericModalBody').innerHTML = bodyHtml;
+    $('genericModal').classList.add('open');
+  }
+  function closeModal() { $('genericModal').classList.remove('open'); }
+
   function openHelp() { $('helpModal').classList.add('open'); }
   function closeHelp() { $('helpModal').classList.remove('open'); }
 
@@ -2047,6 +2141,13 @@
     $('btnSwitchUserClose').addEventListener('click', closeSwitchUser);
     $('btnAddSender').addEventListener('click', addSender);
     $('newSenderName').addEventListener('keydown', (e) => { if (e.key === 'Enter') addSender(); });
+
+    // Generic modal
+    $('btnGenericModalClose').addEventListener('click', closeModal);
+
+    // Calendar pane: select which provider calendars to show/sync
+    const btnCalSelect = $('btnCalSelect');
+    if (btnCalSelect) btnCalSelect.addEventListener('click', showAllCalendarToggles);
 
     // Wizard
     $('btnWizardClose').addEventListener('click', () => $('wizardModal').classList.remove('open'));

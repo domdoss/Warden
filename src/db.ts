@@ -234,6 +234,7 @@ function createSchema(database: Database.Database): void {
       email_enabled    INTEGER DEFAULT 1,
       enabled          INTEGER DEFAULT 1,
       last_calendar_sync TEXT,
+      hidden_calendars TEXT DEFAULT '[]',
       created_at       TEXT,
       updated_at       TEXT
     );
@@ -347,6 +348,7 @@ export function initDatabase(): void {
   // columns here. ALTER fails harmlessly if the column already exists.
   for (const [table, col, def] of [
     ['email_accounts', 'oauth_account_id', 'TEXT'],
+    ['oauth_accounts', 'hidden_calendars', "TEXT DEFAULT '[]'"],
   ] as const) {
     try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
   }
@@ -1847,6 +1849,7 @@ export interface OAuthAccount {
   email_enabled: number;
   enabled: number;
   last_calendar_sync: string | null;
+  hidden_calendars: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -1937,6 +1940,7 @@ export function updateOAuthAccount(
   if (updates.email_enabled !== undefined) { fields.push('email_enabled = ?'); values.push(updates.email_enabled); }
   if (updates.enabled !== undefined) { fields.push('enabled = ?'); values.push(updates.enabled); }
   if (updates.last_calendar_sync !== undefined) { fields.push('last_calendar_sync = ?'); values.push(updates.last_calendar_sync); }
+  if (updates.hidden_calendars !== undefined) { fields.push('hidden_calendars = ?'); values.push(updates.hidden_calendars); }
 
   if (fields.length === 0) return existing;
 

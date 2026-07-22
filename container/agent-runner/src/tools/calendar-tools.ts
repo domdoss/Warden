@@ -52,9 +52,14 @@ registry.register({
         if (resp?.ok) {
             const events = resp.events || [];
             if (events.length === 0) return 'No calendar events found.';
-            const lines = events.slice(0, 50).map((e: any, i: number) =>
-                `${i + 1}. ${e.start} | ${e.title}${e.location ? ' @ ' + e.location : ''} (uid ${e.uid})`,
-            ).join('\n');
+            const lines = events.slice(0, 50).map((e: any, i: number) => {
+                const start = e.start || e.start_time || '';
+                const end = e.end || e.end_time || '';
+                const allDay = e.all_day || e.allDay;
+                const when = allDay ? start : `${start}${end ? ' → ' + end : ''}`;
+                const desc = e.description ? `\n      ${String(e.description).slice(0, 280)}` : '';
+                return `${i + 1}. ${when} | ${e.title}${e.location ? ' @ ' + e.location : ''} (uid ${e.uid || e.event_id})${desc}`;
+            }).join('\n\n');
             return `${events.length} events:\n${lines}`;
         }
         return `Calendar list failed: ${resp?.error || 'unknown error'}`;

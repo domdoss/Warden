@@ -2809,7 +2809,7 @@ export function startStatusServer(d: StatusDeps): void {
       }
     }
 
-    // GET /api/oauth/accounts/:id/calendars - list provider calendars
+    // GET /api/oauth/accounts/:id/calendars - list provider calendars (with hidden flag)
     const calListMatch = pathname.match(/^\/api\/oauth\/accounts\/([^/]+)\/calendars$/);
     if (req.method === 'GET' && calListMatch) {
       const id = decodeURIComponent(calListMatch[1]);
@@ -2818,12 +2818,36 @@ export function startStatusServer(d: StatusDeps): void {
         const { getOAuthAccount } = await import('./db.js');
         const oauthAccount = getOAuthAccount(id);
         if (!oauthAccount) return error(res, 'OAuth account not found', 404);
+        let hiddenIds = new Set<string>();
+        try {
+          const parsed = JSON.parse(oauthAccount.hidden_calendars || '[]');
+          if (Array.isArray(parsed)) hiddenIds = new Set(parsed);
+        } catch { /* ignore */ }
         const token = await ensureFreshToken(id);
         const provider = getProviderInstance(oauthAccount.provider as any);
-        const calendars = await provider.listCalendars(token);
-        return json(res, { ok: true, calendars });
+        const raw = await provider.listCalendars(token);
+        const calendars = (raw || []).map((c: any) => ({
+          id: c.id, name: c.name || c.summary || c.id,
+          hidden: hiddenIds.has(c.id),
+        }));
+        return json(res, { ok: true, data: { calendars } });
       } catch (err: any) {
         logger.error({ err }, 'List calendars failed');
+        return error(res, err.message, 500);
+      }
+    }
+    // PUT /api/oauth/accounts/:id/calendars - set which provider calendars to sync (hidden_calendars)
+    if (req.method === 'PUT' && calListMatch) {
+      const id = decodeURIComponent(calListMatch[1]);
+      try {
+        const { getOAuthAccount, updateOAuthAccount } = await import('./db.js');
+        const body = parseJson(await parseBody(req)) as { hidden_calendars?: string[] };
+        if (!getOAuthAccount(id)) return error(res, 'OAuth account not found', 404);
+        const hidden = Array.isArray(body?.hidden_calendars) ? body.hidden_calendars : [];
+        updateOAuthAccount(id, { hidden_calendars: JSON.stringify(hidden) });
+        return json(res, { ok: true });
+      } catch (err: any) {
+        logger.error({ err }, 'Set hidden calendars failed');
         return error(res, err.message, 500);
       }
     }

@@ -29,6 +29,7 @@ import {
 import { GoogleProvider } from './providers/google.js';
 import { MicrosoftProvider } from './providers/microsoft.js';
 import type { OAuthProvider, OAuthProviderType } from './providers/types.js';
+import { pullCalendarEvents } from './calendar-sync.js';
 
 // ---------------------------------------------------------------------------
 // Scopes per provider — all requested at connect time
@@ -354,6 +355,16 @@ export async function handleOAuthCallback(
     { accountId, provider, email: tokens.email, userId },
     'OAuth account connected',
   );
+
+  // Pull calendar events immediately instead of waiting for the 15-min poller
+  pullCalendarEvents(accountId).then((result) => {
+    logger.info(
+      { accountId, provider, ...result },
+      'Initial calendar sync after OAuth connect',
+    );
+  }).catch((err) => {
+    logger.error({ err, accountId, provider }, 'Initial calendar sync failed');
+  });
 
   return { accountId, provider, email: tokens.email };
 }
