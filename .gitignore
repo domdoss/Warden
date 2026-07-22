@@ -67,6 +67,75 @@ voice/linux.py
 voice/login.py
 voice/setup.py
 
+# ── Repo scope: base app is src/ + public/ (+ tracked container/, voice/, security/) ──
+# Anything not needed to compile or run the base app is ignored below.
+
+# Marketing / demo / old dashboard variants — live dashboard is index.html + js/ + css/ + help/
+public/conn.html
+public/demo.html
+public/demo-admin.html
+public/demo-admin/
+public/demo-user.html
+public/demo-user/
+public/index-marketing.html
+public/index-old.html
+public/index-old-root.html
+public/pitch.html
+public/pip.html
+public/promo.html
+public/promo-manifest.json
+public/promo-sw.js
+public/signup.html
+public/reset-password.html
+public/steve.html
+public/steve-manifest.json
+public/yvon.html
+public/preregister.js
+public/mockup/
+public/pages/
+public/reels/
+public/slides/
+public/webdev/
+public/fonts/
+public/sw.js
+public/robots.txt
+public/sitemap.xml
+public/og-*.png
+public/og-*.svg
+public/*logo*
+public/Mirific.png
+public/mirific-*
+public/serve.svg
+public/css/style-old.css
+
+# Top-level planning notes / journals (not source). README.md stays tracked.
+/*.md
+!CLAUDE.md
+
+# Standalone docs / stray data
+/Great_Stink_*
+/cat_wikipedia_article.txt
+/log
+/log.md
+/test_write
+/warden_prompt_matches.txt
+
+# Stray scripts (not part of the build)
+/backup.sh
+/opt.sh
+/safe-copy.sh
+/start.sh
+/query_db.*
+/compress-photos.cjs
+/warden-ctl
+
+# Vendored / non-base-app dirs and files
+/third-party/
+/training-data/
+/setup/
+/tests/
+/vitest.config.ts
+
 # ── Python runtime ──
 __pycache__/
 *.pyc
