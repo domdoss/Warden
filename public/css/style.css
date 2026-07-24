@@ -1464,3 +1464,88 @@ body.help-page {
   text-align: center;
   opacity: 0.6;
 }
+
+/* ===== Notes view ===== */
+#view-notes .notes-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+#view-notes .notes-side {
+  width: 170px;
+  flex: 0 0 170px;
+  border-right: 1px solid var(--border, #e2e2e2);
+  padding: 10px 8px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+#view-notes .notes-side-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+#view-notes .notes-folders .notes-folder {
+  padding: 4px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#view-notes .notes-folders .notes-folder:hover { background: var(--hover, rgba(0,0,0,0.04)); }
+#view-notes .notes-folders .notes-folder.active { background: var(--accent, #e8f0fe); color: var(--accent-fg, #1a73e8); font-weight: 600; }
+#view-notes .notes-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+#view-notes .notes-tag-chip {
+  font-size: 12px; padding: 2px 8px; border-radius: 12px; background: var(--chip-bg, rgba(0,0,0,0.05)); cursor: pointer; white-space: nowrap;
+}
+#view-notes .notes-tag-chip:hover { background: var(--chip-bg-hover, rgba(0,0,0,0.1)); }
+#view-notes .notes-tag-chip.active { background: var(--accent, #e8f0fe); color: var(--accent-fg, #1a73e8); }
+#view-notes .notes-main { display: flex; flex: 1; min-width: 0; }
+#view-notes .notes-list-col { width: 240px; flex: 0 0 240px; border-right: 1px solid var(--border, #e2e2e2); overflow-y: auto; }
+#view-notes .notes-item { padding: 10px 12px; border-bottom: 1px solid var(--border, #eee); cursor: pointer; }
+#view-notes .notes-item:hover { background: var(--hover, rgba(0,0,0,0.03)); }
+#view-notes .notes-item.active { background: var(--accent, #e8f0fe); }
+#view-notes .notes-item-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-notes .notes-item-sub { font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-notes .notes-editor-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#view-notes .notes-editor-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border, #e2e2e2); }
+#view-notes .notes-title-input { flex: 1; font-weight: 700; font-size: 15px; }
+#view-notes .notes-editor-pane { position: relative; flex: 1; min-height: 0; display: flex; }
+#view-notes .notes-textarea {
+  flex: 1; border: 0; outline: 0; resize: none; padding: 14px 18px; font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13.5px; line-height: 1.6; background: transparent; color: inherit;
+}
+#view-notes .notes-preview-pane { flex: 1; overflow-y: auto; padding: 14px 22px; line-height: 1.6; }
+#view-notes .notes-preview-title { margin-top: 0; }
+#view-notes .notes-preview-pane h1, #view-notes .notes-preview-pane h2, #view-notes .notes-preview-pane h3 { margin: 18px 0 8px; }
+#view-notes .notes-preview-pane pre { padding: 10px 12px; border-radius: 6px; overflow: auto; background: var(--code-bg, rgba(0,0,0,0.05)); }
+#view-notes .notes-preview-pane code { background: var(--code-bg, rgba(0,0,0,0.05)); padding: 1px 4px; border-radius: 3px; font-family: var(--mono, ui-monospace, monospace); }
+#view-notes .notes-preview-pane pre code { background: transparent; padding: 0; }
+#view-notes .notes-preview-pane blockquote { border-left: 3px solid var(--border, #ccc); margin: 8px 0; padding: 2px 12px; color: var(--fg-muted, #666); }
+#view-notes .note-wikilink { color: var(--accent-fg, #1a73e8); text-decoration: none; border-bottom: 1px dashed currentColor; cursor: pointer; }
+#view-notes .note-wikilink.unresolved { color: var(--fg-muted, #999); }
+#view-notes .note-inline-tag { color: var(--accent-fg, #1a73e8); cursor: pointer; }
+#view-notes .notes-backlinks { border-top: 1px solid var(--border, #e2e2e2); padding: 8px 14px; font-size: 12px; min-height: 32px; }
+#view-notes .notes-backlinks-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+#view-notes .notes-backlink { display: inline-block; margin-right: 10px; color: var(--accent-fg, #1a73e8); cursor: pointer; text-decoration: underline; }
+#view-notes .notes-ac {
+  position: absolute; z-index: 30; left: 18px; bottom: 14px; max-width: 320px; min-width: 200px;
+  background: var(--bg, #fff); border: 1px solid var(--border, #ccc); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.15); overflow: hidden;
+}
+#view-notes .notes-ac.hidden { display: none; }
+#view-notes .notes-ac-item { padding: 6px 12px; cursor: pointer; font-size: 13px; }
+#view-notes .notes-ac-item:hover { background: var(--accent, #e8f0fe); }
+#view-notes .notes-crumb { font-size: 13px; }
+#view-notes .notes-crumb-up { cursor: pointer; padding: 0 4px; font-weight: 700; }
+#view-notes .notes-crumb-up:hover { color: var(--accent-fg, #1a73e8); }
+#view-notes .notes-crumb-seg { cursor: pointer; }
+#view-notes .notes-crumb-seg:hover { color: var(--accent-fg, #1a73e8); text-decoration: underline; }
+#view-notes .notes-crumb-here { font-weight: 600; }
+#view-notes .notes-item.notes-dir .notes-item-title { color: var(--accent-fg, #1a73e8); font-weight: 500; }
+#view-notes .notes-ign-head { padding: 8px 4px 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+#view-notes .notes-ignored { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#view-notes .notes-ignored .notes-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#view-notes .notes-restore { flex-shrink: 0; }
+#view-notes .notes-preview-pane table { border-collapse: collapse; margin: 8px 0; }
+#view-notes .notes-preview-pane th, #view-notes .notes-preview-pane td { border: 1px solid var(--border, #ddd); padding: 4px 8px; }
+#view-notes .notes-preview-pane th { background: var(--hover, rgba(0,0,0,0.04)); }
+#view-notes .notes-preview-pane hr { border: none; border-top: 1px solid var(--border, #ddd); margin: 12px 0; }
+#view-notes .notes-preview-pane img { max-width: 100%; height: auto; }
+#view-notes .notes-preview-pane del { text-decoration: line-through; opacity: .7; }
+#view-notes .notes-preview-pane pre { background: var(--code-bg, rgba(0,0,0,0.05)); padding: 10px 12px; border-radius: 6px; overflow: auto; }
+#view-notes .notes-preview-pane pre code { background: none; padding: 0; font-size: 13px; }
+#view-notes .notes-preview-pane .note-task { margin-right: 6px; }
+#view-notes .notes-preview-pane .note-task-item { list-style: none; }
+/* ===== End notes view ===== */

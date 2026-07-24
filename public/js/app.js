@@ -279,6 +279,7 @@
     else if (name === 'accounts') refreshAccounts();
     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
     else if (name === 'email' && window.PIM) window.PIM.refreshEmail();
+    else if (name === 'notes' && window.Notes) window.Notes.refresh();
     else if (window.UserDash) {
       // Views ported from the groupware user dashboard (userdash-extras.js)
       const UD = window.UserDash;
@@ -321,8 +322,11 @@
       // the old static verbose bar; its collapsed summary line is the live
       // status, and expanding it shows the history. Clear it to "No live
       // activity" when nothing is happening so it doesn't stick on the last
-      // completed step.
-      renderProgressPanel(active ? (d.progress || []) : []);
+      // completed step. Keep it populated while background jobs (atlas/artemis)
+      // run too — those bump runningJobs without marking a foreground group
+      // active, so the `active`-only check would blank the panel mid-work.
+      const busy = active || (typeof d.runningJobs === 'number' && d.runningJobs > 0);
+      renderProgressPanel(busy ? (d.progress || []) : []);
 
       // stop button enable/disable
       $('btnStop').disabled = !active;

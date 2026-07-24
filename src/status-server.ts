@@ -183,6 +183,23 @@ import {
   deletePasswordResetToken,
   getUserByEmail,
 } from './db.js';
+import {
+  listNotes,
+  getNote,
+  createNote,
+  updateNote,
+  deleteNote,
+  moveNote,
+  getBacklinks,
+  listNoteTags,
+  listNoteFolders,
+  corpusIndex,
+  listIgnored,
+  ignorePath,
+  ignoreFolder,
+  unignoreEntry,
+  NOTES_ROOT,
+} from './notes-fs.js';
 import { getDb } from './db.js';
 import { AgentSessionStore } from './agent-session-store.js';
 import { encryptApiKey } from './encryption.js';
@@ -3719,6 +3736,123 @@ export function startStatusServer(d: StatusDeps): void {
         res.end('BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n');
         return;
       }
+
+      // ===== Notes (Obsidian-inspired, filesystem-backed: markdown + [[wiki-links]] + backlinks + tags) =====
+      // Note identity is the absolute file path, base64url-encoded as :p in the
+      // /api/notes/file/:p routes. Root is the user's home dir (NOTES_ROOT); the
+      // folder browser has full filesystem access (any absolute path).
+      const decodeNotePath = (b64: string): string => {
+        try { return Buffer.from(b64, 'base64url').toString('utf8'); } catch { return ''; }
+      };
+      if (pathname === '/api/notes/tags' && req.method === 'GET') {
+        json(res, { tags: listNoteTags() });
+        return;
+      }
+      if (pathname === '/api/notes/folders' && req.method === 'GET') {
+        json(res, { folders: listNoteFolders() });
+        return;
+      }
+      if (pathname === '/api/notes/index' && req.method === 'GET') {
+        json(res, { notes: corpusIndex(), root: NOTES_ROOT });
+        return;
+      }
+      if (pathname === '/api/notes/ignored' && req.method === 'GET') {
+        json(res, listIgnored());
+        return;
+      }
+      if (pathname === '/api/notes/ignore' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { path?: string; folder?: string };
+          if (body.path) ignorePath(body.path);
+          else if (body.folder) ignoreFolder(body.folder);
+          else { error(res, 'path or folder required', 400); return; }
+          json(res, { ok: true, ignored: listIgnored() });
+        } catch (err: any) {
+          error(res, err.message, 500);
+        }
+        return;
+      }
+      if (pathname === '/api/notes/unignore' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { path?: string; folder?: string };
+          unignoreEntry(body);
+          json(res, { ok: true, ignored: listIgnored() });
+        } catch (err: any) {
+          error(res, err.message, 500);
+        }
+        return;
+      }
+      if (pathname === '/api/notes' && req.method === 'GET') {
+        const result = listNotes({
+          folder: params.get('folder') ?? undefined,
+          tag: params.get('tag') ?? undefined,
+          q: params.get('q') ?? undefined,
+        });
+        json(res, result);
+        return;
+      }
+      if (pathname === '/api/notes' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { title?: string; body?: string; folder?: string };
+          if (!body.title || !body.title.trim()) {
+            error(res, 'title required', 400);
+            return;
+          }
+          const note = createNote({ title: body.title, body: body.body, folder: body.folder });
+          res.writeHead(201, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: true, note }));
+        } catch (err: any) {
+          error(res, err.message, 500);
+        }
+        return;
+      }
+      const noteItemMatch = pathname.match(/^\/api\/notes\/file\/([A-Za-z0-9_-]+)$/);
+      if (noteItemMatch) {
+        const abs = decodeNotePath(noteItemMatch[1]);
+        if (req.method === 'GET') {
+          const note = getNote(abs);
+          if (!note) { error(res, 'not found', 404); return; }
+          json(res, { note });
+          return;
+        }
+        if (req.method === 'PUT') {
+          try {
+            const body = parseJson(await parseBody(req)) as { title?: string; body?: string; folder?: string };
+            const note = updateNote(abs, body);
+            if (!note) { error(res, 'not found', 404); return; }
+            json(res, { ok: true, note });
+          } catch (err: any) {
+            error(res, err.message, 500);
+          }
+          return;
+        }
+        if (req.method === 'DELETE') {
+          if (!deleteNote(abs)) { error(res, 'not found', 404); return; }
+          json(res, { ok: true });
+          return;
+        }
+      }
+      const noteBacklinkMatch = pathname.match(/^\/api\/notes\/file\/([A-Za-z0-9_-]+)\/backlinks$/);
+      if (noteBacklinkMatch && req.method === 'GET') {
+        const abs = decodeNotePath(noteBacklinkMatch[1]);
+        if (!getNote(abs)) { error(res, 'not found', 404); return; }
+        json(res, { backlinks: getBacklinks(abs) });
+        return;
+      }
+      const noteMoveMatch = pathname.match(/^\/api\/notes\/file\/([A-Za-z0-9_-]+)\/move$/);
+      if (noteMoveMatch && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { folder?: string };
+          const note = moveNote(decodeNotePath(noteMoveMatch[1]), body.folder ?? '');
+          if (!note) { error(res, 'not found', 404); return; }
+          json(res, { ok: true, note });
+        } catch (err: any) {
+          error(res, err.message, 500);
+        }
+        return;
+      }
+      // ===== End notes =====
+
       // Ideas: sub-workspaces under a group folder. Stored as subdirectories of
       // WORKSPACE_ROOT. Empty list is fine for the single-user Warden default.
       const ideasMatch = pathname.match(/^\/api\/groups\/([^/]+)\/ideas$/);

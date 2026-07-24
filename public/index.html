@@ -62,6 +62,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span class="rail-tip">Calendar</span>
       </button>
+      <button class="rail-btn" data-view="notes" data-tip="Notes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+        <span class="rail-tip">Notes</span>
+      </button>
       <!-- Automate -->
       <div class="rail-group-label">Auto</div>
       <button class="rail-btn" data-view="tasks" data-tip="Scheduled Tasks">
@@ -338,6 +342,48 @@
           <div style="margin-top:14px">
             <div class="dim" id="calDayTitle" style="font-size:12px;margin-bottom:6px"></div>
             <div id="calDayList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Notes view ===== -->
+      <section class="view" id="view-notes">
+        <div class="chat-meta-row">
+          <span class="chip" id="notesTitle">Notes</span>
+          <span class="dim" id="notesFolderLabel" style="margin-left:6px"></span>
+          <span class="spacer"></span>
+          <input class="input" id="notesSearch" placeholder="Search notes…" style="min-width:180px">
+          <button class="btn btn-ghost btn-sm" id="btnNotesIgnored">Ignored</button>
+          <button class="btn btn-ghost btn-sm" id="btnNotesIgnoreFolder">Ignore folder</button>
+          <button class="btn btn-ghost btn-sm" id="btnNotesToday">+ Today</button>
+          <button class="btn btn-primary btn-sm" id="btnNotesNew">+ New</button>
+        </div>
+        <div class="notes-layout">
+          <aside class="notes-side">
+            <div class="dim notes-side-head">Folders</div>
+            <div id="notesFolders" class="notes-folders"></div>
+            <div class="dim notes-side-head" style="margin-top:10px">Tags</div>
+            <div id="notesTags" class="notes-tags"></div>
+          </aside>
+          <div class="notes-main">
+            <div class="notes-list-col">
+              <div id="notesList" class="notes-list"></div>
+            </div>
+            <div class="notes-editor-col">
+              <div class="notes-editor-head">
+                <input class="input notes-title-input" id="notesTitleInput" placeholder="Note title">
+                <button class="btn btn-ghost btn-sm" id="btnNotesEdit">Edit</button>
+                <button class="btn btn-ghost btn-sm hidden" id="btnNotesPreview">Preview</button>
+                <button class="btn btn-ghost btn-sm hidden" id="btnNotesIgnore">Ignore</button>
+                <button class="btn btn-danger btn-sm hidden" id="btnNotesDelete">Delete</button>
+              </div>
+              <div id="notesEditorPane" class="notes-editor-pane">
+                <textarea class="notes-textarea" id="notesBody" placeholder="Write… use [[Title]] to link, #tag to tag"></textarea>
+                <div id="notesAc" class="notes-ac hidden"></div>
+              </div>
+              <div id="notesPreviewPane" class="notes-preview-pane hidden"></div>
+              <div class="notes-backlinks" id="notesBacklinks"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -1444,6 +1490,7 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
 </div>
 
 <script src="/js/pim.js"></script>
+<script src="/js/notes.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/userdash-utils.js"></script>
 <script src="/js/userdash-extras.js"></script>

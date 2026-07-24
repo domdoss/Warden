@@ -243,7 +243,7 @@ A full PWA at `http://localhost:3200`. It includes:
 | 💓 **Heartbeat** | Standing instructions on schedule | ⏰ **Alarms** | Reminders with sound + desktop notify |
 | ⚡ **Actions** | One-touch prompt buttons | 📱 **SMS** | Twilio send/receive |
 | 🎤 **Talk** | Voice transcription | ✉️ **Email** | IMAP inbox + send |
-| 📅 **Calendar** | CalDAV synced with Kontact | 🔗 **Accounts** | Connected channels + OAuth |
+| 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
 | 📜 **Process Logs** | Live log tail ||
 
@@ -264,6 +264,19 @@ An agent system is only as good as the requests you give it, so Warden teaches y
 Behind the modal sits a full help site with in-depth pages. The flagship, *not-a-chatbot*, puts chatbot-style asks and agent-style asks side by side — "tell me about microservices" gets you conversation; "read `src/auth.ts` and tell me if there's a timing-safe comparison missing" gets you tools run, files read, verdicts returned — then distills the principles that make requests land: be specific about the target, parallelize independent asks, read `BLOCKED` messages instead of retrying blindly, and watch the verbose bar to see what Warden is doing right now.
 
 ![Help page "This is not a chatbot": chatbot-style vs agent-style asks and the five principles](docs/screenshots/help3.png)
+
+### 📝 Notes
+
+An Obsidian-inspired markdown vault backed by the real filesystem — no database, just `.md` files you can also edit by hand or sync with anything. The vault root is `~/Documents/Notes`; the corpus (tags, backlinks, `[[link]]` resolution, search) is indexed only from that subtree, so it stays focused on your actual notes instead of pulling in the tens of thousands of unrelated markdown files (READMEs, skill docs, etc.) scattered across the rest of your home directory.
+
+- **`[[wiki-links]]`** — link notes by title; the corpus resolves them across the vault.
+- **Backlinks** — every note shows what links *into* it.
+- **Tags** — `#tag` lines feed a tag sidebar with counts.
+- **Folders** — browse subfolders; create notes in the current folder.
+- **Search** — full-text over titles and bodies, scoped to the vault.
+- **Ignore** — hide individual files or whole folders from the corpus without deleting them.
+
+Files are plain markdown on disk; the dashboard is just a viewer/editor over them.
 
 ---
 
