@@ -1,0 +1,967 @@
+--- a/public/index.html
++++ b/public/index.html
+@@ -62,6 +62,10 @@
+         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+         <span class="rail-tip">Calendar</span>
+       </button>
++      <button class="rail-btn" data-view="notes" data-tip="Notes">
++        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
++        <span class="rail-tip">Notes</span>
++      </button>
+       <!-- Automate -->
+       <div class="rail-group-label">Auto</div>
+       <button class="rail-btn" data-view="tasks" data-tip="Scheduled Tasks">
+@@ -342,6 +346,45 @@
+         </div>
+       </section>
+ 
++      <!-- ===== Notes view ===== -->
++      <section class="view" id="view-notes">
++        <div class="chat-meta-row">
++          <span class="chip" id="notesTitle">Notes</span>
++          <span class="dim" id="notesFolderLabel" style="margin-left:6px"></span>
++          <span class="spacer"></span>
++          <input class="input" id="notesSearch" placeholder="Search notes…" style="min-width:180px">
++          <button class="btn btn-ghost btn-sm" id="btnNotesToday">+ Today</button>
++          <button class="btn btn-primary btn-sm" id="btnNotesNew">+ New</button>
++        </div>
++        <div class="notes-layout">
++          <aside class="notes-side">
++            <div class="dim notes-side-head">Folders</div>
++            <div id="notesFolders" class="notes-folders"></div>
++            <div class="dim notes-side-head" style="margin-top:10px">Tags</div>
++            <div id="notesTags" class="notes-tags"></div>
++          </aside>
++          <div class="notes-main">
++            <div class="notes-list-col">
++              <div id="notesList" class="notes-list"></div>
++            </div>
++            <div class="notes-editor-col">
++              <div class="notes-editor-head">
++                <input class="input notes-title-input" id="notesTitleInput" placeholder="Note title">
++                <button class="btn btn-ghost btn-sm" id="btnNotesEdit">Edit</button>
++                <button class="btn btn-ghost btn-sm hidden" id="btnNotesPreview">Preview</button>
++                <button class="btn btn-danger btn-sm hidden" id="btnNotesDelete">Delete</button>
++              </div>
++              <div id="notesEditorPane" class="notes-editor-pane">
++                <textarea class="notes-textarea" id="notesBody" placeholder="Write… use [[Title]] to link, #tag to tag"></textarea>
++                <div id="notesAc" class="notes-ac hidden"></div>
++              </div>
++              <div id="notesPreviewPane" class="notes-preview-pane hidden"></div>
++              <div class="notes-backlinks" id="notesBacklinks"></div>
++            </div>
++          </div>
++        </div>
++      </section>
++
+       <!-- ===== Email view ===== -->
+       <section class="view" id="view-email">
+         <div class="chat-meta-row">
+@@ -1444,6 +1487,7 @@
+ </div>
+ 
+ <script src="/js/pim.js"></script>
++<script src="/js/notes.js"></script>
+ <script src="/js/app.js"></script>
+ <script src="/js/userdash-utils.js"></script>
+ <script src="/js/userdash-extras.js"></script>
+--- a/public/js/app.js
++++ b/public/js/app.js
+@@ -279,6 +279,7 @@
+     else if (name === 'accounts') refreshAccounts();
+     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
+     else if (name === 'email' && window.PIM) window.PIM.refreshEmail();
++    else if (name === 'notes' && window.Notes) window.Notes.refresh();
+     else if (window.UserDash) {
+       // Views ported from the groupware user dashboard (userdash-extras.js)
+       const UD = window.UserDash;
+@@ -321,8 +322,11 @@
+       // the old static verbose bar; its collapsed summary line is the live
+       // status, and expanding it shows the history. Clear it to "No live
+       // activity" when nothing is happening so it doesn't stick on the last
+-      // completed step.
+-      renderProgressPanel(active ? (d.progress || []) : []);
++      // completed step. Keep it populated while background jobs (atlas/artemis)
++      // run too — those bump runningJobs without marking a foreground group
++      // active, so the `active`-only check would blank the panel mid-work.
++      const busy = active || (typeof d.runningJobs === 'number' && d.runningJobs > 0);
++      renderProgressPanel(busy ? (d.progress || []) : []);
+ 
+       // stop button enable/disable
+       $('btnStop').disabled = !active;
+--- a/public/css/style.css
++++ b/public/css/style.css
+@@ -1464,3 +1464,67 @@
+   text-align: center;
+   opacity: 0.6;
+ }
++
++/* ===== Notes view ===== */
++#view-notes .notes-layout {
++  display: flex;
++  flex: 1;
++  min-height: 0;
++}
++#view-notes .notes-side {
++  width: 170px;
++  flex: 0 0 170px;
++  border-right: 1px solid var(--border, #e2e2e2);
++  padding: 10px 8px;
++  overflow-y: auto;
++  font-size: 13px;
++}
++#view-notes .notes-side-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
++#view-notes .notes-folders .notes-folder {
++  padding: 4px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
++}
++#view-notes .notes-folders .notes-folder:hover { background: var(--hover, rgba(0,0,0,0.04)); }
++#view-notes .notes-folders .notes-folder.active { background: var(--accent, #e8f0fe); color: var(--accent-fg, #1a73e8); font-weight: 600; }
++#view-notes .notes-tags { display: flex; flex-wrap: wrap; gap: 6px; }
++#view-notes .notes-tag-chip {
++  font-size: 12px; padding: 2px 8px; border-radius: 12px; background: var(--chip-bg, rgba(0,0,0,0.05)); cursor: pointer; white-space: nowrap;
++}
++#view-notes .notes-tag-chip:hover { background: var(--chip-bg-hover, rgba(0,0,0,0.1)); }
++#view-notes .notes-tag-chip.active { background: var(--accent, #e8f0fe); color: var(--accent-fg, #1a73e8); }
++#view-notes .notes-main { display: flex; flex: 1; min-width: 0; }
++#view-notes .notes-list-col { width: 240px; flex: 0 0 240px; border-right: 1px solid var(--border, #e2e2e2); overflow-y: auto; }
++#view-notes .notes-item { padding: 10px 12px; border-bottom: 1px solid var(--border, #eee); cursor: pointer; }
++#view-notes .notes-item:hover { background: var(--hover, rgba(0,0,0,0.03)); }
++#view-notes .notes-item.active { background: var(--accent, #e8f0fe); }
++#view-notes .notes-item-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++#view-notes .notes-item-sub { font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++#view-notes .notes-editor-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
++#view-notes .notes-editor-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border, #e2e2e2); }
++#view-notes .notes-title-input { flex: 1; font-weight: 700; font-size: 15px; }
++#view-notes .notes-editor-pane { position: relative; flex: 1; min-height: 0; display: flex; }
++#view-notes .notes-textarea {
++  flex: 1; border: 0; outline: 0; resize: none; padding: 14px 18px; font-family: var(--mono, ui-monospace, monospace);
++  font-size: 13.5px; line-height: 1.6; background: transparent; color: inherit;
++}
++#view-notes .notes-preview-pane { flex: 1; overflow-y: auto; padding: 14px 22px; line-height: 1.6; }
++#view-notes .notes-preview-title { margin-top: 0; }
++#view-notes .notes-preview-pane h1, #view-notes .notes-preview-pane h2, #view-notes .notes-preview-pane h3 { margin: 18px 0 8px; }
++#view-notes .notes-preview-pane pre { padding: 10px 12px; border-radius: 6px; overflow: auto; background: var(--code-bg, rgba(0,0,0,0.05)); }
++#view-notes .notes-preview-pane code { background: var(--code-bg, rgba(0,0,0,0.05)); padding: 1px 4px; border-radius: 3px; font-family: var(--mono, ui-monospace, monospace); }
++#view-notes .notes-preview-pane pre code { background: transparent; padding: 0; }
++#view-notes .notes-preview-pane blockquote { border-left: 3px solid var(--border, #ccc); margin: 8px 0; padding: 2px 12px; color: var(--fg-muted, #666); }
++#view-notes .note-wikilink { color: var(--accent-fg, #1a73e8); text-decoration: none; border-bottom: 1px dashed currentColor; cursor: pointer; }
++#view-notes .note-wikilink.unresolved { color: var(--fg-muted, #999); }
++#view-notes .note-inline-tag { color: var(--accent-fg, #1a73e8); cursor: pointer; }
++#view-notes .notes-backlinks { border-top: 1px solid var(--border, #e2e2e2); padding: 8px 14px; font-size: 12px; min-height: 32px; }
++#view-notes .notes-backlinks-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
++#view-notes .notes-backlink { display: inline-block; margin-right: 10px; color: var(--accent-fg, #1a73e8); cursor: pointer; text-decoration: underline; }
++#view-notes .notes-ac {
++  position: absolute; z-index: 30; left: 18px; bottom: 14px; max-width: 320px; min-width: 200px;
++  background: var(--bg, #fff); border: 1px solid var(--border, #ccc); border-radius: 8px;
++  box-shadow: 0 6px 20px rgba(0,0,0,0.15); overflow: hidden;
++}
++#view-notes .notes-ac.hidden { display: none; }
++#view-notes .notes-ac-item { padding: 6px 12px; cursor: pointer; font-size: 13px; }
++#view-notes .notes-ac-item:hover { background: var(--accent, #e8f0fe); }
++/* ===== End notes view ===== */
+--- a/src/status-server.ts
++++ b/src/status-server.ts
+@@ -182,6 +182,16 @@
+   getPasswordResetToken,
+   deletePasswordResetToken,
+   getUserByEmail,
++  listNotes,
++  getNote,
++  getNoteByUid,
++  createNote,
++  updateNote,
++  deleteNote,
++  moveNote,
++  getBacklinks,
++  listNoteTags,
++  listNoteFolders,
+ } from './db.js';
+ import { getDb } from './db.js';
+ import { AgentSessionStore } from './agent-session-store.js';
+@@ -3719,6 +3729,87 @@
+         res.end('BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n');
+         return;
+       }
++
++      // ===== Notes (Obsidian-inspired: markdown + [[wiki-links]] + backlinks + tags) =====
++      if (pathname === '/api/notes/tags' && req.method === 'GET') {
++        json(res, { tags: listNoteTags() });
++        return;
++      }
++      if (pathname === '/api/notes/folders' && req.method === 'GET') {
++        json(res, { folders: listNoteFolders() });
++        return;
++      }
++      if (pathname === '/api/notes' && req.method === 'GET') {
++        const notes = listNotes({
++          folder: params.get('folder') ?? undefined,
++          tag: params.get('tag') ?? undefined,
++          q: params.get('q') ?? undefined,
++        });
++        json(res, { notes });
++        return;
++      }
++      if (pathname === '/api/notes' && req.method === 'POST') {
++        try {
++          const body = parseJson(await parseBody(req)) as { title?: string; body?: string; folder?: string };
++          if (!body.title || !body.title.trim()) {
++            error(res, 'title required', 400);
++            return;
++          }
++          const note = createNote({ title: body.title, body: body.body, folder: body.folder });
++          res.writeHead(201, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
++          res.end(JSON.stringify({ ok: true, note }));
++        } catch (err: any) {
++          error(res, err.message, 500);
++        }
++        return;
++      }
++      const noteItemMatch = pathname.match(/^\/api\/notes\/(\d+)$/);
++      if (noteItemMatch) {
++        const noteId = Number(noteItemMatch[1]);
++        if (req.method === 'GET') {
++          const note = getNote(noteId);
++          if (!note) { error(res, 'not found', 404); return; }
++          json(res, { note });
++          return;
++        }
++        if (req.method === 'PUT') {
++          try {
++            const body = parseJson(await parseBody(req)) as { title?: string; body?: string; folder?: string };
++            const note = updateNote(noteId, body);
++            if (!note) { error(res, 'not found', 404); return; }
++            json(res, { ok: true, note });
++          } catch (err: any) {
++            error(res, err.message, 500);
++          }
++          return;
++        }
++        if (req.method === 'DELETE') {
++          if (!deleteNote(noteId)) { error(res, 'not found', 404); return; }
++          json(res, { ok: true });
++          return;
++        }
++      }
++      const noteBacklinkMatch = pathname.match(/^\/api\/notes\/(\d+)\/backlinks$/);
++      if (noteBacklinkMatch && req.method === 'GET') {
++        const note = getNote(Number(noteBacklinkMatch[1]));
++        if (!note) { error(res, 'not found', 404); return; }
++        json(res, { backlinks: getBacklinks(note.uid) });
++        return;
++      }
++      const noteMoveMatch = pathname.match(/^\/api\/notes\/(\d+)\/move$/);
++      if (noteMoveMatch && req.method === 'POST') {
++        try {
++          const body = parseJson(await parseBody(req)) as { folder?: string };
++          const note = moveNote(Number(noteMoveMatch[1]), body.folder ?? '');
++          if (!note) { error(res, 'not found', 404); return; }
++          json(res, { ok: true, note });
++        } catch (err: any) {
++          error(res, err.message, 500);
++        }
++        return;
++      }
++      // ===== End notes =====
++
+       // Ideas: sub-workspaces under a group folder. Stored as subdirectories of
+       // WORKSPACE_ROOT. Empty list is fine for the single-user Warden default.
+       const ideasMatch = pathname.match(/^\/api\/groups\/([^/]+)\/ideas$/);
+--- a/src/db.ts
++++ b/src/db.ts
+@@ -273,6 +273,36 @@
+     CREATE INDEX IF NOT EXISTS idx_cal_start ON calendar_events(start_time);
+     CREATE INDEX IF NOT EXISTS idx_cal_user ON calendar_events(assigned_to);
+ 
++    CREATE TABLE IF NOT EXISTS notes (
++      id INTEGER PRIMARY KEY AUTOINCREMENT,
++      title TEXT NOT NULL,
++      body TEXT NOT NULL DEFAULT '',
++      folder TEXT NOT NULL DEFAULT '',
++      uid TEXT NOT NULL UNIQUE,
++      created_at INTEGER NOT NULL,
++      updated_at INTEGER NOT NULL
++    );
++    CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder);
++    CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at);
++
++    CREATE TABLE IF NOT EXISTS note_links (
++      src_id INTEGER NOT NULL,
++      dst_uid TEXT NOT NULL,
++      label TEXT,
++      ord INTEGER NOT NULL,
++      PRIMARY KEY (src_id, ord),
++      FOREIGN KEY (src_id) REFERENCES notes(id) ON DELETE CASCADE
++    );
++    CREATE INDEX IF NOT EXISTS idx_links_dst ON note_links(dst_uid);
++
++    CREATE TABLE IF NOT EXISTS note_tags (
++      note_id INTEGER NOT NULL,
++      tag TEXT NOT NULL,
++      PRIMARY KEY (note_id, tag),
++      FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
++    );
++    CREATE INDEX IF NOT EXISTS idx_tags_tag ON note_tags(tag);
++
+     CREATE TABLE IF NOT EXISTS user_alarms (
+       id TEXT PRIMARY KEY,
+       user_id TEXT NOT NULL,
+@@ -2206,6 +2236,204 @@
+   return db.prepare('DELETE FROM calendar_events WHERE id = ?').run(id).changes > 0;
+ }
+ 
++// --- Notes (Obsidian-inspired: markdown notes + [[wiki-link]] graph + tags) ---
++
++export interface Note {
++  id: number;
++  title: string;
++  body: string;
++  folder: string;
++  uid: string;
++  created_at: number;
++  updated_at: number;
++}
++
++export interface NoteBacklink {
++  id: number;
++  title: string;
++  folder: string;
++  uid: string;
++}
++
++export interface NoteTagCount {
++  tag: string;
++  count: number;
++}
++
++// Stable link target: lowercase slug from the title. Case-insensitive
++// resolution: [[My Note]] and [[my note]] both slug to "my-note".
++function slugifyUid(title: string): string {
++  return String(title == null ? '' : title)
++    .trim()
++    .toLowerCase()
++    .replace(/[^\w\s-]/g, '')
++    .replace(/[\s_]+/g, '-')
++    .replace(/-+/g, '-')
++    .replace(/^-|-$/g, '') || 'untitled';
++}
++
++// Disambiguate on collision so uid stays UNIQUE. The base slug still resolves
++// to the first note with that uid; later collisions get "-2", "-3", ...
++function uniqueUid(base: string, excludeId?: number): string {
++  let uid = base;
++  let n = 2;
++  const stmt = db.prepare('SELECT 1 FROM notes WHERE uid = ? AND id != ?');
++  while (stmt.get(uid, excludeId ?? -1)) {
++    uid = `${base}-${n++}`;
++  }
++  return uid;
++}
++
++// Parse [[Target]], [[Target#heading]], [[Target|alias]] → outbound links.
++function parseNoteLinks(body: string): { dst_uid: string; label: string | null; ord: number }[] {
++  const out: { dst_uid: string; label: string | null; ord: number }[] = [];
++  const re = /\[\[([^\]|#\[]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
++  let m: RegExpExecArray | null;
++  while ((m = re.exec(body)) !== null) {
++    const target = (m[1] || '').trim();
++    if (!target) continue;
++    out.push({ dst_uid: slugifyUid(target), label: m[2] ? m[2].trim() : null, ord: out.length });
++  }
++  return out;
++}
++
++// Parse #inline-tags plus a leading YAML `tags: [a, b]` frontmatter list.
++function parseNoteTags(body: string): string[] {
++  const tags = new Set<string>();
++  const fm = body.match(/^---\r?\n([\s\S]*?)\r?\n---/);
++  if (fm) {
++    const tagsLine = fm[1].match(/^tags:\s*\[(.*)\]/m);
++    if (tagsLine) {
++      tagsLine[1]
++        .split(',')
++        .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
++        .filter(Boolean)
++        .forEach((t) => tags.add(t));
++    }
++  }
++  const re = /(?:^|\s)#([A-Za-z][\w-]*)/g;
++  let m: RegExpExecArray | null;
++  while ((m = re.exec(body)) !== null) tags.add(m[1]);
++  return [...tags];
++}
++
++// Rebuild the link + tag rows for one note inside a transaction.
++function reindexNote(noteId: number, body: string): void {
++  db.prepare('DELETE FROM note_links WHERE src_id = ?').run(noteId);
++  db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(noteId);
++  const insLink = db.prepare('INSERT INTO note_links (src_id, dst_uid, label, ord) VALUES (?, ?, ?, ?)');
++  for (const l of parseNoteLinks(body)) insLink.run(noteId, l.dst_uid, l.label, l.ord);
++  const insTag = db.prepare('INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)');
++  for (const t of parseNoteTags(body)) insTag.run(noteId, t);
++}
++
++export function listNotes(filter?: { folder?: string; tag?: string; q?: string }): Note[] {
++  const conditions: string[] = [];
++  const values: unknown[] = [];
++  if (filter?.folder !== undefined) {
++    conditions.push('folder = ?');
++    values.push(filter.folder);
++  }
++  if (filter?.tag) {
++    conditions.push('id IN (SELECT note_id FROM note_tags WHERE tag = ?)');
++    values.push(filter.tag);
++  }
++  if (filter?.q) {
++    conditions.push('(title LIKE ? OR body LIKE ?)');
++    values.push(`%${filter.q}%`, `%${filter.q}%`);
++  }
++  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
++  return db.prepare(`SELECT * FROM notes${where} ORDER BY updated_at DESC`).all(...values) as Note[];
++}
++
++export function getNote(id: number): Note | undefined {
++  return db.prepare('SELECT * FROM notes WHERE id = ?').get(id) as Note | undefined;
++}
++
++export function getNoteByUid(uid: string): Note | undefined {
++  return db.prepare('SELECT * FROM notes WHERE uid = ?').get(uid) as Note | undefined;
++}
++
++export function createNote(input: { title: string; body?: string; folder?: string }): Note {
++  const title = (input.title || '').trim() || 'Untitled';
++  const uid = uniqueUid(slugifyUid(title));
++  const now = Date.now();
++  const body = input.body ?? '';
++  const folder = input.folder ?? '';
++  const tx = db.transaction(() => {
++    const info = db
++      .prepare('INSERT INTO notes (title, body, folder, uid, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
++      .run(title, body, folder, uid, now, now);
++    reindexNote(Number(info.lastInsertRowid), body);
++    return info;
++  });
++  const info = tx();
++  return getNote(Number(info.lastInsertRowid))!;
++}
++
++export function updateNote(
++  id: number,
++  updates: { title?: string; body?: string; folder?: string },
++): Note | undefined {
++  const existing = getNote(id);
++  if (!existing) return undefined;
++  const title = updates.title !== undefined ? ((updates.title || '').trim() || 'Untitled') : existing.title;
++  const body = updates.body !== undefined ? updates.body : existing.body;
++  const folder = updates.folder !== undefined ? updates.folder : existing.folder;
++  // If the title changed in a way that changes the slug, move uid to the new
++  // base (disambiguated) so [[links]] to the new title resolve. Renames that
++  // don't change the slug keep the uid stable (links don't break).
++  const newBase = slugifyUid(title);
++  const uid = newBase !== slugifyUid(existing.title) ? uniqueUid(newBase, id) : existing.uid;
++  const now = Date.now();
++  const tx = db.transaction(() => {
++    db
++      .prepare('UPDATE notes SET title = ?, body = ?, folder = ?, uid = ?, updated_at = ? WHERE id = ?')
++      .run(title, body, folder, uid, now, id);
++    reindexNote(id, body);
++  });
++  tx();
++  return getNote(id);
++}
++
++export function deleteNote(id: number): boolean {
++  // note_links / note_tags cascade via FK ON DELETE CASCADE.
++  return db.prepare('DELETE FROM notes WHERE id = ?').run(id).changes > 0;
++}
++
++export function moveNote(id: number, folder: string): Note | undefined {
++  const existing = getNote(id);
++  if (!existing) return undefined;
++  const now = Date.now();
++  db.prepare('UPDATE notes SET folder = ?, updated_at = ? WHERE id = ?').run(folder || '', now, id);
++  return getNote(id);
++}
++
++export function getBacklinks(uid: string): NoteBacklink[] {
++  return db
++    .prepare(
++      `SELECT n.id, n.title, n.folder, n.uid
++       FROM note_links l JOIN notes n ON n.id = l.src_id
++       WHERE l.dst_uid = ? ORDER BY n.updated_at DESC`,
++    )
++    .all(uid) as NoteBacklink[];
++}
++
++export function listNoteTags(): NoteTagCount[] {
++  return db
++    .prepare('SELECT tag, COUNT(*) AS count FROM note_tags GROUP BY tag ORDER BY count DESC, tag ASC')
++    .all() as NoteTagCount[];
++}
++
++export function listNoteFolders(): { folder: string; count: number }[] {
++  return db
++    .prepare(
++      `SELECT folder, COUNT(*) AS count FROM notes
++       GROUP BY folder ORDER BY folder ASC`,
++    )
++    .all() as { folder: string; count: number }[];
++}
++
+ // --- User Alarms ---
+ 
+ export interface UserAlarm {
+--- /dev/null
++++ b/public/js/notes.js
+@@ -0,0 +1,451 @@
++/* ===== Notes view — Obsidian-inspired markdown notes with [[wiki-links]] =====
++ * Self-contained: own `$` + `api()` wrapper, talks to flat /api/notes/* endpoints
++ * directly (no app.js internals). Plain JS only — no TS, no bundler, no deps.
++ * Storage is SQLite (see src/db.ts); the [[link]] graph + tags are derived from
++ * the note body on every write. Editing uses a plain <textarea>; the preview
++ * pane renders markdown with [[wiki-links]] and #tags rewritten to in-tab links.
++ */
++(function () {
++  'use strict';
++
++  const $ = (id) => document.getElementById(id);
++  const qs = (s, r) => (r || document).querySelector(s);
++  const qsa = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
++
++  async function api(path, opts) {
++    try {
++      const r = await fetch(path, opts);
++      const txt = await r.text();
++      let data = null;
++      try { data = txt ? JSON.parse(txt) : null; } catch { data = null; }
++      return { ok: r.ok, status: r.status, data };
++    } catch (e) {
++      return { ok: false, status: 0, data: null, err: e };
++    }
++  }
++  const getJson = (path) => api(path);
++  const postJson = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
++  const putJson = (path, body) => api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
++  const del = (path) => api(path, { method: 'DELETE' });
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
++  }
++  function p2(n) { return String(n).padStart(2, '0'); }
++  function dateStr(d) { return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); }
++
++  function slugify(title) {
++    return String(title == null ? '' : title).trim().toLowerCase()
++      .replace(/[^\w\s-]/g, '').replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'untitled';
++  }
++
++  function toast(msg, kind) {
++    const el = $('notesTitle');
++    if (el) { el.textContent = msg; el.className = 'chip ' + (kind === 'error' ? 'chip-err' : ''); clearTimeout(el._t); el._t = setTimeout(() => { el.textContent = 'Notes'; el.className = 'chip'; }, 1800); }
++  }
++
++  // ───────────────────────────────────────────────────────── state
++  let allNotes = [];          // every note (lightweight, from list endpoint)
++  let folders = [];           // [{folder, count}]
++  let tags = [];              // [{tag, count}]
++  let current = null;         // full open note
++  let filterFolder = null;    // null = all, '' = root, or a folder name
++  let filterTag = null;
++  let searchQ = '';
++  let mode = 'edit';          // 'edit' | 'preview'
++  let saveTimer = null;
++  let titleTimer = null;
++
++  // ───────────────────────────────────────────────────────── refresh
++  async function refresh() {
++    await Promise.all([loadIndex(), refreshListOnly()]);
++    renderFolders();
++    renderTags();
++    renderList();
++    if (current) {
++      // reload the open note so backlinks/preview reflect any external change
++      const r = await getJson('/api/notes/' + current.id);
++      if (r.ok && r.data && r.data.note) { current = r.data.note; renderEditor(); }
++    }
++  }
++
++  async function loadIndex() {
++    const [fr, tr] = await Promise.all([getJson('/api/notes/folders'), getJson('/api/notes/tags')]);
++    folders = (fr.data && fr.data.folders) || [];
++    tags = (tr.data && tr.data.tags) || [];
++  }
++
++  // ───────────────────────────────────────────────────────── folders / tags
++  function renderFolders() {
++    const el = $('notesFolders');
++    if (!el) return;
++    const total = allNotes.length;
++    const row = (label, val, cls) => `<div class="notes-folder${cls ? ' ' + cls : ''}" data-folder="${esc(val == null ? '' : val)}">${esc(label)} <span class="dim"></span></div>`;
++    let html = row('All notes', '__all__', filterFolder === null ? 'active' : '');
++    html += row('Unfiled', '', filterFolder === '' ? 'active' : '');
++    folders.forEach((f) => {
++      if (!f.folder) return;
++      html += row(f.folder, f.folder, filterFolder === f.folder ? 'active' : '');
++    });
++    el.innerHTML = html;
++    qsa('.notes-folder', el).forEach((b) => b.addEventListener('click', async () => {
++      const v = b.dataset.folder;
++      filterFolder = v === '__all__' ? null : v;
++      filterTag = null;
++      await refreshListOnly();
++      renderFolders();
++      renderTags();
++      renderList();
++    }));
++  }
++
++  function renderTags() {
++    const el = $('notesTags');
++    if (!el) return;
++    if (!tags.length) { el.innerHTML = '<span class="dim" style="font-size:12px">none yet</span>'; return; }
++    el.innerHTML = tags.map((t) => `<span class="notes-tag-chip${filterTag === t.tag ? ' active' : ''}" data-tag="${esc(t.tag)}">#${esc(t.tag)} <span class="dim">${t.count}</span></span>`).join(' ');
++    qsa('.notes-tag-chip', el).forEach((c) => c.addEventListener('click', async () => {
++      filterTag = filterTag === c.dataset.tag ? null : c.dataset.tag;
++      filterFolder = null;
++      await refreshListOnly();
++      renderFolders();
++      renderTags();
++      renderList();
++    }));
++  }
++
++  // ───────────────────────────────────────────────────────── list
++  function visibleNotes() {
++    let list = allNotes;
++    // folder + tag filters are applied server-side in refreshListOnly(); only
++    // fast client-side search is layered on top of whatever was loaded.
++    if (searchQ) {
++      const q = searchQ.toLowerCase();
++      list = list.filter((n) => (n.title || '').toLowerCase().indexOf(q) >= 0 || (n.body || '').toLowerCase().indexOf(q) >= 0);
++    }
++    return list;
++  }
++
++  function renderList() {
++    const el = $('notesList');
++    if (!el) return;
++    const list = visibleNotes();
++    if (!list.length) {
++      el.innerHTML = '<div class="dim" style="padding:14px">No notes. Click + New.</div>';
++      return;
++    }
++    el.innerHTML = list.map((n) => {
++      const active = current && current.id === n.id ? ' active' : '';
++      const sub = n.folder ? esc(n.folder) + ' · ' : '';
++      const when = new Date(n.updated_at).toLocaleDateString();
++      return `<div class="notes-item${active}" data-id="${n.id}"><div class="notes-item-title">${esc(n.title)}</div><div class="notes-item-sub dim">${sub}${when}</div></div>`;
++    }).join('');
++    qsa('.notes-item', el).forEach((it) => it.addEventListener('click', () => openNote(Number(it.dataset.id))));
++  }
++
++  // ───────────────────────────────────────────────────────── open / edit
++  async function openNote(id) {
++    const r = await getJson('/api/notes/' + id);
++    if (!r.ok || !r.data || !r.data.note) { toast('Could not open note', 'error'); return; }
++    current = r.data.note;
++    setMode('edit');
++    renderEditor();
++    renderList();
++  }
++
++  function renderEditor() {
++    if (!current) {
++      $('notesEditorPane').classList.add('hidden');
++      $('notesPreviewPane').classList.add('hidden');
++      $('notesBacklinks').innerHTML = '';
++      $('btnNotesDelete').classList.add('hidden');
++      return;
++    }
++    $('notesTitleInput').value = current.title;
++    $('notesBody').value = current.body;
++    $('btnNotesDelete').classList.remove('hidden');
++    $('notesFolderLabel').textContent = current.folder ? ('/' + current.folder) : '/unfiled';
++    if (mode === 'edit') { $('notesEditorPane').classList.remove('hidden'); $('notesPreviewPane').classList.add('hidden'); }
++    else { renderPreview(); }
++    renderBacklinks();
++  }
++
++  async function renderBacklinks() {
++    const el = $('notesBacklinks');
++    if (!el || !current) { if (el) el.innerHTML = ''; return; }
++    const r = await getJson('/api/notes/' + current.id + '/backlinks');
++    const links = (r.data && r.data.backlinks) || [];
++    if (!links.length) { el.innerHTML = ''; return; }
++    el.innerHTML = '<div class="dim notes-backlinks-head">Linked from</div>' +
++      links.map((b) => `<span class="notes-backlink" data-id="${b.id}">${esc(b.title)}</span>`).join('');
++    qsa('.notes-backlink', el).forEach((s) => s.addEventListener('click', () => openNote(Number(s.dataset.id))));
++  }
++
++  // ───────────────────────────────────────────────────────── save (debounced)
++  function scheduleSave() {
++    if (!current) return;
++    clearTimeout(saveTimer);
++    saveTimer = setTimeout(saveCurrent, 600);
++  }
++  async function saveCurrent() {
++    if (!current) return;
++    const body = $('notesBody').value;
++    const title = $('notesTitleInput').value.trim() || 'Untitled';
++    const r = await putJson('/api/notes/' + current.id, { title, body });
++    if (r.ok && r.data && r.data.note) {
++      const prevUid = current.uid;
++      current = r.data.note;
++      // uid may have changed on rename → refresh index + backlinks
++      if (current.uid !== prevUid) { await loadIndex(); renderFolders(); renderTags(); }
++      // update lightweight entry in allNotes
++      const i = allNotes.findIndex((n) => n.id === current.id);
++      if (i >= 0) allNotes[i] = { ...allNotes[i], title: current.title, folder: current.folder, updated_at: current.updated_at };
++      renderList();
++      renderBacklinks();
++    } else {
++      toast('Save failed', 'error');
++    }
++  }
++
++  // ───────────────────────────────────────────────────────── new / today / delete
++  async function newNote(title) {
++    const r = await postJson('/api/notes', { title: title || 'Untitled', body: '', folder: filterFolder && filterFolder !== '__all__' ? filterFolder : '' });
++    if (r.ok && r.data && r.data.note) {
++      await loadIndex();
++      renderFolders(); renderTags();
++      current = r.data.note;
++      allNotes.unshift({ id: current.id, title: current.title, folder: current.folder, updated_at: current.updated_at, tags: [] });
++      setMode('edit');
++      renderEditor();
++      renderList();
++      $('notesTitleInput').focus();
++      $('notesTitleInput').select();
++    } else {
++      toast('Create failed', 'error');
++    }
++  }
++
++  function newToday() {
++    const title = dateStr(new Date());
++    const uid = slugify(title);
++    const found = allNotes.find((n) => n.uid === uid);
++    if (found) { openNote(found.id); return; }
++    newNote(title);
++  }
++
++  async function deleteCurrent() {
++    if (!current) return;
++    if (!confirm('Delete "' + current.title + '"?')) return;
++    const id = current.id;
++    const r = await del('/api/notes/' + id);
++    if (r.ok) {
++      allNotes = allNotes.filter((n) => n.id !== id);
++      current = null;
++      await loadIndex();
++      renderFolders(); renderTags(); renderList(); renderEditor();
++    } else {
++      toast('Delete failed', 'error');
++    }
++  }
++
++  // ───────────────────────────────────────────────────────── preview / markdown
++  function setMode(m) {
++    mode = m;
++    if (m === 'edit') {
++      $('btnNotesEdit').classList.add('hidden');
++      $('btnNotesPreview').classList.remove('hidden');
++      $('notesEditorPane').classList.remove('hidden');
++      $('notesPreviewPane').classList.add('hidden');
++    } else {
++      $('btnNotesEdit').classList.remove('hidden');
++      $('btnNotesPreview').classList.add('hidden');
++      $('notesEditorPane').classList.add('hidden');
++      $('notesPreviewPane').classList.remove('hidden');
++      renderPreview();
++    }
++  }
++
++  function renderPreview() {
++    const el = $('notesPreviewPane');
++    if (!el || !current) return;
++    el.innerHTML = '<h2 class="notes-preview-title">' + esc(current.title) + '</h2>' + renderMarkdown(current.body || '');
++    // wiki-link clicks
++    qsa('.note-wikilink', el).forEach((a) => a.addEventListener('click', (e) => {
++      e.preventDefault();
++      const uid = a.dataset.noteUid;
++      const target = allNotes.find((n) => n.uid === uid);
++      if (target) openNote(target.id);
++      else if (confirm('Create note "' + (a.dataset.label || a.textContent) + '"?')) newNote(a.dataset.label || a.textContent);
++    }));
++    // tag clicks in preview → filter
++    qsa('.note-inline-tag', el).forEach((t) => t.addEventListener('click', () => {
++      filterTag = t.dataset.tag;
++      filterFolder = null;
++      renderFolders(); renderTags(); renderList();
++    }));
++  }
++
++  // Compact markdown renderer with [[wiki-links]] + #tags. Escapes first.
++  function renderMarkdown(text) {
++    if (!text) return '<p class="dim">Empty note.</p>';
++    const fences = [];
++    // Stash code fences so nothing inside them gets rewritten.
++    let stashed = String(text).replace(/```(\w*)\r?\n?([\s\S]*?)```/g, (_, _lang, body) => {
++      const i = fences.length;
++      fences.push(esc(body.replace(/\n$/, '')));
++      return '\x00F' + i + '\x00';
++    });
++
++    const knownUids = new Set(allNotes.map((n) => n.uid));
++
++    const inline = (s) => {
++      let x = esc(s);
++      // inline code
++      x = x.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
++      // wiki-links: [[Target]], [[Target#heading]], [[Target|alias]]
++      x = x.replace(/\[\[([^\]|#\[]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (m, target, alias) => {
++        const t = target.trim();
++        const label = alias ? alias.trim() : t;
++        const uid = slugify(t);
++        const cls = knownUids.has(uid) ? 'note-wikilink' : 'note-wikilink unresolved';
++        return '<a href="#" class="' + cls + '" data-note-uid="' + esc(uid) + '" data-label="' + esc(label) + '">' + esc(label) + '</a>';
++      });
++      // inline #tags (not inside a word)
++      x = x.replace(/(^|\s)#([A-Za-z][\w-]*)/g, (_, pre, tag) => pre + '<span class="note-inline-tag" data-tag="' + esc(tag) + '">#' + esc(tag) + '</span>');
++      // external links
++      x = x.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
++      // bold / italic
++      x = x.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
++      x = x.replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s)!?.,;:]|$)/g, '$1<em>$2</em>');
++      // restore fences
++      x = x.replace(/\x00F(\d+)\x00/g, (_, i) => '<pre><code>' + fences[Number(i)] + '</code></pre>');
++      return x;
++    };
++
++    const lines = stashed.split(/\r?\n/);
++    const out = [];
++    let list = null;
++    let quote = false;
++    let para = [];
++
++    const flushPara = () => { if (para.length) { out.push('<p>' + para.map(inline).join('<br>') + '</p>'); para = []; } };
++    const flushList = () => { if (list) { out.push('</' + list + '>'); list = null; } };
++    const flushQuote = () => { if (quote) { out.push('</blockquote>'); quote = false; } };
++    const flushAll = () => { flushPara(); flushList(); flushQuote(); };
++
++    for (let i = 0; i < lines.length; i++) {
++      const line = lines[i];
++      if (/^\x00F\d+\x00$/.test(line.trim())) { flushAll(); out.push(inline(line.trim())); continue; }
++      if (!line.trim()) { flushAll(); continue; }
++      const h = line.match(/^(#{1,6})\s+(.*)$/);
++      if (h) { flushAll(); out.push('<h' + h[1].length + '>' + inline(h[2]) + '</h' + h[1].length + '>'); continue; }
++      if (/^>\s?/.test(line)) { flushPara(); flushList(); if (!quote) { out.push('<blockquote>'); quote = true; } out.push('<p>' + inline(line.replace(/^>\s?/, '')) + '</p>'); continue; }
++      const li = line.match(/^[-*]\s+(.*)$/);
++      if (li) { flushPara(); flushQuote(); if (!list) { out.push('<ul>'); list = 'ul'; } out.push('<li>' + inline(li[1]) + '</li>'); continue; }
++      const ol = line.match(/^\d+\.\s+(.*)$/);
++      if (ol) { flushPara(); flushQuote(); if (!list) { out.push('<ol>'); list = 'ol'; } out.push('<li>' + inline(ol[1]) + '</li>'); continue; }
++      flushList(); flushQuote();
++      para.push(line);
++    }
++    flushAll();
++    return out.join('\n');
++  }
++
++  // ───────────────────────────────────────────────────────── [[ autocomplete
++  function autocomplete() {
++    const ta = $('notesBody');
++    const box = $('notesAc');
++    const upto = ta.value.slice(0, ta.selectionStart);
++    const m = upto.match(/\[\[([^\]|#\[]*)$/);
++    if (!m) { if (box) box.classList.add('hidden'); return; }
++    const q = m[1].toLowerCase();
++    const matches = allNotes.filter((n) => n.title.toLowerCase().indexOf(q) >= 0).slice(0, 8);
++    if (!box) return;
++    if (!matches.length) { box.classList.add('hidden'); return; }
++    box.innerHTML = matches.map((n) => `<div class="notes-ac-item" data-title="${esc(n.title)}">${esc(n.title)}</div>`).join('');
++    box.classList.remove('hidden');
++    qsa('.notes-ac-item', box).forEach((it) => it.addEventListener('mousedown', (e) => {
++      e.preventDefault();
++      insertLink(it.dataset.title);
++      box.classList.add('hidden');
++    }));
++  }
++
++  function insertLink(title) {
++    const ta = $('notesBody');
++    const start = ta.selectionStart;
++    const before = ta.value.slice(0, start);
++    const after = ta.value.slice(ta.selectionEnd);
++    const i = before.lastIndexOf('[[');
++    if (i < 0) return;
++    ta.value = before.slice(0, i) + '[[' + title + ']]' + after;
++    const pos = i + 2 + title.length + 2;
++    ta.focus();
++    ta.setSelectionRange(pos, pos);
++    scheduleSave();
++  }
++
++  // ───────────────────────────────────────────────────────── search + list load
++  async function runSearch() {
++    searchQ = $('notesSearch').value.trim();
++    if (searchQ) {
++      // server-side search to catch notes outside the current filter
++      const r = await getJson('/api/notes?q=' + encodeURIComponent(searchQ));
++      allNotes = ((r.data && r.data.notes) || []).map((n) => ({ ...n, tags: [] }));
++    } else {
++      await refreshListOnly();
++    }
++    renderList();
++  }
++
++  async function refreshListOnly() {
++    const params = new URLSearchParams();
++    if (filterFolder !== null && filterFolder !== '__all__') params.set('folder', filterFolder);
++    if (filterTag) params.set('tag', filterTag);
++    const r = await getJson('/api/notes' + (params.toString() ? '?' + params : ''));
++    allNotes = ((r.data && r.data.notes) || []).map((n) => ({ ...n, tags: n.tags || [] }));
++  }
++
++  // ───────────────────────────────────────────────────────── init / bindings
++  function bind() {
++    const btnNew = $('btnNotesNew');
++    const btnToday = $('btnNotesToday');
++    const btnEdit = $('btnNotesEdit');
++    const btnPreview = $('btnNotesPreview');
++    const btnDelete = $('btnNotesDelete');
++    const search = $('notesSearch');
++    const title = $('notesTitleInput');
++    const body = $('notesBody');
++    if (btnNew) btnNew.addEventListener('click', () => newNote());
++    if (btnToday) btnToday.addEventListener('click', newToday);
++    if (btnEdit) btnEdit.addEventListener('click', () => setMode('edit'));
++    if (btnPreview) btnPreview.addEventListener('click', () => setMode('preview'));
++    if (btnDelete) btnDelete.addEventListener('click', deleteCurrent);
++    if (search) search.addEventListener('input', () => { clearTimeout(search._t); search._t = setTimeout(runSearch, 250); });
++    if (title) title.addEventListener('input', () => { clearTimeout(titleTimer); titleTimer = setTimeout(scheduleSave, 400); });
++    if (body) {
++      body.addEventListener('input', scheduleSave);
++      body.addEventListener('keyup', autocomplete);
++      body.addEventListener('click', autocomplete);
++      body.addEventListener('blur', () => { const box = $('notesAc'); if (box) setTimeout(() => box.classList.add('hidden'), 150); });
++    }
++  }
++
++  async function init() {
++    bind();
++    await refreshListOnly();
++    renderFolders();
++    renderTags();
++    renderList();
++    renderEditor();
++  }
++
++  // The rail button + switchView hook drive refresh(); init runs once on load.
++  if (document.readyState === 'loading') {
++    document.addEventListener('DOMContentLoaded', init);
++  } else {
++    init();
++  }
++
++  window.Notes = { refresh, refreshListOnly };
++})();
+\ No newline at end of file

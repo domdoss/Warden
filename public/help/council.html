@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — The Council</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--danger-soft), var(--info-soft)); border: 1px solid var(--border-hi); color: var(--danger); box-shadow: 0 0 32px rgba(248,113,113,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .seat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .seat-card { padding: 18px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--seat-color); position: relative; }
+  .seat-card.skeptic { --seat-color: var(--danger); }
+  .seat-card.pragmatist { --seat-color: var(--warn); }
+  .seat-card.synthesist { --seat-color: var(--info); }
+  .seat-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .seat-chip.skeptic { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+  .seat-chip.pragmatist { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+  .seat-chip.synthesist { color: var(--info); border-color: var(--info); background: var(--info-soft); }
+  .seat-card h3 { margin: 10px 0 4px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  .seat-card .role { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-bottom: 10px; }
+  .seat-card p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.55; }
+
+  .flow-diagram { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 18px 22px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); margin: 0 0 12px; }
+  .flow-row { display: grid; grid-template-columns: 1fr 24px 1fr; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; }
+  .flow-node { padding: 8px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border-hi); color: var(--text-dim); text-align: center; }
+  .flow-node.seat-s { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); background: var(--danger-soft); }
+  .flow-node.seat-p { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); background: var(--warn-soft); }
+  .flow-node.seat-y { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--border)); background: var(--info-soft); }
+  .flow-arrow { text-align: center; color: var(--text-faint); font-size: 16px; }
+
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-info { border-left: 3px solid var(--info); }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-danger { border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--info-soft); color: var(--info); }
+  .help-callout-warn .help-callout-icon { background: var(--warn-soft); color: var(--warn); }
+  .help-callout-danger .help-callout-icon { background: var(--danger-soft); color: var(--danger); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .help-callout pre { margin: 8px 0 0; padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px; }
+  .help-callout code { color: var(--accent); }
+
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+
+  <nav class="help-nav">
+    <a href="/index.html">← Dashboard</a>
+    <span class="crumb">/ help / council</span>
+  </nav>
+
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+    </div>
+    <div>
+      <h1>The Council</h1>
+      <p>Three Artemis instances deliberate in parallel on the same question from three different angles. They share answers between rounds and argue until they agree — or until max rounds is hit. Reserve for high-stakes questions where being wrong is costly.</p>
+    </div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> The three seats</div>
+  <div class="seat-grid">
+    <div class="seat-card skeptic">
+      <span class="seat-chip skeptic">Skeptic</span>
+      <h3>Skeptic</h3>
+      <div class="role">attacks the answer</div>
+      <p>Probes claims, framings, and assumptions. Holds ground when the others are wrong; concedes with reason when they're right.</p>
+    </div>
+    <div class="seat-card pragmatist">
+      <span class="seat-chip pragmatist">Pragmatist</span>
+      <h3>Pragmatist</h3>
+      <div class="role">asks what actually works</div>
+      <p>Stress-tests the answer against reality. Cares about what ships, what runs, what survives contact with users and constraints.</p>
+    </div>
+    <div class="seat-card synthesist">
+      <span class="seat-chip synthesist">Synthesist</span>
+      <h3>Synthesist</h3>
+      <div class="role">asks what the question really is</div>
+      <p>Steps back. Questions the framing itself. Often surfaces a third path that dissolves the disagreement between the other two.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>02</span> How the rounds work</div>
+  <div class="flow-diagram">
+    <div class="flow-row"><div class="flow-node seat-s">Skeptic · round 1</div><div class="flow-arrow">↘</div><div class="flow-node" style="border-style: dashed; color: var(--text-faint);">initial answer</div></div>
+    <div class="flow-row"><div class="flow-node seat-p">Pragmatist · round 1</div><div class="flow-arrow">→</div><div class="flow-node" style="border-style: dashed; color: var(--text-faint);">all three run in parallel</div></div>
+    <div class="flow-row"><div class="flow-node seat-y">Synthesist · round 1</div><div class="flow-arrow">↗</div><div class="flow-node" style="border-style: dashed; color: var(--text-faint);">answers shared between seats</div></div>
+    <div style="border-top: 1px dashed var(--border); margin: 8px 0;"></div>
+    <div class="flow-row"><div class="flow-node seat-s">Skeptic · round 2</div><div class="flow-arrow">↘</div><div class="flow-node" style="border-style: dashed; color: var(--text-faint);">ARGUE: concede or hold with reason</div></div>
+    <div class="flow-row"><div class="flow-node seat-p">Pragmatist · round 2</div><div class="flow-arrow">→</div><div class="flow-node" style="border-style: dashed; color: var(--text-faint);">refine based on disagreements</div></div>
+    <div class="flow-row"><div class="flow-node seat-y">Synthesist · round 2</div><div class="flow-arrow">↗</div><div class="flow-node" style="border-style: dashed; color: var(--text-faint);">consensus check after each round</div></div>
+    <div style="border-top: 1px dashed var(--border); margin: 8px 0;"></div>
+    <div class="flow-row"><div class="flow-node" style="color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); background: var(--ok-soft);">Consensus reached, OR max rounds hit</div><div class="flow-arrow">→</div><div class="flow-node" style="color: var(--accent); border-color: var(--accent); background: var(--accent-soft);">Verdict pushed to user</div></div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> It runs in the background</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon" aria-hidden="true">↻</div>
+    <div>
+      <p>When the orchestrator calls the <code>council</code> tool, it <strong>immediately</strong> tells you "The Council is deliberating — I'll respond with the verdict when they reach one" and ends its turn. The Council keeps running in the background (1–3 minutes).</p>
+      <p>When the seats converge (or hit max rounds), the verdict is pushed to you as a new follow-up message — including the full round-by-round deliberation trace, so you can see how they argued it out. The full verdict is also saved to a markdown file under <code>council-verdicts/</code> for later reference.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> How to call it</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon" aria-hidden="true">⌘</div>
+    <div>
+      <p>Use <code>Convene The Council on this:</code> followed by a self-contained question. The seats can't see chat history, so include everything they need.</p>
+      <pre>Convene The Council on this: should I learn Rust or Go first given
+I already know Python and want to build backend services?</pre>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>05</span> Per-seat model overrides</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon" aria-hidden="true">⚙</div>
+    <div>
+      <p>In Settings → Council Seats, you can pick a different model for each seat. Different models = genuinely different perspectives. Leave a seat blank to inherit Atlas's model.</p>
+      <p>Example: Skeptic = a reasoning-strong cloud model, Pragmatist = a fast local model, Synthesist = a different cloud model with a different lens.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>06</span> When NOT to use it</div>
+  <div class="help-callout help-callout-danger">
+    <div class="help-callout-icon" aria-hidden="true">⚠</div>
+    <div>
+      <p>The Council is 3–10× slower and 3–10× more tokens than a single delegate call. Don't convene it for:</p>
+      <ul style="margin: 4px 0 0; padding-left: 18px;">
+        <li>Routine questions or lookups — answer directly.</li>
+        <li>Anything you can verify with Bash/Read.</li>
+        <li>Low-stakes advice where "good enough" is fine.</li>
+      </ul>
+      <p style="margin-top: 8px;">Reserve it for consequential advice, non-obvious debugging conclusions, or decisions with irreversible consequences.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/agents.html"><strong>Agents</strong><small>every sub-agent explained</small></a>
+    <a href="/help/atlas.html"><strong>Asking Atlas</strong><small>delegation patterns</small></a>
+    <a href="/help/not-a-chatbot.html"><strong>Not a chatbot</strong><small>what Warden is and isn't</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>create, activate, manage</small></a>
+    <a href="/help/settings.html"><strong>Settings</strong><small>council seat models</small></a>
+    <a href="/help/safety.html"><strong>Safety</strong><small>guardrails and warnings</small></a>
+  </div>
+
+</div>
+</body>
+</html>

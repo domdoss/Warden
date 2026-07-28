@@ -1,0 +1,86 @@
+# Security Mode — structured awareness camera feed.
+#
+# The detector watches the webcam, builds a compact JSON description of the
+# scene each frame, and posts change events (arrival, departure, movement,
+# camera covered, camera moved, motion burst) to Warden's owner chat. Warden
+# routes AWARENESS messages to Sentry, a background local model, which decides
+# whether to speak to the user. No images are sent for routine awareness.
+#
+# Copy this file to settings.yaml and edit, or pass --config <path>.
+
+camera:
+  # Local webcam (OpenCV index). 0 = default. Use `v4l2-ctl --list-devices`
+  # or pass --camera to override without editing this.
+  index: 0
+  # Downscale before inference. RF-DETR Keypoint runs at 576x576 internally,
+  # so anything larger just costs capture bandwidth.
+  width: 640
+  height: 480
+  # Frames per second to actually process. CPU inference is the bottleneck.
+  fps: 3
+
+model:
+  # "keypoint" = RF-DETR Keypoint Preview (Apache 2.0). Its detection head
+  # reliably finds person on CPU; the pose head partially loads but we only
+  # need the box/keypoints for the structured situation.
+  variant: keypoint
+  # Detection checkpoint size for the "detection" variant (nano|small|medium|
+  # large). Ignored for keypoint (xlarge only).
+  size: small
+  # Detection confidence floor. The keypoint model can hallucinate many
+  # overlapping low-confidence "person" boxes; keep this at 0.35+ and rely on
+  # the tracker + NMS to suppress duplicates.
+  threshold: 0.35
+
+# Motion detection. Frame differencing produces a motion mask; its nonzero area
+# is the motion signal. Used for "motion burst while empty" and for UI status.
+motion:
+  # Grayscale frames are differenced, blurred, then thresholded.
+  blur: 21
+  # Pixel-difference threshold (0-255). Higher = less sensitive.
+  pixel_threshold: 25
+  # Minimum nonzero area in the motion mask to count as "movement".
+  min_area: 800
+
+# Situational-awareness tuning.
+awareness:
+  enabled: true
+  # Min seconds between any two AWARENESS posts to Warden.
+  cooldown_seconds: 30
+  # Consecutive frames with/without a person before flipping room occupied/empty.
+  presence_debounce: 3
+  # Minimum motion-area to count as a "motion burst" while the room is empty.
+  motion_min_area: 1500
+  # Centroid shift (pixels) that counts as a tracked person "movement" event.
+  motion_movement_px: 80
+  # pHash Hamming distance threshold for "camera moved". Lower = less sensitive.
+  camera_moved_threshold: 16
+  # Number of recent frame hashes to compare against for camera-moved detection.
+  camera_moved_history: 5
+  # Min confidence for non-person objects to be included in the situation JSON.
+  # The keypoint model is person-only, so this is mostly future-proofing.
+  object_min_confidence: 0.2
+  # Camera-tamper detection. Near-uniform frame std over this many frames = covered.
+  covered_std: 6
+  covered_frames: 3
+
+warden:
+  # Desktop Warden service. The laptop POSTs AWARENESS JSON events here.
+  base_url: http://10.0.0.47:3200
+  owner_jid: owner@local
+
+# Frame server — lets the desktop Warden pull the latest frame over HTTP while
+# this app owns /dev/video0. Bind to 0.0.0.0 so the desktop can reach it.
+frame_server:
+  host: 0.0.0.0
+  port: 8765
+
+# Voice client — the security launcher opens voice/ (Jarvis) alongside the
+# webcam window so Warden's replies get spoken and you can talk to Warden.
+voice:
+  enabled: true
+  dir: ../voice
+  auto_setup: true
+
+logging:
+  level: INFO

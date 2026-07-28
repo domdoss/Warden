@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Agents</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 0; margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono); font-size: 12px;
+  }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+
+  .help-hero {
+    display: grid; grid-template-columns: 64px 1fr; gap: 18px;
+    align-items: center; padding: 22px 0 24px;
+    border-bottom: 1px solid var(--border); margin-bottom: 28px;
+  }
+  .help-hero-icon {
+    width: 64px; height: 64px; border-radius: 16px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, var(--accent-soft), var(--info-soft));
+    border: 1px solid var(--border-hi);
+    color: var(--accent);
+    box-shadow: 0 0 32px rgba(94,234,212,0.18) inset;
+  }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+
+  .help-section-label {
+    display: flex; align-items: center; gap: 10px;
+    margin: 28px 0 14px;
+    font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--text-dim);
+  }
+  .help-section-label > span {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 18px; border-radius: 4px;
+    background: var(--surface-3); color: var(--accent);
+    border: 1px solid var(--border-hi);
+    font-size: 10px; font-weight: 600;
+  }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .agent-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .agent-tile {
+    display: grid; grid-template-columns: 44px 1fr; gap: 14px;
+    padding: 16px; border-radius: var(--r-md);
+    background: var(--surface); border: 1px solid var(--border);
+    transition: border-color .15s, transform .15s, background .15s;
+  }
+  .agent-tile:hover { border-color: var(--border-hi); background: var(--surface-2); transform: translateY(-1px); }
+  .agent-tile-icon {
+    width: 44px; height: 44px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--tile-accent, var(--accent)) 14%, var(--surface-2));
+    color: var(--tile-accent, var(--accent));
+    border: 1px solid color-mix(in srgb, var(--tile-accent, var(--accent)) 30%, var(--border));
+  }
+  .agent-tile-icon svg { width: 22px; height: 22px; }
+  .agent-tile h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  .agent-tile h3 small { color: var(--text-faint); font-family: var(--font-mono); font-size: 12px; font-weight: 400; margin-left: 6px; }
+  .agent-tile p { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+  .agent-tile pre {
+    margin: 8px 0 0; padding: 10px 12px;
+    background: var(--bg-sunken); border: 1px solid var(--border);
+    border-radius: var(--r-sm); font-size: 12px;
+  }
+
+  .help-callout {
+    display: grid; grid-template-columns: 36px 1fr; gap: 14px;
+    padding: 14px 16px; border-radius: var(--r-md);
+    border: 1px solid var(--border); background: var(--surface);
+    margin: 0 0 12px;
+  }
+  .help-callout-info { border-left: 3px solid var(--info); }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-icon {
+    width: 36px; height: 36px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 18px; font-weight: 600;
+    background: var(--info-soft); color: var(--info);
+  }
+  .help-callout-warn .help-callout-icon { background: var(--warn-soft); color: var(--warn); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .help-callout code { color: var(--accent); }
+
+  .flow-diagram {
+    display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px;
+    align-items: center; padding: 18px 22px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-md); margin: 0 0 12px;
+  }
+  .flow-node {
+    padding: 14px 18px; border-radius: 10px;
+    text-align: center; font-family: var(--font-mono); font-size: 12px;
+    border: 1px solid var(--border-hi);
+  }
+  .flow-node.orch { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .flow-node.sub { background: var(--surface-2); color: var(--text-dim); }
+  .flow-node strong { display: block; font-size: 14px; color: var(--text); margin-bottom: 2px; font-family: var(--font); }
+  .flow-arrow { color: var(--text-faint); font-size: 22px; font-family: var(--font-mono); }
+  .flow-sub-list { display: grid; gap: 4px; }
+  .flow-sub-list .flow-node { padding: 6px 10px; font-size: 11px; }
+
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 12px 14px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--r-sm);
+    text-decoration: none; color: var(--text);
+    transition: border-color .15s, transform .15s;
+  }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+
+  <nav class="help-nav">
+    <a href="/index.html">← Dashboard</a>
+    <span class="crumb">/ help / agents</span>
+  </nav>
+
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="8" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/>
+        <path d="M12 11v3M10 13l-2 3M14 13l2 3"/>
+      </svg>
+    </div>
+    <div>
+      <h1>The agents</h1>
+      <p>Warden is one orchestrator plus a handful of specialist sub-agents. The orchestrator is the model you're talking to, but it is explicitly a <strong>router and prompt engineer</strong> — it does not write code, edit files, or do research itself. Instead it understands what you want and delegates to the right sub-agent. Each sub-agent runs in its own context window and reports back as a chat message.</p>
+    </div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> The delegation flow</div>
+  <div class="flow-diagram">
+    <div class="flow-node orch"><strong>You</strong>chat message</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node orch"><strong>Orchestrator</strong>plans + delegates</div>
+  </div>
+  <div class="flow-diagram">
+    <div class="flow-node orch"><strong>Orchestrator</strong>tool call</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-sub-list">
+      <div class="flow-node">Atlas</div>
+      <div class="flow-node">Byte</div>
+      <div class="flow-node">Dexter</div>
+      <div class="flow-node">Iris</div>
+      <div class="flow-node">Artemis</div>
+      <div class="flow-node">The Council</div>
+    </div>
+  </div>
+  <p style="margin: 4px 0 0; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono);">Multiple sub-agent calls in the same turn run in parallel. The verbose bar below the composer shows which one is live.</p>
+
+  <div class="help-section-label"><span>02</span> The sub-agents</div>
+  <div class="agent-grid">
+    <div class="agent-tile" style="--tile-accent: var(--info);">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      </div>
+      <div>
+        <h3>Atlas <small>browser + research</small></h3>
+        <p>Opens URLs, takes screenshots, fetches HTML, clicks buttons, reads pages. Multiple Atlas jobs in one turn run in parallel.</p>
+        <pre>Open example.com and take a screenshot.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: var(--warn);">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </div>
+      <div>
+        <h3>Byte <small>compute</small></h3>
+        <p>Runs python3 / bash / node one-liners. Anything expressible as a short program, Byte can run and hand back stdout.</p>
+        <pre>Compute the factorial of 10 using python3.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: var(--violet);">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </div>
+      <div>
+        <h3>Dexter <small>time + scheduling</small></h3>
+        <p>Answers date/time questions and manages scheduled tasks. "What time is it in UTC?", "remind me at 3pm to check the deploy."</p>
+        <pre>Remind me at 3pm to check the deploy status.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: var(--ok);">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>
+      </div>
+      <div>
+        <h3>Iris <small>email</small></h3>
+        <p>Lists your inbox, counts unread, searches emails, and (if enabled) drafts and sends mail. Unavailable until email is configured.</p>
+        <pre>List my last 10 unread emails and summarize each.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: var(--accent);">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 9h1"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+      </div>
+      <div>
+        <h3>Artemis <small>read-only auditor</small></h3>
+        <p>Reads files, greps, reviews code or conversation. Use it for "review this snippet" or "summarize this conversation". Also seats The Council.</p>
+        <pre>Review src/auth.ts for any security issues.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: var(--danger);">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+      </div>
+      <div>
+        <h3>The Council <small>3 Artemis seats</small></h3>
+        <p>Skeptic, Pragmatist, Synthesist deliberate in parallel on the same question, iterate until they agree or hit max rounds. 1–3 min, token-heavy.</p>
+        <pre>Convene The Council on this: should I use a monorepo for a 2-person team?</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> The orchestrator's job</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon" aria-hidden="true">i</div>
+    <div>
+      <p>The orchestrator is a prompt engineer and delegator. You describe the task; it picks the right specialist, writes a precise instruction (including file paths, URLs, and expected output), and emits the tool call. The matching sub-agent runs and posts its result back.</p>
+      <p>Delegation is supervised: the orchestrator checks in on running Atlas jobs every 45 seconds (elapsed time, tool calls, last action), stops any that are stuck or looping, and when a job fails it reads the output and automatically retries with a reworked instruction — you only hear about failures it can't recover. The verbose bar at the bottom of the chat shows which agent is live and which tools are running right now.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/council.html"><strong>The Council</strong><small>three-seat deliberation</small></a>
+    <a href="/help/atlas.html"><strong>Asking Atlas</strong><small>delegation patterns</small></a>
+    <a href="/help/not-a-chatbot.html"><strong>Not a chatbot</strong><small>what Warden is and isn't</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>create, activate, manage</small></a>
+    <a href="/help/settings.html"><strong>Settings</strong><small>every option explained</small></a>
+    <a href="/help/safety.html"><strong>Safety</strong><small>guardrails and warnings</small></a>
+  </div>
+
+</div>
+</body>
+</html>

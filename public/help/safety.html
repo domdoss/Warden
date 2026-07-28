@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Safety &amp; Guardrails</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--danger-soft), var(--warn-soft)); border: 1px solid var(--border-hi); color: var(--danger); box-shadow: 0 0 32px rgba(248,113,113,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .rule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .rule-card { padding: 16px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--rule-color, var(--danger)); }
+  .rule-card.warn { --rule-color: var(--warn); }
+  .rule-card.info { --rule-color: var(--info); }
+  .rule-card.ok { --rule-color: var(--ok); }
+  .rule-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; background: color-mix(in srgb, var(--rule-color, var(--danger)) 14%, var(--surface-2)); color: var(--rule-color, var(--danger)); font-size: 16px; font-family: var(--font-mono); font-weight: 600; margin-bottom: 8px; border: 1px solid color-mix(in srgb, var(--rule-color, var(--danger)) 30%, var(--border)); }
+  .rule-card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  .rule-card p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-danger { border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--danger-soft); color: var(--danger); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .help-callout ul { margin: 4px 0 0; padding-left: 18px; }
+  .help-callout ul li { margin-bottom: 4px; font-size: 12px; }
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+  <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / safety</span></nav>
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
+    <div><h1>Safety &amp; guardrails</h1><p>Warden has full filesystem, network, email, and scheduling powers on the machine it runs on. It can do a lot — including damage. This page is the short list of rules that keep you from getting burned.</p></div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> The hard rules</div>
+  <div class="rule-grid">
+    <div class="rule-card"><div class="rule-icon">⚠</div><h3>Don't run as admin</h3><p>Warden has full permissions by design. Running it as admin multiplies the blast radius — a typo in a tool call can brick the OS. Use a normal user account.</p></div>
+    <div class="rule-card"><div class="rule-icon">@</div><h3>No write access to important things</h3><p>Email, prod repos, SSH keys, password managers, financial accounts. If you wouldn't hand a stranger the password, don't hand Warden write access.</p></div>
+    <div class="rule-card warn"><div class="rule-icon">⧉</div><h3>Make backups first</h3><p>Before letting Warden touch anything you care about, snapshot it. Copy the project directory, save a tarball, or use a real backup tool. Reversible is the goal.</p></div>
+    <div class="rule-card warn"><div class="rule-icon">⌂</div><h3>Not your only/work computer</h3><p>If Warden wedges the machine, you need a second one to recover from. Run it on a box you can afford to lose for a day.</p></div>
+    <div class="rule-card info"><div class="rule-icon">●</div><h3>Watch the verbose bar</h3><p>It shows what Warden is doing right now. If it's calling tools you didn't expect, hit Stop — don't wait to see what happens.</p></div>
+    <div class="rule-card ok"><div class="rule-icon">✓</div><h3>Read BLOCKED messages</h3><p>When a tool fails, Warden says <code>BLOCKED</code> with the reason. Read it before retrying. Blind retries compound failures.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>02</span> What Warden can do</div>
+  <div class="help-callout help-callout-danger">
+    <div class="help-callout-icon">!</div>
+    <div>
+      <p>Warden has direct access to:</p>
+      <ul>
+        <li>The filesystem (read and write — anywhere the user account can).</li>
+        <li>The shell (arbitrary commands, including destructive ones).</li>
+        <li>The network (Atlas opens URLs, fetches pages).</li>
+        <li>Email (if Iris is configured — read, search, draft, send).</li>
+        <li>The scheduler (Dexter can create cron tasks that run later).</li>
+        <li>System processes (Stop/Restart the server itself, truncate logs).</li>
+        <li>Conversation history stored in the local SQLite database, plus Mercury rolling memory in <code>MERCURY_MEMORY.md</code>.</li>
+      </ul>
+      <p style="margin-top: 8px;"><strong>None of these are sandboxed.</strong> The guardrails are your good judgment, the verbose bar, and the Stop button.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> The Stop button is your friend</div>
+  <div class="help-callout help-callout-danger">
+    <div class="help-callout-icon">■</div>
+    <div>
+      <p>If Warden is doing something you didn't intend — heading toward a destructive action, calling the wrong tool, looping — hit Stop in the top bar immediately. It kills the in-flight agent run cleanly and preserves the chat history.</p>
+      <p>You can then ask Warden what it was about to do, redirect it, or start a fresh turn.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> The audit is your other friend</div>
+  <div class="help-callout help-callout-danger">
+    <div class="help-callout-icon">✓</div>
+    <div>
+      <p>The <strong>Run audit</strong> button (left rail, bottom) sends 100 scenarios through the chat API and logs the results. Run it after major changes — it surfaces regressions in tool use, delegation, code execution, scheduling, and computer control.</p>
+      <p>If Warden is broken, paste the log into Claude Code (or your console agent runner of choice) to triage and fix.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/not-a-chatbot.html"><strong>Not a chatbot</strong><small>mental model</small></a>
+    <a href="/help/agents.html"><strong>Agents</strong><small>what each can do</small></a>
+    <a href="/help/settings.html"><strong>Settings</strong><small>model + tool config</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>workflow capture</small></a>
+    <a href="/help/council.html"><strong>The Council</strong><small>high-stakes decisions</small></a>
+    <a href="/help/atlas.html"><strong>Asking Atlas</strong><small>browser patterns</small></a>
+  </div>
+</div>
+</body>
+</html>

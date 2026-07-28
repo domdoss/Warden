@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent !important;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: transparent;
+            color: #00ffff;
+            position: relative;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+        }
+
+        /* Hologram canvas container — radial fade hides the square window edge */
+        .hologram-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            pointer-events: none;
+            -webkit-mask-image: radial-gradient(circle at center, black 35%, transparent 75%);
+            mask-image: radial-gradient(circle at center, black 35%, transparent 75%);
+        }
+
+        #hologramCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* HUD layer (timer, mini holograms) */
+        .hud {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        /* Timer - top right */
+        .timer-slot {
+            position: absolute;
+            top: 3vmin;
+            right: 3vmin;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1vmin;
+            opacity: 0;
+            transition: opacity 300ms ease;
+        }
+
+        .timer-slot.visible {
+            opacity: 1;
+        }
+
+        .timer-ring {
+            width: 50vmin;
+            height: 50vmin;
+            border-radius: 50%;
+            background: #0a0a0a;
+            border: 0.6vmin solid #00ffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow:
+                0 0 4vmin rgba(0, 255, 255, 0.4),
+                inset 0 0 4vmin rgba(0, 255, 255, 0.2);
+        }
+
+        .timer-value {
+            font-size: 15vmin;
+            font-weight: bold;
+            color: #00ffff;
+            text-shadow:
+                0 0 2vmin #00ffff,
+                0 0 4vmin #00ffff;
+        }
+
+        .timer-label {
+            font-size: 4vmin;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.3vmin;
+            color: #00ffff;
+            text-shadow: 0 0 1.5vmin #00ffff;
+            max-width: 50vmin;
+            text-align: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Mini hologram slots - bottom */
+        .mini-slots {
+            position: absolute;
+            bottom: 2vmin;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            gap: 1.5vmin;
+            padding: 0 2vmin;
+        }
+
+        .mini-slot {
+            width: 12vmin;
+            height: 12vmin;
+            border-radius: 50%;
+            background: transparent;
+            border: 0.3vmin solid transparent;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 300ms ease, background 300ms ease, border-color 300ms ease, box-shadow 300ms ease;
+            overflow: hidden;
+        }
+
+        .mini-slot.active {
+            opacity: 1;
+            border-color: rgba(0, 255, 255, 0.5);
+            background: rgba(0, 255, 255, 0.05);
+            box-shadow:
+                0 0 2vmin rgba(0, 255, 255, 0.3),
+                inset 0 0 2vmin rgba(0, 255, 255, 0.15);
+        }
+
+        .mini-slot.flash-success {
+            border-color: #00ff66;
+            background: rgba(0, 255, 102, 0.4);
+            box-shadow:
+                0 0 3vmin rgba(0, 255, 102, 0.8),
+                inset 0 0 2vmin rgba(0, 255, 102, 0.4);
+        }
+
+        .mini-slot.flash-failure {
+            border-color: #ff0033;
+            background: rgba(255, 0, 51, 0.4);
+            box-shadow:
+                0 0 3vmin rgba(255, 0, 51, 0.8),
+                inset 0 0 2vmin rgba(255, 0, 51, 0.4);
+        }
+
+        .mini-label {
+            font-size: 1.8vmin;
+            color: #00ffff;
+            text-transform: uppercase;
+            letter-spacing: 0.2vmin;
+            text-align: center;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding: 0 0.5vmin;
+        }
+
+        /* Portrait 900x1600 adjustments */
+        @media (orientation: portrait) {
+            .timer-ring { width: 42vmin; height: 42vmin; }
+            .timer-value { font-size: 13vmin; }
+        }
+    </style>
+</head>
+<body>
+    <!-- 3D hologram canvas -->
+    <div class="hologram-container">
+        <canvas id="hologramCanvas"></canvas>
+    </div>
+
+    <!-- HUD layer -->
+    <div class="hud">
+        <!-- Top-right: timer slot (initially hidden) -->
+        <div id="timer-slot" class="timer-slot">
+            <div class="timer-ring">
+                <div id="timer-value" class="timer-value">0</div>
+            </div>
+            <div id="timer-label" class="timer-label"></div>
+        </div>
+
+        <!-- Bottom: mini hologram slots (6 blank stubs) -->
+        <div class="mini-slots" id="mini-slots">
+            <div class="mini-slot" data-slot="0"></div>
+            <div class="mini-slot" data-slot="1"></div>
+            <div class="mini-slot" data-slot="2"></div>
+            <div class="mini-slot" data-slot="3"></div>
+            <div class="mini-slot" data-slot="4"></div>
+            <div class="mini-slot" data-slot="5"></div>
+        </div>
+    </div>
+
+    <script src="vendor/three.min.js"></script>
+    <script>
+        // ======================================================================
+        // Hologram (adapted from jarvis-hologram.html, mic-free)
+        // The hologram itself IS the state indicator. setState(name) changes
+        // the target color and motion parameters; animate() lerps toward them.
+        // ======================================================================
+
+        // State -> visual parameters.
+        //   color         : THREE.Color target for all materials
+        //   coreSpeed     : base pulse frequency multiplier for core sin()
+        //   particleDrift : multiplier for particle velocity + rotation
+        //   ringSpeed    : multiplier for ring rotation speeds
+        //   pulseAmp      : amplitude multiplier on the core pulse
+        //   flash         : true => opacity ping-pong error flash
+        const STATE_PARAMS = {
+            idle: {
+                color: 0x00ffff,
+                coreSpeed: 0.001,
+                particleDrift: 1.0,
+                ringSpeed: 1.0,
+                pulseAmp: 0.10,
+                flash: false
+            },
+            listening: {
+                // ~1.4Hz core pulse => sin(t * 2*PI*1.4 / 1000) ≈ sin(t * 0.0088)
+                color: 0xff2b2b,
+                coreSpeed: 0.0088,
+                particleDrift: 1.8,
+                ringSpeed: 1.2,
+                pulseAmp: 0.18,
+                flash: false
+            },
+            processing: {
+                color: 0xffaa00,
+                coreSpeed: 0.0035,
+                particleDrift: 3.8,
+                ringSpeed: 2.6,
+                pulseAmp: 0.14,
+                flash: false,
+                jitter: 0.06,
+                scatter: 0.035,
+            },
+            speaking: {
+                color: 0x00ffff,
+                coreSpeed: 0.002,
+                particleDrift: 1.3,
+                ringSpeed: 1.3,
+                pulseAmp: 0.10,
+                flash: false
+            },
+            error: {
+                color: 0xff0000,
+                coreSpeed: 0.003,
+                particleDrift: 1.0,
+                ringSpeed: 1.0,
+                pulseAmp: 0.12,
+                flash: true
+            }
+        };
+
+        class JarvisHologram {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: this.canvas,
+                    alpha: true,
+                    antialias: true
+                });
+
+                this.audioLevel = 0;
+                this.targetAudioLevel = 0;
+                this.particles = [];
+                this.rings = [];
+                this.orbitalRings = [];
+
+                this._ready = false;
+
+                // State tracking — target color is lerped toward each frame.
+                this.state = 'idle';
+                this.stateParams = STATE_PARAMS.idle;
+                this.targetColor = new THREE.Color(STATE_PARAMS.idle.color);
+                this.currentColor = new THREE.Color(STATE_PARAMS.idle.color);
+
+                this.init();
+            }
+
+            init() {
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setClearColor(0x000000, 0);
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.camera.position.z = 8;
+
+                this.createCore();
+                this.createParticleCloud();
+                this.createRings();
+                this.createOrbitalRings();
+                this.createEnergyField();
+
+                // Collect all materials we want to color-lerp each frame.
+                this.coloredMaterials = [
+                    this.core.material,
+                    this.innerGlow.material,
+                    this.wireframeSphere.material,
+                    this.energyField.material,
+                    this.particleSystem.material,
+                    ...this.rings.map(r => r.material),
+                    ...this.orbitalRings.map(r => r.material)
+                ];
+
+                // Base opacities — flash effect modulates around these.
+                this.baseOpacities = {
+                    core: 0.3,
+                    innerGlow: 0.6,
+                    wireframeSphere: 0.4,
+                    energyField: 0.1,
+                    particles: 0.7,
+                    rings: this.rings.map((_, i) => 0.25 - i * 0.03),
+                    orbitalRings: this.orbitalRings.map(() => 0.5)
+                };
+
+                this.animate();
+
+                window.addEventListener('resize', () => this.onResize());
+
+                this._ready = true;
+            }
+
+            createCore() {
+                const coreGeometry = new THREE.SphereGeometry(0.8, 32, 32);
+                const coreMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x00ffff,
+                    transparent: true,
+                    opacity: 0.3,
+                    wireframe: false
+                });
+                this.core = new THREE.Mesh(coreGeometry, coreMaterial);
+                this.scene.add(this.core);
+
+                const glowGeometry = new THREE.SphereGeometry(0.5, 16, 16);
+                const glowMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x00ffff,
+                    transparent: true,
+                    opacity: 0.6
+                });
+                this.innerGlow = new THREE.Mesh(glowGeometry, glowMaterial);
+                this.scene.add(this.innerGlow);
+
+                const wireframeGeometry = new THREE.SphereGeometry(0.9, 16, 16);
+                const wireframeMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x00ffff,
+                    wireframe: true,
+                    transparent: true,
+                    opacity: 0.4
+                });
+                this.wireframeSphere = new THREE.Mesh(wireframeGeometry, wireframeMaterial);
+                this.scene.add(this.wireframeSphere);
+            }
+
+            createParticleCloud() {
+                const particleCount = 2000;
+                const geometry = new THREE.BufferGeometry();
+                const positions = new Float32Array(particleCount * 3);
+                const velocities = [];
+                const originalPositions = [];
+
+                for (let i = 0; i < particleCount * 3; i += 3) {
+                    const radius = 2 + Math.random() * 4;
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.random() * Math.PI;
+
+                    const x = radius * Math.sin(phi) * Math.cos(theta);
+                    const y = radius * Math.sin(phi) * Math.sin(theta);
+                    const z = radius * Math.cos(phi);
+
+                    positions[i] = x;
+                    positions[i + 1] = y;
+                    positions[i + 2] = z;
+
+                    originalPositions.push({ x, y, z });
+
+                    velocities.push({
+                        x: (Math.random() - 0.5) * 0.01,
+                        y: (Math.random() - 0.5) * 0.01,
+                        z: (Math.random() - 0.5) * 0.01
+                    });
+                }
+
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+                const material = new THREE.PointsMaterial({
+                    color: 0x00ffff,
+                    size: 0.05,
+                    transparent: true,
+                    opacity: 0.7,
+                    blending: THREE.AdditiveBlending
+                });
+
+                this.particleSystem = new THREE.Points(geometry, material);
+                this.particleVelocities = velocities;
+                this.particleOriginalPositions = originalPositions;
+                this.scene.add(this.particleSystem);
+            }
+
+            createRings() {
+                for (let i = 0; i < 5; i++) {
+                    const geometry = new THREE.TorusGeometry(2 + i * 0.6, 0.015, 16, 100);
+                    const material = new THREE.MeshBasicMaterial({
+                        color: 0x00ffff,
+                        transparent: true,
+                        opacity: 0.25 - i * 0.03,
+                        wireframe: false
+                    });
+                    const ring = new THREE.Mesh(geometry, material);
+                    ring.rotation.x = Math.PI / 2;
+                    this.rings.push(ring);
+                    this.scene.add(ring);
+                }
+            }
+
+            createOrbitalRings() {
+                for (let i = 0; i < 3; i++) {
+                    const geometry = new THREE.TorusGeometry(1.5 + i * 0.3, 0.02, 8, 64);
+                    const material = new THREE.MeshBasicMaterial({
+                        color: 0x00ffff,
+                        transparent: true,
+                        opacity: 0.5,
+                        wireframe: true
+                    });
+                    const ring = new THREE.Mesh(geometry, material);
+                    const angle = (i * Math.PI * 2) / 3;
+                    ring.rotation.set(angle, angle * 0.5, 0);
+                    this.orbitalRings.push(ring);
+                    this.scene.add(ring);
+                }
+            }
+
+            createEnergyField() {
+                const geometry = new THREE.IcosahedronGeometry(3, 1);
+                const material = new THREE.MeshBasicMaterial({
+                    color: 0x00ffff,
+                    wireframe: true,
+                    transparent: true,
+                    opacity: 0.1
+                });
+                this.energyField = new THREE.Mesh(geometry, material);
+                this.scene.add(this.energyField);
+            }
+
+            setAudioLevel(level) {
+                const n = Number(level);
+                if (!Number.isFinite(n)) return;
+                this.targetAudioLevel = Math.max(0, Math.min(2, n));
+            }
+
+            setState(name) {
+                const params = STATE_PARAMS[name];
+                if (!params) return;
+                this.state = name;
+                this.stateParams = params;
+                this.targetColor = new THREE.Color(params.color);
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+
+                const now = Date.now();
+                const params = this.stateParams;
+
+                // Smooth audio level transitions
+                this.audioLevel += (this.targetAudioLevel - this.audioLevel) * 0.1;
+
+                // Color lerp (~200ms at 60fps ≈ 0.1 alpha per frame)
+                this.currentColor.lerp(this.targetColor, 0.1);
+                for (const mat of this.coloredMaterials) {
+                    mat.color.copy(this.currentColor);
+                }
+
+                // Core pulsing — coreSpeed drives the sin frequency, pulseAmp its amplitude.
+                // When speaking, audio level contributes prominently to the core pulse.
+                const audioWeight = this.state === 'speaking' ? 1.4 : 0.5;
+                const basePulse = 1 + Math.sin(now * params.coreSpeed) * params.pulseAmp;
+                const audioPulse = this.audioLevel * audioWeight;
+                const totalPulse = basePulse + audioPulse;
+
+                this.core.scale.set(totalPulse, totalPulse, totalPulse);
+                this.innerGlow.scale.set(totalPulse * 0.8, totalPulse * 0.8, totalPulse * 0.8);
+                this.wireframeSphere.scale.set(totalPulse * 1.1, totalPulse * 1.1, totalPulse * 1.1);
+
+                // Inner-glow opacity modulated by audio level for a breath-alive feel.
+                this.innerGlow.material.opacity = Math.max(
+                    0.2,
+                    Math.min(1, this.baseOpacities.innerGlow + this.audioLevel * 0.35)
+                );
+
+                // Rotation — processing spins the wireframe the opposite way ("thinking").
+                this.core.rotation.y += 0.003 * params.ringSpeed + this.audioLevel * 0.02;
+                this.core.rotation.x += 0.002 * params.ringSpeed + this.audioLevel * 0.01;
+                const wireDir = this.state === 'processing' ? 1 : -1;
+                this.wireframeSphere.rotation.y += wireDir * (0.004 * params.ringSpeed - this.audioLevel * 0.015);
+                this.wireframeSphere.rotation.x += wireDir * 0.002;
+
+                // Rings animation
+                this.rings.forEach((ring, i) => {
+                    ring.rotation.z += 0.001 * (i + 1) * params.ringSpeed + this.audioLevel * 0.01;
+                    const ringPulse = 1 + Math.sin(now * 0.002 + i) * 0.05 + this.audioLevel * 0.35;
+                    ring.scale.set(ringPulse, ringPulse, 1);
+                    ring.material.opacity = this.baseOpacities.rings[i] + this.audioLevel * 0.4;
+                });
+
+                // Orbital rings
+                this.orbitalRings.forEach((ring, i) => {
+                    ring.rotation.x += (0.005 + this.audioLevel * 0.02) * params.ringSpeed;
+                    ring.rotation.y += (0.003 + this.audioLevel * 0.015) * params.ringSpeed;
+                    ring.rotation.z += 0.002 * (i + 1) * params.ringSpeed + this.audioLevel * 0.01;
+                });
+
+                // Energy field
+                this.energyField.rotation.x += 0.001 * params.ringSpeed + this.audioLevel * 0.01;
+                this.energyField.rotation.y += 0.002 * params.ringSpeed + this.audioLevel * 0.015;
+                this.energyField.material.opacity = this.baseOpacities.energyField + this.audioLevel * 0.3;
+
+                // Particle animation — drift scales with stateParams.particleDrift.
+                const drift = params.particleDrift;
+                const jitter = params.jitter || 0;
+                const scatter = params.scatter || 0;
+                const positions = this.particleSystem.geometry.attributes.position.array;
+                for (let i = 0; i < positions.length; i += 3) {
+                    const idx = i / 3;
+
+                    positions[i] += this.particleVelocities[idx].x * drift;
+                    positions[i + 1] += this.particleVelocities[idx].y * drift;
+                    positions[i + 2] += this.particleVelocities[idx].z * drift;
+
+                    // Per-frame random jitter (makes the cloud feel alive when "thinking")
+                    if (jitter > 0) {
+                        positions[i] += (Math.random() - 0.5) * jitter;
+                        positions[i + 1] += (Math.random() - 0.5) * jitter;
+                        positions[i + 2] += (Math.random() - 0.5) * jitter;
+                    }
+
+                    const distance = Math.sqrt(
+                        positions[i] ** 2 +
+                        positions[i + 1] ** 2 +
+                        positions[i + 2] ** 2
+                    );
+
+                    // Extra outward scatter while processing so particles bloom further out
+                    if (scatter > 0 && distance > 0.001) {
+                        const dirX = positions[i] / distance;
+                        const dirY = positions[i + 1] / distance;
+                        const dirZ = positions[i + 2] / distance;
+                        positions[i] += dirX * scatter;
+                        positions[i + 1] += dirY * scatter;
+                        positions[i + 2] += dirZ * scatter;
+                    }
+
+                    const outerBound = scatter > 0 ? 7.5 : 6;
+                    if (distance > outerBound || distance < 1.5) {
+                        this.particleVelocities[idx].x *= -1;
+                        this.particleVelocities[idx].y *= -1;
+                        this.particleVelocities[idx].z *= -1;
+                    }
+
+                    if (this.audioLevel > 0.1) {
+                        const dirX = positions[i] / distance;
+                        const dirY = positions[i + 1] / distance;
+                        const dirZ = positions[i + 2] / distance;
+
+                        const pushForce = this.audioLevel * 0.04;
+                        positions[i] += dirX * pushForce;
+                        positions[i + 1] += dirY * pushForce;
+                        positions[i + 2] += dirZ * pushForce;
+                    }
+
+                    if (distance > 4) {
+                        const centerForce = (distance - 4) * 0.01;
+                        const dirX = positions[i] / distance;
+                        const dirY = positions[i + 1] / distance;
+                        const dirZ = positions[i + 2] / distance;
+
+                        positions[i] -= dirX * centerForce;
+                        positions[i + 1] -= dirY * centerForce;
+                        positions[i + 2] -= dirZ * centerForce;
+                    }
+                }
+                this.particleSystem.geometry.attributes.position.needsUpdate = true;
+
+                // Particle system rotation speed scales with particleDrift.
+                this.particleSystem.rotation.y += (0.0005 + this.audioLevel * 0.005) * drift;
+
+                // Error flash — opacity ping-pongs ±0.3 over 300ms (~3.33Hz).
+                if (params.flash) {
+                    const t = (now % 300) / 300;               // 0..1 every 300ms
+                    const flashDelta = Math.sin(t * Math.PI * 2) * 0.3;
+                    this.core.material.opacity = Math.max(0.05, this.baseOpacities.core + flashDelta);
+                    this.wireframeSphere.material.opacity = Math.max(0.05, this.baseOpacities.wireframeSphere + flashDelta);
+                    this.particleSystem.material.opacity = Math.max(0.1, this.baseOpacities.particles + flashDelta);
+                } else {
+                    // Restore base opacities (core / wireframe / particles).
+                    this.core.material.opacity = this.baseOpacities.core;
+                    this.wireframeSphere.material.opacity = this.baseOpacities.wireframeSphere;
+                    this.particleSystem.material.opacity = this.baseOpacities.particles;
+                }
+
+                this.renderer.render(this.scene, this.camera);
+            }
+
+            onResize() {
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+            }
+        }
+
+        // ======================================================================
+        // Jarvis — state management + public JS API
+        // ======================================================================
+        const STATES = ['idle', 'listening', 'processing', 'speaking', 'error'];
+
+        const hologram = new JarvisHologram('hologramCanvas');
+
+        const timerSlotEl = document.getElementById('timer-slot');
+        const timerValueEl = document.getElementById('timer-value');
+        const timerLabelEl = document.getElementById('timer-label');
+        const miniSlotsContainer = document.getElementById('mini-slots');
+
+        let currentState = 'idle';
+        // Timers: id -> { label, secondsRemaining }
+        const activeTimers = new Map();
+        // Mini holograms: id -> slotIndex
+        const activeMiniHolograms = new Map();
+
+        function setState(state) {
+            if (!STATES.includes(state)) {
+                console.warn('[jarvis] Unknown state:', state);
+                return;
+            }
+            currentState = state;
+            hologram.setState(state);
+        }
+
+        function renderTimer() {
+            if (activeTimers.size === 0) {
+                timerSlotEl.classList.remove('visible');
+                return;
+            }
+            // Pick the timer with the lowest remaining seconds (most urgent).
+            let best = null;
+            for (const t of activeTimers.values()) {
+                if (best === null || t.secondsRemaining < best.secondsRemaining) {
+                    best = t;
+                }
+            }
+            timerValueEl.textContent = formatSeconds(best.secondsRemaining);
+            timerLabelEl.textContent = best.label || '';
+            timerSlotEl.classList.add('visible');
+        }
+
+        function formatSeconds(s) {
+            const n = Math.max(0, Math.round(Number(s) || 0));
+            if (n < 60) return String(n);
+            const m = Math.floor(n / 60);
+            const sec = n % 60;
+            return m + ':' + String(sec).padStart(2, '0');
+        }
+
+        function setTimer(opts) {
+            if (!opts || typeof opts !== 'object') return;
+            const id = opts.id != null ? String(opts.id) : 'default';
+            const label = opts.label != null ? String(opts.label) : '';
+            // Accept both snake_case (Python) and camelCase.
+            const seconds = opts.seconds_remaining != null
+                ? opts.seconds_remaining
+                : opts.secondsRemaining;
+            activeTimers.set(id, {
+                label,
+                secondsRemaining: Math.max(0, Number(seconds) || 0)
+            });
+            renderTimer();
+        }
+
+        function clearTimer(id) {
+            const key = id != null ? String(id) : 'default';
+            activeTimers.delete(key);
+            renderTimer();
+        }
+
+        // --- Mini hologram stubs (Phase 4) ---
+        function addMiniHologram(opts) {
+            if (!opts || typeof opts !== 'object') return;
+            const id = opts.id != null ? String(opts.id) : null;
+            if (!id) return;
+            if (activeMiniHolograms.has(id)) return;
+
+            const slots = miniSlotsContainer.querySelectorAll('.mini-slot');
+            let targetIdx = -1;
+            for (let i = 0; i < slots.length; i++) {
+                if (!slots[i].classList.contains('active')) {
+                    targetIdx = i;
+                    break;
+                }
+            }
+            if (targetIdx === -1) {
+                console.warn('[jarvis] No free mini-hologram slot');
+                return;
+            }
+            const slot = slots[targetIdx];
+            slot.classList.add('active');
+            slot.innerHTML = '';
+            const label = document.createElement('div');
+            label.className = 'mini-label';
+            label.textContent = opts.label || '';
+            slot.appendChild(label);
+            activeMiniHolograms.set(id, targetIdx);
+        }
+
+        function removeMiniHologram(id, status) {
+            const key = id != null ? String(id) : null;
+            if (!key) return;
+            const idx = activeMiniHolograms.get(key);
+            if (idx == null) return;
+            const slot = miniSlotsContainer.querySelectorAll('.mini-slot')[idx];
+            if (!slot) {
+                activeMiniHolograms.delete(key);
+                return;
+            }
+
+            const flashClass = status === 'success'
+                ? 'flash-success'
+                : (status === 'failure' ? 'flash-failure' : null);
+
+            const finalize = () => {
+                slot.classList.remove('active', 'flash-success', 'flash-failure');
+                slot.innerHTML = '';
+                activeMiniHolograms.delete(key);
+            };
+
+            if (flashClass) {
+                slot.classList.add(flashClass);
+                setTimeout(finalize, 600);
+            } else {
+                finalize();
+            }
+        }
+
+        // --- Public API ---
+        // Exposed on window.jarvis:
+        //   jarvis.setState(state)                      — 'idle'|'listening'|'processing'|'speaking'|'error'
+        //   jarvis.setAudioLevel(level)                 — number 0..2, drives hologram pulse
+        //   jarvis.setTimer({id, label, seconds_remaining})
+        //   jarvis.clearTimer(id)
+        //   jarvis.addMiniHologram({id, label})         — Phase 4 stub
+        //   jarvis.removeMiniHologram(id, status)       — 'success' | 'failure'
+        //   jarvis.ready()                              — true once three.js + DOM loaded
+        const jarvis = {
+            setState: setState,
+            setAudioLevel: (level) => hologram.setAudioLevel(level),
+            setTimer: setTimer,
+            clearTimer: clearTimer,
+            addMiniHologram: addMiniHologram,
+            removeMiniHologram: removeMiniHologram,
+            ready: () => !!hologram && hologram._ready === true && document.readyState === 'complete'
+        };
+        window.jarvis = jarvis;
+
+        // ======================================================================
+        // Input: click/touch anywhere = button press
+        // ======================================================================
+        function callApi(methodName, ...args) {
+            try {
+                if (window.pywebview && window.pywebview.api && typeof window.pywebview.api[methodName] === 'function') {
+                    const result = window.pywebview.api[methodName](...args);
+                    // pywebview returns a Promise; swallow rejections.
+                    if (result && typeof result.catch === 'function') {
+                        result.catch(err => console.log('[jarvis] API', methodName, 'error:', err));
+                    }
+                } else {
+                    console.log('[jarvis] pywebview.api.' + methodName + ' not ready');
+                }
+            } catch (err) {
+                console.log('[jarvis] API call failed:', methodName, err);
+            }
+        }
+
+        document.addEventListener('mousedown', () => {
+            callApi('button_press');
+        }, { passive: true });
+
+        document.addEventListener('touchstart', () => {
+            callApi('button_press');
+        }, { passive: true });
+
+        // Dev keyboard shortcuts
+        document.addEventListener('keydown', (ev) => {
+            if (ev.key === 'F11') {
+                ev.preventDefault();
+                callApi('toggle_fullscreen');
+            } else if (ev.key === 'Escape') {
+                ev.preventDefault();
+                callApi('exit_fullscreen');
+            } else if (ev.key === ' ' || ev.key === 'Enter') {
+                ev.preventDefault();
+                callApi('button_press');
+            }
+        });
+
+        // Suppress default context menu so right-clicks don't interfere.
+        document.addEventListener('contextmenu', (ev) => ev.preventDefault());
+
+        // pywebview readiness (only for logging; calls are guarded anyway)
+        window.addEventListener('pywebviewready', () => {
+            console.log('[jarvis] pywebview ready');
+        });
+
+        // Initial state
+        setState('idle');
+    </script>
+</body>
+</html>

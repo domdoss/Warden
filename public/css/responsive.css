@@ -1,0 +1,288 @@
+/* responsive.css — fluid layout for any viewport under the 1920×1080 design
+ * target. Loaded AFTER style.css + userdash-extras.css (see the <link> in
+ * index.html) so equal-specificity rules here win on source order. Pure
+ * overrides — does not touch the base files, so it won't revert the notes tab
+ * or any other view's CSS. Notes-tab selectors are no-ops where the elements
+ * don't exist.
+ *
+ * The base shell (.app grid rail+1fr, .main) is already fluid; the cutoff below
+ * 1920 came from view content with fixed multi-column grids sized for exactly
+ * 1920×1080, with .content{overflow:hidden} clipping anything that didn't fit.
+ * These breakpoints collapse those grids progressively from just under 1920
+ * down to mobile so nothing is ever clipped, and let the few inherently-wide
+ * surfaces (7-day calendar, mail row, tables) scroll instead of clip.
+ */
+
+/* ── Global layout fixes (no breakpoint — correctness for ANY size). ──
+ * .chat is a 3-row grid (auto 1fr auto) but has 5 children (chat-meta, messages,
+ * thinking-bar, progress-panel, composer), so the composer lands in an
+ * implicit auto row and the messages 1fr row won't shrink below its content
+ * min-height. On a short window messages stays tall, pushes the composer off
+ * the bottom, and .content{overflow:hidden} clips it → "no input bar". Use
+ * minmax(0,1fr) so messages can shrink to 0 and scroll internally, and spell
+ * out all 5 rows so the composer is always the last, always-visible row. */
+.chat { grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
+
+/* Desktop rail (vertical): let the nav scroll when the window is too short for
+ * all the buttons, instead of clipping the bottom ones. Scoped to >=721px so
+ * it doesn't fight the mobile bottom-bar rail (which is horizontal). The
+ * buttons must NOT shrink (flex-shrink:0) — they keep their 38px height and the
+ * nav scrolls past them; otherwise flex compresses them into a clump. */
+@media (min-width: 721px) {
+  .rail { min-height: 0; }
+  .rail-nav { overflow-y: auto; overflow-x: hidden; min-height: 0; }
+  .rail-btn, .rail-group-label { flex-shrink: 0; }
+}
+
+/* ── ≤1919: just under the 1920×1080 design — REFLOW instead of clip. The base
+ *    rows are flex/nowrap and the content area is overflow:hidden, so below
+ *    1920 the right edge of a row just gets cut off ("I lose things"). Wrap
+ *    every header/action row so it shifts to a second line instead of being
+ *    clipped. This is the single most important rule here. ── */
+@media (max-width: 1919px) {
+  .topbar { flex-wrap: wrap; row-gap: 4px; }
+  .topbar-actions { flex-wrap: wrap; row-gap: 4px; }
+  .chat-meta-row { flex-wrap: wrap; row-gap: 6px; }
+  .composer-tools { flex-wrap: wrap; }
+  /* Any other view header rows share the same pattern — wrap, don't clip. */
+  .view > .chat-meta-row,
+  .view > * + .chat-meta-row { flex-wrap: wrap; row-gap: 6px; }
+}
+
+/* ── ≤1820: free topbar space, start collapsing the widest grid ── */
+@media (max-width: 1820px) {
+  .topbar-stats { display: none; }
+  .deepdive-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* ── ≤1560: 3-col grids → 2, keep deepdive at 3 ── */
+@media (max-width: 1560px) {
+  .settings-grid { grid-template-columns: repeat(2, 1fr); }
+  .council-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── ≤1320: wide grids → 2, 2-col grids → 1 ── */
+@media (max-width: 1320px) {
+  .topbar { gap: 6px; padding: 0 8px; }
+  .topbar-name { font-size: 11px; }
+  .user-pill .uid { display: none; }
+
+  .deepdive-grid { grid-template-columns: repeat(2, 1fr); }
+  .settings-grid { grid-template-columns: 1fr; }
+  .council-grid { grid-template-columns: 1fr; }
+  .agent-grid { grid-template-columns: 1fr; }
+  .skill-grid { grid-template-columns: 1fr; }
+  .mcp-row { grid-template-columns: 1fr auto; }
+
+  /* Chat header wraps instead of overflowing. */
+  .chat-meta-row { flex-wrap: wrap; row-gap: 6px; }
+}
+
+/* ── ≤1100: stack almost everything; wide surfaces scroll internally ── */
+@media (max-width: 1100px) {
+  .deepdive-grid { grid-template-columns: 1fr; }
+
+  /* Mail row: shrink the label column, keep the arrow. */
+  .pim-mail-row { grid-template-columns: 120px 1fr 56px; }
+
+  /* 7-day calendar: keep day cells readable and scroll horizontally instead of
+     squishing to nothing / being clipped by .content{overflow:hidden}. */
+  .pim-cal-grid { grid-template-columns: repeat(7, minmax(92px, 1fr)); overflow-x: auto; }
+  .pim-cal-cell { min-width: 0; }
+
+  /* Notes: hide the folder/tag sidebar, keep list + editor side by side. */
+  #view-notes .notes-side { display: none; }
+  #view-notes .notes-list-col { width: 200px; flex: 0 0 200px; }
+}
+
+/* ── ≤820: stack split layouts; calendar scrolls harder ── */
+@media (max-width: 820px) {
+  .pim-mail-row { grid-template-columns: 1fr; }
+  .pim-cal-grid { grid-template-columns: repeat(7, minmax(84px, 1fr)); }
+
+  /* Notes: stack the list above the editor. */
+  #view-notes .notes-main { flex-direction: column; }
+  #view-notes .notes-list-col {
+    width: 100%; flex: 0 0 auto; max-height: 220px;
+    border-right: none; border-bottom: 1px solid var(--border, #2a2a2a);
+  }
+}
+
+/* ── ≤720: mobile refinement (base style.css turns the rail into a bottom bar) ── */
+@media (max-width: 720px) {
+  .topbar-title { font-size: 11px; }
+  .topbar-actions .tbtn { padding: 0 6px; }
+
+  .settings-grid,
+  .deepdive-grid,
+  .council-grid,
+  .agent-grid,
+  .skill-grid { grid-template-columns: 1fr; }
+  .accounts-grid { grid-template-columns: 1fr; }
+
+  .pim-cal-grid { grid-template-columns: repeat(7, minmax(64px, 1fr)); }
+  .pim-cal-ev { min-width: 0; }
+
+  .chat-meta-row { gap: 4px; }
+
+  /* Rail is now a horizontal bottom bar: scroll it sideways if there are too
+   * many buttons, and NEVER vertically. Buttons keep their size (no shrink).
+   * flex-start (not space-around) so the buttons line up and actually scroll
+   * instead of being spaced off the edges. */
+  .rail-nav {
+    overflow-x: auto; overflow-y: hidden;
+    /* min-width:0 is the key — without it the flex item expands to its 836px
+     * of buttons and gets clipped by the parent instead of scrolling inside
+     * the viewport width. */
+    min-width: 0;
+    justify-content: flex-start;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .rail-nav::-webkit-scrollbar { display: none; }
+  .rail-btn { flex-shrink: 0; }
+}
+
+/* ── Short windows (height): guarantee the composer stays visible. The
+ *    thinking bar and progress panel sit between messages and the composer;
+ *    if either grows tall it can squeeze out the input bar on a short window.
+ *    Cap them so messages + composer always win the space. ── */
+@media (max-height: 700px) {
+  .progress-panel-body { max-height: 120px; }
+  .thinking-bar { max-height: 60px; overflow-y: auto; }
+}
+@media (max-height: 520px) {
+  /* Very short: collapse the progress panel header out of the flow entirely
+   * so only chat-meta + messages + composer remain. */
+  .progress-panel:not(.expanded) { display: none; }
+}
+
+/* ============================================================= ≤720: Mobile modals + settings sheet
+ * Loaded last so these win on source order at equal specificity. Desktop is
+ * untouched — every rule is scoped to max-width:720px.
+ *
+ * Why this block exists:
+ *   .modal-overlay{position:fixed;inset:0;align-items:center} centers the
+ *   modal against the LAYOUT viewport. On mobile the layout viewport is the
+ *   tall one that includes the area behind the address bar, so the modal
+ *   lands in the middle of a "virtual screen" taller than what's visible and
+ *   leaves scrollable blank space below. Fix: size the overlay to the DYNAMIC
+ *   viewport (100dvh = visible height), anchor the modal to the top, and let
+ *   the overlay scroll internally if the body still overflows.
+ *
+ *   The settings drawer is position:absolute inside .main and hides with
+ *   transform:translateX(100%). A transform on an absolutely-positioned
+ *   element still contributes to scrollable overflow, so on mobile you could
+ *   scroll sideways into the "hidden" drawer. Clip .main so the translate is
+ *   actually clipped instead of scrollable. (Open, the drawer sits at right:0
+ *   width:100%, so nothing visible is clipped.) */
+@media (max-width: 720px) {
+  /* ── App shell: prevent the rail's wide min-content buttons from forcing
+   *    the single-column grid track to expand past the viewport. Use 100%
+   *    (parent width) rather than 100vw so vertical scrollbars don't add
+   *    horizontal overflow. ── */
+  .app { grid-template-columns: minmax(0, 1fr); width: 100%; }
+  .rail { min-width: 0; }
+
+  /* ── Modals: anchor to the visible viewport, not the layout viewport ──
+   * Use width:100% (excludes scrollbar gutter) instead of 100vw, which
+   * includes the gutter and creates horizontal overflow once the modal body
+   * gets a vertical scrollbar. */
+  .modal-overlay {
+    position: fixed !important;
+    top: 0 !important; left: 0 !important;
+    width: 100% !important;
+    height: 100dvh !important;
+    align-items: center !important;
+    justify-content: center !important;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  .modal-overlay .modal {
+    max-height: 90dvh !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: auto;
+  }
+
+  /* ── Drawer: full-width overlay sheet on mobile ──
+   * Base .drawer is already fixed-position; on small screens force it to
+   * fill the viewport and prevent any residual horizontal overflow from the
+   * translated-off sheet. */
+  .main { overflow: hidden !important; }
+  .drawer {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-left: none !important;
+  }
+  .drawer-header { height: 52px; padding: 0 12px; }
+  .drawer-title { font-size: 13px; }
+  .drawer-body {
+    padding: 14px 12px 28px;
+    gap: 16px;
+    /* drawer-body can scroll, but its children must not force horizontal size */
+    overflow-x: hidden;
+  }
+
+  /* ── Settings pane: redo for touch ── */
+  .setting-card {
+    padding: 14px;
+    border-radius: 10px;
+    max-width: 100%;
+  }
+  .setting-card h3 { font-size: 13px; margin-bottom: 6px; }
+  .setting-card .hint { font-size: 12px; line-height: 1.45; margin-bottom: 12px; }
+
+  /* Stack label OVER input — the 110px side label is too cramped in portrait. */
+  .setting-row {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 4px;
+    margin-bottom: 12px;
+    max-width: 100%;
+  }
+  .setting-row label {
+    flex: 0 0 auto;
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+  .setting-row .select,
+  .setting-row .input,
+  .setting-row .select.small,
+  .setting-row .input.small {
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 auto;
+    min-height: 40px;
+    box-sizing: border-box;
+  }
+  .setting-row span.dim.mono,
+  .setting-row .select.small ~ span {
+    display: block;
+    max-width: 100%;
+    word-break: break-word;
+  }
+
+  /* Council: three seats in a row still fits portrait; enlarge the selects. */
+  .council-grid { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .council-grid .select { min-height: 40px; }
+
+  .save-row { margin-top: 8px; }
+  .save-row .btn { min-height: 40px; flex: 1; }
+
+  /* ── New Thought: hide the chat-header button; a mobile-only one lives in
+   *    the composer tools (see index.html). Desktop keeps the header button. ── */
+  #btnNewThought { display: none !important; }
+  #btnNewThoughtMobile { display: inline-flex !important; }
+
+  /* Mobile-only topbar settings button (desktop uses .rail-footer #btnSettings). */
+  #btnSettingsMobile { display: inline-flex !important; }
+}
+
+/* Desktop default: the mobile-only composer New Thought button is hidden. */
+#btnNewThoughtMobile { display: none; }
+
+/* Desktop default: the mobile-only topbar settings button is hidden. */
+#btnSettingsMobile { display: none; }

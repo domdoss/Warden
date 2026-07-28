@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Settings</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--accent-soft), var(--surface-3)); border: 1px solid var(--border-hi); color: var(--accent); box-shadow: 0 0 32px rgba(94,234,212,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .setting-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .setting-tile { padding: 14px 16px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); }
+  .setting-tile.warn { border-left-color: var(--warn); }
+  .setting-tile.info { border-left-color: var(--info); }
+  .setting-tile.violet { border-left-color: var(--violet); }
+  .setting-tile.danger { border-left-color: var(--danger); }
+  .setting-tile h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  .setting-tile .where { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-bottom: 8px; }
+  .setting-tile p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .setting-tile code { color: var(--accent); }
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--warn-soft); color: var(--warn); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+  <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / settings</span></nav>
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+    <div><h1>Settings</h1><p>Open the settings drawer from the gear icon in the left rail. Every option persists to the on-disk SQLite <code>router_state</code> table — changes apply on the next agent turn.</p></div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> Models</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>Orchestrator</h3><div class="where">Settings → Model Configuration</div><p>The model that replies to you. Pick a strong cloud model — this is where most of the thinking happens.</p></div>
+    <div class="setting-tile info"><h3>Atlas / Artemis</h3><div class="where">Settings → Model Configuration</div><p>Sub-agent model for research and review. Cloud or strong local both work.</p></div>
+    <div class="setting-tile warn"><h3>Toolcall model (Iris / Byte / Dexter)</h3><div class="where">Settings → Model Configuration</div><p>Fast tool-execution model. Use a small local model — latency matters more than reasoning here.</p></div>
+    <div class="setting-tile violet"><h3>Council Seats × 3</h3><div class="where">Settings → Model Configuration → Council</div><p>Skeptic, Pragmatist, Synthesist. Different models = genuinely different perspectives. Blank inherits Atlas.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>02</span> Context overrides</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>num_ctx — orchestrator</h3><div class="where">Settings → Model Configuration</div><p>Override the orchestrator's context window. Choose a common value from the dropdown, or leave blank for the model default.</p></div>
+    <div class="setting-tile info"><h3>num_ctx — Atlas</h3><div class="where">Settings → Model Configuration</div><p>Override for Atlas and The Council. Independent from the orchestrator ctx.</p></div>
+    <div class="setting-tile warn"><h3>num_ctx — toolcall</h3><div class="where">Settings → Model Configuration</div><p>Override for Iris / Byte / Dexter. Small models usually need less context than the orchestrator.</p></div>
+    <div class="setting-tile danger"><h3>Thinking mode</h3><div class="where">Settings → Model Configuration</div><p>Global default: On (first turn + always-think models), Max (every iteration), or Off. No per-chat override.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> Local models</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>Ollama URL</h3><div class="where">Settings → Model Configuration</div><p>Endpoint for the local Ollama daemon (typically <code>http://localhost:11434</code>). Models from <code>/api/tags</code> populate all model dropdowns, including <code>:cloud</code> variants.</p></div>
+    <div class="setting-tile info"><h3>Mercury</h3><div class="where">Settings → Model Configuration</div><p>Off / RAG / Summary / Full. Controls automatic context injection from conversation memory.</p></div>
+    <div class="setting-tile warn"><h3>Refresh model list</h3><div class="where">Reload settings drawer</div><p>The drawer fetches the current Ollama model list when opened. Run this after <code>ollama pull</code>.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> Chat logs</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>Location</h3><div class="where">Settings → Chat logs</div><p><code>logs/dockbox.log</code> (stdout) and <code>logs/dockbox.error.log</code> (stderr) under the project directory.</p></div>
+    <div class="setting-tile info"><h3>Size</h3><div class="where">Settings → Chat logs</div><p>Current file size is shown next to each log path. Click <b>Refresh size</b> to update it.</p></div>
+    <div class="setting-tile warn"><h3>Access</h3><div class="where">Dashboard / shell</div><p>Use the Process Logs tab, or run <code>tail -f logs/dockbox.log</code> in the project directory.</p></div>
+    <div class="setting-tile danger"><h3>Delete</h3><div class="where">Settings → Chat logs</div><p>Truncates both files to 0 bytes. Irreversible — the data is gone immediately.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>05</span> Other</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>Automation model</h3><div class="where">Settings → Automation</div><p>Model used for scheduled task runs (Dexter's cron jobs).</p></div>
+    <div class="setting-tile info"><h3>Friendly names</h3><div class="where">Settings → General</div><p>Display name shown in the header. Defaults to "Warden".</p></div>
+    <div class="setting-tile warn"><h3>Restart server</h3><div class="where">Settings → bottom</div><p>Restart the Warden parent process. Use after config changes that need a fresh process.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>06</span> Settings persistence</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon">⚠</div>
+    <div>
+      <p>Every setting persists to <code>router_state</code> in <code>store/messages.db</code>. There's no separate config file. To reset a value, clear the field and save — the empty string is the "use default" sentinel.</p>
+      <p>Don't manually edit <code>router_state</code> while Warden is running — the in-memory cache will overwrite your change. Use the dashboard or restart the server first.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/agents.html"><strong>Agents</strong><small>every sub-agent</small></a>
+    <a href="/help/council.html"><strong>The Council</strong><small>seat models</small></a>
+    <a href="/help/atlas.html"><strong>Asking Atlas</strong><small>delegation patterns</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>workflow capture</small></a>
+    <a href="/help/not-a-chatbot.html"><strong>Not a chatbot</strong><small>mental model</small></a>
+    <a href="/help/safety.html"><strong>Safety</strong><small>guardrails</small></a>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Skills</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--accent-soft), var(--violet-soft, rgba(192,132,252,0.12))); border: 1px solid var(--border-hi); color: var(--accent); box-shadow: 0 0 32px rgba(94,234,212,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-info { border-left: 3px solid var(--info); }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--info-soft); color: var(--info); }
+  .help-callout-warn .help-callout-icon { background: var(--warn-soft); color: var(--warn); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .help-callout pre { margin: 8px 0 0; padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px; }
+  .help-callout code { color: var(--accent); }
+  .cmd-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .cmd-row { display: grid; grid-template-columns: 160px 1fr; gap: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); align-items: start; }
+  .cmd-name { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 600; }
+  .cmd-desc { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .cmd-desc code { color: var(--text); }
+  .lifecycle { display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr; gap: 8px; align-items: center; padding: 18px 22px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); margin: 0 0 12px; }
+  .lifecycle-node { padding: 14px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border-hi); text-align: center; }
+  .lifecycle-node strong { display: block; font-size: 13px; color: var(--text); margin-bottom: 2px; }
+  .lifecycle-node small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+  .lifecycle-node.create { background: var(--accent-soft); border-color: var(--accent); }
+  .lifecycle-node.activate { background: var(--info-soft); border-color: var(--info); }
+  .lifecycle-node.use { background: var(--ok-soft); border-color: var(--ok); }
+  .lifecycle-arrow { text-align: center; color: var(--text-faint); font-size: 18px; font-family: var(--font-mono); }
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+  <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / skills</span></nav>
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+    <div><h1>Skills</h1><p>Skills are reusable workflows Warden can capture and re-invoke. Save a multi-step task once with <code>create_skill</code>; later, just say the example prompt and Warden activates it and reuses the workflow.</p></div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> The lifecycle</div>
+  <div class="lifecycle">
+    <div class="lifecycle-node create"><strong>create_skill</strong><small>capture workflow</small></div>
+    <div class="lifecycle-arrow">→</div>
+    <div class="lifecycle-node activate"><strong>activate_skill</strong><small>load into context</small></div>
+    <div class="lifecycle-arrow">→</div>
+    <div class="lifecycle-node use"><strong>say the example prompt</strong><small>Warden runs the workflow</small></div>
+  </div>
+  <p style="margin: 4px 0 0; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono);">Deactivate with <code>deactivate_skill</code>. List everything with <code>list_skills</code>.</p>
+
+  <div class="help-section-label"><span>02</span> The commands</div>
+  <div class="cmd-grid">
+    <div class="cmd-row"><div class="cmd-name">create_skill</div><div class="cmd-desc">Captures a workflow: name, description, the example prompt that triggers it, and the steps Warden takes. Saved to the skills database.</div></div>
+    <div class="cmd-row"><div class="cmd-name">list_skills</div><div class="cmd-desc">Returns every saved skill — name, description, example prompt, active state.</div></div>
+    <div class="cmd-row"><div class="cmd-name">activate_skill</div><div class="cmd-desc">Loads a skill into Warden's active context so the next matching prompt reuses its workflow.</div></div>
+    <div class="cmd-row"><div class="cmd-name">deactivate_skill</div><div class="cmd-desc">Removes a skill from active context. The saved skill still exists; it just won't auto-trigger.</div></div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> Example: capturing a deploy-check workflow</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">⌘</div>
+    <div>
+      <p>Tell Warden what you want it to remember, with the trigger phrase:</p>
+      <pre>Create a skill called "deploy-check" that I trigger with
+"check the deploy". When I say that: SSH into the deploy host,
+run `systemctl status dockbox`, check for errors in the last
+100 log lines, and tell me if anything is failing.</pre>
+    </div>
+  </div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">→</div>
+    <div>
+      <p>Later, just say the trigger:</p>
+      <pre>check the deploy</pre>
+      <p>Warden activates the skill and runs the workflow — no need to repeat the steps.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> When to make a skill</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon">⧉</div>
+    <div>
+      <p>Make a skill when you find yourself giving Warden the same multi-step instruction more than once. Don't make skills for one-offs — that's just clutter in the trigger namespace.</p>
+      <p>Skills are best for: deploy checks, weekly reports, recurring audits, "look at this PR and tell me if X", any task with a fixed shape but variable inputs. The orchestrator decides when to activate a skill based on your prompt matching its <code>example_prompt</code> or <code>when_to_use</code> description.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="help-section-label"><span>05</span> Skills vs. agent delegation</div>
+  <p>Skills run <em>inside</em> the orchestrator loop — they parameterize <em>what</em> Warden is trying to do, but they are not new agents. If a skill needs code changes, file edits, or a deep technical implementation, the orchestrator will still delegate that work to Atlas or another agent while using the skill to shape the overall plan.</p>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/agents.html"><strong>Agents</strong><small>every sub-agent</small></a>
+    <a href="/help/atlas.html"><strong>Asking Atlas</strong><small>delegation patterns</small></a>
+    <a href="/help/council.html"><strong>The Council</strong><small>three-seat deliberation</small></a>
+    <a href="/help/not-a-chatbot.html"><strong>Not a chatbot</strong><small>mental model</small></a>
+    <a href="/help/settings.html"><strong>Settings</strong><small>model + tools</small></a>
+    <a href="/help/safety.html"><strong>Safety</strong><small>guardrails</small></a>
+  </div>
+</div>
+</body>
+</html>

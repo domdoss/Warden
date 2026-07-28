@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Asking Atlas</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--info-soft), var(--accent-soft)); border: 1px solid var(--border-hi); color: var(--info); box-shadow: 0 0 32px rgba(96,165,250,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-info { border-left: 3px solid var(--info); }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--info-soft); color: var(--info); }
+  .help-callout-warn .help-callout-icon { background: var(--warn-soft); color: var(--warn); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .help-callout pre { margin: 8px 0 0; padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px; }
+  .help-callout code { color: var(--accent); }
+  .pattern-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pattern-card { padding: 14px 16px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); }
+  .pattern-card h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; font-family: var(--font-mono); color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em; }
+  .pattern-card pre { margin: 0; padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px; }
+  .pattern-card p { margin: 6px 0 0; font-size: 12px; color: var(--text-dim); }
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+  <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / atlas</span></nav>
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+    <div><h1>Asking Atlas</h1><p>Atlas is the browser + research sub-agent. It opens URLs, takes screenshots, fetches HTML, clicks buttons, and reads pages. Multiple Atlas calls in the same turn run in <strong>parallel</strong>.</p></div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> The basic pattern</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">⌘</div>
+    <div>
+      <p>Just describe what you want — the orchestrator recognizes browser, web, and shell work and hands it to Atlas on its own. There's no magic phrase (saying <code>Delegate to Atlas:</code> works, but it's never required). Atlas runs <strong>in the background</strong> in its own context window — the orchestrator gets a job ID back immediately and stays free for your next message. When Atlas finishes, the result lands in the orchestrator's inbox and it reports back in the chat.</p>
+      <pre>Open example.com and take a screenshot.</pre>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>02</span> Parallel delegation</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">⇄</div>
+    <div>
+      <p>If two tasks are independent, ask for both and say they can run in parallel. The host runs them concurrently via <code>Promise.all</code>.</p>
+<pre>In parallel:
+(1) screenshot example.com, AND
+(2) fetch the title of example.org.</pre>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> Common patterns</div>
+  <div class="pattern-grid">
+    <div class="pattern-card"><h4>Screenshot a page</h4><pre>Screenshot example.com.</pre><p>Returns the rendered page as an image Atlas can read.</p></div>
+    <div class="pattern-card"><h4>Read a URL</h4><pre>Open docs.example.com/api and tell me the auth options.</pre><p>Atlas reads the page text and summarizes.</p></div>
+    <div class="pattern-card"><h4>Click + screenshot</h4><pre>Open the app, click "Sign in", screenshot the result.</pre><p>Atlas can interact with the page, not just read it.</p></div>
+    <div class="pattern-card"><h4>Compare two pages</h4><pre>In parallel:
+(1) screenshot competitor-a.com, AND
+(2) screenshot competitor-b.com.</pre><p>Then ask the orchestrator to compare them.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> Supervised while it runs</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">👁</div>
+    <div>
+      <p>Atlas is never fire-and-forget. While a job runs, the orchestrator checks in on it every 45 seconds — elapsed time, tool-call count, and what it last did — and decides: leave it alone, <strong>stop it</strong> if it's stuck or looping, or redirect it.</p>
+      <p>If a job fails or gets stopped, the orchestrator reads the full output, works out what went wrong, and <strong>automatically retries with a reworked task</strong>. You only hear about a failure when it can't be recovered.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>05</span> When Atlas won't help</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon">⚠</div>
+    <div>
+      <p>Atlas can't reach pages on private networks unless the host can. Pages behind login walls need credentials configured. Pages that block bots may return empty results — Atlas reports this honestly rather than fabricating.</p>
+      <p>The orchestrator <strong>does not code or edit files itself</strong> — it delegates those to Atlas. If you ask "fix the bug" without a file path, Atlas will have to guess; give it the path and the expected outcome.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/agents.html"><strong>Agents</strong><small>every sub-agent</small></a>
+    <a href="/help/council.html"><strong>The Council</strong><small>three-seat deliberation</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>workflow capture</small></a>
+    <a href="/help/not-a-chatbot.html"><strong>Not a chatbot</strong><small>mental model</small></a>
+    <a href="/help/settings.html"><strong>Settings</strong><small>atlas model override</small></a>
+    <a href="/help/safety.html"><strong>Safety</strong><small>guardrails</small></a>
+  </div>
+</div>
+</body>
+</html>

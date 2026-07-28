@@ -1,0 +1,14 @@
+httpx>=0.27.0
+httpx-sse>=0.4.0
+pywebview[qt]>=5.0
+openai-whisper>=20231117
+webrtcvad-wheels>=2.0.10
+audioop-lts>=0.2.1; python_version >= "3.13"
+pydantic>=2.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+pyaudio>=0.2.11
+numpy>=1.24.0
+kokoro>=0.3.0
+soundfile>=0.12.1
+pynput>=1.7.6

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Not a chatbot</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--accent-soft), var(--info-soft)); border: 1px solid var(--border-hi); color: var(--accent); box-shadow: 0 0 32px rgba(94,234,212,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .compare-card { padding: 16px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); }
+  .compare-card.bad { border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 5%, var(--surface)); }
+  .compare-card.good { border-left: 3px solid var(--ok); background: color-mix(in srgb, var(--ok) 5%, var(--surface)); }
+  .compare-card h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
+  .compare-card.bad h3 { color: var(--danger); }
+  .compare-card.good h3 { color: var(--ok); }
+  .compare-card ul { margin: 0; padding-left: 18px; }
+  .compare-card li { margin-bottom: 6px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .compare-card li strong { color: var(--text); }
+
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-info { border-left: 3px solid var(--info); }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--info-soft); color: var(--info); }
+  .help-callout-warn .help-callout-icon { background: var(--warn-soft); color: var(--warn); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  .help-callout pre { margin: 8px 0 0; padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px; }
+  .help-callout code { color: var(--accent); }
+
+  .principles { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .principle { display: grid; grid-template-columns: 32px 1fr; gap: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); align-items: start; }
+  .principle-num { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+  .principle h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  .principle p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+  <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / not-a-chatbot</span></nav>
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></div>
+    <div><h1>This is not a chatbot</h1><p>Warden is an autonomous agent system. The model you're talking to is the orchestrator; it has tools, sub-agents, and filesystem access. It responds best to actionable requests, not open-ended conversation.</p></div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> Chatbot vs. agent</div>
+  <div class="compare">
+    <div class="compare-card bad">
+      <h3>✗ Chatbot-style asks</h3>
+      <ul>
+        <li>"What do you think about Rust?"</li>
+        <li>"Tell me about microservices."</li>
+        <li>"Can you help me with my project?"</li>
+        <li>"Let's talk about our roadmap."</li>
+        <li><strong>Outcome:</strong> vague, conversational, no action taken.</li>
+      </ul>
+    </div>
+    <div class="compare-card good">
+      <h3>✓ Agent-style asks</h3>
+      <ul>
+        <li>"Read src/auth.ts and tell me if there's a timing-safe comparison missing."</li>
+        <li>"Screenshot example.com and tell me if the hero is above the fold."</li>
+        <li>"Convene The Council on this: should I use Postgres or SQLite for a single-user app with 50K rows?"</li>
+        <li>"Open my last 10 unread emails and summarize each in 1 line."</li>
+        <li><strong>Outcome:</strong> tools run, files read, verdicts returned.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>02</span> The five principles</div>
+  <div class="principles">
+    <div class="principle"><div class="principle-num">1</div><div><h4>Be specific about the target</h4><p>Include the file path, URL, or input data. "Fix the bug" → "Fix the bug in src/auth.ts:142 where the JWT expiry check is missing."</p></div></div>
+    <div class="principle"><div class="principle-num">2</div><div><h4>One ask per turn is fine; parallelize independents</h4><p>If two things don't depend on each other, say "X AND Y in parallel" — Warden runs them concurrently.</p></div></div>
+    <div class="principle"><div class="principle-num">3</div><div><h4>Read BLOCKED messages</h4><p>When a direct tool call fails, Warden says <code>BLOCKED</code> with the reason — read the error and redirect. Background Atlas jobs handle this themselves: the orchestrator catches failures, reworks the prompt, and retries before ever bothering you.</p></div></div>
+    <div class="principle"><div class="principle-num">4</div><div><h4>Watch the verbose bar</h4><p>Below the composer. Shows what Warden is doing right now. If it's calling tools you didn't expect, hit Stop.</p></div></div>
+    <div class="principle"><div class="principle-num">5</div><div><h4>Use The Council for high-stakes, not for lookups</h4><p>The Council is 3–10× slower and token-heavier. Reserve it for consequential decisions. Use direct tool calls for everything else.</p></div></div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> The mental model</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">i</div>
+    <div>
+      <p>Treat Warden like a capable colleague you're briefing, not a search engine you're querying. Give it context, a target, and a definition of done:</p>
+      <pre>Read the deploy log at logs/dockbox.log, find any error lines
+from the last hour, and tell me which component is most likely
+failing. If you can't tell from the log, say so — don't guess.</pre>
+      <p>It'll read the file, grep for errors, analyze, and either answer or say it can't tell. That's the loop.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> What it won't do well</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon">⚠</div>
+    <div>
+      <p>Open-ended brainstorming without a target. Hypotheticals with no verification path. Anything that needs "human judgment" without grounding in something it can read or run. Long conversations that drift from the original ask — the context window is finite.</p>
+      <p>For history-heavy asks, Warden uses <strong>Mercury</strong>: a rolling summary plus RAG over older conversation turns, injected into every prompt as <code><mercury_summary></mercury_summary></code> and <code><mercury_context></mercury_context></code>. Configure it in Settings (Off / RAG / Summary / Full). It helps, but it's not perfect — be specific about time ranges or message IDs when precision matters.</p>
+      <p>If you want to brainstorm, point it at something concrete: "Read this PRD and tell me what's missing." That gives it a target.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/agents.html"><strong>Agents</strong><small>every sub-agent</small></a>
+    <a href="/help/council.html"><strong>The Council</strong><small>high-stakes decisions</small></a>
+    <a href="/help/atlas.html"><strong>Asking Atlas</strong><small>browser patterns</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>workflow capture</small></a>
+    <a href="/help/settings.html"><strong>Settings</strong><small>model config</small></a>
+    <a href="/help/safety.html"><strong>Safety</strong><small>guardrails</small></a>
+  </div>
+</div>
+</body>
+</html>

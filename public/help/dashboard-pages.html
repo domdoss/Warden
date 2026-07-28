@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden — Dashboard Page Editor (Beta)</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .help-page { background: var(--bg); }
+  .help-shell { max-width: 880px; margin: 0 auto; padding: 28px 28px 80px; }
+  .help-nav { display: flex; align-items: center; gap: 12px; padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+  .help-nav a { color: var(--text-dim); }
+  .help-nav a:hover { color: var(--accent); text-decoration: none; }
+  .help-nav .crumb { color: var(--text-faint); }
+  .help-hero { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 22px 0 24px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
+  .help-hero-icon { width: 64px; height: 64px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--accent-soft), var(--surface-3)); border: 1px solid var(--border-hi); color: var(--accent); box-shadow: 0 0 32px rgba(94,234,212,0.18) inset; }
+  .help-hero-icon svg { width: 30px; height: 30px; }
+  .help-hero h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; text-transform: none; }
+  .help-hero p { margin: 0; color: var(--text-dim); font-size: 14px; max-width: 640px; }
+  .help-section-label { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); }
+  .help-section-label > span { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border-radius: 4px; background: var(--surface-3); color: var(--accent); border: 1px solid var(--border-hi); font-size: 10px; font-weight: 600; }
+  .help-section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .setting-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .setting-tile { padding: 14px 16px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); }
+  .setting-tile.warn { border-left-color: var(--warn); }
+  .setting-tile.info { border-left-color: var(--info); }
+  .setting-tile.violet { border-left-color: var(--violet); }
+  .setting-tile.danger { border-left-color: var(--danger); }
+  .setting-tile h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  .setting-tile .where { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-bottom: 8px; }
+  .setting-tile p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .setting-tile code { color: var(--accent); }
+  .help-callout { display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface); margin: 0 0 12px; }
+  .help-callout-warn { border-left: 3px solid var(--warn); }
+  .help-callout-info { border-left: 3px solid var(--info); }
+  .help-callout-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 18px; font-weight: 600; background: var(--warn-soft); color: var(--warn); }
+  .help-callout-info .help-callout-icon { background: var(--info-soft); color: var(--info); }
+  .help-callout p { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+  .help-callout p:last-child { margin-bottom: 0; }
+  .help-callout strong { color: var(--text); }
+  pre { background: var(--surface-2); padding: 12px; border-radius: 8px; overflow-x: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); }
+  .see-also-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+  .see-also-grid a { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+  .see-also-grid a:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+  .see-also-grid a strong { font-size: 13px; font-weight: 600; }
+  .see-also-grid a small { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+</style>
+</head>
+<body class="help-page">
+<div class="help-shell">
+  <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / dashboard-pages</span></nav>
+  <header class="help-hero">
+    <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg></div>
+    <div><h1>Dashboard Page Editor</h1><p>Add or edit dashboard views safely with a beta → live pipeline. Broken drafts never reach the live dashboard unless you promote them.</p></div>
+  </header>
+
+  <div class="help-section-label"><span>01</span> Pipeline</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>Beta draft</h3><div class="where">public/beta/&lt;file&gt;</div><p>All edits start in the beta copy. The beta dashboard is served at <code>/beta/</code> for safe preview.</p></div>
+    <div class="setting-tile info"><h3>Preview</h3><div class="where">http://localhost:3200/beta/</div><p>Open the beta URL in a browser (or ask Atlas to inspect it) before promoting anything to live.</p></div>
+    <div class="setting-tile warn"><h3>Promote</h3><div class="where">Add Page drawer → Promote</div><p>Copies the beta file to the live <code>public/</code> directory. The current live file is backed up first to <code>data/dashboard-backups/</code>.</p></div>
+    <div class="setting-tile danger"><h3>Revert</h3><div class="where">Add Page drawer → Revert</div><p>If the live dashboard breaks, restore the most recent backup immediately. Then delete the bad beta draft.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>02</span> Files you can edit</div>
+  <div class="setting-grid">
+    <div class="setting-tile"><h3>index.html</h3><div class="where">public/index.html</div><p>Add new <code>&lt;section class="view" id="view-NAME"&gt;</code> blocks and matching rail buttons in the left nav.</p></div>
+    <div class="setting-tile info"><h3>js/app.js</h3><div class="where">public/js/app.js</div><p>Add view rendering functions, switchView wiring, API calls, and event handlers for the new page.</p></div>
+    <div class="setting-tile warn"><h3>css/style.css</h3><div class="where">public/css/style.css</div><p>Add styles for the new view and components. Keep existing CSS intact.</p></div>
+  </div>
+
+  <div class="help-section-label"><span>03</span> How to ask Warden</div>
+  <div class="help-callout help-callout-info">
+    <div class="help-callout-icon">⌘</div>
+    <div>
+      <p>Ask Warden to make the change. It will follow the beta pipeline automatically:</p>
+      <pre>Add a new dashboard page called "Logs" with a view that lists the last 50 chat messages. Add a rail button below Activity, a section with id="view-logs", and a render function in app.js that calls /api/messages.</pre>
+      <p>Warden should:</p>
+      <ul>
+        <li>Copy <code>public/index.html</code> → <code>public/beta/index.html</code> and add the view + rail button.</li>
+        <li>Copy <code>public/js/app.js</code> → <code>public/beta/js/app.js</code> and add the render logic.</li>
+        <li>Tell you to preview at <code>/beta/</code> before promoting.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>04</span> Manual editing</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon">⚠</div>
+    <div>
+      <p>You can also edit beta files directly:</p>
+      <ul>
+        <li>Click the <strong>Add Page</strong> button at the bottom of the left rail.</li>
+        <li>Click <strong>Edit beta</strong> next to the file you want to change.</li>
+        <li>Save the draft, preview at <code>/beta/</code>, then click <strong>Promote</strong>.</li>
+      </ul>
+      <p>Never edit <code>public/index.html</code>, <code>public/js/app.js</code>, or <code>public/css/style.css</code> directly for a new page — always go through beta.</p>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>05</span> Rules</div>
+  <div class="help-callout help-callout-warn">
+    <div class="help-callout-icon">β</div>
+    <div>
+      <ul>
+        <li><strong>Preview before promote.</strong> A broken beta promoted to live breaks the live dashboard for everyone.</li>
+        <li><strong>One page per beta cycle.</strong> Keep beta changes focused so reverts are clean.</li>
+        <li><strong>Backups are automatic.</strong> Every promotion saves the old live file. Revert restores the most recent backup.</li>
+        <li><strong>Don't delete backups.</strong> They live in <code>data/dashboard-backups/</code> and are your safety net.</li>
+        <li><strong>If live breaks:</strong> Revert immediately, then tell Warden what went wrong and iterate in beta.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="help-section-label"><span>↗</span> See also</div>
+  <div class="see-also-grid">
+    <a href="/help/settings.html"><strong>Settings</strong><small>model / ctx config</small></a>
+    <a href="/help/agents.html"><strong>Agents</strong><small>every sub-agent</small></a>
+    <a href="/help/skills.html"><strong>Skills</strong><small>workflow capture</small></a>
+  </div>
+</div>
+</body>
+</html>
