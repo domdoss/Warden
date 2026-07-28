@@ -69,15 +69,37 @@ def parse_args(argv: list[str] | None = None):
 def _overlay(frame: np.ndarray, light_color, status: str, fps: float) -> np.ndarray:
     """Draw the alert light (top-left circle) + a status line onto the frame."""
     out = frame
+    h, w = out.shape[:2]
+    BLACK = (0, 0, 0)
+    WHITE = (255, 255, 255)
+
     cv2.circle(out, (28, 28), 14, light_color, -1)
-    cv2.circle(out, (28, 28), 14, (255, 255, 255), 1)
-    cv2.rectangle(out, (0, 0), (out.shape[1], 4), light_color, -1)  # top bar
-    cv2.putText(out, f"Warden Security  |  {status}",
-                (55, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(out, f"{fps:4.1f} fps",
-                (out.shape[1] - 90, out.shape[0] - 12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.circle(out, (28, 28), 14, WHITE, 1)
+    cv2.rectangle(out, (0, 0), (w, 4), light_color, -1)  # top bar
+
+    # Black background strip behind status text so it stays readable on dark frames.
+    text_y = 38
+    cv2.rectangle(out, (50, text_y - 24), (w, text_y + 10), BLACK, -1)
+    _shadow_text(out, f"Warden Security  |  {status}", (55, text_y), 0.6)
+
+    # Black background strip behind FPS counter.
+    fps_text = f"{fps:4.1f} fps"
+    fps_w = 110
+    cv2.rectangle(out, (w - fps_w, h - 32), (w, h - 8), BLACK, -1)
+    _shadow_text(out, fps_text, (w - fps_w + 5, h - 12), 0.55)
     return out
+
+
+def _shadow_text(out: np.ndarray, text: str, pos: tuple, scale: float) -> None:
+    """Draw bold white text with a black drop shadow for readability on any background."""
+    BLACK = (0, 0, 0)
+    WHITE = (255, 255, 255)
+    x, y = pos
+    # Single offset shadow, then bold white text on top.
+    cv2.putText(out, text, (x + 2, y + 2), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, BLACK, 2, cv2.LINE_AA)
+    cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
+                scale, WHITE, 2, cv2.LINE_AA)
 
 
 def main(argv: list[str] | None = None) -> int:

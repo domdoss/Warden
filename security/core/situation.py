@@ -142,6 +142,13 @@ class SituationTracker:
         self._stable_count = 0
         self._stable_count_streak = 0
 
+        # Per-event cooldowns (seconds) so a flickering non-person motion signal
+        # or a wobbling camera cover doesn't generate a stream of awareness events.
+        self._motion_burst_cooldown_seconds = 15.0
+        self._camera_cover_cooldown_seconds = 5.0
+        self._last_motion_burst_event = 0.0
+        self._last_camera_cover_event = 0.0
+
         # Camera-motion state.
         self._prev_phashes: deque = deque(maxlen=camera_moved_history)
         self._camera_moved_recent = 0.0  # time we last flagged camera_moved
@@ -203,7 +210,12 @@ class SituationTracker:
         events: List[ChangeEvent] = []
 
         # Camera covered/uncovered transitions.
-        if camera_covered and not self._prev_covered:
+        if (
+            camera_covered
+            and not self._prev_covered
+            and now - self._last_camera_cover_event >= self._camera_cover_cooldown_seconds
+        ):
+            self._last_camera_cover_event = now
             events.append(ChangeEvent("camera_covered", data={"ts": ts}))
         if not camera_covered and self._prev_covered:
             events.append(ChangeEvent("camera_uncovered", data={"ts": ts}))
@@ -262,46 +274,22 @@ class SituationTracker:
 
         self._room_occupied = room_occupied
 
-        # Movement of tracked people. Only flag significant centroid shifts, and
-        # only once per person until they settle (track the last announced move).
-        for pid, p in self._tracked.items():
-            if len(p.history) < 2 or p.frames_missing > 0:
-                continue
-            prev = p.history[-2]
-            dx = p.cx - prev[0]
-            dy = p.cy - prev[1]
-            dist = (dx * dx + dy * dy) ** 0.5
-            # TODO: instead of raw centroid shift, detect "stood up", "sat down",
-            # "approached camera" by keypoint changes (head/shoulder height).
-            if dist >= self.motion_movement_px:
-                # Suppress repeated movement events from the same person until
-                # they move back near their last announced position or sit still.
-                last_announced = getattr(p, '_last_announced_pos', None)
-                if last_announced is not None:
-                    lax, lay = last_announced
-                    back_near = ((p.cx - lax) ** 2 + (p.cy - lay) ** 2) ** 0.5 < self.motion_movement_px * 0.5
-                    if back_near:
-                        continue
-                p._last_announced_pos = (p.cx, p.cy)
-                events.append(ChangeEvent(
-                    "movement",
-                    subject_id=pid,
-                    data={
-                        "ts": ts,
-                        "delta_px": round(dist, 1),
-                        "from": (round(prev[0], 1), round(prev[1], 1)),
-                        "to": (round(p.cx, 1), round(p.cy, 1)),
-                    },
-                ))
+        # NOTE: deliberate choice — do NOT emit "movement" events from tracked
+        # people. People move constantly; centroid drift is not a meaningful
+        # awareness event. Only transitions in person count / occupancy and
+        # non-person motion bursts are reported.
 
         # Motion burst while room is empty: something moved but no person was
         # detected. Could be a pet, door, fan, or missed detection.
+        # Cooldown prevents a flickering motion mask from spamming events.
         if (
             not room_occupied
             and not camera_covered
             and motion_res.area >= self.motion_min_area
             and self._prev_motion_area < self.motion_min_area
+            and now - self._last_motion_burst_event >= self._motion_burst_cooldown_seconds
         ):
+            self._last_motion_burst_event = now
             events.append(ChangeEvent(
                 "motion_burst",
                 data={"ts": ts, "motion_area": motion_res.area, "motion_ratio": round(motion_res.ratio, 4)},
@@ -323,6 +311,8 @@ class SituationTracker:
         self._prev_covered = False
         self._stable_count = 0
         self._stable_count_streak = 0
+        self._last_motion_burst_event = 0.0
+        self._last_camera_cover_event = 0.0
 
     # ── Internal helpers ────────────────────────────────────────────────────
 
