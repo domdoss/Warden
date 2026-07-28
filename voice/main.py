@@ -479,6 +479,8 @@ class JarvisApp:
         # Strip emoji/pictographs/dingbats — the TTS otherwise reads their
         # Unicode names aloud ('✅' -> "white heavy check mark", '🔒' …).
         text = _EMOJI_RE.sub("", text)
+        # Strip bracketed attachments/placeholders like [image], [file], [audio].
+        text = re.sub(r"\[.*?\]", "", text)
         text = re.sub(r"[ \t]+", " ", text)
         return text.strip()
 
