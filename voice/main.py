@@ -353,29 +353,37 @@ class JarvisApp:
 
     async def _handle_interaction(self):
         if self._conversation_active:
-            if self._is_speaking:
-                self.audio_player.cancel()
-                while not self._tts_queue.empty():
-                    try:
-                        self._tts_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                try:
-                    await self.bridge.stop()
-                except Exception:
-                    pass
-                self._turn_done.set()
-                return
-            if self._send_task is not None and not self._send_task.done():
-                self._send_task.cancel()
-                await self.bridge.stop()
-                return
+            # Any click during an active conversation is a hard interrupt: stop
+            # playback, abort any in-flight request/recording, and force the turn
+            # to end so the UI never gets stuck on yellow/processing.
             self._stop_requested = True
             self.audio_recorder.cancel()
             try:
                 await self.bridge.stop()
             except Exception:
                 pass
+
+            if self._send_task is not None and not self._send_task.done():
+                self._send_task.cancel()
+                try:
+                    await self._send_task
+                except asyncio.CancelledError:
+                    pass
+            self._send_task = None
+
+            self.audio_player.cancel()
+            while not self._tts_queue.empty():
+                try:
+                    self._tts_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            self._turn_done.set()
+
+            # Drain any pending synthesis work so the worker doesn't keep us in
+            # a speaking/processing state after the click.
+            if self._tts_worker is not None and not self._tts_worker.done():
+                self._tts_queue.put_nowait(None)
+            self._is_speaking = False
             return
 
         self._conversation_active = True
