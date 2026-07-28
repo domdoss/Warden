@@ -165,7 +165,7 @@ awareness:
   presence_debounce: 2
   cooldown_seconds: 5
 EOF
-./run.sh --no-window --no-voice --config /tmp/aware_test.yaml
+./run.sh --no-window --config /tmp/aware_test.yaml
 # Leave frame for >5s, then re-enter → expect log line:
 #   "AWARENESS arrival (empty Ns, known=...) → Sentry"
 

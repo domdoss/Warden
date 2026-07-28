@@ -17,7 +17,6 @@ Usage:
     python main.py                      # config/settings.yaml (or defaults)
     python main.py --config my.yaml
     python main.py --camera 1           # override webcam index
-    python main.py --no-voice           # don't launch the voice/ client
     python main.py --no-window          # headless (no GUI window)
 """
 
@@ -45,7 +44,6 @@ from core.detector import Detector
 from core.motion import MotionDetector
 from core.situation import SituationTracker
 from core.warden import WardenClient
-from core.voice_launcher import VoiceLauncher
 from core.server import FrameServer
 
 log = logging.getLogger("security")
@@ -69,7 +67,6 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--config", help="Path to settings.yaml")
     p.add_argument("--camera", type=int, help="Override webcam index")
     p.add_argument("--stream", help="Override camera with an HTTP/MJPEG stream URL (e.g. http://esp32-cam.local:81/stream)")
-    p.add_argument("--no-voice", action="store_true", help="Don't launch the voice/ client")
     p.add_argument("--no-window", action="store_true", help="Headless (no GUI window)")
     return p.parse_args(argv)
 
@@ -175,7 +172,6 @@ def main(argv: list[str] | None = None) -> int:
     motion_cfg = cfg["motion"]
     aware_cfg = cfg.get("awareness", {})
     warden_cfg = cfg.get("warden", {})
-    voice_cfg = cfg.get("voice", {})
     fs_cfg = cfg.get("frame_server", {})
 
     if args.camera is not None:
@@ -236,14 +232,6 @@ def main(argv: list[str] | None = None) -> int:
 
     frame_server.on_arm = on_arm
     frame_server.on_disarm = on_disarm
-
-    voice = None
-    if not args.no_voice and voice_cfg.get("enabled", True):
-        voice = VoiceLauncher(
-            voice_dir=voice_cfg.get("dir", "../voice"),
-            auto_setup=voice_cfg.get("auto_setup", True),
-        )
-        voice.start()
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
@@ -416,8 +404,6 @@ def main(argv: list[str] | None = None) -> int:
         if show_window:
             cv2.destroyAllWindows()
         frame_server.stop()
-        if voice is not None:
-            voice.stop()
         log.info("stopped")
     return 0
 

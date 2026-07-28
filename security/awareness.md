@@ -121,7 +121,7 @@ Reused, not re-implemented: `runSubAgentBackground` (`src/agent-spawn.ts:43`), `
 
 ## Verification
 
-1. **Security app presence/emission** — `cd security && ./run.sh --no-window --no-voice`. Leave the room > `empty_threshold_seconds`, re-enter. Log shows `AWARENESS — arrival at <ts>. data: {...}`. Confirm with Warden off it still logs locally.
+1. **Security app presence/emission** — `cd security && ./run.sh --no-window`. Leave the room > `empty_threshold_seconds`, re-enter. Log shows `AWARENESS — arrival at <ts>. data: {...}`. Confirm with Warden off it still logs locally.
 2. **Routing + Sentry** — start Warden (`systemctl --user start warden` after `npm run build`). Trigger an arrival. `journalctl --user -u warden` shows `Security awareness → routing to Sentry (background)` and Sentry's `send_message` (`src/index.ts:312-350` log). Jarvis speaks the greeting via Kokoro.
 3. **Silent on routine** — stay in frame; no AWARENESS posts (cooldown + debounce). Briefly leave/return (< threshold) → no greeting (Sentry dies silent; check `awareness_log` row has `spoken=false`).
 4. **No tokens** — `awareness:model` unset → resolved model is `granite4:latest` (local). Confirm in logs the Sentry model is local, not a cloud model.

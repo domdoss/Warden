@@ -75,12 +75,5 @@ frame_server:
   host: 0.0.0.0
   port: 8765
 
-# Voice client — the security launcher opens voice/ (Jarvis) alongside the
-# webcam window so Warden's replies get spoken and you can talk to Warden.
-voice:
-  enabled: true
-  dir: ../voice
-  auto_setup: true
-
 logging:
   level: INFO

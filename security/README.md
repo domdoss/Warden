@@ -64,7 +64,6 @@ security/
     config.py            # settings loader + COCO class names
     warden.py            # posts AWARENESS JSON to /api/awareness
     server.py            # tiny HTTP server: GET /frame, /status; POST /arm, /disarm, /alert/*
-    voice_launcher.py    # opens the voice/ (Jarvis) client alongside the webcam
   config/settings.example.yaml   # copy to settings.yaml to customize
   sentry.md              # user-editable Sentry policy (injected into Sentry's prompt)
   requirements.txt
@@ -92,7 +91,6 @@ cd security && ./run.sh
 # flags (forwarded to main.py):
 #   --camera 1        override webcam index
 #   --stream URL      use an HTTP/MJPEG stream (e.g. http://esp32-cam.local:81/stream)
-#   --no-voice        don't launch the voice/ client
 #   --no-window       headless (no GUI)
 #   --config my.yaml  override settings file
 ```
