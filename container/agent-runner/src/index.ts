@@ -806,7 +806,7 @@ const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     // The orchestrator's EYES — also listed in Sentry's security toolset, so
     // without this the SUBAGENT_OWNED filter would strip them from the
     // orchestrator's tool defs and the # EYES instructions couldn't fire.
-    'desktop_screenshot', 'read_image',
+    'desktop_screenshot', 'webcam_capture', 'read_image',
 ]);
 
 // Artemis: read-only auditor tools (Bash included for read-only inspection:
@@ -1691,9 +1691,9 @@ async function runNativeOllama(input: ContainerInput) {
         'api_request', 'list_api_keys',
         // Vision captures are orchestrator-only (sub-agents can't see images —
         // _pendingImages is consumed only by runNativeOllama). Always expose them
-        // to the orchestrator so it can take a screenshot / read a host image and
-        // inspect it directly instead of delegating to a sub-agent.
-        'desktop_screenshot', 'read_image',
+        // to the orchestrator so it can take a screenshot / webcam frame / read a
+        // host image and inspect it directly instead of delegating to a sub-agent.
+        'desktop_screenshot', 'webcam_capture', 'read_image',
         // Orchestrator → Sentry direct line (registered by awareness-tools.ts,
         // toolset 'chat'). Always exposed so presence/schedule notes from the
         // user reach Sentry regardless of the dynamic top-K ranking.
@@ -1829,7 +1829,9 @@ The dashboard has a **Notes** view — an Obsidian-style markdown vault rooted a
 
 # EYES — YOUR SURROUNDINGS
 
-You do NOT have a webcam. The standalone security camera is owned by **Sentry** — the only agent that can see the room. For any real-world vision question about your immediate surroundings — "what do you see", "who's in the room / who's there", "what's that over there", "is someone at the door", "is the computer on" — delegate to **sentry** with a clear plain-language question as the {task}. Sentry looks at the live frame (Moondream on the camera machine) and returns a short answer; relay that answer to the user in spoken English. Do NOT answer from your own vision and do NOT use any webcam tool — you don't have one. Keep it to a sentence or two.
+The standalone security camera is owned by **Sentry** — prefer it for any real-world vision question about your immediate surroundings ("what do you see", "who's in the room / who's there", "what's that over there", "is someone at the door", "is the computer on"). Delegate to **sentry** with a clear plain-language question as the {task}; Sentry looks at the live frame (Moondream on the camera machine) and returns a short answer — relay that to the user in spoken English. Keep it to a sentence or two.
+
+Fallback: if Sentry is unavailable or returns an error, AND your own model is vision-capable, you may call \`webcam_capture\` once, look at the frame yourself, and answer directly. Do not use both — try Sentry first.
 
 # WHAT THE USER HEARS
 

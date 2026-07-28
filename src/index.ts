@@ -1319,7 +1319,9 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const question = typeof args?.question === 'string' ? args.question : '';
         const url = `http://${ip}:8765/caption`;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 20000);
+        // First-ever call downloads Moondream (~700MB) + loads it on the GPU;
+        // give it room so the first vision question doesn't abort mid-download.
+        const timer = setTimeout(() => controller.abort(), 150000);
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

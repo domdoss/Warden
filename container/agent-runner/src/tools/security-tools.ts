@@ -231,7 +231,10 @@ registry.register({
     },
     handler: async (args, _context) => {
         const question = String(args?.question || '');
-        const resp = await callHost('security_caption', { question });
+        // Moondream runs on the satellite GPU; the first ever call downloads the
+        // model (~700MB) and loads it, which can take a couple of minutes. Give it
+        // room so the first vision question doesn't time out.
+        const resp = await callHost('security_caption', { question }, 150000);
         if (resp?.ok) {
             return resp.caption || resp.answer || 'No description available.';
         }

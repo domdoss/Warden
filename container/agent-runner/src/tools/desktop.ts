@@ -63,6 +63,36 @@ registry.register({
 });
 
 registry.register({
+    name: 'webcam_capture',
+    description: 'Capture a single frame from the host webcam and load it into YOUR vision context. The Warden orchestrator grabs the frame on the host. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the resolution.',
+    schema: {
+        type: 'object',
+        properties: {
+            device: { type: 'string', description: 'Optional: v4l2 device path (default /dev/video0).' },
+            width: { type: 'number', description: 'Optional: requested frame width in pixels (default 640).' },
+        },
+        required: [],
+    },
+    handler: async (args) => {
+        try {
+            const res = await writeCallbackAsync('webcam_capture', args, 20000);
+            if (!res || res.ok === false) {
+                return `Error capturing webcam: ${res?.error || 'host callback failed'}`;
+            }
+            const b64 = typeof res.image === 'string' ? res.image : '';
+            if (!b64) return `Error: host returned no image data${res?.error ? ` (${res.error})` : ''}.`;
+            queueForVision(b64);
+            log(`webcam_capture: queued host frame ${res.width}x${res.height} for vision`);
+            return `Webcam frame captured (${res.width}×${res.height}px). The image is now in your vision context — describe what you see.`;
+        } catch (err: any) {
+            return `Error capturing webcam: ${err.message}`;
+        }
+    },
+    toolset: 'terminal',
+    tier: 'public',
+});
+
+registry.register({
     name: 'read_image',
     description: 'Read an image file from the HOST filesystem (any path the Warden orchestrator can access, e.g. /home/user/Photos/x.jpg) and load it into YOUR vision context. Use this for images outside the container workspace. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the dimensions.',
     schema: {
