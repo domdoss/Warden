@@ -470,7 +470,9 @@ class JarvisApp:
         import re
         text = re.sub(r"```[\s\S]*?```", " ", text)             # fenced code blocks
         text = re.sub(r"`([^`]*)`", r"\1", text)                # inline code
-        text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)  # links/images -> label
+        # Remove markdown links/images entirely (label + URL) so TTS doesn't read
+        # "image" or raw URLs for attachments like ![image](...).
+        text = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", text)
         text = re.sub(r"^\s*>+\s?", "", text, flags=re.MULTILINE)        # blockquotes
         text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.MULTILINE)  # headers
         text = re.sub(r"^\s*([-*+]|\d+\.)\s+", "", text, flags=re.MULTILINE)  # bullets/numbers
@@ -479,7 +481,7 @@ class JarvisApp:
         # Strip emoji/pictographs/dingbats — the TTS otherwise reads their
         # Unicode names aloud ('✅' -> "white heavy check mark", '🔒' …).
         text = _EMOJI_RE.sub("", text)
-        # Strip bracketed attachments/placeholders like [image], [file], [audio].
+        # Strip any remaining bracketed attachments/placeholders like [image], [file], [audio].
         text = re.sub(r"\[.*?\]", "", text)
         text = re.sub(r"[ \t]+", " ", text)
         return text.strip()
