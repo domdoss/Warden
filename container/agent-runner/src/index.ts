@@ -1689,6 +1689,10 @@ async function runNativeOllama(input: ContainerInput) {
         // toolset 'chat'). Always exposed so presence/schedule notes from the
         // user reach Sentry regardless of the dynamic top-K ranking.
         'tell_sentry',
+        // Read-only latest AWARENESS data (is_known/label, counts, occupancy
+        // duration) for the webcam-vision skill. Always exposed so a vision
+        // question can combine a webcam_capture photo with Sentry's context.
+        'awareness_status',
     ]);
     const DYNAMIC_TOOL_TOP_K = 12;
     let activeToolDefs = fullToolDefs;
@@ -1820,7 +1824,7 @@ The dashboard has a **Notes** view — an Obsidian-style markdown vault rooted a
 
 # EYES — YOUR SURROUNDINGS
 
-You have a webcam (\`webcam_capture\`) facing the room. For a contextual question about your immediate surroundings — "what do you see", "what's around you", "who's there", "what's that over there", "is someone at the door" — call \`webcam_capture\` once, look at the frame yourself, and answer directly in spoken English. Do NOT delegate this to a sub-agent: sub-agents cannot see images (only you can). Keep it to a sentence or two. (Requires your model to be vision-capable; if it isn't, say briefly that you can't see right now.)
+You have a webcam (\`webcam_capture\`) facing the room, and Sentry's structured awareness data (\`awareness_status\`) gives the context the photo alone can't — recognized names (is_known + label), person_count, and how long the room's been occupied/empty. For a real-world vision question — "what do you see", "who's in the room / who's there", "what's that over there", "is someone at the door" — call \`awareness_status\` first, then \`webcam_capture\`, look at the frame, and combine: name known people by their label, mention counts/durations, and describe what you see. Answer in one or two spoken sentences. (There is a \`webcam-vision\` skill that packages this workflow — \`activate_skill('webcam-vision')\` if you want the full steps. Do NOT delegate vision to a sub-agent: sub-agents cannot see images, only you can.) Requires your model to be vision-capable; if it isn't, say briefly that you can't see right now.
 
 # WHAT THE USER HEARS
 

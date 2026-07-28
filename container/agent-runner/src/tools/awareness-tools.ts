@@ -95,3 +95,34 @@ registry.register({
     tier: 'public',
 });
 
+// Read-only access for the orchestrator to Sentry's latest AWARENESS data: the
+// most recent event (arrival/departure/...) plus recognized person (is_known +
+// label), person_count, and how long the room's been occupied/empty. Call this
+// together with webcam_capture so a vision answer ("who's in the room", "what
+// do you see") can name known people and add context the photo alone can't.
+registry.register({
+    name: 'awareness_status',
+    description:
+        "Get Sentry's latest AWARENESS info from the security camera: the most recent event " +
+        "(arrival/departure/camera_covered/...), recognized person (is_known + label from " +
+        "InsightFace), person_count, and how long the room's been occupied or empty. Use this " +
+        "ALONGSIDE webcam_capture to answer 'who's in the room' or 'what do you see' accurately " +
+        "— the structured data gives names, counts, and durations the photo alone can't.",
+    schema: { type: 'object', properties: {}, required: [] },
+    handler: async () => {
+        const resp = await callHost('awareness_status', {});
+        if (!resp || resp.ok === false) return `awareness_status unavailable: ${resp?.error || 'host unreachable'}`;
+        const recent = Array.isArray(resp.recent) ? resp.recent : [];
+        const lines = recent.map((r: any) => {
+            const who = r.label ? ` ${r.label}` : (r.is_known != null ? (r.is_known ? ' known' : ' unknown') : '');
+            const empty = r.seconds_empty != null ? ` empty=${Math.round(r.seconds_empty)}s` : '';
+            let extra = '';
+            if (r.data) { try { const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; if (d && d.person_count != null) extra = ` people=${d.person_count}`; } catch {} }
+            return `[${r.ts}] ${r.event || '?'}${who}${empty}${extra}`;
+        });
+        return `Latest AWARENESS event:\n${resp.latest || '(none yet)'}\n\nRecent events:\n${lines.join('\n') || '(none yet)'}`;
+    },
+    toolset: 'chat',
+    tier: 'public',
+});
+

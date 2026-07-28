@@ -78,7 +78,7 @@ import { startStatusServer, pushNotification, pushActivityLine } from './status-
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
-import { securityLog, awarenessLog, recordAwarenessEvent } from './security-log.js';
+import { securityLog, awarenessLog, recordAwarenessEvent, queryAwarenessHostEvents } from './security-log.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -1335,6 +1335,21 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         return { ok: true, label };
       } catch (err: any) {
         logger.warn({ err }, 'save_known_person: failed to reach satellite');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
+    // Orchestrator vision aid: the latest AWARENESS info from Sentry / the
+    // camera detector — the most recent event text plus the recent host event
+    // rows (event, is_known/label, person_count, how long the room's been
+    // occupied/empty). Lets the orchestrator answer "who's in the room" by
+    // combining a webcam_capture photo with this structured context (names,
+    // counts, durations) that the photo alone can't provide.
+    awareness_status: async () => {
+      try {
+        const recent = queryAwarenessHostEvents(5);
+        return { ok: true, latest: lastAwarenessEvent, recent };
+      } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }
     },
