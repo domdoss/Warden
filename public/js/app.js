@@ -309,46 +309,24 @@
   let typingStopSuppressUntil = 0;
   let typingStatusPollTimer = null;
 
-  // Live thinking bar — streams dim-coded stderr tokens pushed via SSE
-  // agent_activity events. Falls back to the global busy label when no tokens
-  // are arriving.
+  // Live thinking tokens stream into the typing indicator status text via SSE
+  // agent_activity events. Keeps the last 50 words so the user sees what the
+  // agent is currently doing without a separate always-visible idle bar.
   function addThinkingLine(text) {
-    const bar = $('thinkingBar');
-    const content = $('thinkingContent');
-    if (!bar || !content) return;
-    bar.classList.add('has-content');
+    const statusEl = $('typingStatusText');
     const words = text.split(/\s+/).filter(w => w);
     typingWords.push(...words);
     while (typingWords.length > 50) typingWords.shift();
-    content.textContent = typingWords.join(' ');
-    bar.scrollLeft = bar.scrollWidth;
+    if (statusEl) statusEl.textContent = typingWords.join(' ') || 'Thinking…';
   }
 
   function clearThinkingBar() {
-    const bar = $('thinkingBar');
-    const content = $('thinkingContent');
-    if (bar) bar.classList.remove('has-content');
-    if (content) content.innerHTML = '';
     typingWords.length = 0;
   }
 
-  // Reconcile the thinking bar's idle/active label with the global busy
-  // state. Live stderr thinking tokens for the current session take
-  // precedence (signalled by the `has-content` class); otherwise the bar
-  // mirrors busy: "Working…" / latest label, or "Idle".
-  function syncThinkingBar() {
-    const bar = $('thinkingBar');
-    const content = $('thinkingContent');
-    if (!bar || !content) return;
-    if (bar.classList.contains('has-content')) return; // live tokens showing
-    if (lastBusy) {
-      bar.classList.remove('idle');
-      content.textContent = lastProgressLabel || 'Working…';
-    } else {
-      bar.classList.add('idle');
-      content.textContent = 'Idle';
-    }
-  }
+  // No-op: the standalone thinking bar was removed. The typing indicator status
+  // text is updated directly from SSE agent_activity tokens and status polling.
+  function syncThinkingBar() {}
 
   async function pollStatus() {
     try {
@@ -2291,8 +2269,7 @@
       ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
     });
 
-    // Live activity panel — collapse toggle (persisted). The thinking bar
-    // also toggles it, so an idle bar can be clicked to reveal history.
+    // Live activity panel — collapse toggle (persisted)
     const ppHeader = $('progressPanelHeader');
     if (ppHeader) {
       ppHeader.addEventListener('click', toggleProgressPanel);
@@ -2302,13 +2279,6 @@
           if (panel) { panel.classList.remove('collapsed'); ppHeader.setAttribute('aria-expanded', 'true'); }
         }
       } catch {}
-    }
-    const tb = $('thinkingBar');
-    if (tb) {
-      tb.addEventListener('click', toggleProgressPanel);
-      tb.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleProgressPanel(); }
-      });
     }
 
     // Tasks
