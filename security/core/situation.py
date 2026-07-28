@@ -109,13 +109,18 @@ class SituationTracker:
     def __init__(
         self,
         presence_debounce: int = 3,
+        absence_debounce: int | None = None,
         motion_min_area: int = 1500,
         motion_movement_px: int = 80,
         camera_moved_threshold: int = 16,
         camera_moved_history: int = 5,
         object_min_confidence: float = 0.2,
     ):
+        # Debounce frames before flipping occupancy. Absence uses a higher default
+        # so brief detector dropouts while someone is sitting still don't spam
+        # departure/arrival cycles.
         self.presence_debounce = max(1, presence_debounce)
+        self.absence_debounce = max(1, absence_debounce if absence_debounce is not None else presence_debounce * 3)
         self.motion_min_area = motion_min_area
         self.motion_movement_px = motion_movement_px
         self.camera_moved_threshold = camera_moved_threshold
@@ -470,11 +475,12 @@ class SituationTracker:
             self._absent_streak += 1
             self._present_streak = 0
 
-        # Transition only after debounce frames.
+        # Transition only after debounce frames. Absence requires more frames
+        # so brief detector dropouts don't declare the room empty.
         if not self._room_occupied and self._present_streak >= self.presence_debounce:
             self._room_occupied = True
             self._state_since = now
-        elif self._room_occupied and self._absent_streak >= self.presence_debounce:
+        elif self._room_occupied and self._absent_streak >= self.absence_debounce:
             self._room_occupied = False
             self._state_since = now
 
