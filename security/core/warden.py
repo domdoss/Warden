@@ -44,38 +44,18 @@ class WardenClient:
     def _post(self, text: str) -> dict:
         """POST a message to Warden.
 
-        AWARENESS events use the dedicated /api/awareness endpoint if available,
-        so they never appear in the chat. Falls back to /api/messages for older
-        desktops.
+        AWARENESS events are internal Sentry control events and must use the
+        dedicated /api/awareness endpoint. They are never stored as chat/bot
+        messages.
         """
         is_awareness = text.startswith("AWARENESS")
 
-        # Try the dedicated awareness endpoint first (no chat, no relay).
         if is_awareness:
-            try:
-                aware_url = f"{self.base_url}/api/awareness"
-                aware_payload = json.dumps({"text": text}, separators=(",", ":")).encode("utf-8")
-                req = urllib.request.Request(
-                    aware_url, data=aware_payload,
-                    headers={"Content-Type": "application/json"}, method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    body = resp.read().decode("utf-8", "replace")
-                    log.info("awareness event routed directly (%s): %s", resp.status, body[:200])
-                    return {"ok": True, "status": resp.status}
-            except urllib.error.HTTPError as e:
-                # 404 = old desktop without /api/awareness; fall through to chat path.
-                if e.code != 404:
-                    log.warning("awareness endpoint failed (%s), falling back to chat: %s", aware_url, e)
-            except Exception as e:
-                log.warning("awareness endpoint unreachable, falling back to chat: %s", e)
+            return self._post_awareness(text)
 
-        # Fallback: store as bot message (hidden from user chat on new desktops).
         payload = json.dumps({
             "jid": self.owner_jid,
             "text": text,
-            "is_bot_message": is_awareness,
-            "sender_name": "Sentry" if is_awareness else None,
         }, separators=(",", ":")).encode("utf-8")
         url = f"{self.base_url}/api/messages"
 
@@ -93,4 +73,24 @@ class WardenClient:
             return {"ok": False, "error": str(e)}
         except Exception as e:
             log.warning("event POST failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def _post_awareness(self, text: str) -> dict:
+        """POST an AWARENESS event to the dedicated /api/awareness endpoint."""
+        aware_url = f"{self.base_url}/api/awareness"
+        aware_payload = json.dumps({"text": text}, separators=(",", ":")).encode("utf-8")
+        req = urllib.request.Request(
+            aware_url, data=aware_payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = resp.read().decode("utf-8", "replace")
+                log.info("awareness event routed directly (%s): %s", resp.status, body[:200])
+                return {"ok": True, "status": resp.status}
+        except urllib.error.HTTPError as e:
+            log.warning("awareness endpoint failed (%s): %s", aware_url, e)
+            return {"ok": False, "error": f"HTTP {e.code}"}
+        except Exception as e:
+            log.warning("awareness endpoint unreachable: %s", e)
             return {"ok": False, "error": str(e)}

@@ -136,6 +136,12 @@ class SituationTracker:
         self._absent_streak = 0
         self._last_announced_count = 0
 
+        # Person-count debounce: require the count to be stable for a few frames
+        # before announcing arrival/departure, so brief detector flicker doesn't
+        # spam awareness events while someone is sitting still.
+        self._stable_count = 0
+        self._stable_count_streak = 0
+
         # Camera-motion state.
         self._prev_phashes: deque = deque(maxlen=camera_moved_history)
         self._camera_moved_recent = 0.0  # time we last flagged camera_moved
@@ -211,10 +217,22 @@ class SituationTracker:
 
         # Person-count transitions are the real awareness events. We don't care
         # about individual IDs — we care whether the number of people changed.
-        # Record the transition and emit arrival/departure based on occupancy.
-        prev_count = self._last_announced_count
+        # Debounce the count so a flickering detector while someone sits still
+        # doesn't emit repeated arrival/departure events.
         current_count = len(persons_out)
-        if current_count != prev_count and room_occupied == self._room_occupied:
+        if current_count == self._stable_count:
+            self._stable_count_streak += 1
+        else:
+            self._stable_count = current_count
+            self._stable_count_streak = 1
+
+        prev_count = self._last_announced_count
+        count_stable = self._stable_count_streak >= self.presence_debounce
+        if (
+            count_stable
+            and current_count != prev_count
+            and room_occupied == self._room_occupied
+        ):
             # Count changed while occupancy state was stable (e.g. 1 -> 2 people).
             if current_count > prev_count:
                 events.append(ChangeEvent(
@@ -303,6 +321,8 @@ class SituationTracker:
         self._absent_streak = 0
         self._prev_phashes.clear()
         self._prev_covered = False
+        self._stable_count = 0
+        self._stable_count_streak = 0
 
     # ── Internal helpers ────────────────────────────────────────────────────
 

@@ -807,6 +807,14 @@ async function handleMessages(
       idea?: string;
     };
     if (!body.text) return error(res, 'text required');
+
+    // AWARENESS events are internal control messages for Sentry. They must be
+    // sent to the dedicated /api/awareness endpoint; they are never stored as
+    // chat/bot messages here.
+    if ((body.text || '').startsWith('AWARENESS')) {
+      return error(res, 'AWARENESS messages must be sent to /api/awareness');
+    }
+
     const jid = body.jid || WEB_DASHBOARD_JID;
 
     // Panic word: a bare "stop" hard-kills the whole system instead of being
@@ -820,10 +828,7 @@ async function handleMessages(
     }
 
     // Bot message mode: store + relay without triggering agent.
-    // AWARENESS messages are internal control events for Sentry — never relay to
-    // Telegram/WhatsApp/Slack, and never show in the human chat view.
     if (body.is_bot_message) {
-      const isAwareness = (body.text || '').startsWith('AWARENESS');
       const msg: NewMessage = {
         id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         chat_jid: jid,
@@ -836,31 +841,11 @@ async function handleMessages(
         idea: getRouterState(`idea:${jid}`) || '',
       };
       deps.storeMessage(msg);
-      if (!jid.startsWith('web:') && !isAwareness) {
+      if (!jid.startsWith('web:')) {
         deps.sendChannelMessage(jid, body.text).catch((err: any) => {
           logger.warn({ err, jid }, 'Failed to relay bot message to channel');
         });
       }
-      return json(res, { ok: true, id: msg.id });
-    }
-
-    // AWARENESS events from the security detector are internal control messages:
-    // store as bot messages, do NOT relay to channels, and let processOwnerMessages
-    // route them to Sentry (it reads them via getMessagesSince, which includes
-    // AWARENESS bot messages).
-    if ((body.text || '').startsWith('AWARENESS')) {
-      const msg: NewMessage = {
-        id: `awareness-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-        chat_jid: jid,
-        sender: 'assistant',
-        sender_name: 'Sentry',
-        content: body.text,
-        timestamp: new Date().toISOString(),
-        is_from_me: false,
-        is_bot_message: true,
-        idea: '',
-      };
-      deps.storeMessage(msg);
       return json(res, { ok: true, id: msg.id });
     }
 

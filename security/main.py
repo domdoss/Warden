@@ -178,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     awareness_cooldown = float(aware_cfg.get("cooldown_seconds", 30))
     last_awareness_event: Optional[str] = None
     last_awareness_post = 0.0
+    last_suppression_log = 0.0  # rate-limit "suppressed/cooldown" log lines
 
     interval = 1.0 / max(1, cam_cfg["fps"])
     last_infer = 0.0
@@ -269,7 +270,11 @@ def main(argv: list[str] | None = None) -> int:
                 # last sent one, AND we're past the cooldown. This stops repeated
                 # arrival events caused by IDs flipping (a new person gets a new ID
                 # every time the tracker loses/re-acquires them).
-                situation_digest = f"{chosen.event}:count={situation.person_count}:occupied={situation.room_occupied}:covered={situation.camera_covered}:moved={situation.camera_moved}"
+                situation_digest = (
+                    f"event={chosen.event}:count={situation.person_count}:"
+                    f"occupied={situation.room_occupied}:covered={situation.camera_covered}:"
+                    f"moved={situation.camera_moved}"
+                )
                 if since_last >= awareness_cooldown and situation_digest != last_awareness_event:
                     payload = {
                         "event": chosen.event,
@@ -284,11 +289,15 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         log.warning("AWARENESS %s not delivered: %s", chosen.event, res.get("error"))
                 else:
-                    if since_last < awareness_cooldown:
-                        log.info("AWARENESS events queued but cooldown active (%.0fs left)",
-                                 awareness_cooldown - since_last)
-                    else:
-                        log.info("AWARENESS %s suppressed — same situation already reported", chosen.event)
+                    # Suppression/cooldown is expected; keep it at debug level so a
+                    # moving person doesn't fill the info log for the entire window.
+                    if now - last_suppression_log >= 5.0:
+                        last_suppression_log = now
+                        if since_last < awareness_cooldown:
+                            log.debug("AWARENESS events queued but cooldown active (%.0fs left)",
+                                      awareness_cooldown - since_last)
+                        else:
+                            log.debug("AWARENESS %s suppressed — same situation already reported", chosen.event)
 
             frame_server.set_state(state)
             if show_window:
