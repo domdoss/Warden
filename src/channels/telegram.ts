@@ -312,7 +312,15 @@ export class TelegramChannel implements Channel {
     if (images.length > 0) {
       for (const rel of images) {
         const abs = path.isAbsolute(rel) ? rel : path.resolve(process.cwd(), rel);
-        if (!fs.existsSync(abs)) { warn(`sendPhoto: image not found: ${abs}`); continue; }
+        // Security frames are stored under groups/owner/attachments, but the
+        // Sentry image tag is repo-relative (attachments/...). If the root
+        // path is missing, fall back to the owner group folder.
+        let finalAbs = abs;
+        if (!fs.existsSync(finalAbs)) {
+          const groupAbs = path.resolve(WORKSPACE_ROOT, 'groups', 'owner', rel);
+          if (fs.existsSync(groupAbs)) finalAbs = groupAbs;
+        }
+        if (!fs.existsSync(finalAbs)) { warn(`sendPhoto: image not found: ${abs}`); continue; }
         let attempt = 0;
         for (;;) {
           try {

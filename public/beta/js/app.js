@@ -302,10 +302,40 @@
   let lastBusy = false;
   let lastProgressLabel = '';
 
+  // Dashboard typing indicator state
+  let waitingForReply = false;
+  let typingWords = [];
+  let typingHideSuppressUntil = 0;
+  let typingStopSuppressUntil = 0;
+  let typingStatusPollTimer = null;
+
+  // Live thinking bar — streams dim-coded stderr tokens pushed via SSE
+  // agent_activity events. Falls back to the global busy label when no tokens
+  // are arriving.
+  function addThinkingLine(text) {
+    const bar = $('thinkingBar');
+    const content = $('thinkingContent');
+    if (!bar || !content) return;
+    bar.classList.add('has-content');
+    const words = text.split(/\s+/).filter(w => w);
+    typingWords.push(...words);
+    while (typingWords.length > 50) typingWords.shift();
+    content.textContent = typingWords.join(' ');
+    bar.scrollLeft = bar.scrollWidth;
+  }
+
+  function clearThinkingBar() {
+    const bar = $('thinkingBar');
+    const content = $('thinkingContent');
+    if (bar) bar.classList.remove('has-content');
+    if (content) content.innerHTML = '';
+    typingWords.length = 0;
+  }
+
   // Reconcile the thinking bar's idle/active label with the global busy
   // state. Live stderr thinking tokens for the current session take
-  // precedence (signalled by the `has-content` class set by userdash-extras);
-  // otherwise the bar mirrors busy: "Working…" / latest label, or "Idle".
+  // precedence (signalled by the `has-content` class); otherwise the bar
+  // mirrors busy: "Working…" / latest label, or "Idle".
   function syncThinkingBar() {
     const bar = $('thinkingBar');
     const content = $('thinkingContent');
@@ -519,6 +549,8 @@
       await postJson('/api/messages', payload);
       STATE.stopSuppressUntil = 0;
       STATE.waitingForReply = true;
+      waitingForReply = true;
+      showTypingIndicator();
       // remove pending flag — real message will arrive via poll
       setTimeout(() => {
         if (pendingEl && pendingEl.parentNode) pendingEl.classList.remove('pending');
@@ -552,6 +584,8 @@
         // If we got a bot message, we're no longer waiting
         if (msgs.some(m => m.is_bot_message)) {
           STATE.waitingForReply = false;
+          waitingForReply = false;
+          hideTypingIndicator();
           // remove any leftover pending user bubbles that the server has now stored
           qsa('.msg.user.pending', $('messages')).forEach(n => n.remove());
           // Auto-poll a bit longer in case follow-up chunks arrive
@@ -599,6 +633,9 @@
       await postJson('/api/chat/stop', { jid: STATE.currentJid, advance_cursor: true });
       toast('Stop sent', 'success');
       STATE.waitingForReply = false;
+      waitingForReply = false;
+      typingStopSuppressUntil = Date.now() + 2000;
+      hideTypingIndicator();
       pollStatus();
       startChatPolling();
     } catch (e) {
@@ -620,6 +657,8 @@
     // Clear the cursor and reload — equivalent to starting a fresh conversation
     STATE.chatLastTs = '';
     STATE.waitingForReply = false;
+    waitingForReply = false;
+    hideTypingIndicator();
     loadMessages();
     startChatPolling();
     toast('New thought started', 'info');
@@ -2165,10 +2204,19 @@
       pollStatus();
       // Keep a short refresh window alive in case more chunks follow
       STATE.waitingForReply = true;
+      waitingForReply = true;
+      showTypingIndicator();
       startChatPolling();
-    } else if (data.type === 'agent_activity') {
-      // Update verbose bar opportunistically
-      pollStatus();
+    } else if (data.type === 'agent_activity' && data.line) {
+      // Stream dim-coded thinking tokens into the thinking bar
+      const clean = data.line.replace(/\[[0-9;]*m/g, '').trim();
+      if (!clean) return;
+      if (clean.startsWith('[agent-runner] Raw stream chunk')) return;
+      if (clean.startsWith('{') && clean.includes('"model"')) return;
+      addThinkingLine(clean);
+      // Also update the typing status text with the same token stream
+      const statusEl = $('typingStatusText');
+      if (statusEl) statusEl.textContent = typingWords.join(' ');
     } else if (data.message) {
       toast(data.message, data.type === 'alarm' ? 'warn' : 'info');
     }
@@ -2330,6 +2378,51 @@
 
   document.addEventListener('DOMContentLoaded', init);
 
-  // Expose a small surface for debugging
-  window.Warden = { STATE, sendChat, pollChat, pollStatus, refreshTasks, refreshSkills, refreshActivity, refreshAccounts, deleteApiKey, syncThinkingBar };
+  // Typing indicator controls (ported from the previous dashboard)
+  function showTypingIndicator() {
+    if (Date.now() < typingHideSuppressUntil) return;
+    const el = $('typingIndicator');
+    if (!el) return;
+    el.classList.remove('hidden');
+    const statusEl = $('typingStatusText');
+    if (statusEl) statusEl.textContent = 'Thinking…';
+    if (!typingStatusPollTimer) startTypingStatusPoll();
+  }
+
+  function hideTypingIndicator() {
+    if (Date.now() < typingStopSuppressUntil) return;
+    const el = $('typingIndicator');
+    if (el) el.classList.add('hidden');
+    const statusEl = $('typingStatusText');
+    if (statusEl) delete statusEl.dataset.sseUpdated;
+    waitingForReply = false;
+    typingHideSuppressUntil = Date.now() + 2000;
+    if (typingStatusPollTimer) { clearInterval(typingStatusPollTimer); typingStatusPollTimer = null; }
+    clearThinkingBar();
+  }
+
+  function startTypingStatusPoll() {
+    if (typingStatusPollTimer) clearInterval(typingStatusPollTimer);
+    typingStatusPollTimer = setInterval(async () => {
+      if (document.hidden) return;
+      if (!waitingForReply) { hideTypingIndicator(); return; }
+      try {
+        const d = await api('/api/status');
+        const g = (d.groups || []).find(x => x.jid === STATE.currentJid);
+        const statusEl = $('typingStatusText');
+        if (!statusEl) return;
+        if (g && g.active && !g.idle) {
+          if (typingWords.length === 0) {
+            if (g.liveLabel) statusEl.textContent = g.liveLabel;
+            else statusEl.textContent = 'Thinking…';
+          }
+        } else {
+          if (!STATE.waitingForReply) hideTypingIndicator();
+        }
+      } catch {}
+    }, 1500);
+  }
+
+  // Expose a small surface for debugging and inline handlers
+  window.Warden = { STATE, sendChat, pollChat, pollStatus, refreshTasks, refreshSkills, refreshActivity, refreshAccounts, deleteApiKey, syncThinkingBar, stopAgent };
 })();
