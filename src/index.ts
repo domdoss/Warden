@@ -421,9 +421,12 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         // reference and append the real latest pre-fetched frame so Telegram
         // always sends the actual security photo.
         let finalText = text;
-        if (senderName === 'Sentry' && latestSentryFrame) {
+        if (senderName === 'Sentry') {
+          // Strip any [Image: ...] reference the model may have hallucinated;
+          // the host owns the photo. Append the real pre-fetched frame if we
+          // have one, otherwise send text-only so Telegram still gets the alert.
           finalText = finalText.replace(/\s*\[Image:\s*[^\]]+\]/gi, '').trim();
-          finalText = `${finalText} ${latestSentryFrame}`;
+          if (latestSentryFrame) finalText = `${finalText} ${latestSentryFrame}`;
         }
         if (!finalText.trim()) return { ok: false, error: 'missing text' };
         const messageId = `bot-cb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;

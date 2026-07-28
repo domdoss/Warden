@@ -450,9 +450,9 @@ async function handleCallback(raw: string) {
     if (result && (result as any).ok === false) {
       logger.warn({ tool, error: (result as any).error }, 'agent-spawn: callback handler returned error');
     }
-    if (tool === 'send_message' && result && (result as any).ok === true) {
-      agentState.sentMessageCallback = true;
-    }
+    // Note: a sub-agent's send_message callback (e.g. a Sentry alert) must NOT
+    // suppress the orchestrator's own captured final reply — the host delivers
+    // both. So we no longer flip a sentMessageCallback flag here.
     writeCallbackResponse({ id, ...result });
   } catch (err: any) {
     logger.warn({ tool, err }, 'agent-spawn: callback handler threw');
@@ -527,8 +527,9 @@ function onPersistentStdoutData(chunk: Buffer) {
           r({ text: '', exitCode: 0, durationMs: Date.now() - agentState.startedAt, userStopped: true });
           return;
         }
-        const outText = agentState.sentMessageCallback ? '' : agentState.captured;
-        r({ text: outText, exitCode: 0, durationMs: Date.now() - agentState.startedAt });
+        // Always deliver the captured output. Sub-agent send_message callbacks
+        // (e.g. Sentry alerts) must not suppress the orchestrator's final reply.
+        r({ text: agentState.captured, exitCode: 0, durationMs: Date.now() - agentState.startedAt });
       }
       // Keep child alive for next turn — do NOT end stdin or kill
       continue;
@@ -579,7 +580,7 @@ function setupPersistentChild(child: ChildProcess, startedAt: number) {
         r({ text: '', exitCode: 0, durationMs: Date.now() - startedAt, userStopped: true });
         return;
       }
-      r({ text: agentState.sentMessageCallback ? '' : agentState.captured, exitCode, durationMs: Date.now() - startedAt,
+      r({ text: agentState.captured, exitCode, durationMs: Date.now() - startedAt,
         error: exitCode !== 0 ? `agent exited with code ${exitCode}${signal ? ` (signal ${signal})` : ''}; stderr: ${agentState.stderr.slice(-1500)}` : undefined });
     }
   });

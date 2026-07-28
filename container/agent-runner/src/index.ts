@@ -756,13 +756,13 @@ Event fields available in the task:
 - is_known (bool) and label (string) from InsightFace face recognition, when a face is visible
 - ts (timestamp)
 
-A latest security frame reference is provided in your task when available (e.g. "Latest security frame: [Image: attachments/img-....jpg]"). When you send an alert message, include that EXACT reference on the SAME LINE as your text so Telegram sends the photo with caption.
+A latest security frame reference is provided in your task when available. Do NOT add any [Image: ...] reference to your alert text yourself — the host attaches the photo automatically. Just write the caption text (one short plain sentence, no markdown, no emoji).
 
 Use awareness_log FIRST on every AWARENESS event to record your verdict (assessment: spoken|silent|note|flagged) and avoid repeating greetings. Query awareness_log to check recent history before deciding to speak again.
 
 You have several security tools. For alert events (anything suspicious, or when the user notes say to alert), use them in this order:
 1. awareness_log({"action":"record", ...}) — record the event and your verdict.
-2. send_message({"sender": "Sentry", "text": "Alert sentence. [Image: attachments/img-....jpg]"}) — include the latest frame reference. One short plain sentence, no markdown, no emoji.
+2. send_message({"sender": "Sentry", "text": "Alert sentence — what you saw and whether to be concerned."}) — write caption text ONLY; the host attaches the frame. One short plain sentence, no markdown, no emoji, no [Image: ...].
 3. alert_security({"reason": "concise reason"}) — mock escalation to the guard service.
 4. open_security_alert({"reason": "concise reason"}) — opens the detector's red STAND DOWN button.
 
