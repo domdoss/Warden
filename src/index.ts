@@ -20,7 +20,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, CallbackMap, pushSupervisorNote, runSubAgentBackground, setActivityPublisher } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher } from './agent-spawn.js';
 import {
   getBackupConfig,
   createFullBackup,
@@ -1377,6 +1377,46 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         return { ok: true };
       } catch (err: any) {
         logger.warn({ err }, 'tell_sentry: failed to spawn Sentry');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
+    // Orchestrator → Sentry live status query. Spawns Sentry synchronously so
+    // it can pull/process live data and return a concise report, instead of
+    // returning stale cached rows. The orchestrator uses this to decide whether
+    // a current room-status question needs a webcam frame.
+    sentry_query: async (args: any) => {
+      try {
+        const question = typeof args?.question === 'string' && args.question.trim()
+          ? args.question.trim()
+          : 'live status';
+        const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
+        const task =
+          `[ORCHESTRATOR_QUERY] Current local time is ${localNow} (timezone ${tz}).\n\n` +
+          `The orchestrator asks: "${question}"\n\n` +
+          `You are Sentry, the situational-awareness agent. This is a live status query from the orchestrator, NOT an AWARENESS event. ` +
+          `Do NOT send_message to the user. Do NOT use security_log. Use ONLY awareness_log (action: query) and awareness_status. ` +
+          `Decide the CURRENT room state and return a concise report as your final plain-text output. ` +
+          `Start with NOTHING_NOTEWORTHY if the room is currently empty and there is no person present, no recent motion/arrival/departure/alert, and the camera is normal. ` +
+          `Start with NOTEWORTHY if a person is currently present, an unknown person is detected, there is recent motion, an alert is open, or the camera is covered/moved. ` +
+          `Then add one sentence of detail. Read security/sentry.md if you need user-specific rules, but do not greet or alert the user directly.`;
+        const model = resolveAwarenessModel();
+        const result = await runSubAgentSync({
+          agent: 'sentry',
+          prompt: task,
+          model,
+          workspaceRoot: WORKSPACE_ROOT,
+          chatJid: OWNER_JID,
+          groupFolder: 'owner',
+          isMain: true,
+          timeoutMs: 30 * 1000,
+          callbacks: buildAgentCallbacks({}),
+        } as any);
+        logger.info({ report: result.content.slice(0, 200), exitCode: result.exitCode }, 'sentry_query: got report');
+        return { ok: true, report: result.content };
+      } catch (err: any) {
+        logger.warn({ err }, 'sentry_query: failed to query Sentry');
         return { ok: false, error: String(err?.message ?? err) };
       }
     },

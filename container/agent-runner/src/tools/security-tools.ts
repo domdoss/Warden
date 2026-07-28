@@ -202,6 +202,12 @@ registry.register({
         required: ['action'],
     },
     handler: async (args, _context) => {
+        // During orchestrator status queries, Sentry must use awareness_log/
+        // awareness_status only. security_log is for alert-event logging, not
+        // live room-status polling, and using it makes the query slow/wrong.
+        if ((globalThis as any).__sentryQueryMode) {
+            return 'security_log is not available during a live status query. Use awareness_log (action: query) and awareness_status instead.';
+        }
         const resp = await callHost('security_log', args || {});
         if (resp?.ok) {
             if ((args as any)?.action === 'query') return resp.summary || 'No matching rows.';

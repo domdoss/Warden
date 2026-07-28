@@ -14,6 +14,11 @@ async function callHost(tool: string, args: any, timeoutMs = 10000): Promise<any
     }
 }
 
+/** Whether the current task is an orchestrator status query (not an AWARENESS event). */
+function isStatusQuery(): boolean {
+    return sentryTaskPrompt.startsWith('[ORCHESTRATOR_QUERY]');
+}
+
 // Situational-awareness tools (Sentry, the background awareness agent). Mirrors
 // security-tools.ts. awareness_log records/queries Sentry's sqlite history;
 // tell_sentry lets the orchestrator pass a fact to Sentry (recorded as context).
@@ -121,6 +126,28 @@ registry.register({
             return `[${r.ts}] ${r.event || '?'}${who}${empty}${extra}`;
         });
         return `Latest AWARENESS event:\n${resp.latest || '(none yet)'}\n\nRecent events:\n${lines.join('\n') || '(none yet)'}`;
+    },
+    toolset: 'chat',
+    tier: 'public',
+});
+
+// Orchestrator → Sentry live status query. Sentry pulls current data, decides
+// the CURRENT room state, and returns a concise report. The orchestrator uses
+// this instead of stale cached rows to decide whether to pull a webcam frame.
+registry.register({
+    name: 'sentry_query',
+    description:
+        "Ask Sentry, the situational-awareness agent, for a live status report. " +
+        "Sentry pulls current AWARENESS data from the satellite and decides the CURRENT room state. " +
+        "If the report starts with NOTEWORTHY (person present, unknown person, recent motion, alert, camera issue), " +
+        "you MUST then call webcam_capture to verify visually. If the report starts with NOTHING_NOTEWORTHY, " +
+        "answer from the report alone and do NOT pull a frame. Use this for 'who's in the room' / 'what's happening' " +
+        "/ 'security status' questions — NOT awareness_status, which only returns stale cached events.",
+    schema: { type: 'object', properties: { question: { type: 'string', description: 'Optional question to pass to Sentry (e.g. who is in the room).' } }, required: [] },
+    handler: async (args, _context) => {
+        const resp = await callHost('sentry_query', { question: String(args?.question || 'live status') }, 35000);
+        if (!resp || resp.ok === false) return `sentry_query unavailable: ${resp?.error || 'host unreachable'}`;
+        return resp.report || '(no report)';
     },
     toolset: 'chat',
     tier: 'public',

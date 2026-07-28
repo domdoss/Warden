@@ -779,7 +779,17 @@ You are text-only and rely on the structured AWARENESS payload. If the user asks
 
 If the user asks to register a person as known (e.g. "this is user, remember him"), call save_known_person({"label":"user"}). The laptop computes a face embedding on CPU and stores it; future arrivals will report is_known=true and label.
 
-Arm/disarm only when the user explicitly asks you to change the system's armed state. Do NOT output plain text summaries. Only call tools.`,
+Arm/disarm only when the user explicitly asks you to change the system's armed state. Do NOT output plain text summaries. Only call tools.
+
+STATUS QUERY MODE: sometimes the orchestrator asks you a direct question such as "who's in the room" or "what's happening" by passing a task that starts with [ORCHESTRATOR_QUERY]. This is DIFFERENT from an AWARENESS event. In this mode:
+- Do NOT send_message to the user.
+- Do NOT use security_log.
+- Use ONLY these two tools: awareness_log({"action":"query", ...}) and awareness_status. NOTHING ELSE.
+- After reading the results, return a concise report as your final plain-text output.
+- The first word of your report MUST be either NOTHING_NOTEWORTHY or NOTEWORTHY.
+- Use NOTHING_NOTEWORTHY ONLY when the room is currently empty AND there is no person present, no recent arrival/departure, no motion, no alert, and the camera is normal. Example: NOTHING_NOTEWORTHY. The room has been empty with no motion or alerts.
+- Use NOTEWORTHY when a person is currently present, an unknown person is detected, there is recent motion/arrival/departure, an alert is open, or the camera is covered/moved. Example: NOTEWORTHY. One known person (user) is present.
+- After the keyword, add exactly one sentence of detail. Do not greet or alert the user directly.`,
         toolsets: ['awareness-core', 'security-core'],
     },
 ];
@@ -1693,6 +1703,9 @@ async function runNativeOllama(input: ContainerInput) {
         // duration) for the webcam-vision skill. Always exposed so a vision
         // question can combine a webcam_capture photo with Sentry's context.
         'awareness_status',
+        // Live Sentry status query: spawns Sentry synchronously so it can decide
+        // the CURRENT room state instead of returning stale cached rows.
+        'sentry_query',
     ]);
     const DYNAMIC_TOOL_TOP_K = 12;
     let activeToolDefs = fullToolDefs;
@@ -1824,7 +1837,7 @@ The dashboard has a **Notes** view — an Obsidian-style markdown vault rooted a
 
 # EYES — YOUR SURROUNDINGS
 
-You have a webcam (\`webcam_capture\`) facing the room, and Sentry's structured awareness data (\`awareness_status\`) gives the context the photo alone can't — recognized names (is_known + label), person_count, and how long the room's been occupied/empty. For a real-world vision question — "what do you see", "who's in the room / who's there", "what's that over there", "is someone at the door" — call \`awareness_status\` first, then \`webcam_capture\`, look at the frame, and combine: name known people by their label, mention counts/durations, and describe what you see. Answer in one or two spoken sentences. (There is a \`webcam-vision\` skill that packages this workflow — \`activate_skill('webcam-vision')\` if you want the full steps. Do NOT delegate vision to a sub-agent: sub-agents cannot see images, only you can.) Requires your model to be vision-capable; if it isn't, say briefly that you can't see right now.
+When the user asks about the room — "who's in the room", "what's in the room", "what's happening in the room", "is anyone in the room" — your ONLY job is to call \`sentry_query\` and relay Sentry's live report in one sentence. Do NOT use \`awareness_status\` (it only returns stale cached events). Do NOT call \`webcam_capture\`. Do NOT use any other tool. Do NOT answer from memory or conversation history. Just call \`sentry_query\` and answer from its report.
 
 # WHAT THE USER HEARS
 
@@ -3736,7 +3749,8 @@ async function main() {
             }
             log(`[sentry] starting background awareness agent: model=${model || '(none)'}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
             setSentryTaskPrompt(containerInput.prompt || '');
-            const sa = await runSubAgent('sentry', model, systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations);
+            (globalThis as any).__sentryQueryMode = (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]');
+            const sa = await runSubAgent('sentry', model, systemPrompt, tools, containerInput.prompt || '', ctx, (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]') ? 2 : def.maxIterations);
             writeOutput({ status: 'success', result: sa.content || 'Sentry: done (silent).', error: null });
         } catch (err: any) {
             log(`[sentry] error: ${err.message}`);

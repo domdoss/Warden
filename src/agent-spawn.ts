@@ -137,6 +137,141 @@ export function runSubAgentBackground(input: AgentRunInput): void {
 }
 
 /**
+ * Spawn a sub-agent synchronously and return its final stdout result. Unlike
+ * runSubAgentBackground, this waits for the child to exit and captures the JSON
+ * payload inside the first OUTPUT_START/OUTPUT_END block. Callbacks are still
+ * handled live (e.g. Sentry may log), but the agent's final textual output is
+ * returned to the host. Used for orchestrator → Sentry live status queries.
+ */
+export function runSubAgentSync(input: AgentRunInput): Promise<{ content: string; exitCode: number | null }> {
+  return new Promise((resolve) => {
+    const exe = input.executable ?? DEFAULT_EXECUTABLE;
+    const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
+    const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
+    const child = spawn(exe, exeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const callbacks = input.callbacks ?? {};
+    const agentName = input.agent || 'sentry';
+
+    let stdoutBuf = '';
+    let insideCallback = false;
+    let callbackLines: string[] = [];
+    let capturedOutput: string | null = null;
+    let outputOpen = false;
+    let outputLines: string[] = [];
+    let resolved = false;
+
+    const finish = (content: string, exitCode: number | null) => {
+      if (resolved) return;
+      resolved = true;
+      try { child.stdin.end(); } catch { /* ignore */ }
+      resolve({ content, exitCode });
+    };
+
+    const writeResp = (payload: any) => {
+      try {
+        child.stdin.write('CALLBACK_RESPONSE_START\n');
+        child.stdin.write(JSON.stringify(payload) + '\n');
+        child.stdin.write('CALLBACK_RESPONSE_END\n');
+      } catch { /* child gone */ }
+    };
+
+    const handleCb = async (raw: string) => {
+      let parsed: any;
+      try { parsed = JSON.parse(raw); } catch { writeResp({ error: 'bad callback JSON' }); return; }
+      const tool = parsed.tool;
+      const handler = callbacks[tool];
+      if (!handler) { writeResp({ id: parsed.id, error: `no handler for tool: ${tool}` }); return; }
+      try {
+        const r = await handler(parsed.args);
+        writeResp({ id: parsed.id, ...(r || {}) });
+      } catch (err: any) {
+        writeResp({ id: parsed.id, ok: false, error: err?.message ?? String(err) });
+      }
+    };
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuf += chunk.toString();
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (insideCallback) {
+          if (line === 'CALLBACK_END') {
+            insideCallback = false;
+            void handleCb(callbackLines.join('\n'));
+            callbackLines = [];
+            continue;
+          }
+          callbackLines.push(line);
+          continue;
+        }
+        if (line === 'CALLBACK_START') { insideCallback = true; callbackLines = []; continue; }
+        if (line === '---WARDEN_OUTPUT_START---') {
+          outputOpen = true;
+          outputLines = [];
+          continue;
+        }
+        if (line === '---WARDEN_OUTPUT_END---') {
+          outputOpen = false;
+          try {
+            const raw = outputLines.join('\n');
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.result === 'string') {
+              capturedOutput = parsed.result;
+            } else if (parsed && typeof parsed.result?.result === 'string') {
+              capturedOutput = parsed.result.result;
+            } else {
+              capturedOutput = raw;
+            }
+          } catch {
+            capturedOutput = outputLines.join('\n');
+          }
+          continue;
+        }
+        if (outputOpen) { outputLines.push(line); continue; }
+        if (line.startsWith('---WARDEN_STATUS---')) {
+          try {
+            const e = JSON.parse(line.slice('---WARDEN_STATUS---'.length).trim());
+            if (e.label && e.label !== lastProgressLabel) {
+              lastProgressLabel = e.label;
+              pushProgress({ ts: e.ts || Date.now(), kind: 'status', phase: e.phase || agentName, label: e.label, jobs: 0 });
+            }
+          } catch { /* malformed */ }
+          continue;
+        }
+      }
+    });
+    child.stderr.on('data', (c: Buffer) => {
+      const t = c.toString().trim();
+      if (t) logger.info(`sync-agent[${agentName}]: ${t.slice(0, 300)}`);
+    });
+    child.on('exit', (code, signal) => {
+      logger.info({ agent: agentName, code, signal }, `sync-agent[${agentName}]: exited`);
+      finish(capturedOutput ?? '', code);
+    });
+    child.on('error', (err) => {
+      logger.warn({ err, agent: agentName }, `sync-agent[${agentName}]: spawn error`);
+      finish(`spawn error: ${err?.message ?? String(err)}`, null);
+    });
+
+    const payload = JSON.stringify({
+      agent: agentName,
+      prompt: input.prompt,
+      model: input.model,
+      workspaceRoot: input.workspaceRoot,
+      chatJid: input.chatJid || 'owner@local',
+      groupFolder: input.groupFolder || 'owner',
+      isMain: input.isMain ?? true,
+      timeoutMs: input.timeoutMs,
+    });
+    logger.info({ agent: agentName, payloadLen: payload.length }, `sync-agent[${agentName}]: spawning`);
+    try { child.stdin.write(payload); } catch (err: any) {
+      logger.warn({ err }, `sync-agent[${agentName}]: stdin write failed`);
+      finish(`stdin write failed: ${err?.message ?? String(err)}`, null);
+    }
+  });
+}
+
+/**
  * Default `exec_request` callback handler. The agent-runner's Bash tool emits
  * an exec_request callback with `{ command, args, cwd, env }`; this handler
  * runs the command in a VISIBLE tmux session named `warden-shell` so the user
