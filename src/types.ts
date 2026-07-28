@@ -43,7 +43,6 @@ export interface AgentInput {
   councilSkepticModel?: string;     // Council Skeptic seat model (optional, falls back to model)
   councilPragmatistModel?: string;   // Council Pragmatist seat model
   councilSynthesistModel?: string;  // Council Synthesist seat model
-  heimdallModel?: string;       // Heimdall security agent model (no fallback)
   sessionId: string;          // single session, constant
   workspaceRoot: string;
   history: NewMessage[];      // recent messages for context

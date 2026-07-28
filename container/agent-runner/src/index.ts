@@ -20,6 +20,7 @@ import path from 'path';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
+import { setSentryTaskPrompt } from './tools/awareness-tools.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
 import { hooks } from './hooks.js';
@@ -385,7 +386,6 @@ function toolDetailLabel(name, args) {
         case 'atlas': return `🌍 Atlas: ${short(args.task || '', 50)}`;
         case 'artemis': return `🏹 Artemis: ${short(args.task || 'reviewing the conversation', 50)}`;
         case 'iris': return `✉️ Iris: ${short(args.task || '', 50)}`;
-        case 'heimdall': return `🛡️ Heimdall: ${short(args.task || '', 50)}`;
         default: {
             const label = toolLabel(name);
             const keyArg = args.file_path || args.path || args.title || args.name || args.query || args.task_id || '';
@@ -456,7 +456,6 @@ function applySettingsSync(data: any) {
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
-    if (data.heimdallModel !== undefined) HEIMDALL_MODEL = (data.heimdallModel || '').replace(/^local:/, '');
     if (data.subagentModel !== undefined) process.env.SUBAGENT_MODEL = data.subagentModel || '';
     if (data.orchestratorCtx !== undefined) process.env.ORCHESTRATOR_NUM_CTX = data.orchestratorCtx ? String(data.orchestratorCtx) : '';
     if (data.subagentCtx !== undefined) process.env.SUBAGENT_NUM_CTX = data.subagentCtx ? String(data.subagentCtx) : '';
@@ -741,53 +740,37 @@ Be direct and specific — reference the exact point you're critiquing. Do not f
         toolsets: [],
     },
     {
-        delegate: 'heimdall',
-        label: 'Heimdall',
-        maxIterations: 20,
-        summary: "security-camera alerts: assess a flagged frame, decide normal vs abnormal, escalate + alert the user only if abnormal (and leave the alert OPEN for the user to close). Runs in the background; dies silently on non-events.",
-        systemPrompt: `You are Heimdall, Warden's vision-based security verifier. You run in the background on a vision-capable model. Sentry (the lightweight data-only guard) has flagged a possible anomaly from the laptop camera's structured data. You are given that data plus a live frame from the laptop.
-
-Your job: CONFIRM or DENY the anomaly.
-
-TIME — the exact current local time and timezone is given at the top of your task. Reference every event by that time/date.
-
-DATA FORMAT — the AWARENESS data is JSON. It contains the event type, the full situation (persons, camera state, room occupancy, motion), and the event-specific payload. Use the situation.persons list for who/where; use room.occupied and seconds_in_state for context.
-
-CONFIRMED (abnormal):
-- The described situation is actually happening in the frame (e.g. unknown person present when the user should be away, camera covered/tampered, clear intrusion).
-- Call send_message ONCE with sender="Heimdall" and a concise alert — include the image tag exactly as provided in your task so the user sees the frame in the dashboard/Telegram.
-- Then call open_security_alert ONCE to light the red alert on the laptop.
-- Record security_log (assessment=abnormal, escalated=true).
-- Then STOP.
-
-DENIED (false positive):
-- The data doesn't match the frame (e.g. labelled person is not actually there, motion was a pet/shadow, camera moved but scene is normal).
-- Record security_log (assessment=normal, escalated=false).
-- Do NOT send_message. Do NOT call open_security_alert.
-- STOP silently.
-
-If uncertain, lean toward DENY unless the visual evidence clearly supports the anomaly. The user only wants to be bothered for real problems.
-
-Keep any alert message short — one or two plain sentences, no markdown, no emoji. Never repeat a tool call.`,
-        toolsets: ['security-core'],
-    },
-    {
         delegate: 'sentry',
         label: 'Sentry',
-        maxIterations: 8,
-        summary: "situational awareness: assess a webcam AWARENESS event using the detector's raw data + user-editable rules in security/sentry.md, and decide whether to escalate to Heimdall. Runs in the background; dies silently on normal events.",
-        systemPrompt: `You are Sentry, Warden's situational-awareness agent. You run in the background on a light local model.
+        maxIterations: 4,
+        summary: "single background security agent: read security/sentry.md, decide alert/greet/silent, send one captioned photo alert, and update security state (open/dismiss alert, arm/disarm, log). Runs in the background.",
+        systemPrompt: `You are Sentry, Warden's single background security agent. You are a data-only decision maker.
 
-The only input you get is structured JSON from the laptop camera detector: event type (arrival/departure/movement/camera_covered/camera_uncovered/camera_moved/motion_burst/note), person count, known/unknown labels, motion area, seconds the room was empty or occupied, camera state, and time.
+You receive one structured JSON AWARENESS event from the satellite camera detector. Your ONLY job is to apply the user notes below.
 
-Your job:
-1. Record every event in awareness_log (action: record).
-2. Apply the user-editable policy in security/sentry.md (loaded above this prompt) to classify the event as NORMAL or ANOMALOUS.
-3. If ANOMALOUS, call escalate_to_heimdall ONCE with a concise reason and the situation data. Do NOT send_message the user yourself. Heimdall will pull a live frame and confirm.
-4. If NORMAL, stay silent after logging.
+Event fields available in the task:
+- event: arrival | departure | movement | motion_burst | camera_covered | camera_uncovered | camera_moved | note
+- situation.person_count, situation.labels, situation.room_occupied
+- situation.seconds_empty, situation.seconds_occupied, situation.motion_area
+- situation.camera_covered, situation.camera_moved
+- ts (timestamp)
 
-You may call webcam_capture or security_frame ONCE only if the raw data is genuinely insufficient, but prefer not to.`,
-        toolsets: ['awareness-core'],
+A latest security frame reference is provided in your task when available (e.g. "Latest security frame: [Image: attachments/img-....jpg]"). When you send an alert message, include that EXACT reference on the SAME LINE as your text so Telegram sends the photo with caption.
+
+You have several security tools. For alert events (anything suspicious, or when the user notes say to alert), use them in this order:
+1. send_message({"sender": "Sentry", "text": "Alert sentence. [Image: attachments/img-....jpg]"}) — include the latest frame reference. One short plain sentence, no markdown, no emoji.
+2. alert_security({"reason": "concise reason"}) — mock escalation to the guard service.
+3. open_security_alert({"reason": "concise reason"}) — opens the detector's red STAND DOWN button.
+4. security_log({"action":"record","assessment":"abnormal","condition":"what you saw or what the event reported","escalated":true}) — persist the abnormal assessment.
+
+For friendly, non-alert events, use send_message WITHOUT the image reference, or stay silent. Non-alert events use at most ONE tool.
+
+For false-positive / non-event detections:
+1. dismiss_security_flag({}) — re-arms the detector and closes the alert.
+2. security_log({"action":"record","assessment":"normal","condition":"what you saw or why it was normal","escalated":false}).
+
+Arm/disarm only when the user explicitly asks you to change the system's armed state. Do NOT output plain text summaries. Only call tools.`,
+        toolsets: ['awareness-core', 'security-core'],
     },
 ];
 
@@ -802,7 +785,7 @@ const SUBAGENT_BY_DELEGATE = new Map<string, SubAgentDef>(SUBAGENTS.map(s => [s.
 
 const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'convert_file', 'api_request', 'list_api_keys',
-    // The orchestrator's EYES — also listed in Heimdall/Sentry toolsets, so
+    // The orchestrator's EYES — also listed in Sentry's security toolset, so
     // without this the SUBAGENT_OWNED filter would strip them from the
     // orchestrator's tool defs and the # EYES instructions couldn't fire.
     'desktop_screenshot', 'webcam_capture', 'read_image',
@@ -992,26 +975,30 @@ const BOTH_TOOL_DEFS = stripTier(registry.getDefinitions(
     registry.getByTier('both').map(t => t.name)
 ));
 
-// Each sub-agent's actual tool defs: its toolsets' tools + shared 'both' tools
+// Each sub-agent's actual tool defs: its toolsets' tools + shared 'both' tools,
+// EXCEPT for Sentry, which gets only its explicit toolsets to prevent
+// fabric/MCP/web noise from derailing its narrow background job.
 const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
     SUBAGENTS.map(s => [
         s.delegate,
-        stripTier([
-            ...registry.getDefinitions(getSubAgentToolNames(s)),
-            ...BOTH_TOOL_DEFS,
-        ]),
+        stripTier(
+            s.delegate === 'sentry'
+                ? registry.getDefinitions(getSubAgentToolNames(s))
+                : [
+                    ...registry.getDefinitions(getSubAgentToolNames(s)),
+                    ...BOTH_TOOL_DEFS,
+                ]
+        ),
     ])
 );
 
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
-    // Atlas, artemis, and heimdall run async by default: the call returns a job
+    // Atlas, artemis, and sentry run async by default: the call returns a job
     // id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
-    // mid-turn. Heimdall is the background security agent — it always runs in
-    // the background so the orchestrator isn't blocked waiting on a security
-    // review (which may involve vision/model latency).
-    if (s.delegate === 'atlas' || s.delegate === 'artemis' || s.delegate === 'heimdall') {
+    // mid-turn.
+    if (s.delegate === 'atlas' || s.delegate === 'artemis' || s.delegate === 'sentry') {
         return {
             type: 'function',
             function: {
@@ -1050,12 +1037,6 @@ let ORCHESTRATOR_MODEL = '';
 // No baked-in default: when unset, Atlas falls back to the orchestrator model
 // (the dashboard global default), never to a hardcoded model string.
 let ATLAS_MODEL = '';
-// Heimdall model — from dashboard Heimdall dropdown (heimdall:model). Empty
-// means fall back to the orchestrator model. Needed for the heimdall delegate
-// path (the orchestrator delegating a SECURITY ALERT to heimdall), which runs
-// Heimdall on this model — set it to a local vision model if the cloud
-// orchestrator model 500s on alert-frame images.
-let HEIMDALL_MODEL = '';
 // Council per-seat model overrides — from dashboard Council Seats dropdowns.
 // Empty string means "fall back to ATLAS_MODEL" (the default council behavior).
 let COUNCIL_MODEL_SKEPTIC = '';
@@ -1271,6 +1252,14 @@ function getNumCtx(model: string): number | undefined {
     if ((globalThis as any)._sessionId === 'mercury') {
         const mercuryOverride = process.env.MERCURY_NUM_CTX ? parseInt(process.env.MERCURY_NUM_CTX, 10) : 0;
         if (mercuryOverride > 0) return cap(mercuryOverride);
+    }
+    // Sentry runs as a sub-agent but needs the same context headroom as the
+    // orchestrator for image-bearing security tasks. The Sentry run-mode branch
+    // sets ORCHESTRATOR_MODEL to the agent's own model so it matches here and
+    // picks up the dashboard's orchestrator ctx override.
+    if (model === ORCHESTRATOR_MODEL) {
+        const orchOverride = process.env.ORCHESTRATOR_NUM_CTX ? parseInt(process.env.ORCHESTRATOR_NUM_CTX, 10) : 0;
+        if (orchOverride > 0) return cap(orchOverride);
     }
     return undefined; // no override → send no num_ctx; backend uses the model's own native window
 }
@@ -1579,7 +1568,7 @@ interface ContainerInput {
     chatJid: string;
     isMain: boolean;
     isScheduledTask?: boolean;
-    /** When set (e.g. 'heimdall'), main() runs that sub-agent directly instead
+    /** When set (e.g. 'sentry'), main() runs that sub-agent directly instead
      *  of the orchestrator loop — used for the background security agent. */
     agent?: string;
     assistantName?: string;
@@ -1590,7 +1579,6 @@ interface ContainerInput {
     councilSkepticModel?: string;
     councilPragmatistModel?: string;
     councilSynthesistModel?: string;
-    heimdallModel?: string;
     userId?: string;
     userKeyId?: string;
     verbose?: boolean;
@@ -1808,7 +1796,7 @@ Warden is a multi-agent system running on the user's own machine. You are the co
 - **byte** — projects, deliverables, blockers, financials, work tasks.
 - **artemis** — audit / second opinion on the conversation. Runs in the background like atlas.
 - **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree.
-- **heimdall** — the security camera agent. SECURITY ALERT messages from the detector are piped to Heimdall automatically in code (you never see them). Delegate to heimdall only if the user explicitly asks you to do something with the security system (check a camera, arm/disarm, review a frame). Heimdall runs in the background; you get a job id and the result lands in your inbox.
+- **sentry** — the background security / situational-awareness agent. AWARENESS events from the detector are piped to Sentry automatically in code (you never see them). Security alerts, arming/disarming, and camera frame review are handled by Sentry in the background; you do not need to delegate them unless the user explicitly asks for a security status check.
 
 Each specialist's model is picked per-role in the dashboard — local (Ollama) or cloud — and the orchestrator (you) has its own model too. You don't choose or see which model a specialist runs on; you just delegate. A specialist's result is its own work, in its own words — relay what matters, don't re-do it.
 
@@ -1988,7 +1976,6 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
     COUNCIL_MODEL_SKEPTIC = (input.councilSkepticModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_PRAGMATIST = (input.councilPragmatistModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
-    HEIMDALL_MODEL = (input.heimdallModel || '').replace(/^local:/, '');
     TOOL_MODEL = process.env.SUBAGENT_MODEL || process.env.OLLAMA_CHAT_MODEL || ORCHESTRATOR_MODEL || '';
     const toolContext = { chatJid: input.chatJid, groupFolder: input.groupFolder, isMain: input.isMain, userId: process.env.WARDEN_USER_ID || '' };
 
@@ -3220,7 +3207,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // delegate task, bounce it back instead of dispatching (and before the
     // task is spoken to the user). The task is English intent, not a command
     // line — see looksLikeCommandPrescription above.
-    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'iris', 'dexter', 'byte', 'artemis', 'council', 'heimdall']);
+    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'iris', 'dexter', 'byte', 'artemis', 'council']);
     if (DELEGATE_TOOL_NAMES.has(toolName) && args.task && looksLikeCommandPrescription(String(args.task))) {
         log(`[guard] blocked over-prompted ${toolName} task (contains shell command): ${String(args.task).slice(0, 120)}`);
         return `STOP — you put a shell command in the task. That is over-prompting and the user has told you repeatedly to stop. A delegate task is plain-English INTENT for the specialist, not a command line. Do NOT include \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, or any other shell command — those are the specialist's calls to make, not yours. State the GOAL and the facts (paths, URLs, names, what's wrong) in normal English and let ${toolName} decide how to investigate. Re-call ${toolName} now with intent only.`;
@@ -3229,11 +3216,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // Mid-turn, restate to the user what's about to happen (their intent, in
     // clean words) while the sub-agent runs in the background. The engineered
     // task string already is that restatement — speak it directly, no label.
-    // Skip the restatement for heimdall: its task is the verbatim SECURITY ALERT
-    // text (already in chat), so echoing it would double-post the alert and
-    // re-trigger the loop. Heimdall runs silently in the background.
     const delegateDef = SUBAGENT_BY_DELEGATE.get(toolName);
-    if (delegateDef && args.task && toolName !== 'heimdall') {
+    if (delegateDef && args.task) {
         try { writeCallback('send_message', { text: `${args.task as string}` }); } catch { /* best-effort */ }
     }
 
@@ -3470,69 +3454,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             atlasDirect = { active: true, messages: [] };
             result = `Direct Atlas mode is on. Tell the user, in one short sentence, that they're now talking to Atlas directly — they can describe what they need and Atlas will ask questions to get it right, then say "go" to start or "back to Warden" to exit. Then end your turn immediately and do nothing else.`;
         }
-    } else if (toolName === 'heimdall') {
-        // Heimdall — the background security agent. Spawn it as a background
-        // job (same pattern as atlas) so the orchestrator gets a job id back
-        // immediately and the security review result lands in the inbox. This
-        // mirrors the host-side tell_heimdall path and the auto-trigger routing
-        // in the parent process, both of which use runSubAgentBackground. Without
-        // this branch the call fell through to registry.dispatch('heimdall') →
-        // "Error: Unknown tool heimdall" because heimdall is a delegate, not a
-        // registered registry tool.
-        const task = args.task as string;
-        const urgent = args.urgent === true;
-        if (!task) {
-            result = 'Error: task is required';
-        } else {
-            const def = SUBAGENT_BY_DELEGATE.get('heimdall')!;
-            const jobShortId = Math.random().toString(36).slice(2, 6);
-            const jobId = `heimdall-${jobShortId}`;
-            // Inject the current local time so Heimdall can reference events by
-            // time/date (its system prompt expects this at the top of the task).
-            const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-            const heimdallTask = `Current local time is ${localNow} (timezone ${tz}).\n\n${task}`;
-            const tools = SUBAGENT_TOOL_DEFS.get('heimdall') || [];
-            // Heimdall runs on its own dashboard model (heimdall:model) — typically
-            // a local vision model, since cloud models flake (500) on Ollama's
-            // base64 alert-frame images. No fallback: the dropdown can't be blank,
-            // so HEIMDALL_MODEL is always set.
-            const model = HEIMDALL_MODEL || undefined;
-            writeStatus({ phase: 'heimdall', label: `Heimdall ${jobShortId}: ${task.slice(0, 50)}...`, jobs: atlasBackgroundJobs.size + 1, ts: Date.now() });
-            const abortFlag = { aborted: false };
-            const jobRecord: BackgroundJob = {
-                promise: null as any, startedAt: Date.now(), agent: 'heimdall', task, shortId: jobShortId,
-                toolCallCount: 0, lastAction: 'starting', lastActionAt: Date.now(), abortFlag,
-                status: 'running', activityLog: [],
-            };
-            const job = runSubAgent('heimdall', model, def.systemPrompt, tools, heimdallTask, context, def.maxIterations, abortFlag, (tName, argsSummary, resultPreview) => {
-                jobRecord.toolCallCount++;
-                jobRecord.lastAction = `${tName}(${argsSummary})`;
-                jobRecord.lastActionAt = Date.now();
-                jobRecord.activityLog.push({ t: Date.now(), tool: tName, args: argsSummary, result: resultPreview });
-                if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
-                emitAtlasJobsStatus();
-            })
-                .then(saResult => {
-                    writeStatus({ phase: 'heimdall', label: `Heimdall ${jobShortId} complete`, ts: Date.now() });
-                    if (jobRecord.status === 'running') jobRecord.status = 'done';
-                    inbox.push({ jobId, agent: 'heimdall', task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult: saResult.content || 'Heimdall completed the security review (no text output).', activityLog: jobRecord.activityLog });
-                })
-                .catch(err => {
-                    if (jobRecord.status === 'running') jobRecord.status = 'errored';
-                    inbox.push({ jobId, agent: 'heimdall', task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
-                })
-                .finally(() => {
-                    if (jobRecord.status === 'running') jobRecord.status = 'done';
-                    const remaining = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running').length;
-                    writeStatus({ phase: remaining > 0 ? 'heimdall' : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `Heimdall ${jobShortId} complete`, jobs: remaining, ts: Date.now() });
-                    setTimeout(() => { atlasBackgroundJobs.delete(jobId); }, 60000).unref?.();
-                });
-            jobRecord.promise = job;
-            atlasBackgroundJobs.set(jobId, jobRecord);
-            emitAtlasJobsStatus();
-            result = `Heimdall ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the security review result will arrive in your inbox. (job id: ${jobId})`;
-        }
     } else if (toolName === 'byte' || toolName === 'dexter' || toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
         let task = args.task as string;
@@ -3762,51 +3683,11 @@ async function main() {
         process.exit(1);
     }
 
-    // Heimdall run-mode: the host spawns this process with agent:'heimdall' to
-    // run the background security sub-agent directly (NOT the orchestrator loop).
-    // Heimdall's tool calls (Read, webcam_capture, close_security_alert,
-    // alert_security, send_message, security_log) route to the host via the
-    // normal CALLBACK stdio mechanism. Sub-agent vision works because runSubAgent
-    // now drains _pendingImages (see runSubAgent).
-    if (containerInput.agent === 'heimdall') {
-        try {
-            const def = SUBAGENT_BY_DELEGATE.get('heimdall');
-            if (!def) throw new Error('heimdall sub-agent not defined');
-            const tools = SUBAGENT_TOOL_DEFS.get('heimdall') || [];
-            const ctx = {
-                chatJid: containerInput.chatJid || 'owner@local',
-                groupFolder: containerInput.groupFolder || 'owner',
-                isMain: containerInput.isMain ?? true,
-                userId: process.env.WARDEN_USER_ID || '',
-            };
-            const model = containerInput.model || HEIMDALL_MODEL || undefined;
-            // Heimdall runs on its own dashboard model (heimdall:model), passed by
-            // containerInput.model). Mirror it into ORCHESTRATOR_MODEL so Heimdall
-            // resolves num_ctx — and any other orchestrator-scoped setting —
-            // exactly as the orchestrator does: getNumCtx(model) hits the
-            // model === ORCHESTRATOR_MODEL branch and reads process.env.ORCHESTRATOR_NUM_CTX
-            // (the dashboard's local:orchestrator_ctx, inherited via env). Without
-            // this, Heimdall skipped every override and fell to the hardcoded cloud
-            // ctx, which the cloud backend rejected (gemma4:31b-cloud → 500). It
-            // also makes unloadModel skip evicting a model the orchestrator shares.
-            if (model) ORCHESTRATOR_MODEL = model;
-            log(`[heimdall] starting background security agent: model=${model || '(none)'}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
-            const sa = await runSubAgent('heimdall', model, def.systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations);
-            writeOutput({ status: 'success', result: sa.content || 'Heimdall: done (silent).', error: null });
-        } catch (err: any) {
-            log(`[heimdall] error: ${err.message}`);
-            writeOutput({ status: 'error', result: null, error: `Heimdall error: ${err.message}` });
-        }
-        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-        process.exit(0);
-    }
-
-    // Sentry run-mode: mirrors the Heimdall branch above. The host spawns this
+    // Sentry run-mode: the host spawns this
     // process with agent:'sentry' (AWARENESS event from the detector's presence
-    // tracker, or a tell_sentry note) to run the background awareness agent
-    // directly — NOT the orchestrator loop. Tool calls (send_message,
-    // webcam_capture, awareness_log, escalate_to_heimdall) route to the host via
-    // CALLBACK stdio.
+    // tracker, or a tell_sentry note) to run the background security/awareness
+    // agent directly — NOT the orchestrator loop. Tool calls (send_message,
+    // open_security_alert, security_log, etc.) route to the host via CALLBACK stdio.
     if (containerInput.agent === 'sentry') {
         try {
             const def = SUBAGENT_BY_DELEGATE.get('sentry');
@@ -3822,21 +3703,25 @@ async function main() {
             // in containerInput.model. The fallback here is intentionally generic
             // because the host is the source of truth for the dashboard setting.
             const model = containerInput.model || 'granite4:latest';
-            // Same num_ctx/unload parity as Heimdall: resolve orchestrator-scoped
-            // settings against this model.
+            // Resolve orchestrator-scoped num_ctx against this model so the
+            // dashboard context override applies to Sentry too.
             if (model) ORCHESTRATOR_MODEL = model;
-            // Load the user's editable rules from security/sentry.md.
+            // Load the user-editable rules from security/sentry.md and inject them
+            // as trusted instructions. The user writes freeform notes like "I will
+            // be out all day, anyone is an alert". Treat those notes as the primary
+            // behavior guide; they are NOT untrusted tool output.
             let systemPrompt = def.systemPrompt;
             try {
                 const sentryMdPath = path.join(containerInput.workspaceRoot || '', 'security', 'sentry.md');
                 const sentryMd = fs.existsSync(sentryMdPath) ? fs.readFileSync(sentryMdPath, 'utf8') : '';
                 if (sentryMd) {
-                    systemPrompt = `=== Sentry rules (read-only) ===\n${sentryMd}\n\n=== Sentry operating instructions ===\n${systemPrompt}`;
+                    systemPrompt = `${systemPrompt}\n\n# YOUR USER'S SENTRY NOTES — FOLLOW THESE\n${sentryMd}`;
                 }
             } catch (e: any) {
                 log(`[sentry] could not read sentry.md: ${e.message}`);
             }
             log(`[sentry] starting background awareness agent: model=${model || '(none)'}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
+            setSentryTaskPrompt(containerInput.prompt || '');
             const sa = await runSubAgent('sentry', model, systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations);
             writeOutput({ status: 'success', result: sa.content || 'Sentry: done (silent).', error: null });
         } catch (err: any) {

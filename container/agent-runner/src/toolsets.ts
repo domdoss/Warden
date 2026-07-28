@@ -39,21 +39,17 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
-    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','artemis','iris','heimdall'], tier: 'public' },
+    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','artemis','iris'], tier: 'public' },
 
-    // Heimdall — the background security agent. All its security tools listed
-    // explicitly here so the sub-agent definitely gets them (close_security_alert
-    // is registered with toolset 'chat' but isn't in the chat toolset's list).
-    // Read/Write/Edit come via 'file' (tier both → BOTH_TOOL_DEFS).
-    security:     { name: 'security',     tools: ['security_frame','send_message','alert_security','open_security_alert','dismiss_security_flag','arm_security','disarm_security','security_log'], tier: 'public' },
+    // Security tools — used by Sentry (the single background security agent) to
+    // send alerts, open/dismiss detector alerts, arm/disarm, and log events.
+    security:     { name: 'security',     tools: ['security_frame','send_message','open_security_alert','security_log','dismiss_security_flag','alert_security','arm_security','disarm_security'], tier: 'public' },
     'security-core': { name: 'security-core', includes: ['security'] },
 
-    // Sentry — the background situational-awareness agent. No webcam_capture:
-    // the detector holds the webcam while it's running, so Sentry can't grab a
-    // frame — it decides from the AWARENESS event data alone. send_message is
-    // registered by security-tools.ts; awareness_log by awareness-tools.ts;
-    // escalate_to_heimdall by awareness-tools.ts.
-    awareness:    { name: 'awareness',    tools: ['security_frame','send_message','awareness_log','escalate_to_heimdall'], tier: 'public' },
+    // Sentry — the single background situational-awareness + security agent.
+    // Decides whether to alert/greet/silent, sends the captioned photo alert, and
+    // updates physical security state. No file tools, no fabric, no web.
+    awareness:    { name: 'awareness',    tools: ['send_message'], tier: 'public' },
     'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
 
     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin'] },

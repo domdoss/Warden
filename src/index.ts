@@ -20,7 +20,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, CallbackMap, pushSupervisorNote, runSubAgentBackground } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, CallbackMap, pushSupervisorNote, runSubAgentBackground, setActivityPublisher } from './agent-spawn.js';
 import {
   getBackupConfig,
   createFullBackup,
@@ -74,7 +74,7 @@ import { formatLocalTime } from './timezone.js';
 import { computeNextRun, startSchedulerLoop } from './task-scheduler.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
 import { projectAllDeliverables, startKontactWatcher } from './kontact-projection.js';
-import { startStatusServer, pushNotification } from './status-server.js';
+import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
@@ -120,16 +120,27 @@ let messageLoopRunning = false;
 export let agentProcessing = false;
 let lastAwarenessEvent: string = '';
 
-/** Update the latest AWARENESS text for Sentry's escalate_to_heimdall callback. */
-export function setLastAwarenessEvent(text: string): void {
-  lastAwarenessEvent = text;
-}
+// Security-message throttle: Sentry background agent can get chatty when the
+// detector fires rapidly or the model loops. Cap each sender to one outbound
+// channel delivery per window so the phone isn't flooded.
+const SECURITY_SENDERS = new Set(['Sentry']);
+const securityMessageThrottle = new Map<string, number>();
+const SECURITY_MESSAGE_WINDOW_MS = 60_000;
 
 const channels: Channel[] = [];
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   lastAgentTimestamp = getRouterState('last_agent_timestamp') || '';
+
+  // If the agent cursor ever lags behind the channel cursor (e.g., a failed
+  // run rolled it back while the channel cursor stayed advanced), reconcile
+  // them on startup so we don't re-process messages the channel already saw.
+  if (lastTimestamp && lastAgentTimestamp && lastTimestamp > lastAgentTimestamp) {
+    logger.info({ lastTimestamp, lastAgentTimestamp }, 'Reconciling lagging agent cursor on startup');
+    lastAgentTimestamp = lastTimestamp;
+  }
+
   // Reset any stale processing state from a previous crash/restart.
   setRouterState('agent:processing', 'false');
 }
@@ -231,11 +242,11 @@ function buildPrompt(newMessages: NewMessage[]): string {
   // Fetch last N+2 messages (both sides) and exclude the current pending ones to
   // get up to N turns of real back-and-forth context.
   const rawHistory = getChatHistory(OWNER_JID, MERCURY_RECENT_MESSAGES + 2) as unknown as NewMessage[];
-  // Exclude background agent messages (Heimdall security alerts, Sentry
-  // greetings) — they are stored for the user/dashboard, but the orchestrator
-  // must NOT see them in its history (otherwise it parrots/acknowledges them).
+  // Exclude background agent messages (Sentry security alerts and greetings) —
+  // they are stored for the user/dashboard, but the orchestrator must NOT see them
+  // in its history (otherwise it parrots/acknowledges them).
   const contextMessages = rawHistory
-    .filter((m) => !pendingIds.has(m.id) && !['Heimdall', 'Sentry'].includes(m.sender_name || ''))
+    .filter((m) => !pendingIds.has(m.id) && m.sender_name !== 'Sentry')
     .slice(-MERCURY_RECENT_MESSAGES);
 
   if (contextMessages.length > 0) {
@@ -314,20 +325,26 @@ function resolveAwarenessModel(): string {
   return (getRouterState('sentry:model') || getRouterState('orchestrator:model') || '').trim().replace(/^local:/, '');
 }
 
-/** Laptop IP where the security detector runs. Read from router state first,
+/** Satellite IP where the security detector runs. Read from router state first,
  *  then env, then localhost fallback. */
-function getSecurityLaptopIp(): string {
-  return (getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_LAPTOP_IP || '127.0.0.1').trim();
+function getSatelliteIp(): string {
+  return (
+    getRouterState('security:satellite_ip') ||
+    getRouterState('security:laptop_ip') ||
+    process.env.WARDEN_SECURITY_SATELLITE_IP ||
+    process.env.WARDEN_SECURITY_LAPTOP_IP ||
+    '127.0.0.1'
+  ).trim();
 }
 
-/** Pull the current frame from the laptop's security detector and save it to the
- *  desktop's owner attachments. Returns the [Image: ...] reference string. */
+/** Pull the current frame from the satellite security detector and save it to
+ *  the desktop's owner attachments. Returns the [Image: ...] reference string. */
 async function fetchAndSaveSecurityFrame(): Promise<string | null> {
-  const ip = getSecurityLaptopIp();
+  const ip = getSatelliteIp();
   const url = `http://${ip}:8765/frame`;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const timer = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`frame server returned ${res.status}`);
@@ -338,26 +355,43 @@ async function fetchAndSaveSecurityFrame(): Promise<string | null> {
     if (!processed) throw new Error('processImage failed');
     return processed.content; // e.g. "[Image: attachments/xyz.jpg]"
   } catch (err: any) {
-    logger.warn({ err, url }, 'fetchAndSaveSecurityFrame: failed to pull/save laptop frame');
+    logger.warn({ err, url }, 'fetchAndSaveSecurityFrame: failed to pull/save satellite frame');
     return null;
   }
 }
 
-/** Spawn Sentry, the background situational-awareness agent (fire-and-forget,
- *  same shape as the Heimdall background spawn). Never awaited. */
-export function spawnSentryBackground(task: string): void {
-  runSubAgentBackground({
-    agent: 'sentry',
-    prompt: task,
-    model: resolveAwarenessModel(),
-    sessionId: 'owner',
-    workspaceRoot: WORKSPACE_ROOT,
-    chatJid: OWNER_JID,
-    groupFolder: 'owner',
-    isMain: true,
-    timeoutMs: 90 * 1000, // greetings are short — don't let a stuck model linger
-    callbacks: buildAgentCallbacks(),
-  } as any);
+/** Latest security frame reference fetched for the current Sentry run, so the
+ *  host can attach it to Sentry's send_message even if the model forgets. */
+let latestSentryFrame: string | null = null;
+
+/** Spawn Sentry, the single background security/awareness agent (fire-and-forget).
+ *  Never awaited. Pass the original awareness text so Sentry has full context. */
+export function spawnSentryBackground(task: string, awarenessText?: string): void {
+  if (awarenessText) {
+    lastAwarenessEvent = awarenessText;
+  }
+  // Pre-fetch the latest security frame so Sentry can include it in any alert
+  // message it sends. If the frame server is slow/down, Sentry still runs without
+  // the image rather than being blocked.
+  void fetchAndSaveSecurityFrame().then((imageTag) => {
+    latestSentryFrame = imageTag || null;
+    if (!imageTag) {
+      logger.warn('spawnSentryBackground: could not fetch security frame for Sentry');
+    }
+    const prompt = imageTag ? `${task}\n\nLatest security frame: ${imageTag}` : task;
+    runSubAgentBackground({
+      agent: 'sentry',
+      prompt,
+      model: resolveAwarenessModel(),
+      sessionId: 'owner',
+      workspaceRoot: WORKSPACE_ROOT,
+      chatJid: OWNER_JID,
+      groupFolder: 'owner',
+      isMain: true,
+      timeoutMs: 90 * 1000, // greetings are short — don't let a stuck model linger
+      callbacks: buildAgentCallbacks({ awarenessText }),
+    } as any);
+  });
 }
 
 /**
@@ -370,12 +404,12 @@ export function spawnSentryBackground(task: string): void {
  * Handlers return `{ ok: true, ... }` on success or `{ ok: false, error }`
  * on failure. The agent-runner parser surfaces the error to the agent.
  */
-export function buildAgentCallbacks(): CallbackMap {
+export function buildAgentCallbacks(opts?: { awarenessText?: string }): CallbackMap {
   return {
     send_message: async (args: any) => {
       try {
         const text = typeof args?.text === 'string' ? args.text : '';
-        if (!text) return { ok: false, error: 'missing text' };
+        const senderName = typeof args?.sender === 'string' && args.sender.trim() ? args.sender.trim() : ASSISTANT_NAME;
 
         // `type: 'notification'` is intermediate agent narration during tool
         // calls — drop it. Only the final writeOutput response should appear
@@ -384,26 +418,51 @@ export function buildAgentCallbacks(): CallbackMap {
           return { ok: true, skipped: true };
         }
 
-        const senderName = typeof args?.sender === 'string' && args.sender.trim() ? args.sender.trim() : ASSISTANT_NAME;
+        // For Sentry security alerts, the host owns the photo attachment.
+        // Sentry may omit the frame, or hallucinate a placeholder like
+        // [Image: attachments/img-....jpg]. Strip any existing [Image: ...]
+        // reference and append the real latest pre-fetched frame so Telegram
+        // always sends the actual security photo.
+        let finalText = text;
+        if (senderName === 'Sentry' && latestSentryFrame) {
+          finalText = finalText.replace(/\s*\[Image:\s*[^\]]+\]/gi, '').trim();
+          finalText = `${finalText} ${latestSentryFrame}`;
+        }
+        if (!finalText.trim()) return { ok: false, error: 'missing text' };
         const messageId = `bot-cb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         storeMessage({
           id: messageId,
           chat_jid: OWNER_JID,
           sender: 'assistant:local',
           sender_name: senderName,
-          content: text,
+          content: finalText,
           timestamp: new Date().toISOString(),
           is_from_me: false,
           is_bot_message: true,
         });
+
+        // Throttle chatty security agents. The message is still stored above,
+        // but repeated outbound deliveries are suppressed for a window.
+        if (SECURITY_SENDERS.has(senderName)) {
+          const lastSent = securityMessageThrottle.get(senderName) || 0;
+          const nowMs = Date.now();
+          if (nowMs - lastSent < SECURITY_MESSAGE_WINDOW_MS) {
+            logger.info({ sender: senderName, secondsSinceLast: Math.round((nowMs - lastSent) / 1000), messageId }, 'send_message callback: throttling security sender');
+            return { ok: true, messageId, throttled: true };
+          }
+          securityMessageThrottle.set(senderName, nowMs);
+        }
+
         const targetChannel = typeof args?.channel === 'string'
           ? channels.find((c) => c.name === args.channel)
           : undefined;
         const targets = targetChannel ? [targetChannel] : channels;
+        logger.info({ sender: senderName, channels: targets.map((c) => c.name), messageId }, 'send_message callback: delivering to channels');
         await Promise.allSettled(
           targets.map((ch) =>
-            ch.sendMessage(OWNER_JID, text).catch((err) =>
-              logger.warn({ channel: ch.name, err }, 'send_message callback: channel send failed'),
+            ch.sendMessage(OWNER_JID, finalText).then(
+              () => logger.info({ channel: ch.name, messageId }, 'send_message callback: channel delivered'),
+              (err) => logger.warn({ channel: ch.name, err }, 'send_message callback: channel send failed'),
             ),
           ),
         );
@@ -1115,12 +1174,12 @@ export function buildAgentCallbacks(): CallbackMap {
 
     webcam_capture: async (args: any) => {
       try {
-        // Prefer the laptop's Security Mode frame server. The detector owns the
+        // Prefer the satellite's Security Mode frame server. The detector owns the
         // webcam, so grabbing /dev/video0 directly would fail. Fall back to ffmpeg.
         let cap;
         let source = 'ffmpeg';
-        const laptopIp = getSecurityLaptopIp();
-        const frameUrl = `http://${laptopIp}:8765/frame`;
+        const satelliteIp = getSatelliteIp();
+        const frameUrl = `http://${satelliteIp}:8765/frame`;
         if (await securityAppHasFrameServer(frameUrl)) {
           try {
             cap = await captureWebcamFromSecurityApp(frameUrl);
@@ -1183,7 +1242,7 @@ export function buildAgentCallbacks(): CallbackMap {
     // it so it can raise the next alert. The detector holds an alert OPEN until
     // this is called (one alert per incident, not one per detection).
     close_security_alert: async (_args: any) => {
-      const ip = getSecurityLaptopIp();
+      const ip = getSatelliteIp();
       const url = `http://${ip}:8765/alert/close`;
       try {
         const controller = new AbortController();
@@ -1204,9 +1263,9 @@ export function buildAgentCallbacks(): CallbackMap {
 
     // Guard's chat command: arm the standalone detector (enable flagging).
     // Mirrors close_security_alert. The detector keeps running + showing the
-    // feed; armed means Heimdall flagging is active, disarmed means it's paused.
+    // feed; armed means Sentry flagging is active, disarmed means it's paused.
     arm_security: async (_args: any) => {
-      const ip = getSecurityLaptopIp();
+      const ip = getSatelliteIp();
       const url = `http://${ip}:8765/arm`;
       try {
         const controller = new AbortController();
@@ -1227,7 +1286,7 @@ export function buildAgentCallbacks(): CallbackMap {
 
     // Guard's chat command: disarm the standalone detector (stop flagging).
     disarm_security: async (_args: any) => {
-      const ip = getSecurityLaptopIp();
+      const ip = getSatelliteIp();
       const url = `http://${ip}:8765/disarm`;
       try {
         const controller = new AbortController();
@@ -1246,23 +1305,16 @@ export function buildAgentCallbacks(): CallbackMap {
       }
     },
 
-    // Heimdall's conditions log (own sqlite store, store/security.db). Records
+    // Sentry's conditions log (own sqlite store, store/security.db). Records
     // each alert assessment with an exact timestamp, and queries history by
-    // local-time range so Heimdall can reference events by time/date.
+    // local-time range so Sentry can reference events by time/date.
     security_log: async (args: any) => {
       return securityLog(args);
     },
 
-    // Sentry's situational-awareness log (awareness_log table, same store).
-    // Records each AWARENESS event + Sentry's verdict; Sentry queries it to
-    // de-dup greetings (don't greet twice in a row) and recall recent events.
-    awareness_log: async (args: any) => {
-      return awarenessLog(args);
-    },
-
-    // Orchestrator → Sentry direct (mirrors tell_heimdall). The user tells
-    // Jarvis a fact that should affect greeting behavior ("heading out for
-    // the evening"); Sentry records it in awareness_log as context, silently.
+    // Orchestrator → Sentry direct. The user tells Jarvis a presence/schedule
+    // note (e.g. "heading out for the evening"); Sentry processes it according to
+    // the rules in security/sentry.md. Sentry does not reply in the chat.
     tell_sentry: async (args: any) => {
       try {
         const message = typeof args?.message === 'string' ? args.message.trim() : '';
@@ -1273,11 +1325,10 @@ export function buildAgentCallbacks(): CallbackMap {
         const task =
           `Current local time is ${localNow} (timezone ${tz}).\n\n` +
           `AWARENESS — note at ${compactTs}. data: {"event":"note","message":${JSON.stringify(message)},"ts":"${compactTs}"}\n\n` +
-          `The user passed you a note for your awareness context (see the data message above). ` +
-          `Record it with awareness_log (action record, event "note", assessment "note") so it factors into future greetings. ` +
-          `Do NOT send_message and do NOT reply in chat — record it silently and stop.`;
+          `The user passed you a note. Read security/sentry.md and follow its rules. ` +
+          `Do NOT send_message and do NOT reply in chat unless the rules explicitly tell you to greet. Stop after one action.`;
         spawnSentryBackground(task);
-        logger.info('tell_sentry: spawned Sentry to record message');
+        logger.info('tell_sentry: spawned Sentry to process note');
         return { ok: true };
       } catch (err: any) {
         logger.warn({ err }, 'tell_sentry: failed to spawn Sentry');
@@ -1285,60 +1336,11 @@ export function buildAgentCallbacks(): CallbackMap {
       }
     },
 
-    // Sentry detected an anomaly from structured data → escalate to Heimdall.
-    // Heimdall pulls a live frame from the laptop, confirms/denies the anomaly,
-    // and alerts the user if confirmed.
-    escalate_to_heimdall: async (args: any) => {
-      try {
-        const reason = String(args?.reason || '').trim();
-        // Retrieve the AWARENESS event that triggered this escalation.
-        const awarenessText = lastAwarenessEvent || '';
-        if (!awarenessText) {
-          logger.warn('escalate_to_heimdall: no recent AWARENESS event stored');
-          return { ok: false, error: 'no awareness event context' };
-        }
-
-        // Pull a fresh frame from the laptop and save it to desktop attachments.
-        const imageTag = await fetchAndSaveSecurityFrame();
-        if (!imageTag) {
-          return { ok: false, error: 'could not fetch frame from security laptop' };
-        }
-
-        const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-        const task =
-          `Current local time is ${localNow} (timezone ${tz}).\n\n` +
-          `${awarenessText}\n\n` +
-          `Sentry flagged this as anomalous: ${reason || '(no reason given)'}\n\n` +
-          `Heimdall, confirm or deny the anomaly using the live frame attached below and the data above. ` +
-          `If you CONFIRM a real problem, send_message the user with a concise alert and include the image tag exactly as shown: ${imageTag}. ` +
-          `Then call open_security_alert to light the red alert on the laptop. ` +
-          `If you DENY (false positive), record security_log as normal and stop silently.`;
-
-        const heimdallModel = (getRouterState('heimdall:model') || '').replace(/^local:/, '') || undefined;
-        runSubAgentBackground({
-          agent: 'heimdall',
-          prompt: task,
-          model: heimdallModel,
-          sessionId: 'owner',
-          workspaceRoot: WORKSPACE_ROOT,
-          chatJid: OWNER_JID,
-          groupFolder: 'owner',
-          isMain: true,
-          timeoutMs: 5 * 60 * 1000,
-          callbacks: buildAgentCallbacks(),
-        } as any);
-        logger.info({ reason, imageTag }, 'escalate_to_heimdall: spawned Heimdall for vision confirmation');
-        return { ok: true };
-      } catch (err: any) {
-        logger.warn({ err }, 'escalate_to_heimdall: failed to spawn Heimdall');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Heimdall confirmed an anomaly → light the red alert on the laptop detector.
-    open_security_alert: async (_args: any) => {
-      const ip = getSecurityLaptopIp();
+    // Sentry raised an alert → light the red alert on the satellite detector.
+    open_security_alert: async (args: any) => {
+      const reason = String(args?.reason || '').trim();
+      if (!reason) return { ok: false, error: 'missing reason' };
+      const ip = getSatelliteIp();
       const url = `http://${ip}:8765/alert/open`;
       try {
         const controller = new AbortController();
@@ -1444,7 +1446,7 @@ async function processOwnerMessages(): Promise<void> {
   if (pending.length === 0) return;
 
   // ── "Close the alert" — the person at the keyboard re-arms the detector ──
-  // Heimdall never closes an ABNORMAL alert itself; the user closes it after
+  // Sentry never closes an ABNORMAL alert itself; the user closes it after
   // they've checked / acted on it. This intercepts that command and calls the
   // close_security_alert host callback directly (the orchestrator doesn't own
   // that tool), then acknowledges — no orchestrator turn needed.
@@ -1464,17 +1466,7 @@ async function processOwnerMessages(): Promise<void> {
     } catch (err: any) {
       reply = `Could not close the security alert: ${err?.message ?? err}.`;
     }
-    const ack: NewMessage = {
-      id: `sec-close-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      chat_jid: OWNER_JID,
-      sender: 'assistant',
-      sender_name: ASSISTANT_NAME,
-      content: reply,
-      timestamp: new Date().toISOString(),
-      is_from_me: false,
-      is_bot_message: true,
-    };
-    storeMessage(ack);
+    await deliverReply(reply);
     pushNotification('owner', { type: 'chat_complete', message: reply, from: OWNER_JID });
     logger.info({ chatJid: OWNER_JID }, 'Security alert closed by user → detector re-armed');
     return;
@@ -1511,17 +1503,7 @@ async function processOwnerMessages(): Promise<void> {
     } catch (err: any) {
       reply = `Could not toggle the security system: ${err?.message ?? err}.`;
     }
-    const ack: NewMessage = {
-      id: `sec-arm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      chat_jid: OWNER_JID,
-      sender: 'assistant',
-      sender_name: ASSISTANT_NAME,
-      content: reply,
-      timestamp: new Date().toISOString(),
-      is_from_me: false,
-      is_bot_message: true,
-    };
-    storeMessage(ack);
+    await deliverReply(reply);
     pushNotification('owner', { type: 'chat_complete', message: reply, from: OWNER_JID });
     logger.info({ chatJid: OWNER_JID, arm: armText, disarm: disarmText }, 'Security system toggled by user');
     return;
@@ -1547,30 +1529,10 @@ async function processOwnerMessages(): Promise<void> {
     const events = pending.filter((m) => (m.content || '').startsWith('AWARENESS'));
     const latest = events.length > 0 ? events[events.length - 1] : pending[pending.length - 1]!;
     const awarenessText = latest.content || '';
-    lastAwarenessEvent = awarenessText;
-    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}`;
-
-    // Pre-write the event row (engrained logging — survives a Sentry crash).
-    // Parse "AWARENESS — <event> at <ts>. data: <json>"; parse failures just
-    // record the raw text in the data column.
-    try {
-      const m = /AWARENESS — (\S+) at (\S+)\. data: (.+)$/s.exec(awarenessText);
-      let data: any = {};
-      try { data = m?.[3] ? JSON.parse(m[3]) : {}; } catch { data = { raw: (m?.[3] || '').slice(0, 500) }; }
-      awarenessLog({
-        action: 'record',
-        ts: m?.[2] || localNow,
-        event: m?.[1] || 'event',
-        label: typeof data.label === 'string' ? data.label : null,
-        is_known: typeof data.is_known === 'boolean' ? data.is_known : null,
-        seconds_empty: typeof data.seconds_empty === 'number' ? data.seconds_empty : null,
-        assessment: 'flagged', // event received; Sentry's own row carries its verdict
-        data,
-      });
-    } catch { /* best-effort */ }
+    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}\n\nUse tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent. Do not use awareness_log; it does not exist. Do not write a plain-text response.`;
 
     try {
-      spawnSentryBackground(task);
+      spawnSentryBackground(task, awarenessText);
     } catch (err: any) {
       logger.warn({ err }, 'Awareness: failed to spawn Sentry');
     }
@@ -1581,7 +1543,6 @@ async function processOwnerMessages(): Promise<void> {
 
   // Advance cursor before invoking the agent so a crash between cursor advance
   // and agent completion doesn't re-process the same messages.
-  const previousCursor = lastAgentTimestamp;
   lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
   saveState();
 
@@ -1631,7 +1592,6 @@ async function processOwnerMessages(): Promise<void> {
     councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
     councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
     councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,
-    heimdallModel: (getRouterState('heimdall:model') || '').replace(/^local:/, '') || undefined,
     showThinking: getRouterState(`thinking:${OWNER_JID}`)
       || getRouterState('local:thinking')
       || 'true',
@@ -1647,9 +1607,8 @@ async function processOwnerMessages(): Promise<void> {
     agentProcessing = false;
     setRouterState('agent:processing', 'false');
     logger.error({ err }, 'runAgent threw');
-    // Roll back cursor so the message gets retried on the next loop tick.
-    lastAgentTimestamp = previousCursor;
-    saveState();
+    // Keep the cursor advanced so the failed turn is not retried indefinitely
+    // and the user doesn't get a re-reply to the same message every loop tick.
     return;
   }
   agentProcessing = false;
@@ -1913,6 +1872,10 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   startChromeWatchdog();
   loadState();
+
+  // Wire the activity publisher so agent-runner stderr thinking tokens reach
+  // the dashboard's live thinking bar via SSE.
+  setActivityPublisher(pushActivityLine);
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

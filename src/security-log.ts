@@ -3,15 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { STORE_DIR } from './config.js';
 
-// Heimdall's own conditions log — a robust, open-ended sqlite store separate
+// Sentry's own conditions log — a robust, open-ended sqlite store separate
 // from the message DB. Every security assessment is recorded here with its
-// exact timestamp so Heimdall can reference events by time/date and learn
+// exact timestamp so Sentry can reference events by time/date and learn
 // normal patterns (e.g. the same person arriving/leaving at the same times).
 //
 // The schema is deliberately open: structured columns cover the queryable
-// fields, and a JSON `data` column holds anything else Heimdall wants to
+// fields, and a JSON `data` column holds anything else Sentry wants to
 // record (durations, tags, extra counts, freeform notes) so it can handle any
-// task without a schema migration. WAL mode so a dashboard reader and Heimdall
+// task without a schema migration. WAL mode so a dashboard reader and Sentry
 // writing concurrently don't block each other.
 
 const DB_PATH = path.join(STORE_DIR, 'security.db');
@@ -154,7 +154,7 @@ export function securityLog(args: any): { ok: boolean; summary?: string; error?:
 
     if (action === 'stats') {
       // Quick aggregates for "what's normal here" — counts by assessment, by
-      // hour-of-day, by camera — so Heimdall can reason about patterns.
+      // hour-of-day, by camera — so Sentry can reason about patterns.
       const since = typeof args?.since === 'string' ? args.since : null;
       const where = since ? 'WHERE ts >= ?' : '';
       const params = since ? [since] : [];

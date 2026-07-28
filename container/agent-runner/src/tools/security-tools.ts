@@ -44,13 +44,13 @@ registry.register({
     tier: 'public',
 });
 
-// Security Mode tools (Heimdall, the background security agent). The standalone
-// detector app holds an alert OPEN until Warden closes it; close_security_alert
-// (via dismiss_security_flag) re-arms it. alert_security is the MOCK
-// external-escalation call (no real guard service yet — it just acknowledges it
-// would alert them). arm_security/disarm_security toggle the detector's
-// flagging. send_message lets Heimdall tell the user about an abnormal alert.
-// security_log lets it persist/query a dated conditions history.
+// Security Mode tools (Sentry, the single background security agent). The
+// standalone detector app holds an alert OPEN until Warden closes it;
+// close_security_alert (via dismiss_security_flag) re-arms it. alert_security
+// is the MOCK external-escalation call (no real guard service yet — it just
+// acknowledges it would alert them). arm_security/disarm_security toggle the
+// detector's flagging. send_message lets Sentry tell the user about an abnormal
+// alert. security_log lets it persist/query a dated conditions history.
 
 registry.register({
     name: 'dismiss_security_flag',
@@ -86,7 +86,7 @@ registry.register({
     },
     handler: async (args, _context) => {
         const reason = String(args?.reason || '').trim();
-        // MOCK — no external call is made yet. The tool exists so Heimdall calls
+        // MOCK — no external call is made yet. The tool exists so Sentry calls
         // it for real and the escalation path is wired; swap the body for a real
         // HTTP call to a guard/dispatch service when one exists.
         return `Mock Alert: If there were security guards I would be alerting them now.${reason ? ` (reason: ${reason})` : ''}`;
@@ -98,7 +98,7 @@ registry.register({
 registry.register({
     name: 'arm_security',
     description:
-        "Arm the security system — enable the detector's flagging (so it raises alerts to Heimdall). " +
+        "Arm the security system — enable the detector's flagging (so it raises alerts to Sentry). " +
         "Use this when the user wants flagging on.",
     schema: { type: 'object', properties: {} },
     handler: async (_args, _context) => {
@@ -113,7 +113,7 @@ registry.register({
 registry.register({
     name: 'disarm_security',
     description:
-        "Disarm the security system — pause the detector's flagging (no alerts raised to Heimdall). " +
+        "Disarm the security system — pause the detector's flagging (no alerts raised to Sentry). " +
         "Use this when the user wants flagging off.",
     schema: { type: 'object', properties: {} },
     handler: async (_args, _context) => {
@@ -130,13 +130,14 @@ registry.register({
     description:
         "Spawn the security alert on the detector: opens the red STAND DOWN button + flips the " +
         "detector to ALERTED. Call this ONCE, only when you DECLARE the flagged detection ABNORMAL, " +
-        "after alert_security and send_message. Do NOT call it for a normal/non-event. The alert " +
-        "then stays open until cleared (dismiss_security_flag) or the guard presses STAND DOWN.",
+        "after send_message. Do NOT call it for a normal/non-event. The alert stays open until the " +
+        "guard presses STAND DOWN.",
     schema: {
         type: 'object',
         properties: {
             reason: { type: 'string', description: 'Why this is an alert (abnormal).' },
         },
+        required: ['reason'],
     },
     handler: async (args, _context) => {
         const resp = await callHost('open_security_alert', { reason: String(args?.reason || '') });
@@ -152,21 +153,24 @@ registry.register({
     description:
         "Send a message to the user (or another chat) immediately. Use this to tell the user about " +
         "an ABNORMAL security alert — concisely, what you saw and whether they should be concerned. " +
-        "Do NOT use this for normal/non-events (die silently).",
+        "If you have a frame reference from the task like [Image: attachments/...], include it in the " +
+        "message so Telegram sends the photo as a caption. Do NOT use this for normal/non-events (die silently).",
     schema: {
         type: 'object',
         properties: {
             text: { type: 'string', description: 'The message text to send.' },
+            message: { type: 'string', description: 'Alias for text.' },
             target_jid: { type: 'string', description: 'Optional target chat jid; defaults to the owner chat.' },
-            sender: { type: 'string', description: 'Optional sender identity name (e.g. "Heimdall").' },
+            sender: { type: 'string', description: 'Optional sender identity name (e.g. "Sentry").' },
         },
-        required: ['text'],
+        anyOf: [{ required: ['text'] }, { required: ['message'] }],
     },
     handler: async (args, _context) => {
+        const content = String(args?.text ?? args?.message ?? '');
         const resp = await callHost('send_message', {
-            text: String(args?.text || ''),
+            text: content,
             target_jid: args?.target_jid,
-            sender: args?.sender || 'Heimdall',
+            sender: args?.sender || 'Sentry',
         });
         if (resp?.ok) return 'Message sent.';
         return `send_message failed: ${resp?.error || 'unknown error'}`;
@@ -178,7 +182,7 @@ registry.register({
 registry.register({
     name: 'security_log',
     description:
-        "Record or query Heimdall's security-conditions log (a persistent sqlite store of every " +
+        "Record or query Sentry's security-conditions log (a persistent sqlite store of every " +
         "alert assessment, by time). ACTION 'record': append a row {timestamp, alert_ts, assessment " +
         "('normal'|'abnormal'), condition, escalated (bool)}. ACTION 'query': return rows within an " +
         "optional since/until local-time range (YYYY-MM-DDTHH:MM:SS), newest-first, up to limit. Use " +

@@ -188,6 +188,12 @@
 
           <div class="thinking-bar idle" id="thinkingBar" role="button" tabindex="0" title="Click to view activity history"><span id="thinkingContent">Idle</span></div>
 
+          <div class="typing-bar hidden" id="typingIndicator">
+            <div class="typing-dots"><span></span><span></span><span></span></div>
+            <div class="typing-status" id="typingStatusText">Queued</div>
+            <button class="typing-stop-btn" onclick="Warden.stopAgent()" title="Stop processing" type="button">End</button>
+          </div>
+
           <div class="progress-panel collapsed" id="progressPanel">
             <button class="progress-panel-header" id="progressPanelHeader" type="button" aria-expanded="false">
               <span class="live-dot"></span>

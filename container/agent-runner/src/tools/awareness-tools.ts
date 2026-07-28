@@ -1,6 +1,11 @@
 import { registry } from '../tool-registry.js';
 import { writeCallbackAsync } from '../index.js';
 
+// The Sentry run-mode branch in index.ts sets this to the original task prompt
+// so the host callback tools can log the full AWARENESS context if needed.
+let sentryTaskPrompt = '';
+export function setSentryTaskPrompt(prompt: string): void { sentryTaskPrompt = prompt; }
+
 async function callHost(tool: string, args: any, timeoutMs = 10000): Promise<any> {
     try {
         return await writeCallbackAsync(tool, args, timeoutMs);
@@ -16,19 +21,22 @@ async function callHost(tool: string, args: any, timeoutMs = 10000): Promise<any
 registry.register({
     name: 'awareness_log',
     description:
-        "Record or query Sentry's situational-awareness log (a persistent sqlite store of every " +
-        "AWARENESS event and your verdicts, by time). ACTION 'record': append a row {ts, event, " +
-        "label, is_known, person_count, seconds_empty, seconds_occupied, motion_area, assessment " +
-        "('spoken'|'silent'|'note'|'flagged'), spoken (the line you said, if any), data (extra json)}. " +
-        "ACTION 'query': return rows, newest-first, up to limit, filter by event/assessment/since/until " +
-        "(YYYY-MM-DDTHH:MM:SS). ACTION 'stats': counts by event. Use this to de-dup (check whether you " +
-        "greeted recently) and to look back by time/date.",
+        "Record or query Sentry's situational-awareness log. Use this FIRST on every AWARENESS event. " +
+        "ACTION 'record': append a verdict row. Required fields: action='record', ts (YYYY-MM-DDTHH:MM:SS), " +
+        "event (arrival|departure|movement|motion_burst|camera_covered|camera_moved|note), assessment " +
+        "('spoken'|'silent'|'note'|'flagged'), and optionally label, is_known, seconds_empty, " +
+        "seconds_occupied, motion_area, person_count, spoken (exact line if assessment='spoken'), data (extra json). " +
+        "Do NOT invent field names like event_type, timestamp, or details. " +
+        "ACTION 'query': return rows, newest-first, up to limit, filter by event/assessment/since/until. " +
+        "ACTION 'stats': counts by event. " +
+        "Examples: awareness_log({\"action\":\"record\",\"ts\":\"2026-07-27T22:00:00\",\"event\":\"arrival\",\"is_known\":true,\"assessment\":\"silent\"}); " +
+        "awareness_log({\"action\":\"record\",\"ts\":\"2026-07-27T22:00:00\",\"event\":\"arrival\",\"label\":\"user\",\"is_known\":true,\"seconds_empty\":120,\"assessment\":\"spoken\",\"spoken\":\"Welcome back.\"});",
     schema: {
         type: 'object',
         properties: {
             action: { type: 'string', enum: ['record', 'query', 'stats'], description: "'record' to append, 'query' to read, 'stats' for counts." },
             ts: { type: 'string', description: "record: local time (YYYY-MM-DDTHH:MM:SS)." },
-            event: { type: 'string', description: "record: the event type (arrival|departure|unknown|covered|note)." },
+            event: { type: 'string', description: "record: the event type (arrival|departure|movement|motion_burst|camera_covered|camera_uncovered|camera_moved|note)." },
             label: { type: 'string', description: "record: the known-person label, if recognized." },
             is_known: { type: 'boolean', description: "record: whether the person is a known person." },
             person_count: { type: 'number', description: "record: number of people." },
@@ -58,10 +66,10 @@ registry.register({
     tier: 'public',
 });
 
-// Orchestrator → Sentry direct. Mirrors tell_heimdall (security-tools.ts).
-// tier:'public' + toolset 'chat' keeps it orchestrator-only (sub-agents don't
-// include 'chat'). The user tells Jarvis a fact that should affect greeting
-// behavior; Sentry records it silently, no chat reply.
+// Orchestrator → Sentry direct. tier:'public' + toolset 'chat' keeps it
+// orchestrator-only (sub-agents don't include 'chat'). The user tells Jarvis a
+// fact that should affect greeting behavior; Sentry records it silently, no chat
+// reply.
 registry.register({
     name: 'tell_sentry',
     description:
@@ -87,29 +95,3 @@ registry.register({
     tier: 'public',
 });
 
-// Sentry → Heimdall escalation. Sentry decides from JSON data that something is
-// anomalous; Heimdall confirms with vision. The host handles the handoff.
-registry.register({
-    name: 'escalate_to_heimdall',
-    description:
-        "Escalate an anomalous AWARENESS event to Heimdall for vision confirmation. " +
-        "Call this ONCE when the structured data indicates something abnormal (unknown person, " +
-        "presence when the user is away, camera tamper, etc.). Provide a concise reason. " +
-        "Heimdall will pull a live frame, confirm or deny, and alert the user if needed.",
-    schema: {
-        type: 'object',
-        properties: {
-            reason: { type: 'string', description: 'Why Sentry considers this anomalous.' },
-        },
-        required: ['reason'],
-    },
-    handler: async (args, _context) => {
-        const reason = String(args?.reason || '').trim();
-        if (!reason) return 'Missing reason.';
-        const resp = await callHost('escalate_to_heimdall', { reason });
-        if (resp?.ok) return 'Escalated to Heimdall for vision confirmation.';
-        return `Could not escalate: ${resp?.error || 'unknown error'}`;
-    },
-    toolset: 'awareness',
-    tier: 'public',
-});

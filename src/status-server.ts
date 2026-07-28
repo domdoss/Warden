@@ -9,7 +9,7 @@ import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, getLiveStatus, getProgressHistory } from './agent-spawn.js';
-import { setLastAwarenessEvent, spawnSentryBackground } from './index.js';
+import { spawnSentryBackground } from './index.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -1359,9 +1359,8 @@ function handleSettings(res: http.ServerResponse): void {
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
     councilPragmatistModel: getRouterState('council:pragmatist_model') || '',
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
-    heimdallModel: getRouterState('heimdall:model') || '',
     sentryModel: getRouterState('sentry:model') || '',
-    securityLaptopIp: getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_LAPTOP_IP || '',
+    securitySatelliteIp: getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_SATELLITE_IP || process.env.WARDEN_SECURITY_LAPTOP_IP || '',
     sentryMd,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     automationModel: getRouterState('automation:model') || '',
@@ -1431,22 +1430,17 @@ async function handleSettingsSave(
   if (body.councilSynthesistModel !== undefined) {
     setRouterState('council:synthesist_model', String(body.councilSynthesistModel));
   }
-  // Heimdall (background security agent) model — blank inherits the orchestrator
-  // model. Heimdall needs vision to read alert frames; set this to a local vision
-  // model if the cloud orchestrator model 500s on Ollama's images field.
-  if (body.heimdallModel !== undefined) {
-    setRouterState('heimdall:model', String(body.heimdallModel || ''));
-  }
-  // Sentry (background awareness agent) model — light local model that checks
-  // structured camera data. Blank inherits the orchestrator model.
+  // Sentry (background security/awareness agent) model — vision-capable model
+  // that reads alert frames and structured camera data. Blank inherits the
+  // orchestrator model.
   if (body.sentryModel !== undefined) {
     setRouterState('sentry:model', String(body.sentryModel || ''));
   }
-  // IP of the laptop running the security detector (camera + structured data feed).
-  if (body.securityLaptopIp !== undefined) {
-    const ip = String(body.securityLaptopIp || '').trim();
-    setRouterState('security:laptop_ip', ip);
-    if (ip) process.env.WARDEN_SECURITY_LAPTOP_IP = ip;
+  // IP of the satellite running the security detector (camera + structured data feed).
+  if (body.securitySatelliteIp !== undefined) {
+    const ip = String(body.securitySatelliteIp || '').trim();
+    setRouterState('security:satellite_ip', ip);
+    if (ip) process.env.WARDEN_SECURITY_SATELLITE_IP = ip;
   }
   // Mirror toolcall model into router_state and live env so subprocess inherits it.
   if (body.ollamaChatModel !== undefined) {
@@ -1490,8 +1484,12 @@ async function handleSettingsSave(
   // Track whether any router-state settings were saved
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
-    body.councilSkepticModel !== undefined || body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
-    body.mercuryMode !== undefined || body.mercuryModel !== undefined || body.mercuryCtx !== undefined || body.thinking !== undefined;
+    body.atlasModel !== undefined || body.councilSkepticModel !== undefined ||
+    body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
+    body.sentryModel !== undefined ||
+    body.securitySatelliteIp !== undefined || body.mercuryMode !== undefined ||
+    body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
+    body.thinking !== undefined;
 
   const vars: Record<string, string> = {};
   for (const [key, envKey] of Object.entries(envMap)) {
@@ -3475,30 +3473,11 @@ export function startStatusServer(d: StatusDeps): void {
             return error(res, 'expected AWARENESS message');
           }
 
-          // Parse "AWARENESS — <event> at <ts>. data: <json>" for engrained logging.
-          const m = /AWARENESS — (\S+) at (\S+)\. data: (.+)$/s.exec(text);
-          let data: any = {};
-          try { data = m?.[3] ? JSON.parse(m[3]) : {}; } catch { data = { raw: (m?.[3] || '').slice(0, 500) }; }
-          awarenessLog({
-            action: 'record',
-            ts: m?.[2] || new Date().toISOString(),
-            event: m?.[1] || 'event',
-            label: typeof data.label === 'string' ? data.label : null,
-            is_known: typeof data.is_known === 'boolean' ? data.is_known : null,
-            seconds_empty: typeof data.seconds_empty === 'number' ? data.seconds_empty : null,
-            assessment: 'flagged',
-            data,
-          });
-
-          // Keep the latest awareness text available for Sentry's
-          // escalate_to_heimdall callback (it needs the original event data).
-          setLastAwarenessEvent(text);
-
           // Spawn Sentry directly; no chat message, no channel relay.
           const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
           const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-          const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${text}`;
-          spawnSentryBackground(task);
+          const task = `Current local time is ${localNow} (timezone ${tz }).\n\n${text}\n\nUse tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent. Do not use awareness_log; it does not exist. Do not write a plain-text response.`;
+          spawnSentryBackground(task, text);
 
           logger.info({ text: text.slice(0, 80) }, 'AWARENESS routed directly to Sentry');
           return json(res, { ok: true });

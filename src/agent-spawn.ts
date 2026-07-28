@@ -17,11 +17,16 @@ const DEFAULT_EXECUTABLE_ARGS = ['dist/agent-runner/index.js'];
 export type CallbackHandler = (args: any) => Promise<any>;
 export type CallbackMap = Record<string, CallbackHandler>;
 
+let pushActivityLineFn: ((userId: string, line: string, chatJid: string) => void) | null = null;
+export function setActivityPublisher(fn: (userId: string, line: string, chatJid: string) => void): void {
+  pushActivityLineFn = fn;
+}
+
 export type AgentRunInput = AgentInput & {
   executable?: string;
   executableArgs?: string[];
   callbacks?: CallbackMap;
-  /** When set (e.g. 'heimdall'), runSubAgentBackground spawns the named sub-agent
+  /** When set (e.g. 'sentry'), runSubAgentBackground spawns the named sub-agent
    *  directly instead of the orchestrator. */
   agent?: string;
   chatJid?: string;
@@ -30,15 +35,15 @@ export type AgentRunInput = AgentInput & {
 };
 
 /**
- * Spawn a background sub-agent (e.g. Heimdall, the security agent) in a FRESH
- * child process with its OWN self-contained CALLBACK pump — it does NOT touch
- * the global `agentState`/persistent orchestrator child, so it runs alongside
- * the main loop without clashing. Fire-and-forget: the host does not await it;
- * the child runs the sub-agent, its tool calls are handled by `input.callbacks`
- * (send_message / close_security_alert / webcam_capture / security_log), and it
- * exits when done. Heimdall's user-facing output goes via its own send_message
- * callback; the raw "SECURITY ALERT" trigger is consumed here, not by the
- * orchestrator, so the main chat isn't muddied.
+ * Spawn a background sub-agent (e.g. Sentry, the security/awareness agent) in a
+ * FRESH child process with its OWN self-contained CALLBACK pump — it does NOT
+ * touch the global `agentState`/persistent orchestrator child, so it runs
+ * alongside the main loop without clashing. Fire-and-forget: the host does not
+ * await it; the child runs the sub-agent, its tool calls are handled by
+ * `input.callbacks` (send_message / close_security_alert / webcam_capture /
+ * security_log), and it exits when done. Sentry's user-facing output goes via its
+ * own send_message callback; the raw AWARENESS trigger is consumed here, not by
+ * the orchestrator, so the main chat isn't muddied.
  */
 export function runSubAgentBackground(input: AgentRunInput): void {
   const exe = input.executable ?? DEFAULT_EXECUTABLE;
@@ -46,7 +51,7 @@ export function runSubAgentBackground(input: AgentRunInput): void {
   const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
   const child = spawn(exe, exeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const callbacks = input.callbacks ?? {};
-  const agentName = input.agent || 'heimdall';
+  const agentName = input.agent || 'sentry';
 
   let stdoutBuf = '';
   let insideCallback = false;
@@ -314,6 +319,7 @@ const agentState = {
   callbackLines: [] as string[],
   turnTimeout: null as ReturnType<typeof setTimeout> | null,
   sentMessageCallback: false,
+  chatJid: 'owner@local',
 };
 
 // Live verbose-status label emitted by the agent-runner child via
@@ -397,6 +403,7 @@ function resetTurnState(callbacks: CallbackMap, resolve: (out: AgentOutput) => v
   agentState.insideCallback = false;
   agentState.callbackLines = [];
   agentState.sentMessageCallback = false;
+  agentState.chatJid = (resolve as any)?.chatJid || 'owner@local';
   agentState.turnTimeout = setTimeout(() => {
     const r = agentState.resolve;
     if (!r) return;
@@ -548,6 +555,11 @@ function setupPersistentChild(child: ChildProcess, startedAt: number) {
     for (const line of lines) {
       const t = line.trim();
       if (t) logger.info(`agent-runner: ${t.slice(0, 500)}`);
+      // Forward dim-coded stderr thinking tokens to the dashboard so the live
+      // thinking bar can stream them word-by-word.
+      if (pushActivityLineFn && t.includes('[2m')) {
+        pushActivityLineFn('owner', t, agentState.chatJid || 'owner@local');
+      }
     }
   });
   child.on('exit', (code, signal) => {
@@ -623,6 +635,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
 
     // Reuse the persistent child if it's still alive.
     if (persistentChild && !persistentChild.killed && persistentChild.exitCode === null) {
+      (resolve as any).chatJid = input.chatJid || 'owner@local';
       resetTurnState(callbacks, resolve, input.timeoutMs);
       try {
         mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -644,7 +657,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             councilSkepticModel: input.councilSkepticModel,
             councilPragmatistModel: input.councilPragmatistModel,
             councilSynthesistModel: input.councilSynthesistModel,
-            heimdallModel: input.heimdallModel,
             subagentModel: process.env.SUBAGENT_MODEL || '',
             orchestratorCtx: process.env.ORCHESTRATOR_NUM_CTX || '',
             subagentCtx: process.env.SUBAGENT_NUM_CTX || '',
@@ -671,6 +683,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
     const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
     const child = spawn(exe, exeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
 
+    (resolve as any).chatJid = input.chatJid || 'owner@local';
     resetTurnState(callbacks, resolve, input.timeoutMs);
     setupPersistentChild(child, agentState.startedAt);
 
@@ -681,7 +694,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       councilSkepticModel: input.councilSkepticModel,
       councilPragmatistModel: input.councilPragmatistModel,
       councilSynthesistModel: input.councilSynthesistModel,
-      heimdallModel: input.heimdallModel,
       sessionId: input.sessionId,
       workspaceRoot: input.workspaceRoot,
       history: input.history,

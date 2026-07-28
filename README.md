@@ -97,8 +97,7 @@ Each sub-agent has its own system prompt, its own toolset, and its own model. Th
 | **Byte** | Local or cloud (local recommended) | Projects, deliverables, blockers, work tasks, time tracking | Work management. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
-| **Sentry** | Local (light — no vision required) | `awareness_log`, `send_message`, `escalate_to_heimdall` | Background situational-awareness guard. Receives only structured JSON from the laptop camera (no images). Decides if events are normal/anomalous using the editable `security/sentry.md` rules. Greets on friendly arrivals; escalates anomalies to Heimdall. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
-| **Heimdall** | Local (vision-capable) | `security_log`, `send_message`, `open_security_alert`, `dismiss_security_flag`, vision | Vision verifier. When Sentry escalates, Heimdall pulls a live frame from the laptop, confirms or denies the anomaly, and — if confirmed — alerts the user with the image and lights the red alert on the laptop. |
+| **Sentry** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the laptop camera, applies the editable `security/sentry.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
 
 > 🎛️ **Every agent's model is picked in the dashboard** — local Ollama or cloud, your call. Local and cloud run through the [same Ollama pipeline](#-hybrid-model-architecture), so switching an agent between them needs no code or infrastructure change. Iris, Dexter, and Byte are light, structured-task agents — run them on a local model (granite is plenty) and save cloud spend for Atlas and the Council.
 
@@ -378,14 +377,13 @@ See `voice/README.md` for install and usage. Copy `voice/config/settings.example
 
 ## 🛡️ Security Mode
 
-`security/` is a two-tier webcam awareness system. The **laptop** (or any camera machine) runs the cheap RF-DETR detector and sends only structured JSON events to the **desktop** Warden service. Two background agents handle the rest:
+`security/` is a webcam awareness system. The **laptop** (or any camera machine — including an ESP32-CAM HTTP stream) runs the cheap RF-DETR detector and sends only structured JSON events to the **desktop** Warden service. One background agent handles the rest:
 
-- 📷 **RF-DETR Keypoint** (Apache 2.0, commercially free — no YOLO) watches the webcam on the laptop CPU and builds a compact JSON situation each frame (persons, motion, camera state, objects).
+- 📷 **RF-DETR Keypoint** (Apache 2.0, commercially free — no YOLO) watches the webcam on the laptop CPU and builds a compact JSON situation each frame (persons, motion, camera state, objects). Accepts a local webcam index **or** an HTTP/MJPEG stream URL (`--stream http://esp32-cam.local:81/stream`, or `camera.stream_url` in config; press `s` in the window to switch live).
 - 🔔 **AWARENESS events** are POSTed to the dedicated **`/api/awareness`** endpoint on the desktop only when something changes (arrival, departure, camera covered/moved, motion burst). They are internal control messages — `/api/messages` rejects them — so routine awareness never pollutes chat, Telegram, or other channels.
-- 🛡️ **Sentry** (light local model, no vision) receives the JSON, checks it against the editable `security/sentry.md` rules, and either greets on friendly arrivals or escalates anomalies to Heimdall.
-- 🧠 **Heimdall** (vision-capable local model on the desktop) pulls a live frame from the laptop, confirms or denies the anomaly, and — if confirmed — sends you an alert **with the image attached** (shows in dashboard + Telegram) and lights a red alert on the laptop.
-- 🎛️ **Sentry model, Heimdall model, and the laptop IP** are all set from the dashboard — no hardcoded defaults.
-- 🗄️ `store/security.db` logs every AWARENESS event and Heimdall assessment.
+- 🛡️ **Sentry** (single light local model, vision-optional) receives the JSON, applies the editable `security/sentry.md` rules, and decides per event: **alert** (send a captioned frame to chat + Telegram, open the red STAND DOWN alert on the laptop, log it), **greet** (friendly arrival), or **stay silent**. It also owns arming/disarming the detector and the security log. There is no separate vision verifier — Sentry is the whole background security path.
+- 🎛️ **Sentry model and the laptop IP** are set from the dashboard — no hardcoded defaults.
+- 🗄️ `store/security.db` logs every AWARENESS event and Sentry assessment.
 
 It's intentionally a starting framework. Upgradable later: **InsightFace face-ID** for stable person recognition, **ORB/RANSAC camera-motion detection**, multiple camera machines, and integration with **Home Assistant** or a real guard-dispatch service.
 
