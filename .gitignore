@@ -147,3 +147,5 @@ Thumbs.db
 *.swp
 *.swo
 *~
+# Local Sentry policy — edit locally, not tracked
+security/sentry.md
