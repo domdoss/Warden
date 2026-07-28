@@ -7,7 +7,8 @@ IDs, motion regions, camera state, objects. When something changes (someone
 arrives or leaves, the camera is covered, the camera is moved, large motion
 while empty), a compact JSON AWARENESS message is posted to Warden's owner
 chat. Warden routes these messages to Sentry, a background local model, which
-decides whether to tell the user.
+decides whether to tell the user. The orchestrator can pull the live frame on
+demand if it needs a visual description.
 
 This app intentionally does NOT send images for routine awareness. Frames are
 still published on the local /frame HTTP endpoint so Warden can pull a live
@@ -46,7 +47,6 @@ from core.situation import SituationTracker
 from core.warden import WardenClient
 from core.server import FrameServer
 from core import known
-from core import caption
 
 log = logging.getLogger("security")
 
@@ -262,7 +262,6 @@ def main(argv: list[str] | None = None) -> int:
     motion_cfg = cfg["motion"]
     aware_cfg = cfg.get("awareness", {})
     rec_cfg = cfg.get("recognition", {})
-    cap_cfg = cfg.get("caption", {})
     warden_cfg = cfg.get("warden", {})
     fs_cfg = cfg.get("frame_server", {})
 
@@ -299,10 +298,9 @@ def main(argv: list[str] | None = None) -> int:
         object_min_confidence=float(aware_cfg.get("object_min_confidence", 0.2)),
     )
 
-    # Lazy singletons for face recognition and scene caption. They load models
-    # only when an event actually fires, so the security feed starts fast.
+    # Lazy singleton for face recognition; it loads the model only when an
+    # event actually fires, so the security feed starts fast.
     known_persons = known.KnownPersons(cfg)
-    scene_caption = caption.Captioner(cfg)
 
     warden = WardenClient(
         base_url=warden_cfg.get("base_url", "http://127.0.0.1:3200"),
@@ -330,20 +328,11 @@ def main(argv: list[str] | None = None) -> int:
     frame_server.on_arm = on_arm
     frame_server.on_disarm = on_disarm
 
-    def on_caption(frame_bgr, question):
-        """Moondream on GPU answers Sentry's question about the latest frame."""
-        if question:
-            answer = scene_caption.query(frame_bgr, question)
-            return {"answer": answer} if answer else {"error": "caption unavailable"}
-        text = scene_caption.caption(frame_bgr)
-        return {"caption": text} if text else {"error": "caption unavailable"}
-
     def on_known_save(frame_bgr, label):
         """Save the current frame's face as a known person on the laptop CPU."""
         ok = known_persons.save_known_person(frame_bgr, label)
         return {"ok": ok, "label": label} if ok else {"ok": False, "error": "no face detected"}
 
-    frame_server.on_caption = on_caption
     frame_server.on_known_save = on_known_save
 
     signal.signal(signal.SIGINT, _stop)
@@ -533,11 +522,9 @@ def main(argv: list[str] | None = None) -> int:
                     }
                     payload.update(chosen.data)
 
-                    # Enrich awareness events with face recognition (CPU) and a
-                    # Moondream scene caption (GPU). Recognition runs for any
-                    # person-related event. Moondream auto-runs on anomalies:
-                    # covered camera, camera moved, motion burst while empty, or
-                    # an unknown person arriving after the room was empty.
+                    # Enrich awareness events with face recognition (CPU).
+                    # The security feed is pure structured data; the orchestrator
+                    # can call webcam_capture if it needs a visual description.
                     if chosen.event in ("arrival", "camera_uncovered", "motion_burst"):
                         try:
                             is_known, label = known_persons.is_known(frame)
@@ -547,19 +534,6 @@ def main(argv: list[str] | None = None) -> int:
                                 log.info("recognized %s as known person", label)
                         except Exception as e:
                             log.debug("face recognition skipped: %s", e)
-
-                    anomaly = chosen.event in ("camera_covered", "camera_moved", "motion_burst") or (
-                        chosen.event == "arrival"
-                        and not payload.get("is_known")
-                        and situation.seconds_in_state >= float(aware_cfg.get("empty_threshold_seconds", 60))
-                    )
-                    if anomaly:
-                        try:
-                            cap_text = scene_caption.caption(frame)
-                            if cap_text:
-                                payload["scene_caption"] = cap_text
-                        except Exception as e:
-                            log.debug("scene caption skipped: %s", e)
 
                     res = warden.send_awareness(chosen.event, payload)
                     if res.get("ok"):

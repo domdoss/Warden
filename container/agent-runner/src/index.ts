@@ -754,7 +754,6 @@ Event fields available in the task:
 - situation.seconds_empty, situation.seconds_occupied, situation.motion_area
 - situation.camera_covered, situation.camera_moved
 - is_known (bool) and label (string) from InsightFace face recognition, when a face is visible
-- scene_caption (string) from Moondream, when installed
 - ts (timestamp)
 
 A latest security frame reference is provided in your task when available (e.g. "Latest security frame: [Image: attachments/img-....jpg]"). When you send an alert message, include that EXACT reference on the SAME LINE as your text so Telegram sends the photo with caption.
@@ -769,14 +768,14 @@ You have several security tools. For alert events (anything suspicious, or when 
 
 For friendly, non-alert events, record awareness_log then optionally use send_message WITHOUT the image reference. Stay silent for routine arrivals you already greeted, brief absences, or when the user notes say to be quiet. Non-alert events use at most one awareness_log + one send_message.
 
-If the model you are running on is vision-capable, you may call security_frame once to load the live frame into your vision context and verify what you see. Otherwise rely on the structured payload and the latest frame reference.
+If the model you are running on is vision-capable, you may call security_frame once to load the live frame into your vision context and verify what you see. Otherwise rely on the structured payload.
 
 For false-positive / non-event detections:
 1. awareness_log({"action":"record","assessment":"silent", ...})
 2. dismiss_security_flag({}) — re-arms the detector and closes the alert.
 3. security_log({"action":"record","assessment":"normal","condition":"what you saw or why it was normal","escalated":false}).
 
-You are text-only. If the structured data is not enough to decide, call security_caption({"question":"..."}) once. The laptop runs Moondream on GPU and returns a short description. Examples: "is the computer turned on?", "is there a person at the desk?", "is something on the table?". Do not call it routinely; use it for anomaly verification or user questions.
+You are text-only and rely on the structured AWARENESS payload. If the user asks what the camera sees, the orchestrator can pull the frame with webcam_capture itself.
 
 If the user asks to register a person as known (e.g. "this is user, remember him"), call save_known_person({"label":"user"}). The laptop computes a face embedding on CPU and stores it; future arrivals will report is_known=true and label.
 
