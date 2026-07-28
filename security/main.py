@@ -166,20 +166,21 @@ def main(argv: list[str] | None = None) -> int:
         port=int(fs_cfg.get("port", 8765)),
     )
     frame_server.start()
-    frame_server.set_armed(False)  # no armed-flagging concept anymore
+    # Armed security flagging is handled by the desktop now, but the laptop still
+    # accepts /arm and /disarm commands from the desktop/guard so the UI can
+    # reflect the current armed state and status light can show it.
+    frame_server.set_armed(True)
 
-    # Alert state set by the desktop when Heimdall confirms an anomaly.
-    alert_active = False
-    alert_until = 0.0
-    alert_timeout = 60.0  # seconds the red light stays on after /alert/open
+    def on_arm():
+        frame_server.set_armed(True)
+        log.info("security system armed")
 
-    def set_alert():
-        nonlocal alert_active, alert_until
-        alert_active = True
-        alert_until = time.time() + alert_timeout
-        log.info("desktop confirmed alert → red alert light on")
+    def on_disarm():
+        frame_server.set_armed(False)
+        log.info("security system disarmed")
 
-    frame_server.on_alert_open = set_alert
+    frame_server.on_arm = on_arm
+    frame_server.on_disarm = on_disarm
 
     voice = None
     if not args.no_voice and voice_cfg.get("enabled", True):
@@ -260,15 +261,9 @@ def main(argv: list[str] | None = None) -> int:
             # Build structured situation and detect changes.
             situation, events = tracker.update(frame, dets, motion_res, camera_covered)
 
-            # Expire desktop-triggered alert after alert_timeout.
-            if alert_active and time.time() > alert_until:
-                alert_active = False
-
-            # Status light: red if desktop alerted, camera covered, or camera moved;
-            # amber on motion; green when idle. No armed state anymore.
-            if alert_active:
-                light, state = LIGHT_RED, "ALERT — desktop confirmed"
-            elif camera_covered or situation.camera_moved:
+            # Status light reflects armed state + situation.
+            armed = frame_server.is_armed()
+            if camera_covered or situation.camera_moved:
                 light, state = LIGHT_RED, "CAMERA ALERT"
             elif motion_res.area >= motion.min_area:
                 light, state = LIGHT_AMBER, "MOTION"
@@ -276,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
                 light, state = LIGHT_GREEN, "OCCUPIED"
             else:
                 light, state = LIGHT_GREEN, "IDLE"
+
+            if not armed:
+                state = f"DISARMED — {state}"
 
             # Post change events to Warden, respecting the cooldown.
             # # TODO: batch closely-spaced events into one AWARENESS message to
