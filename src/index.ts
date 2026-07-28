@@ -120,6 +120,11 @@ let messageLoopRunning = false;
 export let agentProcessing = false;
 let lastAwarenessEvent: string = '';
 
+/** Update the latest AWARENESS text for Sentry's escalate_to_heimdall callback. */
+export function setLastAwarenessEvent(text: string): void {
+  lastAwarenessEvent = text;
+}
+
 const channels: Channel[] = [];
 
 function loadState(): void {

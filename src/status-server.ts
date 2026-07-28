@@ -9,7 +9,7 @@ import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, getLiveStatus, getProgressHistory } from './agent-spawn.js';
-import { spawnSentryBackground } from './index.js';
+import { setLastAwarenessEvent, spawnSentryBackground } from './index.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -3489,6 +3489,10 @@ export function startStatusServer(d: StatusDeps): void {
             assessment: 'flagged',
             data,
           });
+
+          // Keep the latest awareness text available for Sentry's
+          // escalate_to_heimdall callback (it needs the original event data).
+          setLastAwarenessEvent(text);
 
           // Spawn Sentry directly; no chat message, no channel relay.
           const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;

@@ -77,6 +77,12 @@ cd security
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt     # rfdetr pulls weights on first run (CPU)
 cp config/settings.example.yaml config/settings.yaml   # edit if you like
+
+# OpenCV's bundled Qt needs fonts for slider labels. Copy system DejaVu fonts
+# into the cv2 Qt fonts directory so the GUI trackbars render correctly:
+mkdir -p .venv/lib/python*/site-packages/cv2/qt/fonts
+cp /usr/share/fonts/TTF/DejaVuSans.ttf .venv/lib/python*/site-packages/cv2/qt/fonts/
+cp /usr/share/fonts/TTF/DejaVuSans-Bold.ttf .venv/lib/python*/site-packages/cv2/qt/fonts/
 ```
 
 ## Start
