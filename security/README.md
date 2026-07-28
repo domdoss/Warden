@@ -34,6 +34,23 @@ ALERTED → red STAND DOWN button + auto-popup of the alert image.
 State machine: **ARMED → REVIEWING → (ALERTED | ARMED)**. The alert is spawned
 *only* after Heimdall declares it abnormal — the detector just flags for review.
 
+### Awareness events (always-on, separate from security alerts)
+
+The detector also runs a continuous **situational-awareness** feed that posts
+compact JSON events (arrival, departure, motion burst, camera covered/uncovered)
+to Warden. These AWARENESS events are **internal control messages**, not chat
+messages:
+
+- They are POSTed to the dedicated `/api/awareness` endpoint on the desktop.
+- `/api/messages` rejects AWARENESS messages; the awareness endpoint is the only
+  valid path.
+- Warden routes them to the **Sentry** background agent (local model), which
+  applies the user-editable policy in `security/sentry.md` and decides whether to
+  escalate to Heimdall.
+- Person `movement` is intentionally **not** an awareness event — people move
+  constantly, so only occupancy/count transitions and non-person motion bursts
+  are reported.
+
 ## Files
 
 ```
@@ -45,7 +62,7 @@ security/
     rules.py             # rule matching (allowed classes, confidence, movement)
     capture.py           # annotate frames + write event JSON
     config.py            # settings loader + COCO class names
-    warden.py            # posts the SECURITY ALERT frame to Warden
+    warden.py            # posts SECURITY ALERT frames and AWARENESS JSON to Warden
     server.py            # tiny HTTP server: GET /frame, /status; POST /alert/open, /alert/close
     voice_launcher.py    # opens the voice/ (Jarvis) client alongside the webcam
     known.py             # known-person keyframe pHash compare (skip flagging known people)
@@ -75,9 +92,8 @@ python main.py                 # webcam window + (optionally) voice/ open togeth
 ```
 
 The window shows the live feed, an alert light (green idle / amber motion or
-reviewing / red alert), and three sliders: **conf x100** (detection threshold),
-**motion px** (motion sensitivity), **rearm sec** (min seconds between flags,
-default 20).
+reviewing / red alert), and two sliders: **conf x100** (detection threshold) and
+**motion px** (motion sensitivity).
 
 When Heimdall declares an alert, a **red STAND DOWN** button appears at the
 bottom and a **"Security Alert — review"** window pops up with the alert image.
@@ -97,17 +113,23 @@ The frame server (`http://127.0.0.1:8765`) stops with it; Warden's
 - **Heimdall** sub-agent: `container/agent-runner/src/index.ts` (SUBAGENTS) +
   `tools/security-tools.ts` (webcam_capture, send_message, alert_security,
   open_security_alert, dismiss_security_flag, save_known_person, security_log).
+- **Sentry** sub-agent: same SUBAGENTS list, toolset `awareness-core`. The
+  agent-runner host reads `security/sentry.md` and prepends it to Sentry's
+  system prompt; edit that file to change the awareness policy.
 - **Auto-trigger**: `src/index.ts processOwnerMessages` routes `SECURITY ALERT`
   messages to Heimdall (background), only the latest flag, never the main
-  orchestrator → no chat spam.
+  orchestrator → no chat spam. AWARENESS events are handled by the dedicated
+  `/api/awareness` endpoint in `src/status-server.ts`, not the chat message path.
 - **Orchestrator → Heimdall direct**: the `tell_heimdall` tool (no Atlas).
+- **Orchestrator → Sentry direct**: the `tell_sentry` tool.
 - **Close the alert**: `close_security_alert` host callback → `POST /alert/close`
   (Heimdall's normal-dismiss, or the guard's "close the alert" chat command, or
   the STAND DOWN button).
 - **Telegram**: alert `send_message` includes `[Image: …]`; the Telegram channel
   sends it as a photo, so alerts + their frames show on your phone.
 - **security.db** (`store/security.db`): `security_log` (every flag + assessment,
-  engrained host-side recording) + `known_persons` (keyframes for the pHash skip).
+  engrained host-side recording) + `awareness_log` (every AWARENESS event +
+  Sentry assessment) + `known_persons` (keyframes for the pHash skip).
 
 ## Model
 
