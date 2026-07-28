@@ -187,7 +187,7 @@ class DockboxBridge:
             # the notification truncates it to a preview — fetch the full stored
             # message and speak that. Mark the turn handled so the agent_activity
             # wrap-up is suppressed.
-            preview = (event.get("message") or "").strip()
+            preview = self._strip_attachments((event.get("message") or "").strip())
             if preview:
                 self._spoke_message = True
                 self._turn_text = []
@@ -215,21 +215,32 @@ class DockboxBridge:
         """
         head = preview.rstrip("…").rstrip(". ").strip()
         if not head or not self.active_jid:
-            return preview
+            return self._strip_attachments(preview)
         try:
             msgs = await self.client.get_messages(self.active_jid, limit=10)
         except Exception as e:
             print(f"[bridge] get_messages failed: {e}")
-            return preview
+            return self._strip_attachments(preview)
         for m in msgs:
             content = (m.get("content") or "").strip()
             if content and content.startswith(head):
-                return content
-        return preview
+                return self._strip_attachments(content)
+        return self._strip_attachments(preview)
+
+    @staticmethod
+    def _strip_attachments(text: str) -> str:
+        """Remove bracketed attachment placeholders and markdown images from TTS text."""
+        # Markdown image/link syntax: ![label](url) or [label](url)
+        text = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", text)
+        # Bare bracketed placeholders like [Image: ...], [file], [audio]
+        text = re.sub(r"\[.*?\]", "", text)
+        # Collapse leftover whitespace
+        text = re.sub(r"[ \t]+", " ", text)
+        return text.strip()
 
     def _finish_turn(self) -> None:
         """Speak the buffered final-iteration text once, then end the turn."""
-        spoken = "" if self._spoke_message else "".join(self._turn_text).strip()
+        spoken = "" if self._spoke_message else self._strip_attachments("".join(self._turn_text).strip())
         self._turn_text = []
         if spoken and self._on_chunk is not None:
             try:
