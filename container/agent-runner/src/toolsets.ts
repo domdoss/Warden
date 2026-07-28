@@ -14,7 +14,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // Atlas run runSubAgent, which never reads _pendingImages — so they cannot see
     // captured frames. Keep these out of every sub-agent toolset (atlas-core pulls
     // in `terminal` above, NOT `capture`) so the orchestrator handles all vision.
-    capture:   { name: 'capture',   tools: ['desktop_screenshot', 'webcam_capture', 'read_image'], tier: 'public' },
+    capture:   { name: 'capture',   tools: ['desktop_screenshot', 'read_image'], tier: 'public' },
     projects:  { name: 'projects',  tools: ['create_project','get_project','update_project','archive_project',
                                              'complete_project','delete_project','list_projects'], tier: 'public' },
     worktasks: { name: 'worktasks', tools: ['create_work_task','list_work_tasks','update_work_task',
@@ -43,7 +43,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
 
     // Security tools — used by Sentry (the single background security agent) to
     // send alerts, open/dismiss detector alerts, arm/disarm, and log events.
-    security:     { name: 'security',     tools: ['security_frame','send_message','open_security_alert','security_log','dismiss_security_flag','alert_security','arm_security','disarm_security'], tier: 'public' },
+    security:     { name: 'security',     tools: ['security_frame','security_caption','save_known_person','send_message','open_security_alert','security_log','dismiss_security_flag','alert_security','arm_security','disarm_security'], tier: 'public' },
     'security-core': { name: 'security-core', includes: ['security'] },
 
     // Sentry — the single background situational-awareness + security agent.

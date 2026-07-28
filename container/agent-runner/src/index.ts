@@ -746,7 +746,14 @@ Be direct and specific — reference the exact point you're critiquing. Do not f
         summary: "single background security / situational-awareness agent: read security/sentry.md, decide alert/greet/silent, send one captioned photo alert, and update security state (open/dismiss alert, arm/disarm, log). Runs in the background.",
         systemPrompt: `You are Sentry, Warden's single background security / situational-awareness agent. You are a data-only decision maker.
 
-You receive one structured JSON AWARENESS event from the satellite camera detector. Your ONLY job is to apply the user notes below.
+## DIRECT QUESTIONS (asked by the user via the orchestrator)
+If your task is a direct question from the user about the room or what the camera sees — e.g. "who is in the room", "what do you see", "is the computer on", "is someone at the door" — and it is NOT an AWARENESS event (no "AWARENESS —" prefix, no event JSON):
+1. Call security_caption({"question": "<the user's question>"}) ONCE. The laptop runs Moondream on GPU against the live frame and returns a short answer.
+2. Answer the user's question directly in plain spoken English, in a sentence or two, using that answer. Add anything you know from the latest AWARENESS payload (is_known/label) if relevant.
+3. Stop. Do NOT call send_message, open_security_alert, alert_security, awareness_log, or any other tool for a question. Just answer and return the text.
+
+## AWARENESS EVENTS
+Otherwise your task is an AWARENESS event from the satellite camera detector. Your ONLY job is to apply the user notes below.
 
 Event fields available in the task:
 - event: arrival | departure | movement | motion_burst | camera_covered | camera_uncovered | camera_moved | note
@@ -769,7 +776,7 @@ You have several security tools. For alert events (anything suspicious, or when 
 
 For friendly, non-alert events, record awareness_log then optionally use send_message WITHOUT the image reference. Stay silent for routine arrivals you already greeted, brief absences, or when the user notes say to be quiet. Non-alert events use at most one awareness_log + one send_message.
 
-If the model you are running on is vision-capable, you may call webcam_capture once to verify what you see. Otherwise rely on the structured payload and the latest frame reference.
+If the model you are running on is vision-capable, you may call security_frame once to load the live frame into your vision context and verify what you see. Otherwise rely on the structured payload and the latest frame reference.
 
 For false-positive / non-event detections:
 1. awareness_log({"action":"record","assessment":"silent", ...})
@@ -780,7 +787,7 @@ You are text-only. If the structured data is not enough to decide, call security
 
 If the user asks to register a person as known (e.g. "this is user, remember him"), call save_known_person({"label":"user"}). The laptop computes a face embedding on CPU and stores it; future arrivals will report is_known=true and label.
 
-Arm/disarm only when the user explicitly asks you to change the system's armed state. Do NOT output plain text summaries. Only call tools.`,
+Arm/disarm only when the user explicitly asks you to change the system's armed state. For AWARENESS events, do NOT output plain text summaries — only call tools. (Direct user questions are answered in plain text per the section above.)`,
         toolsets: ['awareness-core', 'security-core'],
     },
 ];
@@ -799,7 +806,7 @@ const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     // The orchestrator's EYES — also listed in Sentry's security toolset, so
     // without this the SUBAGENT_OWNED filter would strip them from the
     // orchestrator's tool defs and the # EYES instructions couldn't fire.
-    'desktop_screenshot', 'webcam_capture', 'read_image',
+    'desktop_screenshot', 'read_image',
 ]);
 
 // Artemis: read-only auditor tools (Bash included for read-only inspection:
@@ -1005,11 +1012,12 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
 
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
-    // Atlas, artemis, and sentry run async by default: the call returns a job
-    // id immediately and the result lands in the orchestrator's inbox. Blocking
-    // mode remains for quick lookups the orchestrator cannot proceed without
-    // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'artemis' || s.delegate === 'sentry') {
+    // Atlas and artemis run async by default: the call returns a job id
+    // immediately and the result lands in the orchestrator's inbox. Sentry runs
+    // SYNC (blocking) so the orchestrator gets the answer in-turn — it's the
+    // only way to answer real-world vision questions (Moondream on the camera
+    // machine) and relay them to the user in the same reply.
+    if (s.delegate === 'atlas' || s.delegate === 'artemis') {
         return {
             type: 'function',
             function: {
@@ -1683,9 +1691,9 @@ async function runNativeOllama(input: ContainerInput) {
         'api_request', 'list_api_keys',
         // Vision captures are orchestrator-only (sub-agents can't see images —
         // _pendingImages is consumed only by runNativeOllama). Always expose them
-        // to the orchestrator so it can take a screenshot / webcam frame / read a
-        // host image and inspect it directly instead of delegating to a sub-agent.
-        'desktop_screenshot', 'webcam_capture', 'read_image',
+        // to the orchestrator so it can take a screenshot / read a host image and
+        // inspect it directly instead of delegating to a sub-agent.
+        'desktop_screenshot', 'read_image',
         // Orchestrator → Sentry direct line (registered by awareness-tools.ts,
         // toolset 'chat'). Always exposed so presence/schedule notes from the
         // user reach Sentry regardless of the dynamic top-K ranking.
@@ -1821,7 +1829,7 @@ The dashboard has a **Notes** view — an Obsidian-style markdown vault rooted a
 
 # EYES — YOUR SURROUNDINGS
 
-You have a webcam (\`webcam_capture\`) facing the room. For a contextual question about your immediate surroundings — "what do you see", "what's around you", "who's there", "what's that over there", "is someone at the door" — call \`webcam_capture\` once, look at the frame yourself, and answer directly in spoken English. Do NOT delegate this to a sub-agent: sub-agents cannot see images (only you can). Keep it to a sentence or two. (Requires your model to be vision-capable; if it isn't, say briefly that you can't see right now.)
+You do NOT have a webcam. The standalone security camera is owned by **Sentry** — the only agent that can see the room. For any real-world vision question about your immediate surroundings — "what do you see", "who's in the room / who's there", "what's that over there", "is someone at the door", "is the computer on" — delegate to **sentry** with a clear plain-language question as the {task}. Sentry looks at the live frame (Moondream on the camera machine) and returns a short answer; relay that answer to the user in spoken English. Do NOT answer from your own vision and do NOT use any webcam tool — you don't have one. Keep it to a sentence or two.
 
 # WHAT THE USER HEARS
 
@@ -3465,7 +3473,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             atlasDirect = { active: true, messages: [] };
             result = `Direct Atlas mode is on. Tell the user, in one short sentence, that they're now talking to Atlas directly — they can describe what they need and Atlas will ask questions to get it right, then say "go" to start or "back to Warden" to exit. Then end your turn immediately and do nothing else.`;
         }
-    } else if (toolName === 'byte' || toolName === 'dexter' || toolName === 'iris') {
+    } else if (toolName === 'byte' || toolName === 'dexter' || toolName === 'iris' || toolName === 'sentry') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
         let task = args.task as string;
         if (!task) result = 'Error: task is required';
