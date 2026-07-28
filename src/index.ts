@@ -120,12 +120,9 @@ let messageLoopRunning = false;
 export let agentProcessing = false;
 let lastAwarenessEvent: string = '';
 
-// Security-message throttle: Sentry background agent can get chatty when the
-// detector fires rapidly or the model loops. Cap each sender to one outbound
-// channel delivery per window so the phone isn't flooded.
+// Security senders — background agents (Sentry) whose send_message output
+// should also be spoken over the voice client's SSE stream.
 const SECURITY_SENDERS = new Set(['Sentry']);
-const securityMessageThrottle = new Map<string, number>();
-const SECURITY_MESSAGE_WINDOW_MS = 60_000;
 
 const channels: Channel[] = [];
 
@@ -440,18 +437,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           is_from_me: false,
           is_bot_message: true,
         });
-
-        // Throttle chatty security agents. The message is still stored above,
-        // but repeated outbound deliveries are suppressed for a window.
-        if (SECURITY_SENDERS.has(senderName)) {
-          const lastSent = securityMessageThrottle.get(senderName) || 0;
-          const nowMs = Date.now();
-          if (nowMs - lastSent < SECURITY_MESSAGE_WINDOW_MS) {
-            logger.info({ sender: senderName, secondsSinceLast: Math.round((nowMs - lastSent) / 1000), messageId }, 'send_message callback: throttling security sender');
-            return { ok: true, messageId, throttled: true };
-          }
-          securityMessageThrottle.set(senderName, nowMs);
-        }
 
         const targetChannel = typeof args?.channel === 'string'
           ? channels.find((c) => c.name === args.channel)
