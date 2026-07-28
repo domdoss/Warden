@@ -65,7 +65,8 @@ import {
   setMcpServerEnabled,
 } from './mcp-registry.js';
 import {
-  awarenessLog,
+  recordAwarenessEvent,
+  queryAwarenessHostEvents,
 } from './security-log.js';
 import {
   createTask,
@@ -1861,6 +1862,19 @@ function handleActivity(
   json(res, { items: items.slice(0, limit) });
 }
 
+/** GET /api/security/awareness-log?limit=N — recent host AWARENESS event rows
+ *  (assessment IS NULL, i.e. the rows the host auto-logged independent of
+ *  Sentry's verdict rows), newest-first, with seconds_empty for arrivals. */
+function handleAwarenessLog(res: http.ServerResponse, params: URLSearchParams): void {
+  const limit = Math.min(Math.max(1, parseInt(params.get('limit') || '50', 10)), 1000);
+  try {
+    const rows = queryAwarenessHostEvents(limit);
+    json(res, { rows });
+  } catch (err: any) {
+    json(res, { ok: false, error: String(err?.message ?? err) });
+  }
+}
+
 function handleNotifications(
   res: http.ServerResponse,
   params: URLSearchParams,
@@ -3476,7 +3490,9 @@ export function startStatusServer(d: StatusDeps): void {
           // Spawn Sentry directly; no chat message, no channel relay.
           const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
           const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-          const task = `Current local time is ${localNow} (timezone ${tz }).\n\n${text}\n\nUse tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent. Do not use awareness_log; it does not exist. Do not write a plain-text response.`;
+          const task = `Current local time is ${localNow} (timezone ${tz }).\n\n${text}\n\nYou are Sentry, Warden's situational-awareness agent. Use tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent.\n\nThe AWARENESS payload now includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- scene_caption (from Moondream on the laptop/GPU, when the event is an anomaly)\n- room occupancy, motion area, camera state, and keypoint/bbox data\n\nUse awareness_log (action: record/query) to record your verdict and avoid repeating greetings. You are text-only; if the structured data is not enough, call security_caption({"question":"..."}) once and the laptop will run Moondream on GPU.\n\nDo not write a plain-text response; use tools only.`;
+          // Host-side auto-log of the raw event, independent of Sentry.
+          recordAwarenessEvent(text);
           spawnSentryBackground(task, text);
 
           logger.info({ text: text.slice(0, 80) }, 'AWARENESS routed directly to Sentry');
@@ -3609,6 +3625,7 @@ export function startStatusServer(d: StatusDeps): void {
         return await handleVault(req, res, pathname);
       if (pathname === '/api/search') return await handleSearch(res, params);
       if (pathname === '/api/activity') return handleActivity(res, params);
+      if (pathname === '/api/security/awareness-log') return handleAwarenessLog(res, params);
       if (pathname === '/api/notifications' && req.method === 'GET')
         return handleNotificationsSse(req, res);
       if (pathname === '/api/notifications/poll' && req.method === 'GET')

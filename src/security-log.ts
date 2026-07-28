@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { STORE_DIR } from './config.js';
+import { logger } from './logger.js';
 
 // Sentry's own conditions log — a robust, open-ended sqlite store separate
 // from the message DB. Every security assessment is recorded here with its
@@ -261,5 +262,91 @@ export function awarenessLog(args: any): { ok: boolean; summary?: string; error?
     return { ok: false, error: `unknown action: ${action} (use record | query | stats)` };
   } catch (err: any) {
     return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
+/** Recent host AWARENESS event rows (assessment IS NULL — the rows the host
+ *  auto-logged, not Sentry's verdict rows), newest insertion first. Ordered by
+ *  created_at (not ts) so a mix of compact and ISO ts strings doesn't break the
+ *  ordering. */
+export function queryAwarenessHostEvents(limit: number): any[] {
+  const n = Math.min(Math.max(1, Math.floor(limit)), 1000);
+  const d = getDb();
+  return d
+    .prepare(
+      'SELECT ts, event, label, is_known, seconds_empty, data FROM awareness_log WHERE assessment IS NULL ORDER BY created_at DESC LIMIT ?',
+    )
+    .all(n) as any[];
+}
+
+/** Parse a timestamp that is either ISO (YYYY-MM-DDTHH:MM:SS) or the detector's
+ *  compact local form (YYYYMMDDTHHMMSS) into a Date. Local-naive in both cases. */
+function parseTs(ts: string): Date | null {
+  if (!ts) return null;
+  const iso = Date.parse(ts);
+  if (!Number.isNaN(iso)) return new Date(iso);
+  const m = ts.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/);
+  if (m) return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+  return null;
+}
+
+/** Host-side auto-log: parse an incoming AWARENESS text and record the raw event
+ *  to awareness_log, INDEPENDENT of the Sentry agent — so an event is always
+ *  recorded even if Sentry crashes, loops, or skips its tool. For arrivals,
+ *  compute seconds_empty = seconds since the last departure row.
+ *
+ *  assessment is left null on purpose: that's the discriminator between host
+ *  event rows (this function) and Sentry's verdict rows (which set assessment).
+ *  The dashboard Security feed filters on assessment IS NULL for a clean feed.
+ *
+ *  Never throws. */
+export function recordAwarenessEvent(awarenessText: string): void {
+  try {
+    const m = awarenessText.match(/^AWARENESS\s+—\s+(\w+)\s+at\s+(\S+)\.\s+data:\s+(\{.*\})/);
+    if (!m) return;
+    const event = m[1];
+    const compactTs = m[2];
+    let data: any = {};
+    try { data = JSON.parse(m[3]); } catch { /* leave empty */ }
+
+    // Convert the detector's compact local ts YYYYMMDDTHHMMSS -> ISO
+    // YYYY-MM-DDTHH:MM:SS so every row is string-comparable for ORDER BY ts.
+    const iso =
+      compactTs.length === 15 && /^\d{8}T\d{6}$/.test(compactTs)
+        ? `${compactTs.slice(0, 4)}-${compactTs.slice(4, 6)}-${compactTs.slice(6, 8)}T${compactTs.slice(9, 11)}:${compactTs.slice(11, 13)}:${compactTs.slice(13, 15)}`
+        : compactTs;
+
+    // For arrivals, how long was the room empty? Seconds since the last
+    // departure event. Order by created_at (insertion time, always ISO) — NOT
+    // by ts, because the DB may hold rows with the detector's compact ts
+    // (YYYYMMDDTHHMMSS) mixed with ISO ts, and a string ORDER BY ts would
+    // sort compact above ISO ('0' > '-') and return a stale row.
+    let seconds_empty: number | null = null;
+    if (event === 'arrival') {
+      const d = getDb();
+      const row = d
+        .prepare("SELECT ts FROM awareness_log WHERE event = 'departure' ORDER BY created_at DESC LIMIT 1")
+        .get() as { ts: string | null } | undefined;
+      if (row && row.ts) {
+        const depDate = parseTs(String(row.ts));
+        const arrDate = parseTs(iso);
+        if (depDate && arrDate) seconds_empty = Math.max(0, (arrDate.getTime() - depDate.getTime()) / 1000);
+      }
+    }
+
+    const label = typeof data.label === 'string' ? data.label : undefined;
+    const is_known = typeof data.is_known === 'boolean' ? data.is_known : undefined;
+
+    awarenessLog({
+      action: 'record',
+      ts: iso,
+      event,
+      label,
+      is_known,
+      seconds_empty,
+      data,
+    });
+  } catch (err: any) {
+    logger.error({ err }, 'recordAwarenessEvent: failed');
   }
 }

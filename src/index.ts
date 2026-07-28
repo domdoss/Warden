@@ -78,7 +78,7 @@ import { startStatusServer, pushNotification, pushActivityLine } from './status-
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
-import { securityLog, awarenessLog } from './security-log.js';
+import { securityLog, awarenessLog, recordAwarenessEvent } from './security-log.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -1306,6 +1306,66 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       return securityLog(args);
     },
 
+    // Sentry's situational-awareness history (arrivals/departures/greetings).
+    awareness_log: async (args: any) => {
+      return awarenessLog(args);
+    },
+
+    // Sentry is text-only. Ask the satellite security app to run Moondream on
+    // the latest frame (GPU) and return a caption or answer.
+    security_caption: async (args: any) => {
+      try {
+        const ip = getSatelliteIp();
+        const question = typeof args?.question === 'string' ? args.question : '';
+        const url = `http://${ip}:8765/caption`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 20000);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const body: any = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          return { ok: false, error: body?.error || `HTTP ${res.status}` };
+        }
+        return { ok: true, caption: body?.caption, answer: body?.answer };
+      } catch (err: any) {
+        logger.warn({ err }, 'security_caption: failed to reach satellite');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
+    // Sentry registers a known person; the satellite computes the face embedding
+    // on CPU and stores it locally.
+    save_known_person: async (args: any) => {
+      try {
+        const label = String(args?.label || '').trim();
+        if (!label) return { ok: false, error: 'missing label' };
+        const ip = getSatelliteIp();
+        const url = `http://${ip}:8765/known/save`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const body: any = await res.json().catch(() => ({}));
+        if (!res.ok || !body?.ok) {
+          return { ok: false, error: body?.error || `HTTP ${res.status}` };
+        }
+        return { ok: true, label };
+      } catch (err: any) {
+        logger.warn({ err }, 'save_known_person: failed to reach satellite');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
     // Orchestrator → Sentry direct. The user tells Jarvis a presence/schedule
     // note (e.g. "heading out for the evening"); Sentry processes it according to
     // the rules in security/sentry.md. Sentry does not reply in the chat.
@@ -1523,9 +1583,11 @@ async function processOwnerMessages(): Promise<void> {
     const events = pending.filter((m) => (m.content || '').startsWith('AWARENESS'));
     const latest = events.length > 0 ? events[events.length - 1] : pending[pending.length - 1]!;
     const awarenessText = latest.content || '';
-    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}\n\nUse tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent. Do not use awareness_log; it does not exist. Do not write a plain-text response.`;
+    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}\n\nYou are Sentry, Warden's situational-awareness agent. Use tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent.\n\nThe AWARENESS payload now includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- scene_caption (from Moondream on the laptop/GPU, when the event is an anomaly)\n- room occupancy, motion area, camera state, and keypoint/bbox data\n\nUse awareness_log (action: record/query) to record your verdict and avoid repeating greetings. You are text-only; if the structured data is not enough, call security_caption({"question":"..."}) once and the laptop will run Moondream on GPU.\n\nDo not write a plain-text response; use tools only.`;
 
     try {
+      // Host-side auto-log of the raw event, independent of Sentry.
+      recordAwarenessEvent(awarenessText);
       spawnSentryBackground(task, awarenessText);
     } catch (err: any) {
       logger.warn({ err }, 'Awareness: failed to spawn Sentry');

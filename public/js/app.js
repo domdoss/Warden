@@ -275,6 +275,7 @@
     if (name === 'tasks') refreshTasks();
     else if (name === 'skills') { refreshSkills(); refreshMcp(); }
     else if (name === 'activity') refreshActivity();
+    else if (name === 'security') refreshSecurity();
     else if (name === 'logs') refreshProcessLogs();
     else if (name === 'accounts') refreshAccounts();
     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
@@ -1887,6 +1888,45 @@
     }
   }
 
+  // ============================================================= Security events
+  function fmtAbsence(seconds) {
+    if (seconds == null) return '';
+    const s = Math.round(Number(seconds));
+    if (!isFinite(s) || s < 0) return '';
+    if (s < 60) return `gone ${s}s`;
+    const m = Math.floor(s / 60);
+    const rs = s % 60;
+    if (m < 60) return `gone ${m}m${rs ? ' ' + rs + 's' : ''}`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return `gone ${h}h${rm ? ' ' + rm + 'm' : ''}`;
+  }
+
+  async function refreshSecurity() {
+    const el = $('securityList');
+    if (!el) return;
+    el.innerHTML = '<div class="task-empty">Loading…</div>';
+    try {
+      const data = await api('/api/security/awareness-log?limit=50');
+      const rows = data.rows || [];
+      if (!rows.length) { el.innerHTML = '<div class="task-empty">No security events yet.</div>'; return; }
+      el.innerHTML = rows.map(r => {
+        const who = r.label ? esc(r.label) : (r.is_known != null ? (r.is_known ? 'known' : 'unknown') : '');
+        const absence = r.event === 'arrival' && r.seconds_empty != null ? ' · ' + esc(fmtAbsence(r.seconds_empty)) : '';
+        let extra = '';
+        if (r.data) { try { const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; if (d && d.person_count != null) extra = 'people: ' + esc(String(d.person_count)); } catch {}
+        }
+        return '<div class="activity-item"><div class="row1">' +
+          '<span class="name">' + esc(r.event || '?') + (who ? ' · ' + who : '') + '</span>' +
+          '<span class="ts">' + fmtTime(r.ts) + absence + '</span></div>' +
+          (extra ? '<div class="tools">' + extra + '</div>' : '') +
+          '</div>';
+      }).join('');
+    } catch (e) {
+      el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
+    }
+  }
+
   // ============================================================= Process logs
   async function refreshProcessLogs() {
     const el = $('processLogsContent');
@@ -2295,6 +2335,7 @@
     $('btnAddApiKey').addEventListener('click', openApiKeyDrawer);
     $('btnRefreshSkills').addEventListener('click', () => { refreshSkills(); refreshMcp(); });
     $('btnRefreshActivity').addEventListener('click', refreshActivity);
+    const btnSec = $('btnRefreshSecurity'); if (btnSec) btnSec.addEventListener('click', refreshSecurity);
 
     // MCP + Skills mutation controls
     $('btnMcpAdd').addEventListener('click', mcpAddSubmit);
@@ -2394,5 +2435,5 @@
   }
 
   // Expose a small surface for debugging and inline handlers
-  window.Warden = { STATE, sendChat, pollChat, pollStatus, refreshTasks, refreshSkills, refreshActivity, refreshAccounts, deleteApiKey, syncThinkingBar, stopAgent };
+  window.Warden = { STATE, sendChat, pollChat, pollStatus, refreshTasks, refreshSkills, refreshActivity, refreshSecurity, refreshAccounts, deleteApiKey, syncThinkingBar, stopAgent };
 })();
