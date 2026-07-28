@@ -23,7 +23,9 @@ dist/
 *.tsbuildinfo
 
 # ── Runtime data (DB, sessions, ipc, per-group folders) ──
-data/
+# Ignore everything under data/ EXCEPT the skills (those are tracked).
+data/*
+!data/skills/
 logs/
 tmp/
 store/
