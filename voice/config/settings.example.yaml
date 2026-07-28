@@ -9,6 +9,13 @@ voice:
   max_recording_seconds: 30
   silence_threshold: 500
   whisper_model: base
+  # TTS engine: "kokoro" (default, fast, low-VRAM) or "orpheus"
+  # (LLM-based, high quality, requires a CUDA GPU with ~6+ GB VRAM).
+  tts_engine: kokoro
+  # Kokoro voices (examples): am_michael, af_heart, bm_george, af_bella.
+  # Orpheus voices (this package): zoe, zac, jess, leo, mia, julia, leah.
+  tts_voice: am_michael
+  tts_speed: 1.0
   # Double-clap wake: clap twice to activate. clap_threshold is the
   # AC-coupled int16 peak (DC offset removed) that counts as a clap onset.
   # It's an amplitude floor: set it above your mic's speech peaks so only a

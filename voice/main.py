@@ -6,7 +6,7 @@ Architecture:
 - Background thread: single asyncio event loop.
 - DockboxBridge owns the HTTP/SSE connection to the server.
 - Local Whisper transcribes voice; transcribed text is sent to /api/messages.
-- Agent reply chunks arrive via SSE and are spoken by Kokoro TTS.
+- Agent reply chunks arrive via SSE and are spoken by Orpheus-TTS.
 """
 
 from __future__ import annotations
@@ -108,7 +108,11 @@ class JarvisApp:
             sample_rate=voice_cfg.get("sample_rate", 16000)
         )
         self.stt = STT(model=voice_cfg.get("whisper_model", "base"))
-        self.tts = TTS(voice="bm_george", speed=1.2, lang_code="b")
+        self.tts = TTS(
+            engine=voice_cfg.get("tts_engine", "kokoro"),
+            voice=voice_cfg.get("tts_voice", None),
+            speed=float(voice_cfg.get("tts_speed", 1.0)),
+        )
 
         self.window: Optional[JarvisWindow] = None
         self.clap_detector: Optional[ClapDetector] = None
@@ -295,6 +299,11 @@ class JarvisApp:
             print(f"User said: {text}")
 
             user_ended = self._user_ended(text)
+            if user_ended:
+                print("[jarvis] user ended conversation; not sending to server")
+                await self._play_beep_async(self.beep_generator.stop_beep)
+                return False
+
             self._turn_done.clear()
             self._end_conversation = False
             vision_source = self._vision_source(text)

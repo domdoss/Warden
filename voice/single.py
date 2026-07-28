@@ -18,21 +18,29 @@ from core.dockbox_client import DockboxClient
 from core.session_store import SessionStore
 
 
-BASE_URL = "http://127.0.0.1:3200"
+import sys
+
+
 DEFAULT_JID = "owner@local"
+
+
+def _base_url() -> str:
+    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
+    return f"http://{host}:3200"
 
 
 async def _run() -> int:
     cfg = Config()
     store = SessionStore()
     store.clear()
-    client = DockboxClient(base_url=BASE_URL, session_store=store)
+    base_url = _base_url()
+    client = DockboxClient(base_url=base_url, session_store=store)
     try:
-        print(f"[single] server: {BASE_URL}")
+        print(f"[single] server: {base_url}")
         health = await client.health()
         print(f"[single] server health: {health.get('status', '?')}")
 
-        cfg.set("dockbox.base_url", BASE_URL)
+        cfg.set("dockbox.base_url", base_url)
         cfg.set("dockbox.default_jid", DEFAULT_JID)
         # Drop any leftover auth from a previous (cloud) setup — this server
         # needs none.
@@ -40,7 +48,7 @@ async def _run() -> int:
             cfg.dockbox.pop(stale, None)
         cfg.save()
         print(f"[single] saved config to {cfg.config_path}")
-        print(f"[single] base_url={BASE_URL}  default_jid={DEFAULT_JID}")
+        print(f"[single] base_url={base_url}  default_jid={DEFAULT_JID}")
         return 0
     except Exception as e:
         print(f"[single] FAILED: {e}")

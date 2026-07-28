@@ -33,6 +33,13 @@ from typing import Optional
 import cv2
 import numpy as np
 
+try:
+    import tkinter as tk
+    from tkinter import simpledialog
+    _HAS_TK = True
+except Exception:
+    _HAS_TK = False
+
 from core.config import load_config
 from core.detector import Detector
 from core.motion import MotionDetector
@@ -61,12 +68,14 @@ def parse_args(argv: list[str] | None = None):
     p = argparse.ArgumentParser(description="Warden Security Mode awareness feed")
     p.add_argument("--config", help="Path to settings.yaml")
     p.add_argument("--camera", type=int, help="Override webcam index")
+    p.add_argument("--stream", help="Override camera with an HTTP/MJPEG stream URL (e.g. http://esp32-cam.local:81/stream)")
     p.add_argument("--no-voice", action="store_true", help="Don't launch the voice/ client")
     p.add_argument("--no-window", action="store_true", help="Headless (no GUI window)")
     return p.parse_args(argv)
 
 
-def _overlay(frame: np.ndarray, light_color, status: str, fps: float) -> np.ndarray:
+def _overlay(frame: np.ndarray, light_color, status: str, fps: float,
+             source_label: str = "") -> np.ndarray:
     """Draw the alert light (top-left circle) + a status line onto the frame."""
     out = frame
     h, w = out.shape[:2]
@@ -81,6 +90,12 @@ def _overlay(frame: np.ndarray, light_color, status: str, fps: float) -> np.ndar
     text_y = 38
     cv2.rectangle(out, (50, text_y - 24), (w, text_y + 10), BLACK, -1)
     _shadow_text(out, f"Warden Security  |  {status}", (55, text_y), 0.6)
+
+    # Source label under the status line (e.g. "cam:0" or stream URL host).
+    if source_label:
+        src_y = text_y + 20
+        cv2.rectangle(out, (50, src_y - 14), (w, src_y + 8), BLACK, -1)
+        _shadow_text(out, f"source: {source_label}", (55, src_y), 0.45)
 
     # Black background strip behind FPS counter.
     fps_text = f"{fps:4.1f} fps"
@@ -100,6 +115,51 @@ def _shadow_text(out: np.ndarray, text: str, pos: tuple, scale: float) -> None:
                 scale, BLACK, 2, cv2.LINE_AA)
     cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
                 scale, WHITE, 2, cv2.LINE_AA)
+
+
+def _source_label(stream_url: str | None, cam_index: int, width: int = 70) -> str:
+    """Compact label for the active video source."""
+    if not stream_url:
+        return f"cam:{cam_index}"
+    # Trim to width; show scheme+host+path tail.
+    s = stream_url.replace("http://", "").replace("https://", "")
+    if len(s) > width:
+        s = s[:width - 3] + "..."
+    return s
+
+
+def _open_capture(stream_url: str | None, cam_cfg: dict):
+    """Open a VideoCapture from an HTTP stream or a local webcam index."""
+    if stream_url:
+        cap = cv2.VideoCapture(stream_url)
+    else:
+        cap = cv2.VideoCapture(int(cam_cfg["index"]))
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_cfg["width"])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_cfg["height"])
+    return cap
+
+
+def _prompt_source(current: str, cam_index: int) -> str | None:
+    """Ask the user for a new source (HTTP stream URL or camera index)."""
+    if not _HAS_TK:
+        log.warning("tkinter unavailable — cannot show settings dialog")
+        return None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        prompt = (
+            f"Current source: {current or f'cam:{cam_index}' }\n\n"
+            "Enter an HTTP stream URL (e.g. http://esp32-cam.local:81/stream) "
+            "or a camera index (e.g. 0, 1)."
+        )
+        result = simpledialog.askstring("Warden Security — Source", prompt)
+        root.destroy()
+        return result.strip() if result else None
+    except Exception as e:
+        log.warning("source dialog failed: %s", e)
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,16 +183,11 @@ def main(argv: list[str] | None = None) -> int:
 
     show_window = not args.no_window
 
-    log.info("opening webcam index %s (%dx%d @ %d fps)",
-             cam_cfg["index"], cam_cfg["width"], cam_cfg["height"], cam_cfg["fps"])
-    cap = cv2.VideoCapture(int(cam_cfg["index"]))
+    stream_url = args.stream or cam_cfg.get("stream_url")
+    cap = _open_capture(stream_url, cam_cfg)
     if not cap.isOpened():
-        log.error("could not open webcam index %s", cam_cfg["index"])
+        log.error("could not open video source")
         return 2
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_cfg["width"])
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_cfg["height"])
 
     log.info("loading model (variant=%s, threshold=%.2f) — first frame may be slow",
              model_cfg["variant"], model_cfg["threshold"])
@@ -166,10 +221,10 @@ def main(argv: list[str] | None = None) -> int:
         port=int(fs_cfg.get("port", 8765)),
     )
     frame_server.start()
-    # Armed security flagging is handled by the desktop now, but the laptop still
-    # accepts /arm and /disarm commands from the desktop/guard so the UI can
-    # reflect the current armed state and status light can show it.
-    frame_server.set_armed(True)
+    # Armed security flagging is handled by the desktop now. The laptop accepts
+    # /arm and /disarm commands from the desktop/guard, but starts disarmed so
+    # the user must explicitly arm it.
+    frame_server.set_armed(False)
 
     def on_arm():
         frame_server.set_armed(True)
@@ -212,6 +267,32 @@ def main(argv: list[str] | None = None) -> int:
     light = LIGHT_GREEN
 
     # Live sliders.
+    source_label = _source_label(stream_url, int(cam_cfg["index"]))
+
+    def switch_source():
+        nonlocal cap, stream_url, source_label
+        current = stream_url or f"cam:{cam_cfg['index']}"
+        result = _prompt_source(current, int(cam_cfg["index"]))
+        if result is None:
+            return
+        new_url: str | None = None
+        try:
+            idx = int(result)
+            cam_cfg["index"] = idx
+        except ValueError:
+            new_url = result
+        stream_url = new_url
+        old_cap = cap
+        cap = _open_capture(stream_url, cam_cfg)
+        if cap.isOpened():
+            old_cap.release()
+            source_label = _source_label(stream_url, int(cam_cfg["index"]))
+            log.info("switched source to %s", source_label)
+        else:
+            log.error("failed to open new source, keeping previous")
+            cap.release()
+            cap = old_cap
+
     if show_window:
         cv2.namedWindow("Warden Security")
         cv2.createTrackbar("conf x100", "Warden Security",
@@ -263,7 +344,9 @@ def main(argv: list[str] | None = None) -> int:
 
             # Status light reflects armed state + situation.
             armed = frame_server.is_armed()
-            if camera_covered or situation.camera_moved:
+            if not armed:
+                light, state = LIGHT_GREY, "DISARMED"
+            elif camera_covered or situation.camera_moved:
                 light, state = LIGHT_RED, "CAMERA ALERT"
             elif motion_res.area >= motion.min_area:
                 light, state = LIGHT_AMBER, "MOTION"
@@ -272,14 +355,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 light, state = LIGHT_GREEN, "IDLE"
 
-            if not armed:
-                state = f"DISARMED — {state}"
-
-            # Post change events to Warden, respecting the cooldown.
+            # Post change events to Warden, respecting the cooldown and armed state.
+            # The security system starts disarmed; awareness events are only sent
+            # when armed so routine motion/person detections don't wake Sentry.
             # # TODO: batch closely-spaced events into one AWARENESS message to
             # reduce Sentry wake-ups; e.g. arrival + movement on the same frame
             # should probably be a single "arrival" event with movement data.
-            if events:
+            if events and armed:
                 since_last = now - last_awareness_post
                 # Pick the highest-priority event to announce. Order matters.
                 priority = ["camera_covered", "camera_moved", "arrival", "departure",
@@ -322,10 +404,13 @@ def main(argv: list[str] | None = None) -> int:
 
             frame_server.set_state(state)
             if show_window:
-                display = _overlay(frame.copy(), light, state, fps)
+                display = _overlay(frame.copy(), light, state, fps, source_label)
                 cv2.imshow("Warden Security", display)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
+                if key == ord("s"):
+                    switch_source()
     finally:
         cap.release()
         if show_window:

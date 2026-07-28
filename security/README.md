@@ -1,72 +1,72 @@
 # Warden Security Mode
 
-A standalone webcam watcher that flags detections to **Heimdall**, Warden's
-background security agent, which reviews each flag and decides whether to raise
-an alert. Known people are skipped at the detector (no agent round-trip). It's a
-**basic framework** — plumbed in and upgradable for real home-security use
-(Home Assistant, a real guard-dispatch service, face-ID, etc. can be added as
-plugins/MCP later).
+A standalone webcam watcher that posts compact structured-JSON events to
+**Sentry**, Warden's single background security/awareness agent. Sentry applies
+the editable `security/sentry.md` rules and decides per event whether to alert
+(send a captioned frame to chat + Telegram and light the red alert on the
+camera machine), greet, or stay silent. It's a **basic framework** — plumbed in
+and upgradable for real home-security use (Home Assistant, a real guard-dispatch
+service, face-ID, etc. can be added as plugins/MCP later).
 
 No YOLO (AGPL). Commercially-free models only: **RF-DETR Keypoint** (Apache 2.0)
-for detection, **gemma4** (via Warden's Ollama) for vision.
+for detection. Sentry runs on a light local model (vision optional).
 
 ## How it works
 
 ```
-webcam → RF-DETR Keypoint detector (CPU)
-  │  detects a person / vehicle / thief-tool / covered camera
-  │  known person?  → pHash-match a saved keyframe → SKIP (no alert)
+webcam (or ESP32-CAM HTTP stream) → RF-DETR Keypoint detector (CPU)
+  │  builds a structured JSON situation each frame:
+  │    persons, motion, camera state, room occupancy
   ▼
-FLAGGED → posts one frame to Warden (POST /api/messages "SECURITY ALERT …")
+on a meaningful change (arrival, departure, camera covered/moved, motion burst)
+  → POST AWARENESS JSON to Warden's dedicated /api/awareness endpoint
+  │  (/api/messages rejects AWARENESS — routine awareness never hits chat)
   ▼
-Warden routes it to Heimdall (background sub-agent, NOT the main chat)
+Warden spawns Sentry (background sub-agent, NOT the main chat)
   ▼
-Heimdall reviews the frame (vision) + its security_log history:
-  │  NORMAL  → save_known_person (keyframe) + dismiss_security_flag (silent)
-  │  ABNORMAL → alert_security (mock escalate) + send_message (image attached,
-  │            shows in chat + Telegram) + open_security_alert (red button + popup)
+Sentry applies security/sentry.md rules + reads the latest frame:
+  │  ALERT   → send_message (captioned frame, shows in chat + Telegram)
+  │           + alert_security + open_security_alert (red STAND DOWN on the camera machine)
+  │           + security_log (abnormal)
+  │  GREET   → send_message (friendly arrival, no image)
+  │  SILENT  → dismiss_security_flag / security_log (normal)
   ▼
-ALERTED → red STAND DOWN button + auto-popup of the alert image.
+ALERTED → red STAND DOWN button on the camera machine's window.
   The GUARD presses STAND DOWN (or says "close the alert" in chat) to re-arm.
-  Heimdall cannot close alerts — only the guard can.
 ```
 
-State machine: **ARMED → REVIEWING → (ALERTED | ARMED)**. The alert is spawned
-*only* after Heimdall declares it abnormal — the detector just flags for review.
+There is no separate vision verifier — Sentry is the whole background security
+path. Arm/disarm is owned by Sentry (and the laptop's `/arm` `/disarm`
+endpoints); the detector starts **disarmed** by default and the status light
+shows grey when disarmed.
 
-### Awareness events (always-on, separate from security alerts)
+### Events
 
-The detector also runs a continuous **situational-awareness** feed that posts
-compact JSON events (arrival, departure, motion burst, camera covered/uncovered)
-to Warden. These AWARENESS events are **internal control messages**, not chat
-messages:
+AWARENESS events are **internal control messages**, not chat messages:
 
-- They are POSTed to the dedicated `/api/awareness` endpoint on the desktop.
-- `/api/messages` rejects AWARENESS messages; the awareness endpoint is the only
-  valid path.
-- Warden routes them to the **Sentry** background agent (local model), which
-  applies the user-editable policy in `security/sentry.md` and decides whether to
-  escalate to Heimdall.
-- Person `movement` is intentionally **not** an awareness event — people move
-  constantly, so only occupancy/count transitions and non-person motion bursts
-  are reported.
+- POSTed to the dedicated `/api/awareness` endpoint on the desktop.
+- `/api/messages` rejects AWARENESS; the awareness endpoint is the only valid path.
+- Person `movement` is intentionally **not** an event — people move constantly,
+  so only occupancy/count transitions and non-person motion bursts are reported.
+- Count transitions are debounced (separate, longer `absence_debounce`) so a
+  flickering detector while someone sits still doesn't spam arrival/departure.
 
 ## Files
 
 ```
 security/
-  main.py                # webcam loop, state machine, GUI (alert light + STAND DOWN button + sliders)
+  main.py                # webcam loop, GUI (alert light + sliders + source switch)
+  run.sh                 # activates the shared venv and runs main.py
   core/
-    detector.py          # RF-DETR Keypoint wrapper (detection-only fallback)
+    detector.py          # RF-DETR Keypoint wrapper
     motion.py            # frame-differencing motion detector
-    rules.py             # rule matching (allowed classes, confidence, movement)
-    capture.py           # annotate frames + write event JSON
+    situation.py         # structured situation tracker + change events
     config.py            # settings loader + COCO class names
-    warden.py            # posts SECURITY ALERT frames and AWARENESS JSON to Warden
-    server.py            # tiny HTTP server: GET /frame, /status; POST /alert/open, /alert/close
+    warden.py            # posts AWARENESS JSON to /api/awareness
+    server.py            # tiny HTTP server: GET /frame, /status; POST /arm, /disarm, /alert/*
     voice_launcher.py    # opens the voice/ (Jarvis) client alongside the webcam
-    known.py             # known-person keyframe pHash compare (skip flagging known people)
-  config/settings.example.yaml   # the "set of instructions" — copy to settings.yaml
+  config/settings.example.yaml   # copy to settings.yaml to customize
+  sentry.md              # user-editable Sentry policy (injected into Sentry's prompt)
   requirements.txt
 ```
 
@@ -88,67 +88,63 @@ cp /usr/share/fonts/TTF/DejaVuSans-Bold.ttf .venv/lib/python*/site-packages/cv2/
 ## Start
 
 ```bash
-cd security && . .venv/bin/activate
-python main.py                 # webcam window + (optionally) voice/ open together
-# flags:
+cd security && ./run.sh
+# flags (forwarded to main.py):
 #   --camera 1        override webcam index
+#   --stream URL      use an HTTP/MJPEG stream (e.g. http://esp32-cam.local:81/stream)
 #   --no-voice        don't launch the voice/ client
 #   --no-window       headless (no GUI)
 #   --config my.yaml  override settings file
 ```
 
-The window shows the live feed, an alert light (green idle / amber motion or
-reviewing / red alert), and two sliders: **conf x100** (detection threshold) and
-**motion px** (motion sensitivity).
+The window shows the live feed, an alert light (grey disarmed / green idle /
+amber motion / red alert), and two sliders: **conf x100** (detection threshold)
+and **motion px** (motion sensitivity). The active source is shown under the
+status line. Press **s** to switch the video source live (HTTP stream URL or
+camera index) via a small dialog.
 
-When Heimdall declares an alert, a **red STAND DOWN** button appears at the
-bottom and a **"Security Alert — review"** window pops up with the alert image.
+When Sentry raises an alert, a **red STAND DOWN** button appears at the bottom.
 Press STAND DOWN (or type "close the alert" / "stand down" / "all clear" in the
-Warden chat) to close the alert and re-arm the detector.
+Warden chat) to close the alert and re-arm.
 
 ## Stop
 
 - Close the webcam window or press **q** in it, or
 - `pkill -f "security/main.py"` (or kill the pid printed at start).
 
-The frame server (`http://127.0.0.1:8765`) stops with it; Warden's
+The frame server (`http://0.0.0.0:8765`) stops with it; Warden's
 `webcam_capture` then falls back to ffmpeg `/dev/video0`.
 
 ## Warden side (already plumbed in)
 
-- **Heimdall** sub-agent: `container/agent-runner/src/index.ts` (SUBAGENTS) +
-  `tools/security-tools.ts` (webcam_capture, send_message, alert_security,
-  open_security_alert, dismiss_security_flag, save_known_person, security_log).
-- **Sentry** sub-agent: same SUBAGENTS list, toolset `awareness-core`. The
-  agent-runner host reads `security/sentry.md` and prepends it to Sentry's
-  system prompt; edit that file to change the awareness policy.
-- **Auto-trigger**: `src/index.ts processOwnerMessages` routes `SECURITY ALERT`
-  messages to Heimdall (background), only the latest flag, never the main
-  orchestrator → no chat spam. AWARENESS events are handled by the dedicated
-  `/api/awareness` endpoint in `src/status-server.ts`, not the chat message path.
-- **Orchestrator → Heimdall direct**: the `tell_heimdall` tool (no Atlas).
+- **Sentry** sub-agent: `container/agent-runner/src/index.ts` (SUBAGENTS),
+  toolsets `awareness-core` + `security-core`. The agent-runner host reads
+  `security/sentry.md` and prepends it to Sentry's system prompt; edit that file
+  to change the policy.
+- **AWARENESS routing**: the dedicated `/api/awareness` endpoint in
+  `src/status-server.ts` records the event to `awareness_log` and spawns Sentry
+  in the background. `/api/messages` rejects AWARENESS messages.
 - **Orchestrator → Sentry direct**: the `tell_sentry` tool.
-- **Close the alert**: `close_security_alert` host callback → `POST /alert/close`
-  (Heimdall's normal-dismiss, or the guard's "close the alert" chat command, or
-  the STAND DOWN button).
+- **Arm/disarm**: `/arm` and `/disarm` endpoints on the camera machine's frame
+  server; Sentry arms/disarms when the user asks.
 - **Telegram**: alert `send_message` includes `[Image: …]`; the Telegram channel
   sends it as a photo, so alerts + their frames show on your phone.
-- **security.db** (`store/security.db`): `security_log` (every flag + assessment,
-  engrained host-side recording) + `awareness_log` (every AWARENESS event +
-  Sentry assessment) + `known_persons` (keyframes for the pHash skip).
+- **security.db** (`store/security.db`): `security_log` (every flag +
+  assessment) + `awareness_log` (every AWARENESS event + Sentry assessment).
 
 ## Model
 
-Heimdall shares the orchestrator's model (dashboard `orchestrator:model` —
-`gemma4:31b-cloud` here, vision-capable). No fallback — if that model is down,
-Heimdall retries (500s) but won't swap models.
+Sentry's model is picked in the dashboard (`sentry:model`); blank inherits the
+orchestrator model. It's a light data-only decision maker — a small local model
+is plenty. Vision is optional (a frame reference is supplied with the event when
+available).
 
 ## Upgradable (later, not in the demo)
 
 - **Home Assistant** as a plugin/MCP (arm/disarm, sensors, automations).
 - **Real guard-dispatch** — swap the `alert_security` mock stub for a real
   HTTP call to a monitoring service.
-- **Face-ID** — replace the whole-frame pHash skip with InsightFace embeddings
-  for reliable recognition across positions/lighting.
-- **More cameras / RTSP** — the detector opens one webcam; multi-camera is a
-  config + loop change.
+- **Face-ID** — replace the pHash path with InsightFace embeddings for reliable
+  recognition across positions/lighting.
+- **More cameras / RTSP** — the detector opens one source (webcam or HTTP
+  stream); multi-camera is a config + loop change.
