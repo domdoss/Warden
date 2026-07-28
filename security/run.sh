@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-source "../voice/.venv/bin/activate"
+source ".venv/bin/activate"
 
 if [ ! -f config/settings.yaml ]; then
   echo "&>&> no config/settings.yaml — using bundled defaults (copy settings.example.yaml to customize)"

@@ -101,6 +101,15 @@ and **motion px** (motion sensitivity). The active source is shown under the
 status line. Press **s** to switch the video source live (HTTP stream URL or
 camera index) via a small dialog.
 
+Keyboard shortcuts:
+
+- **q** — quit
+- **s** — switch source
+- **k** — save the current frame's face as a known person. You are prompted for
+  a name/label; the face embedding is computed on CPU and stored locally in
+  `store/security.db`. Future arrivals with a visible face will report
+  `is_known: true` and the label, so Sentry can greet by name and skip alerts.
+
 When Sentry raises an alert, a **red STAND DOWN** button appears at the bottom.
 Press STAND DOWN (or type "close the alert" / "stand down" / "all clear" in the
 Warden chat) to close the alert and re-arm.
@@ -134,15 +143,14 @@ The frame server (`http://0.0.0.0:8765`) stops with it; Warden's
 
 Sentry's model is picked in the dashboard (`sentry:model`); blank inherits the
 orchestrator model. It's a light data-only decision maker — a small local model
-is plenty. Vision is optional (a frame reference is supplied with the event when
-available).
+is plenty. Vision is optional: the security laptop runs Moondream on GPU when
+Sentry asks a question via `security_caption({"question":"..."})`, so the
+desktop Sentry model itself can stay text-only.
 
 ## Upgradable (later, not in the demo)
 
 - **Home Assistant** as a plugin/MCP (arm/disarm, sensors, automations).
 - **Real guard-dispatch** — swap the `alert_security` mock stub for a real
   HTTP call to a monitoring service.
-- **Face-ID** — replace the pHash path with InsightFace embeddings for reliable
-  recognition across positions/lighting.
 - **More cameras / RTSP** — the detector opens one source (webcam or HTTP
   stream); multi-camera is a config + loop change.

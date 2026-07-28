@@ -9,3 +9,9 @@ Pillow>=10.0.0
 pyyaml>=6.0
 # Keyframe recognition (known-person pHash compare, application-side).
 imagehash>=4.3.0
+# Face-ID embeddings (optional; default recognition method).
+insightface>=0.7.3
+onnxruntime>=1.16
+# Moondream scene caption (optional; gracefully skipped if not installed).
+transformers>=4.35
+torch>=2.0

@@ -63,6 +63,36 @@ awareness:
   # Camera-tamper detection. Near-uniform frame std over this many frames = covered.
   covered_std: 6
   covered_frames: 3
+  # Room must be empty this many seconds before an unknown arrival counts as an
+  # anomaly worth a Moondream caption.
+  empty_threshold_seconds: 60
+
+recognition:
+  # Person recognition method. "insightface" uses local face embeddings (default);
+  # "phash" falls back to whole-frame perceptual hashes.
+  method: insightface
+  # cpu avoids VRAM contention with RF-DETR / vision models. cuda is supported.
+  device: cpu
+  # Cosine-similarity threshold for a face to count as a known person.
+  match_threshold: 0.42
+  # Ignore faces smaller than this (too far away to ID reliably).
+  min_face_size: 60
+  # How often to run face recognition just for the live GUI overlay (seconds).
+  # Awareness events do their own recognition; this is purely visual feedback.
+  # Lower = more responsive name labels; higher = less CPU use.
+  overlay_interval_seconds: 0.5
+
+# Optional Moondream scene caption for AWARENESS events. Runs on GPU by default
+# (set device: cpu if no CUDA). Disabled automatically if transformers / moondream
+# are not installed.
+caption:
+  enabled: true
+  # Hugging Face model id. Moondream 2B is ~1.6 GB quantized.
+  model: vikhyatk/moondream2
+  # Pin a revision for reproducibility. Update via the model card on Hugging Face.
+  revision: 2025-06-21
+  # GPU caption is fast; RF-DETR stays on CPU, so there is no VRAM contention.
+  device: cuda
 
 warden:
   # Desktop Warden service. The satellite POSTs AWARENESS JSON events here.

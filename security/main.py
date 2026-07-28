@@ -45,6 +45,8 @@ from core.motion import MotionDetector
 from core.situation import SituationTracker
 from core.warden import WardenClient
 from core.server import FrameServer
+from core import known
+from core import caption
 
 log = logging.getLogger("security")
 
@@ -94,6 +96,11 @@ def _overlay(frame: np.ndarray, light_color, status: str, fps: float,
         cv2.rectangle(out, (50, src_y - 14), (w, src_y + 8), BLACK, -1)
         _shadow_text(out, f"source: {source_label}", (55, src_y), 0.45)
 
+    # Keyboard hints.
+    hint_y = text_y + 40
+    cv2.rectangle(out, (50, hint_y - 14), (w, hint_y + 8), BLACK, -1)
+    _shadow_text(out, "[q] quit  [s] source  [k] save known person", (55, hint_y), 0.4)
+
     # Black background strip behind FPS counter.
     fps_text = f"{fps:4.1f} fps"
     fps_w = 110
@@ -102,16 +109,99 @@ def _overlay(frame: np.ndarray, light_color, status: str, fps: float,
     return out
 
 
-def _shadow_text(out: np.ndarray, text: str, pos: tuple, scale: float) -> None:
-    """Draw bold white text with a black drop shadow for readability on any background."""
+def _shadow_text(out: np.ndarray, text: str, pos: tuple, scale: float,
+                color: tuple = (255, 255, 255), thickness: int = 2) -> None:
+    """Draw bold text with a black drop shadow for readability on any background."""
     BLACK = (0, 0, 0)
-    WHITE = (255, 255, 255)
     x, y = pos
-    # Single offset shadow, then bold white text on top.
     cv2.putText(out, text, (x + 2, y + 2), cv2.FONT_HERSHEY_SIMPLEX,
-                scale, BLACK, 2, cv2.LINE_AA)
+                scale, BLACK, thickness, cv2.LINE_AA)
     cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
-                scale, WHITE, 2, cv2.LINE_AA)
+                scale, color, thickness, cv2.LINE_AA)
+
+
+def _iou(a: tuple, b: tuple) -> float:
+    """IOU of two xyxy boxes."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _center_in_box(cx: float, cy: float, box: tuple) -> bool:
+    """True if the point (cx,cy) is inside the xyxy box."""
+    x1, y1, x2, y2 = box
+    return x1 <= cx <= x2 and y1 <= cy <= y2
+
+
+def _draw_scene_overlay(
+    frame: np.ndarray,
+    dets,
+    recognized: Optional[dict],
+    motion_bbox: Optional[tuple] = None,
+) -> np.ndarray:
+    """Draw detection boxes, labels, keypoints, and recognized names on the frame."""
+    out = frame.copy()
+    h, w = out.shape[:2]
+    GREEN = (0, 255, 0)
+    RED = (0, 0, 255)
+    BLUE = (255, 0, 0)
+    YELLOW = (0, 255, 255)
+    WHITE = (255, 255, 255)
+
+    # Motion region.
+    if motion_bbox is not None:
+        x1, y1, x2, y2 = motion_bbox
+        cv2.rectangle(out, (x1, y1), (x2, y2), YELLOW, 2)
+        _shadow_text(out, "motion", (x1, max(y1 - 4, 15)), 0.45, YELLOW, 1)
+
+    # Best-matched recognized face box, if any.
+    rec_label = None
+    rec_bbox = None
+    if recognized and recognized.get("label"):
+        rec_label = recognized["label"]
+        rec_bbox = recognized.get("bbox")
+
+    # Per-detection overlays.
+    for d in dets.detections:
+        x1, y1, x2, y2 = (int(v) for v in d.xyxy[:4])
+        cls = d.class_name
+        conf = d.confidence
+        box_color = GREEN
+        label_text = f"{cls} {conf:.2f}"
+
+        if cls == "person":
+            box_color = BLUE
+            # If this person box contains the recognized face center, show the name.
+            # A face is almost always inside the person detection, so center-in-box
+            # is more reliable than IOU when the two boxes differ in size.
+            if rec_label and rec_bbox:
+                face_cx = (rec_bbox[0] + rec_bbox[2]) / 2.0
+                face_cy = (rec_bbox[1] + rec_bbox[3]) / 2.0
+                if _center_in_box(face_cx, face_cy, (x1, y1, x2, y2)):
+                    label_text = f"{rec_label} ({conf:.2f})"
+                    box_color = GREEN
+
+        cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2)
+        _shadow_text(out, label_text, (x1, max(y1 - 4, 15)), 0.45, box_color, 1)
+
+        # Keypoints for person detections.
+        if cls == "person" and d.keypoints is not None:
+            try:
+                kps = d.keypoints.xy
+                for (kx, ky) in kps:
+                    cx, cy = int(kx), int(ky)
+                    if 0 <= cx < w and 0 <= cy < h:
+                        cv2.circle(out, (cx, cy), 3, (0, 200, 255), -1)
+            except Exception:
+                pass
+
+    return out
 
 
 def _source_label(stream_url: str | None, cam_index: int, width: int = 70) -> str:
@@ -171,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     model_cfg = cfg["model"]
     motion_cfg = cfg["motion"]
     aware_cfg = cfg.get("awareness", {})
+    rec_cfg = cfg.get("recognition", {})
+    cap_cfg = cfg.get("caption", {})
     warden_cfg = cfg.get("warden", {})
     fs_cfg = cfg.get("frame_server", {})
 
@@ -207,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
         object_min_confidence=float(aware_cfg.get("object_min_confidence", 0.2)),
     )
 
+    # Lazy singletons for face recognition and scene caption. They load models
+    # only when an event actually fires, so the security feed starts fast.
+    known_persons = known.KnownPersons(cfg)
+    scene_caption = caption.Captioner(cfg)
+
     warden = WardenClient(
         base_url=warden_cfg.get("base_url", "http://127.0.0.1:3200"),
         owner_jid=warden_cfg.get("owner_jid", "owner@local"),
@@ -233,6 +330,22 @@ def main(argv: list[str] | None = None) -> int:
     frame_server.on_arm = on_arm
     frame_server.on_disarm = on_disarm
 
+    def on_caption(frame_bgr, question):
+        """Moondream on GPU answers Sentry's question about the latest frame."""
+        if question:
+            answer = scene_caption.query(frame_bgr, question)
+            return {"answer": answer} if answer else {"error": "caption unavailable"}
+        text = scene_caption.caption(frame_bgr)
+        return {"caption": text} if text else {"error": "caption unavailable"}
+
+    def on_known_save(frame_bgr, label):
+        """Save the current frame's face as a known person on the laptop CPU."""
+        ok = known_persons.save_known_person(frame_bgr, label)
+        return {"ok": ok, "label": label} if ok else {"ok": False, "error": "no face detected"}
+
+    frame_server.on_caption = on_caption
+    frame_server.on_known_save = on_known_save
+
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
@@ -246,6 +359,14 @@ def main(argv: list[str] | None = None) -> int:
     last_awareness_event: Optional[str] = None
     last_awareness_post = 0.0
     last_suppression_log = 0.0  # rate-limit "suppressed/cooldown" log lines
+
+    # Visual feedback: run face recognition every N seconds just for the overlay.
+    # This is separate from the awareness event recognition; it lets the GUI show
+    # a name above a recognized person's head without spamming recognition on
+    # every single frame.
+    recognition_overlay_interval = float(rec_cfg.get("overlay_interval_seconds", 2.0))
+    last_recognition_overlay = 0.0
+    recognized_overlay: Optional[dict] = None
 
     interval = 1.0 / max(1, cam_cfg["fps"])
     last_infer = 0.0
@@ -288,6 +409,31 @@ def main(argv: list[str] | None = None) -> int:
         cv2.createTrackbar("motion px", "Warden Security",
                            int(motion_cfg.get("min_area", 800)), 5000, lambda _v: None)
 
+    def save_known_from_gui():
+        """Prompt for a label and save the current frame as a known person."""
+        if not _HAS_TK:
+            log.warning("tkinter unavailable — cannot save known person from GUI")
+            return
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            label = simpledialog.askstring("Warden Security — Save Known Person", "Enter name/label for this person:")
+            root.destroy()
+            if not label or not label.strip():
+                return
+            label = label.strip()
+            ok, _ = cap.read()
+            if ok:
+                success = known_persons.save_known_person(frame, label)
+                if success:
+                    log.info("GUI: saved known person %r", label)
+                else:
+                    log.warning("GUI: no face detected; could not save %r", label)
+            else:
+                log.warning("GUI: no frame available to save known person")
+        except Exception as e:
+            log.warning("GUI save known person failed: %s", e)
+
     try:
         while _running:
             now = time.time()
@@ -317,6 +463,20 @@ def main(argv: list[str] | None = None) -> int:
 
             motion_res = motion.step(frame)
             dets = detector.predict(frame)
+
+            # Periodically run face recognition just for the visual overlay.
+            # This is independent of awareness event recognition.
+            if now - last_recognition_overlay >= recognition_overlay_interval:
+                last_recognition_overlay = now
+                try:
+                    is_known, label, face_bbox = known_persons.is_known(frame, return_box=True)
+                    if is_known and label:
+                        recognized_overlay = {"label": label, "bbox": face_bbox}
+                    else:
+                        recognized_overlay = None
+                except Exception as e:
+                    log.debug("overlay recognition skipped: %s", e)
+                    recognized_overlay = None
 
             # Camera-tamper check.
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -372,6 +532,35 @@ def main(argv: list[str] | None = None) -> int:
                         "situation": situation.to_dict(),
                     }
                     payload.update(chosen.data)
+
+                    # Enrich awareness events with face recognition (CPU) and a
+                    # Moondream scene caption (GPU). Recognition runs for any
+                    # person-related event. Moondream auto-runs on anomalies:
+                    # covered camera, camera moved, motion burst while empty, or
+                    # an unknown person arriving after the room was empty.
+                    if chosen.event in ("arrival", "camera_uncovered", "motion_burst"):
+                        try:
+                            is_known, label = known_persons.is_known(frame)
+                            payload["is_known"] = is_known
+                            payload["label"] = label
+                            if label:
+                                log.info("recognized %s as known person", label)
+                        except Exception as e:
+                            log.debug("face recognition skipped: %s", e)
+
+                    anomaly = chosen.event in ("camera_covered", "camera_moved", "motion_burst") or (
+                        chosen.event == "arrival"
+                        and not payload.get("is_known")
+                        and situation.seconds_in_state >= float(aware_cfg.get("empty_threshold_seconds", 60))
+                    )
+                    if anomaly:
+                        try:
+                            cap_text = scene_caption.caption(frame)
+                            if cap_text:
+                                payload["scene_caption"] = cap_text
+                        except Exception as e:
+                            log.debug("scene caption skipped: %s", e)
+
                     res = warden.send_awareness(chosen.event, payload)
                     if res.get("ok"):
                         last_awareness_post = now
@@ -392,13 +581,16 @@ def main(argv: list[str] | None = None) -> int:
 
             frame_server.set_state(state)
             if show_window:
-                display = _overlay(frame.copy(), light, state, fps, source_label)
+                display = _draw_scene_overlay(frame, dets, recognized_overlay, situation.motion_bbox)
+                display = _overlay(display, light, state, fps, source_label)
                 cv2.imshow("Warden Security", display)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
                 if key == ord("s"):
                     switch_source()
+                if key == ord("k"):
+                    save_known_from_gui()
     finally:
         cap.release()
         if show_window:

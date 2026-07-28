@@ -52,6 +52,25 @@ class TrackedPerson:
 
 
 @dataclass
+class GhostTrack:
+    """A recently-lost person kept alive for re-identification.
+
+    When the detector briefly drops a stationary person (sitting still, low
+    confidence), we keep their last-known position as a ghost. If they reappear
+    in roughly the same spot within ``ghost_ttl_frames``, we revive the original
+    ID instead of minting a new one and spamming arrival/departure events.
+    """
+    id: int
+    cx: float
+    cy: float
+    w: float
+    h: float
+    confidence: float
+    keypoints: List[Dict[str, Any]] = field(default_factory=list)
+    frames_missing: int = 0
+
+
+@dataclass
 class DetectedObject:
     """Non-person detection in the frame."""
     class_name: str
@@ -134,6 +153,12 @@ class SituationTracker:
         self._tracked: Dict[int, TrackedPerson] = {}
         self._persons_missing_frames: Dict[int, int] = {}
 
+        # Recently-lost tracks kept as "ghosts" so brief detector dropouts don't
+        # mint a new person ID and spam arrival/departure events. TTL is based on
+        # the occupancy absence debounce; default gives ~3-6 seconds at 5 fps.
+        self._ghosts: Dict[int, GhostTrack] = {}
+        self._ghost_ttl_frames = max(15, self.absence_debounce * 2)
+
         # Room occupancy state.
         self._room_occupied = False
         self._state_since = time.time()
@@ -192,8 +217,13 @@ class SituationTracker:
         # Motion region bbox from the binary mask.
         motion_bbox = self._motion_bbox(motion_res.mask)
 
-        # Build serializable lists.
-        persons_out = [self._person_to_dict(p) for p in self._tracked.values()]
+        # Build serializable lists. Ghosts are included so the person count
+        # stays stable across brief detector dropouts; frames_missing > 0 marks
+        # entries that haven't been re-detected this frame.
+        persons_out = [
+            self._person_to_dict(p)
+            for p in list(self._tracked.values()) + list(self._ghosts.values())
+        ]
         objects_out = [self._object_to_dict(o) for o in objects_input]
 
         situation = Situation(
@@ -318,6 +348,7 @@ class SituationTracker:
         self._stable_count_streak = 0
         self._last_motion_burst_event = 0.0
         self._last_camera_cover_event = 0.0
+        self._ghosts.clear()
 
     # ── Internal helpers ────────────────────────────────────────────────────
 
@@ -358,8 +389,40 @@ class SituationTracker:
 
         return persons, objects
 
+    def _best_match(
+        self,
+        track: TrackedPerson | GhostTrack,
+        candidates: List[Dict[str, Any]],
+        matched_new: set,
+    ) -> Tuple[int, float]:
+        """Return (candidate_index, cost) for the best unmatched candidate."""
+        best_idx = -1
+        best_cost = float("inf")
+        for i, c in enumerate(candidates):
+            if i in matched_new:
+                continue
+            dx = c["cx"] - track.cx
+            dy = c["cy"] - track.cy
+            dist = (dx * dx + dy * dy) ** 0.5
+            iou = self._iou(
+                (track.cx - track.w / 2, track.cy - track.h / 2,
+                 track.cx + track.w / 2, track.cy + track.h / 2),
+                (c["x1"], c["y1"], c["x2"], c["y2"]),
+            )
+            # Weight distance more than IOU; IOU is unreliable on fast motion.
+            cost = dist - iou * 50.0
+            if cost < best_cost:
+                best_cost = cost
+                best_idx = i
+        return best_idx, best_cost
+
     def _update_tracks(self, persons, frame_w, frame_h):
-        """Match detected people to existing IDs; return (matched_ids, new_ids)."""
+        """Match detected people to existing IDs; return (matched_ids, new_ids).
+
+        Ghost tracks are recently-lost people kept alive for re-identification.
+        A detection that matches a ghost revives the original ID silently; only
+        detections that match neither a live track nor a ghost become new IDs.
+        """
         # Build candidate centers/boxes.
         candidates = []
         for p in persons:
@@ -371,37 +434,20 @@ class SituationTracker:
                 "conf": p.confidence, "keypoints": p.keypoints,
             })
 
-        matched_existing = set()
-        matched_new = set()
-        matches: List[Tuple[int, int, float]] = []  # (track_id, cand_idx, cost)
+        matched_existing: set = set()
+        matched_new: set = set()
+        live_matches: List[Tuple[int, int, float]] = []  # (track_id, cand_idx, cost)
 
+        # 1. Match live tracks first.
         for tid, track in self._tracked.items():
-            best_idx = -1
-            best_cost = float("inf")
-            for i, c in enumerate(candidates):
-                if i in matched_new:
-                    continue
-                # Cost = center distance heavily penalized, plus IOU bonus.
-                dx = c["cx"] - track.cx
-                dy = c["cy"] - track.cy
-                dist = (dx * dx + dy * dy) ** 0.5
-                iou = self._iou(
-                    (track.cx - track.w / 2, track.cy - track.h / 2,
-                     track.cx + track.w / 2, track.cy + track.h / 2),
-                    (c["x1"], c["y1"], c["x2"], c["y2"]),
-                )
-                # Weight distance more than IOU; IOU is unreliable on fast motion.
-                cost = dist - iou * 50.0
-                if cost < best_cost:
-                    best_cost = cost
-                    best_idx = i
+            best_idx, best_cost = self._best_match(track, candidates, matched_new)
             if best_idx >= 0 and best_cost < 150.0:
-                matches.append((tid, best_idx, best_cost))
+                live_matches.append((tid, best_idx, best_cost))
 
-        # Greedy assignment by lowest cost.
-        matches.sort(key=lambda x: x[2])
-        assigned_tracks = {}
-        for tid, cidx, _cost in matches:
+        # Greedy live assignment by lowest cost.
+        live_matches.sort(key=lambda x: x[2])
+        assigned_tracks: Dict[int, TrackedPerson] = {}
+        for tid, cidx, _cost in live_matches:
             if tid in assigned_tracks or cidx in matched_new:
                 continue
             c = candidates[cidx]
@@ -413,13 +459,13 @@ class SituationTracker:
             track.confidence = c["conf"]
             track.frames_missing = 0
             track.history.append((track.cx, track.cy))
-            # Convert keypoints to plain dicts for the situation payload.
             track.keypoints = self._keypoints_to_dict(c["keypoints"])
             assigned_tracks[tid] = track
             matched_existing.add(tid)
             matched_new.add(cidx)
 
-        # Any existing track not matched this frame ages; after debounce, drop it.
+        # 2. Promote unmatched live tracks that have passed presence_debounce to
+        #    ghosts so a brief dropout can be recovered without a new ID.
         gone_ids = []
         for tid, track in self._tracked.items():
             if tid not in matched_existing:
@@ -427,9 +473,59 @@ class SituationTracker:
                 if track.frames_missing >= self.presence_debounce:
                     gone_ids.append(tid)
         for tid in gone_ids:
-            self._tracked.pop(tid, None)
+            track = self._tracked.pop(tid)
+            self._ghosts[tid] = GhostTrack(
+                id=track.id,
+                cx=track.cx,
+                cy=track.cy,
+                w=track.w,
+                h=track.h,
+                confidence=track.confidence,
+                keypoints=track.keypoints,
+                frames_missing=track.frames_missing,
+            )
 
-        # Fresh detections become new IDs.
+        # 3. Try to revive ghosts with remaining candidates. Use the same cost
+        #    threshold as live tracks; a stationary person in the same chair will
+        #    match, while a new person entering across the room will not.
+        ghost_matches: List[Tuple[int, int, float]] = []
+        for tid, ghost in list(self._ghosts.items()):
+            best_idx, best_cost = self._best_match(ghost, candidates, matched_new)
+            if best_idx >= 0 and best_cost < 150.0:
+                ghost_matches.append((tid, best_idx, best_cost))
+
+        ghost_matches.sort(key=lambda x: x[2])
+        revived: set = set()
+        for tid, cidx, _cost in ghost_matches:
+            if cidx in matched_new or tid in revived:
+                continue
+            c = candidates[cidx]
+            ghost = self._ghosts.pop(tid)
+            self._tracked[tid] = TrackedPerson(
+                id=tid,
+                cx=c["cx"],
+                cy=c["cy"],
+                w=c["x2"] - c["x1"],
+                h=c["y2"] - c["y1"],
+                confidence=c["conf"],
+                keypoints=self._keypoints_to_dict(c["keypoints"]),
+                frames_missing=0,
+                history=deque([(c["cx"], c["cy"])], maxlen=10),
+            )
+            matched_existing.add(tid)
+            matched_new.add(cidx)
+            revived.add(tid)
+
+        # 4. Age ghosts and drop expired ones.
+        expired = []
+        for tid, ghost in list(self._ghosts.items()):
+            ghost.frames_missing += 1
+            if ghost.frames_missing >= self._ghost_ttl_frames:
+                expired.append(tid)
+        for tid in expired:
+            self._ghosts.pop(tid, None)
+
+        # 5. Fresh detections become new IDs.
         new_ids = []
         for i, c in enumerate(candidates):
             if i in matched_new:

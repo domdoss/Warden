@@ -212,3 +212,59 @@ registry.register({
     toolset: 'security',
     tier: 'public',
 });
+
+// Sentry is text-only. When it needs to know what the camera sees, it asks the
+// satellite security app to run Moondream on the latest frame (GPU). This
+// keeps vision on the laptop and leaves the desktop Sentry model as plain text.
+registry.register({
+    name: 'security_caption',
+    description:
+        "Ask the satellite security camera to look at the latest frame and describe it. " +
+        "This runs Moondream on the laptop's GPU and returns a short caption or a specific answer. " +
+        "Use this when the structured AWARENESS data is not enough to decide, e.g. 'is the computer on?'. " +
+        "Call sparingly — it costs a GPU inference. Pass a question for a targeted answer; omit for a general caption.",
+    schema: {
+        type: 'object',
+        properties: {
+            question: { type: 'string', description: 'Specific question about the frame (optional).' },
+        },
+    },
+    handler: async (args, _context) => {
+        const question = String(args?.question || '');
+        const resp = await callHost('security_caption', { question });
+        if (resp?.ok) {
+            return resp.caption || resp.answer || 'No description available.';
+        }
+        return `security_caption failed: ${resp?.error || 'unknown error'}`;
+    },
+    toolset: 'security',
+    tier: 'public',
+});
+
+// Register a known person so future arrivals report is_known + label. The
+// satellite security app computes the face embedding on CPU from the current
+// frame and stores it locally.
+registry.register({
+    name: 'save_known_person',
+    description:
+        "Tell the satellite security camera to save the current frame's face as a known person. " +
+        "The laptop computes an InsightFace embedding on CPU and stores it. Future arrivals with " +
+        "a visible face will report is_known=true and label. Use this when you are confident the " +
+        "person in the latest frame is the owner or a regular guest and should not trigger alerts.",
+    schema: {
+        type: 'object',
+        properties: {
+            label: { type: 'string', description: 'Name or label for this person (e.g. "user").' },
+        },
+        required: ['label'],
+    },
+    handler: async (args, _context) => {
+        const label = String(args?.label || '').trim();
+        if (!label) return 'missing label';
+        const resp = await callHost('save_known_person', { label });
+        if (resp?.ok) return `Saved known person ${label}.`;
+        return `save_known_person failed: ${resp?.error || 'unknown error'}`;
+    },
+    toolset: 'security',
+    tier: 'public',
+});
