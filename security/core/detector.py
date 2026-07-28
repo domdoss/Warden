@@ -58,9 +58,9 @@ class Detector:
 
         if self.variant == "keypoint":
             try:
-                self._model = RFDETRKeypointPreview()
+                self._model = RFDETRKeypointPreview(device="cpu")
                 self._backend = "rfdetr-keypoint"
-                log.info("Loaded RF-DETR Keypoint Preview (Apache 2.0)")
+                log.info("Loaded RF-DETR Keypoint Preview (Apache 2.0) on CPU")
                 return
             except Exception as e:
                 log.warning("RFDETRKeypointPreview unavailable (%s); falling back to RFDETR", e)
@@ -71,9 +71,9 @@ class Detector:
             "nano": RFDETRNano, "small": RFDETRSmall, "medium": RFDETRMedium,
             "large": RFDETRLarge, "base": RFDETR,
         }.get(self.size, RFDETRSmall)
-        self._model = size_cls()
+        self._model = size_cls(device="cpu")
         self._backend = f"rfdetr-detection-{self.size}"
-        log.info("Loaded RF-DETR %s (detection, Apache 2.0)", self.size)
+        log.info("Loaded RF-DETR %s (detection, Apache 2.0) on CPU", self.size)
 
     @property
     def backend(self) -> str:

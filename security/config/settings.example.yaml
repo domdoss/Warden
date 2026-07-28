@@ -82,17 +82,18 @@ recognition:
   # Lower = more responsive name labels; higher = less CPU use.
   overlay_interval_seconds: 0.5
 
-# Optional Moondream scene caption for AWARENESS events. Runs on GPU by default
-# (set device: cpu if no CUDA). Disabled automatically if transformers / moondream
-# are not installed.
+# Optional Ollama scene caption for AWARENESS events. Disabled by default so the
+# security feed stays pure structured data; the orchestrator/Sentry can call
+# webcam_capture if it needs a visual description. Enable this if you want the
+# laptop to auto-caption anomalies via Ollama.
 caption:
-  enabled: true
-  # Hugging Face model id. Moondream 2B is ~1.6 GB quantized.
-  model: vikhyatk/moondream2
-  # Pin a revision for reproducibility. Update via the model card on Hugging Face.
-  revision: 2025-06-21
-  # GPU caption is fast; RF-DETR stays on CPU, so there is no VRAM contention.
-  device: cuda
+  enabled: false
+  # Local Ollama API endpoint on the laptop/satellite.
+  ollama_url: http://127.0.0.1:11434
+  # Vision model pulled in Ollama. gemma3:4b is small and works on 4 GB VRAM.
+  model: gemma3:4b
+  # Max seconds to wait for an Ollama caption response.
+  timeout_seconds: 60
 
 warden:
   # Desktop Warden service. The satellite POSTs AWARENESS JSON events here.

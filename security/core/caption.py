@@ -1,14 +1,17 @@
-"""Optional Moondream scene caption for security awareness events.
+"""Ollama-based scene caption for security awareness events.
 
-Moondream is a tiny open-source vision-language model (Apache 2.0). It runs
-locally on CPU and can describe a frame in one short sentence. If the model or
-transformers are not installed, the captioner gracefully returns None and the
-security feed falls back to structured data only.
+The laptop/satellite runs a local Ollama vision model (default gemma3:4b) and
+captions/answers questions about the latest frame on demand. This avoids the
+heavy HuggingFace/transformers dependency and Python 3.14 wheel build issues.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import urllib.error
+import urllib.request
 from typing import Optional
 
 import cv2
@@ -16,94 +19,96 @@ import numpy as np
 
 log = logging.getLogger("security.caption")
 
-DEFAULT_MODEL = "vikhyatk/moondream2"
-DEFAULT_REVISION = "2025-06-21"
+DEFAULT_MODEL = "gemma3:4b"
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
 
 class Captioner:
-    """Lazy-load Moondream and caption/answer questions about frames on demand."""
+    """Call Ollama to caption or answer questions about frames on demand."""
 
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
         cap_cfg = self.cfg.get("caption", {})
         self.enabled = bool(cap_cfg.get("enabled", True))
-        self.model_name = str(cap_cfg.get("model", DEFAULT_MODEL))
-        self.revision = str(cap_cfg.get("revision", DEFAULT_REVISION))
-        self.device = str(cap_cfg.get("device", "cuda")).lower()
-        self._model = None
+        self.model = str(cap_cfg.get("model", DEFAULT_MODEL))
+        self.ollama_url = str(cap_cfg.get("ollama_url", DEFAULT_OLLAMA_URL)).rstrip("/")
+        self.timeout = float(cap_cfg.get("timeout_seconds", 60))
         self._warned = False
 
-    def _pil(self, frame_bgr: np.ndarray):
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        from PIL import Image
-        return Image.fromarray(rgb)
+    def _encode_frame(self, frame_bgr: np.ndarray) -> Optional[str]:
+        """Encode a BGR frame as a base64 JPEG string for Ollama vision."""
+        try:
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            ok, buf = cv2.imencode(".jpg", rgb)
+            if not ok or buf is None:
+                return None
+            return base64.b64encode(buf.tobytes()).decode("utf-8")
+        except Exception as e:
+            log.warning("Frame encoding failed: %s", e)
+            return None
+
+    def _ask(self, frame_bgr: np.ndarray, prompt: str) -> Optional[str]:
+        """Send one vision prompt to Ollama and return the text response."""
+        b64 = self._encode_frame(frame_bgr)
+        if b64 is None:
+            return None
+
+        url = f"{self.ollama_url}/api/chat"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [b64],
+                }
+            ],
+            "stream": False,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8")
+                parsed = json.loads(body)
+                message = parsed.get("message", {})
+                text = message.get("content") if isinstance(message, dict) else None
+                if text:
+                    text = text.strip()
+                return text
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:200]
+            if not self._warned:
+                log.warning("Ollama caption HTTP %s: %s", e.code, body)
+                self._warned = True
+        except Exception as e:
+            if not self._warned:
+                log.warning("Ollama caption failed: %s", e)
+                self._warned = True
+        return None
 
     def caption(self, frame_bgr: np.ndarray) -> Optional[str]:
-        """Return a short caption, or None if disabled / missing deps / no GPU."""
+        """Return a short caption for the frame."""
         if not self.enabled or frame_bgr is None or frame_bgr.size == 0:
             return None
-        try:
-            model = self._load()
-            if model is None:
-                return None
-            image = self._pil(frame_bgr)
-            result = model.caption(image, length="short")
-            caption = result.get("caption") if isinstance(result, dict) else str(result)
-            if caption:
-                log.info("Moondream caption: %s", caption)
-            return caption
-        except Exception as e:
-            if not self._warned:
-                log.warning("Moondream caption failed: %s", e)
-                self._warned = True
-            return None
+        text = self._ask(frame_bgr, "Describe this scene in one short sentence.")
+        if text:
+            log.info("Ollama caption: %s", text)
+        return text
 
     def query(self, frame_bgr: np.ndarray, question: str) -> Optional[str]:
-        """Ask Moondream a specific question about the frame. Returns answer text."""
+        """Ask a specific question about the frame."""
         if not self.enabled or frame_bgr is None or frame_bgr.size == 0 or not question:
             return None
-        try:
-            model = self._load()
-            if model is None:
-                return None
-            image = self._pil(frame_bgr)
-            result = model.query(image, question)
-            answer = result.get("answer") if isinstance(result, dict) else str(result)
-            if answer:
-                log.info("Moondream query (%s): %s", question, answer)
-            return answer
-        except Exception as e:
-            if not self._warned:
-                log.warning("Moondream query failed: %s", e)
-                self._warned = True
-            return None
-
-    def _load(self):
-        if self._model is not None:
-            return self._model
-        try:
-            from transformers import AutoModelForCausalLM
-        except Exception as e:
-            if not self._warned:
-                log.warning("transformers not installed; Moondream caption unavailable: %s", e)
-                self._warned = True
-            return None
-
-        try:
-            device_map = {"": self.device} if self.device != "cpu" else "auto"
-            self._model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                revision=self.revision,
-                trust_remote_code=True,
-                device_map=device_map,
-            )
-            log.info("Moondream loaded (%s on %s)", self.model_name, self.device)
-            return self._model
-        except Exception as e:
-            if not self._warned:
-                log.warning("Failed to load Moondream %s: %s", self.model_name, e)
-                self._warned = True
-            return None
+        text = self._ask(frame_bgr, question)
+        if text:
+            log.info("Ollama query (%s): %s", question, text)
+        return text
 
 
 # Module-level singleton.

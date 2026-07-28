@@ -12,6 +12,6 @@ imagehash>=4.3.0
 # Face-ID embeddings (optional; default recognition method).
 insightface>=0.7.3
 onnxruntime>=1.16
-# Moondream scene caption (optional; gracefully skipped if not installed).
-transformers>=4.35
-torch>=2.0
+# Ollama scene caption is used instead of a local HuggingFace model, so no
+# torch/transformers dependency is needed here. The security app calls Ollama
+# over HTTP when caption.enabled is true and the model is pulled.

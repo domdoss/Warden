@@ -8,9 +8,7 @@ work during the demo.
 
   GET /frame    → the latest captured JPEG (image/jpeg)
   GET /status   → {"state": ..., "armed": ..., "last_alert_ts": ...}
-  POST /caption → {"question?": "..."} → Moondream on GPU answers about the
-                  latest frame. This lets the text-only desktop Sentry model
-                  request vision on demand without running vision itself.
+  POST /known/save → {"label": "..."} save the current frame's face embedding.
   POST /alert/open, /alert/close — Heimdall spawns/closes an alert.
   POST /arm, /disarm — arm/disarm the system (the guard's chat command).
 
@@ -52,9 +50,6 @@ class FrameServer:
         # to arm/disarm the whole system (disarmed = no flagging to Warden).
         self.on_arm = None
         self.on_disarm = None
-        # Called for POST /caption. Receives the latest BGR frame and optional
-        # question string; returns a dict {caption? answer? error?}.
-        self.on_caption: Optional[Callable[[np.ndarray, Optional[str]], dict[str, Any]]] = None
         # Called for POST /known/save. Receives the latest BGR frame and a label;
         # returns a dict {ok, label?, error?}.
         self.on_known_save: Optional[Callable[[np.ndarray, str], dict[str, Any]]] = None
@@ -121,25 +116,6 @@ class FrameServer:
         except Exception as e:
             log.warning("disarm handler error: %s", e)
             return False
-
-    def request_caption(self, question: Optional[str]) -> dict[str, Any]:
-        """Run Moondream on the latest frame, optionally answering a question."""
-        if self.on_caption is None:
-            return {"error": "caption handler not registered"}
-        with self._lock:
-            frame_bytes = self._frame
-        if not frame_bytes:
-            return {"error": "no frame yet"}
-        try:
-            import cv2
-            arr = np.frombuffer(frame_bytes, dtype=np.uint8)
-            frame_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame_bgr is None:
-                return {"error": "could not decode frame"}
-            return self.on_caption(frame_bgr, question)
-        except Exception as e:
-            log.warning("caption handler error: %s", e)
-            return {"error": str(e)}
 
     def request_known_save(self, label: str) -> dict[str, Any]:
         """Save the latest frame's face as a known person on the laptop."""
@@ -209,19 +185,9 @@ class FrameServer:
                     self.end_headers()
 
             def do_POST(self):
-                # Sentry (text-only) asks the laptop to look at the latest frame
-                # with Moondream on GPU. Optional "question" field; absent = caption.
-                if self.path == "/caption":
-                    req = self._read_json()
-                    question = req.get("question") if isinstance(req, dict) else None
-                    result = server.request_caption(question)
-                    self.send_response(200 if "error" not in result else 503)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps(result).encode())
                 # Sentry registers a known person; the laptop computes the face
                 # embedding on CPU from the current frame.
-                elif self.path == "/known/save":
+                if self.path == "/known/save":
                     req = self._read_json()
                     label = req.get("label") if isinstance(req, dict) else None
                     result = server.request_known_save(label)
