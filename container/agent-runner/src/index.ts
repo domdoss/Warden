@@ -1273,14 +1273,15 @@ function getNumCtx(model: string): number | undefined {
         const mercuryOverride = process.env.MERCURY_NUM_CTX ? parseInt(process.env.MERCURY_NUM_CTX, 10) : 0;
         if (mercuryOverride > 0) return cap(mercuryOverride);
     }
-    // Sentry runs as a sub-agent but needs the same context headroom as the
-    // orchestrator for image-bearing security tasks. The Sentry run-mode branch
-    // sets ORCHESTRATOR_MODEL to the agent's own model so it matches here and
-    // picks up the dashboard's orchestrator ctx override.
-    if (model === ORCHESTRATOR_MODEL) {
-        const orchOverride = process.env.ORCHESTRATOR_NUM_CTX ? parseInt(process.env.ORCHESTRATOR_NUM_CTX, 10) : 0;
-        if (orchOverride > 0) return cap(orchOverride);
-    }
+    // Sentry runs on granite4.1:8b. Without a baked-in ctx Ollama loads at
+    // its 2048 default, the 9 tool schemas + system prompt overflow, and
+    // granite returns an empty response. The Sentry run-mode branch sets
+    // __sentryNumCtx before invoking the model — bake it in here for Sentry
+    // ONLY, independent of (and without touching) the orchestrator's
+    // dashboard ctx setting.
+    const sentryCtx = (globalThis as any).__sentryNumCtx;
+    if (sentryCtx) return cap(Number(sentryCtx));
+
     return undefined; // no override → send no num_ctx; backend uses the model's own native window
 }
 
@@ -3733,6 +3734,12 @@ async function main() {
             // Resolve orchestrator-scoped num_ctx against this model so the
             // dashboard context override applies to Sentry too.
             if (model) ORCHESTRATOR_MODEL = model;
+            // Sentry runs on granite4.1:8b. Without a baked-in ctx Ollama loads
+            // at its 2048 default, the 9 tool schemas + system prompt overflow,
+            // and granite returns an empty response ("Task completed (no
+            // response)"). Flag this run so getNumCtx bakes in 8k for Sentry
+            // ONLY — never touch the orchestrator's dashboard ctx setting.
+            (globalThis as any).__sentryNumCtx = 8192;
             // Load the user-editable rules from security/sentry.md and inject them
             // as trusted instructions. The user writes freeform notes like "I will
             // be out all day, anyone is an alert". Treat those notes as the primary
