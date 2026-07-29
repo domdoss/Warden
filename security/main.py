@@ -523,17 +523,14 @@ def main(argv: list[str] | None = None) -> int:
                     payload.update(chosen.data)
 
                     # Enrich awareness events with face recognition (CPU).
-                    # The security feed is pure structured data; the orchestrator
-                    # can call webcam_capture if it needs a visual description.
-                    if chosen.event in ("arrival", "camera_uncovered", "motion_burst"):
-                        try:
-                            is_known, label = known_persons.is_known(frame)
-                            payload["is_known"] = is_known
-                            payload["label"] = label
-                            if label:
-                                log.info("recognized %s as known person", label)
-                        except Exception as e:
-                            log.debug("face recognition skipped: %s", e)
+                    try:
+                        is_known, label = known_persons.is_known(frame)
+                        payload["is_known"] = is_known
+                        payload["label"] = label
+                        if label:
+                            log.info("recognized %s as known person", label)
+                    except Exception as e:
+                        log.debug("face recognition skipped: %s", e)
 
                     res = warden.send_awareness(chosen.event, payload)
                     if res.get("ok"):
