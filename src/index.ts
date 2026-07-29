@@ -369,8 +369,12 @@ export function spawnSentryBackground(task: string, awarenessText?: string): voi
   }
   // Pre-fetch the latest security frame so Sentry can include it in any alert
   // message it sends. If the frame server is slow/down, Sentry still runs without
-  // the image rather than being blocked.
-  void fetchAndSaveSecurityFrame().then((imageTag) => {
+  // the image rather than being blocked. Wait ~2s before pulling the frame so the
+  // person has settled into view — fetching the instant the event arrives is too
+  // quick and often catches an empty or mid-entry frame.
+  void new Promise((resolve) => setTimeout(resolve, 2000))
+    .then(() => fetchAndSaveSecurityFrame())
+    .then((imageTag) => {
     latestSentryFrame = imageTag || null;
     if (!imageTag) {
       logger.warn('spawnSentryBackground: could not fetch security frame for Sentry');
