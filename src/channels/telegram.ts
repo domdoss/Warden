@@ -324,7 +324,7 @@ export class TelegramChannel implements Channel {
         let attempt = 0;
         for (;;) {
           try {
-            await this.bot.api.sendPhoto(Number(chatId), new InputFile(abs), {
+            await this.bot.api.sendPhoto(Number(chatId), new InputFile(finalAbs), {
               caption: caption.slice(0, 1024) || undefined,
             });
             break;
