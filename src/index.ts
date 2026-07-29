@@ -415,18 +415,14 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           return { ok: true, skipped: true };
         }
 
-        // For Sentry security alerts, the host owns the photo attachment.
-        // Sentry may omit the frame, or hallucinate a placeholder like
-        // [Image: attachments/img-....jpg]. Strip any existing [Image: ...]
-        // reference and append the real latest pre-fetched frame so Telegram
-        // always sends the actual security photo.
+        // For Sentry security alerts, append the real pre-fetched security
+        // frame so Telegram sends the photo. Only swap when we actually have a
+        // frame — otherwise leave whatever [Image: ...] reference Sentry wrote
+        // in place so Telegram can still resolve and send it.
         let finalText = text;
-        if (senderName === 'Sentry') {
-          // Strip any [Image: ...] reference the model may have hallucinated;
-          // the host owns the photo. Append the real pre-fetched frame if we
-          // have one, otherwise send text-only so Telegram still gets the alert.
+        if (senderName === 'Sentry' && latestSentryFrame) {
           finalText = finalText.replace(/\s*\[Image:\s*[^\]]+\]/gi, '').trim();
-          if (latestSentryFrame) finalText = `${finalText} ${latestSentryFrame}`;
+          finalText = `${finalText} ${latestSentryFrame}`;
         }
         if (!finalText.trim()) return { ok: false, error: 'missing text' };
         const messageId = `bot-cb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
