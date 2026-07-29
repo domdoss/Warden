@@ -22,6 +22,11 @@ voice:
   # deliberate, loud double-clap wakes the assistant. Raise it if talking false-
   # triggers; lower it if loud claps get missed.
   clap_enabled: true
+  # Sample rate (Hz) for the clap detector's mic stream. Independent of the STT
+  # sample_rate above (which must stay 16000 for Whisper). 48000 is the most
+  # universally supported by PipeWire/ALSA input nodes; 16000 can be rejected on
+  # some nodes on reopen (pause/resume), surfacing as "Invalid sample rate".
+  clap_sample_rate: 48000
   clap_threshold: 7200
   # Minimum peak/RMS (crest factor) for an onset to count as a clap. A clap is
   # impulsive (high crest); speech/music/steady noise are flatter. Raise it to

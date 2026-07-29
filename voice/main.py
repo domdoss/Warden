@@ -615,7 +615,7 @@ class JarvisApp:
                 or self._is_speaking
                 or (time.monotonic() - self._last_spoke_at) < self._SPEAK_COOLDOWN
             ),
-            sample_rate=voice_cfg.get("sample_rate", 16000),
+            sample_rate=int(voice_cfg.get("clap_sample_rate", 48000)),
             threshold=int(voice_cfg.get("clap_threshold", 9000)),
             crest_factor=float(voice_cfg.get("clap_crest", 4.0)),
             input_device=self._input_device,
