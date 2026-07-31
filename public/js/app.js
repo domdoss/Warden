@@ -855,6 +855,10 @@
     // Cloud tags end in :cloud; everything else is local. No hardcoded cloud list.
     const orchHtml = buildModelOptions(models, fn, m => m);
     const anyModelHtml = buildModelOptions(models, fn, m => m, { inherit: true });
+    // Driving-force presets (orchestrator preamble) — from data/driving-forces/.
+    // '' = Warden default (the built-in preamble, preserves the dynamic name).
+    const drivingForceHtml = '<option value="">Warden (default)</option>' +
+      (d.drivingForces || []).map(p => modelOption(p.id, p.label)).join('');
 
     const body = `
       <div class="setting-card">
@@ -876,12 +880,19 @@
           <select class="select small" id="sOrchestratorCtx">${buildCtxOptions(d.orchestratorCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
+        <div class="setting-row"><label>Driving force</label>
+          <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
+          <span class="dim mono" style="font-size:10px">orchestrator persona; switching clears context</span>
+        </div>
         <div class="setting-row"><label>Atlas</label>
           <select class="select" id="sAtlas">${anyModelHtml}</select>
         </div>
         <div class="setting-row"><label>Atlas ctx</label>
           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+        </div>
+        <div class="setting-row"><label>Hephaestus</label>
+          <select class="select" id="sHephaestus">${anyModelHtml}</select>
         </div>
         <div class="setting-row" style="align-items:flex-start">
           <label>The Council</label>
@@ -985,6 +996,8 @@
     };
     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
+    setSelect('sHephaestus', (d.hephaestusModel || '').replace(/^local:/, ''));
+    setSelect('sDrivingForce', d.drivingForce || '');
     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
     setSelect('sSynthesist', (d.councilSynthesistModel || '').replace(/^local:/, ''));
@@ -1087,9 +1100,12 @@
     st.textContent = 'saving…'; st.className = 'status';
     try {
       const stripLocal = (v) => (v || '').replace(/^local:/, '');
+      const prevDrivingForce = (STATE.cachedSettings && STATE.cachedSettings.drivingForce) || '';
       const body = {
         globalDefaultModel: stripLocal($('sOrchestrator').value),
         atlasModel: stripLocal($('sAtlas').value),
+        hephaestusModel: stripLocal($('sHephaestus').value),
+        drivingForce: $('sDrivingForce').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
         councilPragmatistModel: stripLocal($('sPragmatist').value),
         councilSynthesistModel: stripLocal($('sSynthesist').value),
@@ -1108,6 +1124,13 @@
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
       toast('Model configuration saved', 'success');
+      // Switching the driving force clears the orchestrator's context on the
+      // server; reset the chat view to reflect the fresh conversation.
+      if (body.drivingForce !== prevDrivingForce) {
+        try { await loadSettingsValues(); } catch (e) { /* settings will reload next open */ }
+        newThought();
+        toast('Driving force changed — context cleared', 'info');
+      }
       // refresh chat model select
       // per-chat model dropdown removed; model is only configured in Settings
     } catch (e) {

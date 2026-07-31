@@ -237,8 +237,15 @@ function buildPrompt(newMessages: NewMessage[]): string {
   // getMessagesForDashboard returns both sides of the conversation.
   const pendingIds = new Set(newMessages.map((m) => m.id));
   // Fetch last N+2 messages (both sides) and exclude the current pending ones to
-  // get up to N turns of real back-and-forth context.
-  const rawHistory = getChatHistory(OWNER_JID, MERCURY_RECENT_MESSAGES + 2) as unknown as NewMessage[];
+  // get up to N turns of real back-and-forth context. A driving-force switch (or
+  // any explicit context clear) drops history before the clear marker so a new
+  // persona starts clean instead of inheriting the old conversation; the pending
+  // cursor (last_agent_timestamp) is advanced separately on the clear.
+  const allHistory = getChatHistory(OWNER_JID, MERCURY_RECENT_MESSAGES + 2) as unknown as NewMessage[];
+  const clearAt = getRouterState('orchestrator:context_clear_at') || '';
+  const rawHistory = clearAt
+    ? allHistory.filter((m) => (m.timestamp || '') > clearAt)
+    : allHistory;
   // Exclude background agent messages (Sentry security alerts and greetings) —
   // they are stored for the user/dashboard, but the orchestrator must NOT see them
   // in its history (otherwise it parrots/acknowledges them).
@@ -1676,6 +1683,9 @@ async function processOwnerMessages(): Promise<void> {
     memoryContext,
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
+    hephaestusModel: (getRouterState('hephaestus:model') || '').replace(/^local:/, '') || undefined,
+    drivingForce: getRouterState('orchestrator:driving_force') || '',
+    contextClearAt: getRouterState('orchestrator:context_clear_at') || '',
     councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
     councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
     councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,

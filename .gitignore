@@ -26,6 +26,7 @@ dist/
 # Ignore everything under data/ EXCEPT the skills (those are tracked).
 data/*
 !data/skills/
+!data/driving-forces/
 # Binary skill assets (fonts, PDFs) stay on disk but out of git.
 data/skills/**/*.ttf
 data/skills/**/*.otf

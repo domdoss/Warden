@@ -26,7 +26,7 @@ function queueForVision(b64: string): void {
 
 registry.register({
     name: 'desktop_screenshot',
-    description: 'Take a screenshot of the full desktop. Captured by the Warden orchestrator on the host and loaded into YOUR vision context immediately — you (the orchestrator) can see and describe it in your next response. Call this yourself; do NOT delegate it to a sub-agent (sub-agents like Atlas have no vision and cannot see the result). Returns the native resolution.',
+    description: 'Take a screenshot of the full desktop (or a window/region). The image is loaded into your vision context immediately — you can see it in your next response and use the pixel coordinates to drive desktop_click(x, y). Returns the native resolution. Use this to SEE a native desktop app (Stremio, a media player, a settings window) before clicking it; for web pages use browser_snapshot instead.',
     schema: {
         type: 'object',
         properties: {

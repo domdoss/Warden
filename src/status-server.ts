@@ -459,6 +459,31 @@ function parseUrl(raw: string): { pathname: string; params: URLSearchParams } {
   };
 }
 
+/**
+ * List driving-force presets from data/driving-forces/*.md. Each preset's
+ * label is its first `# …` heading; the id is the filename without `.md`.
+ * Used to populate the "Driving Force" dropdown on the dashboard.
+ */
+function listDrivingForces(): { id: string; label: string }[] {
+  const dir = path.join(DATA_DIR, 'driving-forces');
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
+  } catch {
+    return [];
+  }
+  return files.map((f) => {
+    const id = f.replace(/\.md$/, '');
+    let label = id;
+    try {
+      const text = fs.readFileSync(path.join(dir, f), 'utf-8');
+      const m = text.match(/^\s*#\s+(.+?)\s*$/m);
+      if (m) label = m[1];
+    } catch { /* keep filename label */ }
+    return { id, label };
+  });
+}
+
 /** Auto-commit changes in a group folder after file operations */
 function autoCommitGroupFile(filePath: string): void {
   const relFromGroups = path.relative(GROUPS_DIR, filePath);
@@ -1342,6 +1367,7 @@ function handleSettings(res: http.ServerResponse): void {
     const sentryMdPath = path.resolve(WORKSPACE_ROOT, 'security', 'sentry.md');
     if (fs.existsSync(sentryMdPath)) sentryMd = fs.readFileSync(sentryMdPath, 'utf8');
   } catch { /* ignore */ }
+  const drivingForces = listDrivingForces();
   json(res, {
     assistantName: ASSISTANT_NAME,
     localAssistantName: LOCAL_ASSISTANT_NAME,
@@ -1357,6 +1383,9 @@ function handleSettings(res: http.ServerResponse): void {
     defaultModelMode: DEFAULT_MODEL_MODE,
     orchestratorModel: getRouterState('orchestrator:model') || '',
     atlasModel: getRouterState('atlas:model') || '',
+    hephaestusModel: getRouterState('hephaestus:model') || '',
+    drivingForce: getRouterState('orchestrator:driving_force') || '',
+    drivingForces,
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
     councilPragmatistModel: getRouterState('council:pragmatist_model') || '',
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
@@ -1422,6 +1451,24 @@ async function handleSettingsSave(
   if (body.atlasModel !== undefined) {
     setRouterState('atlas:model', String(body.atlasModel));
   }
+  if (body.hephaestusModel !== undefined) {
+    setRouterState('hephaestus:model', String(body.hephaestusModel || ''));
+  }
+  if (body.drivingForce !== undefined) {
+    const newForce = String(body.drivingForce || '');
+    const prevForce = getRouterState('orchestrator:driving_force') || '';
+    setRouterState('orchestrator:driving_force', newForce);
+    // Switching the driving force clears the orchestrator's context: mark the
+    // clear time (the host gates <chat_history> on it, and the agent-runner
+    // resets its in-memory conversation when it sees the marker change) and
+    // advance the message cursor so nothing retries under the old persona.
+    if (newForce !== prevForce) {
+      const now = new Date().toISOString();
+      setRouterState('orchestrator:context_clear_at', now);
+      setRouterState('last_agent_timestamp', now);
+      logger.info({ prev: prevForce, next: newForce }, 'Driving force changed — orchestrator context cleared');
+    }
+  }
   if (body.councilSkepticModel !== undefined) {
     setRouterState('council:skeptic_model', String(body.councilSkepticModel));
   }
@@ -1485,7 +1532,8 @@ async function handleSettingsSave(
   // Track whether any router-state settings were saved
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
-    body.atlasModel !== undefined || body.councilSkepticModel !== undefined ||
+    body.atlasModel !== undefined || body.hephaestusModel !== undefined || body.drivingForce !== undefined ||
+    body.councilSkepticModel !== undefined ||
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
     body.sentryModel !== undefined ||
     body.securitySatelliteIp !== undefined || body.mercuryMode !== undefined ||

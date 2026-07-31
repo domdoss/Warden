@@ -8,12 +8,12 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
                                              'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
                                              'browser_tabs', 'browser_back', 'browser_current_url'], tier: 'public' },
     terminal:  { name: 'terminal',  tools: ['Bash', 'desktop_click', 'desktop_type'], tier: 'public' },
-    // Vision captures (screenshot / webcam / host image files) are ORCHESTRATOR-ONLY:
-    // the image is injected into the caller's vision context via _pendingImages,
-    // which only runNativeOllama (the orchestrator loop) consumes. Sub-agents like
-    // Atlas run runSubAgent, which never reads _pendingImages — so they cannot see
-    // captured frames. Keep these out of every sub-agent toolset (atlas-core pulls
-    // in `terminal` above, NOT `capture`) so the orchestrator handles all vision.
+    // Desktop vision — desktop_screenshot is the one capture sub-agents need, so
+    // they can SEE the screen while driving native apps with desktop_click/type.
+    // runSubAgent drains _pendingImages into the next iteration (mirroring the
+    // orchestrator loop), so Atlas can see the frame it just captured. webcam_capture
+    // and read_image stay orchestrator-only (in `capture` below).
+    'desktop-vision': { name: 'desktop-vision', tools: ['desktop_screenshot'], tier: 'public' },
     capture:   { name: 'capture',   tools: ['desktop_screenshot', 'webcam_capture', 'read_image'], tier: 'public' },
     projects:  { name: 'projects',  tools: ['create_project','get_project','update_project','archive_project',
                                              'complete_project','delete_project','list_projects'], tier: 'public' },
@@ -39,7 +39,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
-    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','artemis','iris'], tier: 'public' },
+    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','hephaestus','artemis','iris'], tier: 'public' },
 
     // Security tools — used by Sentry (the single background security agent) to
     // send alerts, open/dismiss detector alerts, arm/disarm, and log events.
@@ -54,7 +54,12 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
 
     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin'] },
     'dexter-core':   { name: 'dexter-core',   includes: ['tasks'] },
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin'] },
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin','desktop-vision'] },
+    // Hephaestus — the coding specialist. Like atlas-core but adds `file`
+    // (Read/Write/Edit/Glob/Grep) so it can edit source, plus browser +
+    // desktop-vision for webapp/UI testing. Both Atlas and Hephaestus merge
+    // active skill tools at spawn, so the data/skills/ library is inherited.
+    'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     'iris-core':     { name: 'iris-core',     includes: ['email','contacts','calendar','todos'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },

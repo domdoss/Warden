@@ -1,5 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs';
+import sharp from 'sharp';
 
 const pexecFile = promisify(execFile);
 
@@ -127,26 +129,48 @@ export async function keyboardKey(key: string, mods: string[] = []): Promise<voi
   }
 }
 
+/** True on a KDE Plasma session (XDG_CURRENT_DESKTOP=KDE / KDE_FULL_SESSION=true). */
+function isKde(): boolean {
+  return /^kde/i.test(process.env.XDG_CURRENT_DESKTOP || '') || process.env.KDE_FULL_SESSION === 'true';
+}
+
 /**
  * Capture a screenshot, optionally cropped to `region`. Returns a PNG Buffer.
- * Wayland: `grim [-g "x,y wxh"] -` writes PNG to stdout.
- * X11: `scrot [-a x,y,w,h] -` writes PNG to stdout.
+ * KDE Plasma Wayland doesn't implement wlr-screencopy, so `grim` fails there —
+ * use Spectacle (KDE's own tool, via KWin's privileged path) and crop with sharp
+ * if a region is requested. Other Wayland compositors (sway/Hyprland) use `grim`;
+ * X11 uses `scrot`.
  */
 export async function screenshot(region?: Region): Promise<Buffer> {
   const s = requireSession();
+  if (s === 'wayland' && isKde()) {
+    const tmp = `/tmp/warden-shot-${process.pid}-${Date.now()}.png`;
+    try {
+      await pexecFile('spectacle', ['-b', '-n', '-f', '-o', tmp], { timeout: 15000 });
+      const full = await fs.promises.readFile(tmp);
+      if (region) {
+        return await sharp(full)
+          .extract({ left: region.x, top: region.y, width: region.w, height: region.h })
+          .png()
+          .toBuffer();
+      }
+      return full;
+    } finally {
+      try { await fs.promises.unlink(tmp); } catch { /* ignore */ }
+    }
+  }
   if (s === 'wayland') {
     const args = region
       ? ['-g', `${region.x},${region.y} ${region.w}x${region.h}`, '-']
       : ['-'];
     const { stdout } = await pexecFile('grim', args, { encoding: 'buffer' });
     return stdout as unknown as Buffer;
-  } else {
-    const args = region
-      ? ['-a', `${region.x},${region.y},${region.w},${region.h}`, '-']
-      : ['-'];
-    const { stdout } = await pexecFile('scrot', args, { encoding: 'buffer' });
-    return stdout as unknown as Buffer;
   }
+  const args = region
+    ? ['-a', `${region.x},${region.y},${region.w},${region.h}`, '-']
+    : ['-'];
+  const { stdout } = await pexecFile('scrot', args, { encoding: 'buffer' });
+  return stdout as unknown as Buffer;
 }
 
 /**

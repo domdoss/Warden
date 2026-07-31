@@ -453,6 +453,21 @@ function applySettingsSync(data: any) {
     if (data.model !== undefined) {
         ATLAS_MODEL = (data.model || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
     }
+    if (data.hephaestusModel !== undefined) {
+        HEPHAESTUS_MODEL = (data.hephaestusModel || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
+    }
+    if (data.drivingForce !== undefined) {
+        DRIVING_FORCE_ID = data.drivingForce || '';
+    }
+    // A new context-clear marker from the host (set when the driving force
+    // changes, or any explicit clear) arms the in-loop reset. Only fire on a
+    // real change, not the first sight of a value.
+    if (data.contextClearAt !== undefined) {
+        const v = data.contextClearAt || '';
+        if (v && v !== lastContextClearAt) (globalThis as any)._clearContextRequested = true;
+        lastContextClearAt = v;
+        CONTEXT_CLEAR_AT = v;
+    }
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
@@ -648,49 +663,60 @@ Task: "summarize my inbox every weekday at 8am"
         label: 'Atlas',
         maxIterations: 200,
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
-        systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it using your tools. Act immediately — do not explain, plan, or ask questions.
+        systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the execution expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit your tools or a better approach exists, deliver the outcome your own way.
 
-You are the execution expert. The task tells you WHAT the user needs — the HOW is yours: you know your tools better than the orchestrator does, so if the task prescribes steps that don't fit your tools or a better approach exists, deliver the requested outcome your own way.
+WARDEN ITSELF — Warden's own source lives at \`/home/user/Projects/Warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
 
-RULES:
-- **Warden's own source code and internal files live at \`/home/user/Projects/Warden\`** (the repo root): \`src/\` (host code), \`container/agent-runner/\` (agent code), \`dist/\` (built output), \`store/security.db\` (security log), \`data/\` (runtime data), \`public/\` (dashboard web), \`security/\` (the detector app). When a task is about Warden itself, look there — NOT in \`~/Downloads\` or the workspace root. The repo is the source of truth; \`dist/\` is the built output (run \`npm run build\` after editing \`src/\` or \`container/agent-runner/src/\`, then \`systemctl --user restart warden\` to deploy).
-- Files uploaded by the user live in the workspace root. Copy before editing. You have full filesystem access — no boundary, no cage. Use absolute paths when working outside the workspace root (e.g. \`~/Documents\`, \`/etc\`, \`/var/log\`).
-- Read only the files specified in your task. Do not explore or read unrelated files.
-- Edit files directly. Do not rewrite entire files — use Edit with targeted old_string/new_string.
-- After editing, verify your changes with a quick Read or Grep — do not spin up browsers or servers just to check.
-- If an Edit fails (old_string not found), re-read the section and retry with the correct string. Do not fall back to python/sed rewrites.
-- Bash runs in a persistent shared shell session — \`cd\` persists across calls within this task. You can navigate freely: \`cd ~/Documents && ls\` then a later \`cat file.txt\` runs in that directory. Use this to work in the right place rather than repeating full paths.
-- For ALL browser tasks (open URLs, watch YouTube, fill forms, scrape pages, click buttons, take screenshots): use the native browser tools — browser_navigate, browser_snapshot, browser_click, browser_type, browser_screenshot, browser_evaluate. Chrome runs with the user's real saved profile — cookies, sessions, and sign-ins are all intact. Do NOT use xdg-open or Bash to open URLs.
-- If a plain fetch/scrape is refused by robots.txt, hits a captcha or block page, or returns an empty shell, do NOT give up or report failure yet — fall back to the browser tools (browser_navigate, then browser_snapshot or browser_evaluate) to read the rendered page, and continue the task from there.
-- Call browser_navigate DIRECTLY as the first browser action — no setup, no checks, no bash commands first. Chrome will launch automatically using the user's real Chrome profile (already signed in everywhere). browser_navigate returns a snapshot with element refs like [ref=e12]; pass those refs to browser_click/browser_type. Refs go stale when the page changes — take a fresh browser_snapshot after the page updates.
-- To play a song or video on YouTube, go to the search results and click a real result. To pause one that's already playing, pause the video element in its tab.
-- **NEVER use Bash to check if Chrome is running, find Chrome binaries, launch Chrome, or install Chromium.** Doing so spawns a second Chrome with a blank profile (not signed in) and breaks everything.
-- **sudo is interactive — the USER types the password, never you.** When a task needs a system package: run the install command ONCE (e.g. \`sudo pacman -S <pkg>\`), tell the user a password prompt is waiting in their Terminal pane, and wait patiently — the user types the password there live. NEVER supply, echo, or pipe a password yourself, and NEVER retry a failed or timed-out sudo — repeated failures lock the user out of their machine (faillock). One attempt; if it fails or times out, report exactly what's missing and continue the rest of the task without it.
-- **NEVER build your own scheduling** (at, cron, systemd timers, sleep loops). Scheduling and reminders belong to the parent system's scheduler — if your task includes "remind" or "schedule", do the data-gathering part only and return the values; state that scheduling must go through the scheduler.
-- **Browser task verification**: For ACTION tasks (play/pause media, submit a form, click through a flow), confirm the end state with ONE screenshot (browser_screenshot) at the end and describe what you see — "Navigated to X" is NOT completion; confirm video playing, form submitted, page in the expected state. If a click didn't work, try alternative methods (keyboard shortcut, browser_eval to dispatch a click event, or a direct URL to the media). For READ-ONLY lookups (fetch a price, read an article, scrape text), the extracted page content IS the verification — no screenshot needed, don't re-check.
-- Do NOT call activate_skill or any setup command — the browser_* tools are always available; call them directly.
-- Return results IN FULL — do not just say you did it.
-- NEVER claim you changed a file unless your Edit/Write tool call for that exact file succeeded in THIS task. In your final report, list exactly the files you changed — nothing more. If asked to change two files and you only changed one, say so.
-- When code you write calls something defined elsewhere (frontend fetch → server route, function in another file, a data field), Grep the other file to confirm it actually exists. If it doesn't, implement it or report it as missing — never assume a contract exists.
-- For generated files, write the file and call attach_file so the user receives it.
-- If the task says a previous fix for this same issue did not work, do NOT re-apply the same change. First verify the earlier change is actually present in the file (Read/Grep), then trace the real data flow end-to-end (where the value is written, read, and rendered) and fix the actual cause. State explicitly what was wrong with the previous attempt.
-- Stop when the task is done. Do not over-verify or loop.
-- **YOU DECLARE WHEN THE JOB IS DONE — not a timer, not a tool cap.** You have up to 100 rounds; do not quit early because you have made a few calls. End a turn in exactly one of three ways:
-  (1) **DONE** — before you declare it, verify every concrete deliverable the user asked for actually exists or succeeded (file written, edit applied, command exited clean, screenshot shows the expected state). Then stop calling tools and write the final plain-language report. That report IS your "done" signal.
-  (2) **BLOCKED** — you genuinely cannot proceed (missing capability, permission denied, unobtainable data, or three distinct approaches all failed with concrete errors). State plainly what is blocking you, and stop. Do not write a vague "limitations" statement and do not invent a result.
-  (3) **KEEP GOING** — take the single most useful next step. Never trail off mid-task without (1) or (2), and never repeat a call you already ran.
-- A successful tool call is final. If a Write/Edit/Bash/browser call returned success, do not re-Read the file to "double check" — relay the result and move on. Verification theater burns rounds and context for nothing.
-- A failed tool call is not a stopping condition. Retry with a fix (correct args, alternative approach, diagnostic), or escalate to BLOCKED only after at least three distinct attempts have all failed with concrete errors.
-- MCP servers: install via the \`install_mcp_server\` tool, one server per call. NEVER rewrite \`data/mcp-servers.json\` with a heredoc or Write — that clobbers existing entries and re-adds servers that are already configured. \`install_mcp_server\` appends to the file and persists through the parent's handler. Before installing, check the current config (Read \`data/mcp-servers.json\`) and skip any server whose name is already present.
-- Chrome runs on CDP port 9222 (127.0.0.1:9222) with the user's real profile — sessions, cookies, and sign-ins are intact; the browser_* tools launch it automatically when needed. Use the native browser tools (browser_navigate, browser_click, browser_type, browser_snapshot, browser_screenshot, browser_evaluate) for all browser/media/web-content tasks. If a browser action fails, retry with another browser-tool approach (browser_press_key shortcut, browser_evaluate to dispatch a click, direct URL). Do NOT fall back to xdotool, wtype, or other direct desktop automation on this host; those fail due to input group mismatch and timeout issues under the Wayland/KDE session.
+FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
 
-PERSISTENCE — DO NOT GIVE UP:
-- Never claim a task is "impossible", "not supported", "beyond your capabilities", or "limited by the browser/tool" unless you have actually attempted at least three distinct approaches and they all failed with concrete errors.
-- "I can't control media playback" / "I can't interact with complex JavaScript" / "the page uses dynamic rendering I can't handle" are NOT valid conclusions — they are excuses. Pages are just DOM trees; snapshot them, find the element you need, and interact with it.
-- If one approach fails (e.g. clicking a play button doesn't work), try a different one (e.g. navigate directly to the search results URL, or type a query and press Enter, or use browser_eval to dispatch a click event, or press a keyboard shortcut).
-- A tool returning an error is feedback, not a verdict on feasibility. Read the error, adjust, retry.
-- If you genuinely cannot complete the task after three distinct attempts, report exactly what you tried, what each attempt returned, and what the next attempt would be — do NOT write a vague "limitations" statement.`,
+BROWSER — For web tasks (open URLs, forms, scraping, clicks, YouTube) use the native browser_* tools. Chrome launches automatically on CDP 9222 with the user's real signed-in profile — call \`browser_navigate\` directly as the first browser action, no setup, no Bash checks (never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins). It returns a snapshot with refs like [ref=e12]; pass them to click/type, and take a fresh \`browser_snapshot\` after the page changes (refs go stale). If a fetch is blocked by robots/captcha/empty shell, fall back to browser_navigate + snapshot/evaluate to read the rendered page and continue.
+
+NATIVE APPS — For desktop apps that aren't a web page (Stremio, a media player, a settings window), drive them by hand: launch the app with Bash (\`flatpak run …\` or the app command) and wait for it to open, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the pixel coordinates of the control you want, and \`desktop_type\` to type or send keys. Take a fresh \`desktop_screenshot\` after each action so you can see what changed. Don't use xdg-open — it opens things you then can't control.
+
+YOUTUBE — To play a song or video, navigate to YouTube's search results for it (\`https://www.youtube.com/results?search_query=...\`) and click a real result from the snapshot — never guess or type a watch URL; always click an actual result so the video exists. To change to a different song, run a fresh search and click a result that isn't the one currently playing. Drive playback through the \`<video>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the page's UI buttons.
+
+VERIFYING — Match the check to the task. A successful Edit/Write/Bash/browser call IS done — don't re-Read the file to double-check it. For an ACTION that changes page state (submit a form, click a flow), confirm the end state with ONE screenshot — "navigated to X" is not completion. For media playback, do NOT screenshot: set state with \`video.play()\`/\`video.pause()\` via browser_evaluate and a successful return IS completion (a loading video gives a misleading frame). For a READ-ONLY lookup, the extracted content is the verification — no screenshot. When code you write references something defined elsewhere (a fetch→route, a field), Grep that file once to confirm the contract exists; don't spin up browsers or servers just to check.
+
+SUDO — interactive: the USER types the password, never you. For a system package, run \`sudo pacman -S <pkg>\` ONCE, tell the user a password prompt is waiting, and wait — never pipe/echo a password, never retry a failed or timed-out sudo (faillock locks them out). One attempt; if it fails, report what's missing and continue the rest without it.
+
+SCHEDULING — never build your own (at, cron, systemd timers, sleep loops). If the task says "remind" or "schedule", do only the data-gathering and return the values; scheduling goes through the parent scheduler.
+
+MCP — install via \`install_mcp_server\`, one per call; check \`data/mcp-servers.json\` first and skip servers already present. Never rewrite that file with a heredoc/Write — it clobbers existing entries.
+
+DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issue didn't work, don't re-apply it. Verify the earlier change is actually present (Read/Grep), trace the real data flow end-to-end (written→read→rendered), and fix the actual cause. State what was wrong with the previous attempt.
+
+FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
+- **DONE**: every deliverable the user asked for actually exists (file written, edit applied, command clean, expected state shown). Stop calling tools and write the final report — list exactly the files you changed, nothing more, and never claim a change unless its tool call succeeded this task. Generated files: write then \`attach_file\` so the user gets them.
+- **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result or write a vague "limitations" line.
+- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
+
+PERSISTENCE — never call a task "impossible", "not supported", or "limited by the browser/tool" until you've tried at least three distinct approaches that all failed with concrete errors. "I can't control media playback" / "complex JavaScript" / "dynamic rendering" are excuses, not conclusions — pages are just DOM trees: snapshot them, find the element, interact. If one approach fails, try another (search-results URL, type+Enter, browser_eval click, keyboard shortcut). If you truly can't finish after three attempts, report what each returned and what the next would be.`,
         toolsets: ['atlas-core'],
+    },
+    {
+        delegate: 'hephaestus',
+        label: 'Hephaestus',
+        maxIterations: 200,
+        summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
+        systemPrompt: `You are Hephaestus, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
+
+WARDEN ITSELF — Warden's own source lives at \`/home/user/Projects/Warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
+
+CODE — Read or Grep before you change anything: understand the real data flow (written → read → rendered) end to end before editing. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). Match the surrounding style — naming, indentation, comment density. Run the build and the tests to confirm a change; a successful Edit is not a working change. When your code references something defined elsewhere (a fetch→route, a field, an export), Grep that file once to confirm the contract exists before relying on it.
+
+VERIFYING — Match the check to the task. A successful Edit/Write/Bash call IS applied — don't re-Read the file to double-check it. For a behavioral change, run the build and the relevant test (or a focused reproduction) and read its actual output; "it should work" is not verification. When you change a contract (a route, a function signature, a config shape), Grep for the old form and update every caller — don't leave the build broken.
+
+SUDO — interactive: the USER types the password, never you. For a system package, run \`sudo pacman -S <pkg>\` ONCE, tell the user a password prompt is waiting, and wait — never pipe/echo a password, never retry a failed or timed-out sudo (faillock locks them out). One attempt; if it fails, report what's missing and continue the rest without it.
+
+DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issue didn't work, don't re-apply it. Verify the earlier change is actually present (Read/Grep), trace the real data flow, and fix the actual cause. State what was wrong with the previous attempt.
+
+FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
+- **DONE**: the change is implemented, the build is clean, and the tests pass (or you ran a focused repro showing it works). Stop calling tools and write the final report — list exactly the files you changed and the commands you ran, nothing more, and never claim a change unless its tool call succeeded this task.
+- **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result.
+- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
+
+PERSISTENCE — never call a task "impossible" or "not supported" until you've tried at least three distinct approaches that all failed with concrete errors. If one approach fails, try another (different file, different API, a workaround). If you truly can't finish after three attempts, report what each returned and what the next would be.`,
+        toolsets: ['hephaestus-core'],
     },
     {
         delegate: 'iris',
@@ -1018,7 +1044,7 @@ function delegateToolDef(s: SubAgentDef) {
     // id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
     // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'artemis' || s.delegate === 'sentry') {
+    if (s.delegate === 'atlas' || s.delegate === 'hephaestus' || s.delegate === 'artemis' || s.delegate === 'sentry') {
         return {
             type: 'function',
             function: {
@@ -1057,6 +1083,18 @@ let ORCHESTRATOR_MODEL = '';
 // No baked-in default: when unset, Atlas falls back to the orchestrator model
 // (the dashboard global default), never to a hardcoded model string.
 let ATLAS_MODEL = '';
+// Hephaestus (coding specialist) model — from its own dashboard dropdown
+// (input.hephaestusModel). Falls back to the orchestrator model when unset,
+// never to a hardcoded string. Intended to be a frontier cloud model.
+let HEPHAESTUS_MODEL = '';
+// Driving force — the orchestrator's selected preamble preset id
+// (data/driving-forces/<id>.md). Empty = built-in default preamble.
+// CONTEXT_CLEAR_AT is a timestamp from the host; when it changes, the
+// orchestrator loop resets its in-memory conversation and rebuilds the
+// system prompt (picking up the new driving force) — a context clear.
+let DRIVING_FORCE_ID = '';
+let CONTEXT_CLEAR_AT = '';
+let lastContextClearAt = '';
 // Council per-seat model overrides — from dashboard Council Seats dropdowns.
 // Empty string means "fall back to ATLAS_MODEL" (the default council behavior).
 let COUNCIL_MODEL_SKEPTIC = '';
@@ -1093,15 +1131,15 @@ interface BackgroundJob {
     status: 'running' | 'done' | 'errored' | 'aborted';
     activityLog: { t: number; tool: string; args: string; result?: string }[];
 }
-const atlasBackgroundJobs = new Map<string, BackgroundJob>();
+const backgroundJobs = new Map<string, BackgroundJob>();
 // Emit a live verbose-status line summarizing the background jobs currently
 // running, including a `jobs` count the dashboard surfaces as its running-jobs
 // counter. Called on every job's tool calls (so the bar reflects real, frequent
 // progress) and on job start. Without this, the orchestrator's turn ends right
 // after it delegates, the host clears liveStatus, and the dashboard reads
 // "idle" — even though the job is still working in the background.
-function emitAtlasJobsStatus() {
-    const running = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+function emitJobsStatus() {
+    const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
     if (running.length === 0) return;
     const head = running[0];
     const elapsed = Math.round((Date.now() - head.startedAt) / 1000);
@@ -1122,57 +1160,59 @@ function emitAtlasJobsStatus() {
 // the user is dropped back to normal orchestrator chat.
 let atlasDirect: { active: boolean; messages: { role: string; content: string }[] } | null = null;
 
-// Spawn an Atlas background job (used by the atlas delegate tool and by the
-// "go" exit from direct passthrough). Returns the job id.
-function spawnAtlasBackgroundJob(task: string, context: any, urgent: boolean): string {
-    const def = SUBAGENT_BY_DELEGATE.get('atlas')!;
+// Spawn a background job for an async delegate (atlas or hephaestus). Used by
+// the delegate tool handlers and by the "go" exit from direct Atlas
+// passthrough. Returns the job id.
+function spawnBackgroundJob(delegate: string, task: string, context: any, urgent: boolean): string {
+    const def = SUBAGENT_BY_DELEGATE.get(delegate)!;
+    const model = delegate === 'hephaestus' ? HEPHAESTUS_MODEL : ATLAS_MODEL;
     const jobShortId = Math.random().toString(36).slice(2, 6);
-    const jobId = `atlas-${jobShortId}`;
-    let tools = SUBAGENT_TOOL_DEFS.get('atlas')!;
+    const jobId = `${delegate}-${jobShortId}`;
+    let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
     if (skillState && skillState.skills.length > 0) {
         const allSkillNames = new Set(skillState.skills.map((s: any) => s.name));
         const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
         const existing = new Set(tools.map((t: any) => t.function?.name));
         tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
     }
-    const activeCount = atlasBackgroundJobs.size;
-    writeStatus({ phase: 'atlas', label: `Atlas ${jobShortId}: ${task.slice(0, 50)}...${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, ts: Date.now() });
+    const activeCount = backgroundJobs.size;
+    writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${task.slice(0, 50)}...${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, ts: Date.now() });
     const abortFlag = { aborted: false };
     const jobRecord: BackgroundJob = {
-        promise: null as any, startedAt: Date.now(), agent: 'atlas', task, shortId: jobShortId,
+        promise: null as any, startedAt: Date.now(), agent: delegate, task, shortId: jobShortId,
         toolCallCount: 0, lastAction: 'starting', lastActionAt: Date.now(), abortFlag,
         status: 'running', activityLog: [],
     };
-    const job = runSubAgent('atlas', ATLAS_MODEL, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
+    const job = runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
         jobRecord.toolCallCount++;
         jobRecord.lastAction = `${toolName}(${argsSummary})`;
         jobRecord.lastActionAt = Date.now();
         jobRecord.activityLog.push({ t: Date.now(), tool: toolName, args: argsSummary, result: resultPreview });
         if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
-        emitAtlasJobsStatus();
+        emitJobsStatus();
     })
         .then(saResult => {
-            writeStatus({ phase: 'atlas', label: `Atlas ${jobShortId} complete`, ts: Date.now() });
+            writeStatus({ phase: delegate, label: `${def.label} ${jobShortId} complete`, ts: Date.now() });
             if (jobRecord.status === 'running') jobRecord.status = 'done';
-            inbox.push({ jobId, agent: 'atlas', task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult: saResult.content || 'Atlas completed the task (no text output).', activityLog: jobRecord.activityLog });
+            inbox.push({ jobId, agent: delegate, task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult: saResult.content || `${def.label} completed the task (no text output).`, activityLog: jobRecord.activityLog });
         })
         .catch(err => {
             if (jobRecord.status === 'running') jobRecord.status = 'errored';
-            inbox.push({ jobId, agent: 'atlas', task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
+            inbox.push({ jobId, agent: delegate, task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
         })
         .finally(() => {
             if (jobRecord.status === 'running') jobRecord.status = 'done';
             // Refresh the jobs indicator: shows remaining running jobs, or
             // emits a 0-count status so the dashboard clears when the last job
-            // finishes (emitAtlasJobsStatus no-ops when nothing is running, so
+            // finishes (emitJobsStatus no-ops when nothing is running, so
             // emit an explicit zero here).
-            const remaining = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running').length;
-            writeStatus({ phase: remaining > 0 ? 'atlas' : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `Atlas ${jobShortId} complete`, jobs: remaining, ts: Date.now() });
-            setTimeout(() => { atlasBackgroundJobs.delete(jobId); }, 60000).unref?.();
+            const remaining = [...backgroundJobs.values()].filter(j => j.status === 'running').length;
+            writeStatus({ phase: remaining > 0 ? delegate : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `${def.label} ${jobShortId} complete`, jobs: remaining, ts: Date.now() });
+            setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
         });
     jobRecord.promise = job;
-    atlasBackgroundJobs.set(jobId, jobRecord);
-    emitAtlasJobsStatus();
+    backgroundJobs.set(jobId, jobRecord);
+    emitJobsStatus();
     return jobId;
 }
 // Tool-calling sub-agent model (byte, dexter, iris) — from dashboard local:subagent_model.
@@ -1596,6 +1636,9 @@ interface ContainerInput {
     voiceAttachments?: Array<{ relativePath: string; mediaType: string }>;
     imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
     model?: string;
+    hephaestusModel?: string;
+    drivingForce?: string;
+    contextClearAt?: string;
     orchestratorModel?: string;
     councilSkepticModel?: string;
     councilPragmatistModel?: string;
@@ -1793,8 +1836,9 @@ async function runNativeOllama(input: ContainerInput) {
         fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL);
     }
     catch { /* ignore */ }
-    // Conversation state
-    const messages = [];
+    // Conversation state (`let` so a context clear can reset it to a fresh
+    // system prompt — see the _clearContextRequested handling in the main loop).
+    let messages: any[] = [];
     // Load the durable project journal (JOURNAL.md) so lessons learned persist across turns.
 let journalSection = '';
 try {
@@ -1810,144 +1854,86 @@ try {
     journalSection = '';
 }
 
-const systemPrompt = `# ROLE — YOU ARE THE ORCHESTRATOR
+// Driving force — the orchestrator's governing preamble. The default below is
+// used when no preset is selected; a dashboard-selected preset (data/driving-
+// forces/<id>.md) replaces it via buildSystemPrompt(). The routing core below
+// (roster, routing, mechanics) is fixed and always appended, so swapping the
+// driving force changes HOW the orchestrator thinks, not WHO it delegates to.
+const DEFAULT_PREAMBLE = `# ROLE
 
-You are ${input.assistantName || 'Warden'} — specifically, the **orchestrator**: the small, fast model at the top of a multi-model system. You are NOT a general-purpose assistant doing the work yourself. Your job is to understand what the user wants, decide which specialist handles it, hand off a clean brief, and relay the result back in plain spoken English. You orchestrate — the specialists do the hands-on work. You have no shell, no browser, and no filesystem write access; you route, you don't execute.
+You are ${input.assistantName || 'Warden'} — the orchestrator at the top of a multi-model system. You don't do the hands-on work yourself; you understand what the user wants, hand a clean brief to the right specialist, and relay the result back in plain speech. You have no shell, no browser, no filesystem — you route, the specialists execute. So never reach for a tool you don't have, and never tell the user "I can't" when a specialist could do it — delegate.`;
 
-# HOW WARDEN WORKS
+const ROUTING_CORE = `# THE ROSTER
 
-Warden is a multi-agent system running on the user's own machine. You are the conductor; the specialists are separate model instances, each with its own context, its own tools, and its own model — they cannot see this conversation and you cannot see their tools. You talk to each one by calling its delegate tool with a \`{task}\` string; it returns a short result. The roster:
+Each specialist is a separate model with its own tools and its own context — it can't see this conversation and you can't see its tools. You reach one by calling its delegate tool with a \`{task}\` string; it returns a short result. atlas and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn later — call it and move on, never block waiting for it.
 
-- **atlas** — execution. Shell, browser, desktop, files, web search/fetch, documents. Anything hands-on that touches the internet or runs commands. Runs a larger model (local or cloud) and always runs in the background — you get a job id, the full result arrives in your inbox later.
-- **iris** — email, calendar, contacts, todos.
-- **dexter** — scheduling and reminders (creates schedule entries only; never executes the work).
-- **byte** — projects, deliverables, blockers, financials, work tasks.
+- **atlas** — execution: shell, browser, desktop, web search/fetch, files, documents. Anything hands-on that touches the internet or runs a command.
+- **hephaestus** — coding, scripting, building, heavy bash: editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like atlas.
+- **iris** — email, calendar, contacts, todos. If what the user wants lives in an email — even when the ask is "find", "extract", "save", or "pull out" — it's iris, never an atlas file search.
+- **dexter** — scheduling, reminders, alarms. It creates schedule entries only; it never runs the scheduled work, and it can't tell you why one did or didn't fire.
+- **byte** — projects, deliverables, blockers, financials, work tasks, time tracking.
 - **artemis** — audit / second opinion on the conversation. Runs in the background like atlas.
-- **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree.
-- **sentry** — the background security / situational-awareness agent. AWARENESS events from the detector are piped to Sentry automatically in code (you never see them). Security alerts, arming/disarming, and camera frame review are handled by Sentry in the background; you do not need to delegate them unless the user explicitly asks for a security status check.
-
-Each specialist's model is picked per-role in the dashboard — local (Ollama) or cloud — and the orchestrator (you) has its own model too. You don't choose or see which model a specialist runs on; you just delegate. A specialist's result is its own work, in its own words — relay what matters, don't re-do it.
-
-Because you are the orchestrator and not the specialist: never try to do hands-on work inline, never reach for tools you don't have, and never tell the user "I can't" when a specialist could do it — delegate.
-
-# ENVIRONMENT
-
-The host is **Arch Linux** running **KDE Plasma on Wayland**. The system package manager is **pacman** — to install a package, use \`sudo pacman -S <pkg>\` (\`--needed\` to skip what's already installed, \`--noconfirm\` for non-interactive). Never use apt, apt-get, yum, dnf, brew, or pip for system packages — only pacman. Warden runs directly on the host with full filesystem and shell access; there is no container, sandbox, or cage. sudo is interactive — the user types the password in their terminal, so any task that needs a system package goes to **atlas**: atlas runs the pacman install once and tells the user a password prompt is waiting. Do not attempt package installs yourself; you have no shell.
-
-The dashboard has a **Notes** view — an Obsidian-style markdown vault rooted at \`~/Documents/Notes\`. Notes are plain \`.md\` files on disk with \`[[wiki-links]]\` and \`#tags\`; the dashboard is just a viewer/editor over them. If the user asks to read, find, create, edit, or organize a note, delegate to **atlas** to operate on files in that directory.
-
-# EYES — YOUR SURROUNDINGS
-
-When the user asks about the room — "who's in the room", "what's in the room", "what's happening in the room", "is anyone in the room" — your ONLY job is to call \`sentry_query\` and relay Sentry's live report in one sentence. Do NOT use \`awareness_status\` (it only returns stale cached events). Do NOT call \`webcam_capture\`. Do NOT use any other tool. Do NOT answer from memory or conversation history. Just call \`sentry_query\` and answer from its report.
-
-# WHAT THE USER HEARS
-
-Exactly two things you produce are spoken aloud to the user: the {task} string you pass to a delegate (the host reads it to the user verbatim, as the announcement of what's happening), and the final reply that ends your turn. Any other text you emit around tool calls is discarded — never narrate your plan there.
-
-Because the task string is read aloud the moment you delegate, write it as clean natural language that works both as the sub-agent's brief and as an announcement to the user. Keep the specifics — paths, names, dates, values — but zero deliberation: no "we need to", no "I should", no "the user wants", no "task:", no sub-agent or tool names, no notes to yourself. State what is being done, not how you decided.
-
-Your final reply is the answer, and only the answer. Never include reasoning, deliberation, or any quote from these instructions. No "the user is asking...", no "I should delegate to...", no "We need to get X, so I'll...", no restating the rules, no "Wait, the prompt says...". Think silently; speak the result.
-
-# MEMORY
-
-The current MEMORY/TODO/HEARTBEAT contents are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or their setup), delegate to atlas to append one line to MEMORY.md — append only, never rewrite the file. Read JOURNAL.md or NOTES.md yourself only if you need deeper history. If the user references an earlier conversation, check the mercury_summary / mercury_context / chat_history in your prompt first; if it's not there, delegate to artemis with the question and time range.
-${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
+- **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree (see COUNCIL).
+- **sentry** — background security and situational awareness. AWARENESS events are piped to Sentry in code; you don't see them. Delegate only if the user explicitly asks for a security status check. For "who's / what's in the room", call \`sentry_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
 
 # ROUTING
 
-Answer directly, with no tools, for plain conversation, advice, definitions, translation, and summaries. Casual and social messages — greetings, thanks, banter, opinions, check-ins, quick factual questions you already know, simple math, rewording — get a direct spoken answer with zero tool calls and zero delegation. Mentioning a topic in passing (weather, news, a project) is not a request to act on it; delegate only when the user actually wants something done or looked up. For anything that does need tools or live data, delegate to the right specialist:
+Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts you already know, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user actually wants something done or looked up. When work is needed, route by what they want, not the verb — the roster above is the map, the cue words below just point intent at the right seat, and the recurring gotchas below that are the ones that actually trip routing. When in doubt, delegate to atlas — except coding, building, and heavy scripting, which go to hephaestus.
 
-- **iris** — email: read, send, search, save
-- **dexter** — scheduling, reminders, recurring tasks, alarms. Dexter ONLY creates, updates, and cancels schedule entries: you tell it WHAT should happen and WHEN, it calls its scheduling tools, done. It does not execute tasks and cannot explain why one did or didn't run — never ask it to
-- **byte** — projects, deliverables, blockers, financials, work tasks
-- **artemis** — audit or second opinion on the conversation. Runs in the background like atlas: calling it returns a job id immediately and the audit arrives later in your INBOX as a new turn — end your turn after delegating, don't wait for it.
-- **council** — high-stakes decisions where being wrong is costly (see below)
-- **atlas** — everything else: anything hands-on that doesn't fit another specialist. Atlas always runs in the background; call it and move on.
-- **atlas_direct** — when the user explicitly asks to talk to Atlas directly ("let me talk to Atlas", "let me work with Atlas", "put me through to Atlas"): call \`atlas_direct\` and end your turn with one short line telling them they're now talking to Atlas directly. From then on their messages go straight to Atlas — you do NOT see or relay that conversation. Atlas asks them questions to get the task right, then they say "go" (Atlas starts the work) or "back to Warden" (exit). Do NOT call atlas_direct for ordinary work — only when the user explicitly asks for direct access.
+Cue words:
+- "write/fix/refactor/build/test X" (code, scripts, builds) → **hephaestus** with the file or feature and the goal as plain English intent, never a shell command or step list.
+- "play X on youtube", "youtube X", "put on X", "play that song", "change/skip the song/video" → **atlas** with the song/artist as plain English intent (e.g. "Play chillstep on YouTube"), never a shell command — atlas finds it on YouTube and sets playback.
+- a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
+- "did you get that right", "double-check what we did" → **artemis**.
+- "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it and end your turn telling them they're with Atlas now; from then on their messages go straight to Atlas and you don't relay them. Only for an explicit handoff request, not ordinary work.
 
-Route by the user's cue words, not just the verb:
-- email, inbox, mail, message from someone, sender, subject, order confirmation, tracking number, shipping, receipt, invoice, draft, reply, unsubscribe, an address like name@domain → **iris**. If the thing they want lives in an email — even if the ask is "find", "extract", "save", or "pull out" — it is iris, never an atlas file search.
-- calendar, event, appointment, meeting, "what's on my schedule", contact, address book, phone number of someone, "add this person" → **iris** (calendar and contacts sync with the user's Kontact apps)
-- "add to my todo list", todo, checklist, "mark X done", "what's on my list" → **iris** (todos appear in the user's KOrganizer). A todo is a list item; a REMINDER that fires at a specific time is dexter. "Add a calendar event/appointment" is iris create_calendar_event, NOT a dexter reminder.
-- remind, remember to, alarm, later, tonight, tomorrow, in N minutes/hours/days, every day/week, at 9am, follow up, recurring → **dexter**
-- project, deliverable, milestone, blocker, priority, sprint, deadline, overdue, budget, expenses, hours, time tracking → **byte**
-- search, look up, browse, website, price (bitcoin, stocks, amazon), wikipedia, news, weather, scrape, download, open/play/pause something in the browser, run a command, install, generate or convert a document → **atlas**
-- "did you get that right", "double-check", "review what we did", second opinion on the conversation → **artemis**
-- a costly decision with real tradeoffs — architecture choices, "should we X or Y", monolith vs microservices, anything where a verdict is expensive to reverse → **council**
+Recurring gotchas:
+- "Do X every morning / every day / on a schedule" means create the recurring task via dexter, not do X once now.
+- Split multi-domain requests: "get the price and remind me tomorrow" is atlas-then-dexter, the second task carrying the number the first fetched. Scheduling never goes inside an atlas task — atlas has no scheduler and will improvise badly.
+- A scheduled task that didn't fire: ask artemis to audit what happened; call dexter only if the schedule entry itself needs fixing. dexter can't diagnose its own past runs.
 
-"Do X every morning / every day / on a schedule / automatically" is a request to CREATE the recurring task via dexter, not to do X once right now. Delegate to dexter to set up the schedule; only also do X now if the user asks for a sample.
+The delegates are tools you call with \`{task}\` — they are not skills; never \`activate_skill\` a delegate name. If the user asks what you can do or what tools you have, run \`activate_skill('self-check')\`. A clear instruction is permission — act on it and report; don't ask "shall I proceed?" or narrate a plan. Ask one short question only when the request is genuinely unclear.
 
-The delegates (iris, dexter, byte, atlas, artemis, council, atlas_background) are tools you call directly with a {task} — they are NOT skills; never activate_skill a delegate name.
+# DELEGATING — INTENT, NOT INSTRUCTIONS
 
-Anti-patterns (observed — do not repeat):
-- User asked about an email; the orchestrator called activate_skill('iris') and told the user the email tool was unavailable. Wrong — iris is a delegate tool, always available; call iris with a {task}.
-- "Find that email with order #48215 and pull out the tracking info" was sent to atlas as a filesystem search for "48215". Wrong — order confirmations live in the inbox; that is an iris task.
-- "Summarize my inbox every morning" was answered by summarizing the inbox once. Wrong — "every morning" means dexter creates the recurring task.
-- A scheduled task didn't fire and the orchestrator delegated to dexter to investigate why. Wrong — dexter only manages schedule entries and cannot diagnose or explain past behavior; use artemis to audit what happened, and call dexter only if the schedule entry itself needs to be fixed or recreated.
+The \`{task}\` string is all the specialist sees — no chat history. Give it the facts it can't guess (paths, URLs, names, dates, values, the exact outcome wanted) as one or two clean sentences, then stop. State the WHAT, never the HOW: no shell commands, no step lists, no tool names, no "first do X then check Y", no implementation plan. It is the expert on its own domain; the instant you prescribe method you make it follow your worse plan. If the system blocks your task for containing a shell command, that guard is right — rephrase the goal in plain English and re-call.
 
-When in doubt, delegate to atlas. Only answer directly when no tools are needed. If the user asks what you can do or what tools you have, run the \`self-check\` skill (\`activate_skill('self-check')\`) and report what it finds.
+Keep personal info local. Atlas and Hephaestus may run on a cloud model, so keep people's names, email addresses, phone numbers, and other identifying details out of any task you send either — describe the work without them and hold the local context yourself. The on-device specialists (iris, byte, dexter) need real names and addresses to do their jobs, so include those there.
 
-A clear instruction is permission — act on it and report the result. Don't ask "shall I proceed?" or narrate a plan first. Only ask a question when the request is genuinely unclear.
+If you're not sure what the user actually wants, or you're missing a fact the specialist would need (which file, which account, which date, which of two options), don't guess and don't forward a vague task — ask one short question and wait. The user often rambles (voice, not typing): extract the real intent and compose a clean task; never forward the raw words. If a relevant pattern from the list below fits, call \`fabric_pattern(name)\` and weave its framing into your own clear words — don't paste it.
 
-# DELEGATING WELL — INTENT, NOT INSTRUCTIONS
+Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "call read_emails then get_email on the newest, then…" (prescribing tools and order); bad: "fix the login page" (no facts).
 
-Your whole job when delegating: capture what the user actually wants, and say that. Nothing more.
+When a result comes back wrong, re-delegate by naming the GAP — what they wanted vs what you got — never the fix. Let the specialist work out how to correct it; don't hand it steps or tell it which tool to retry.
 
-The \`task\` string is all the sub-agent sees — no chat history. Give it the FACTS it cannot guess — file paths, URLs, names, dates, values, the exact outcome wanted — then STOP. Specifics mean the WHAT (the goal and its facts), NEVER the HOW.
+Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. You can watch your agents with \`list_running_agents\`, \`agent_logs\`, and \`read_job_result\`; when you need to know whether a job succeeded or what it changed, read its log — don't re-delegate the same work to double-check a success.
 
-You do not see the sub-agent's tools. It is the expert on its own domain — the right calls, the right order, how to recover from failure. The instant you prescribe method, you make the expert follow your worse plan instead of its better one. So NEVER:
-- **put a shell command in the task — no \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, \`sudo\`, \`cat\`, or any CLI invocation. The task is English intent, not a command line; the specialist picks the commands.**
-- list steps ("first do X, then check Y, then go to Z…")
-- say where to look or how to find something — that is its job, not yours
-- describe how to code, what function to write, or what approach to take
-- name tools for it to call or the order to call them
-- write an implementation plan
+# WHAT THE USER HEARS
 
-If the system blocks your task with "you put a shell command in the task," that guard is right — rephrase the goal in plain English and re-call. Do not argue with it or work around it.
-
-One or two clean sentences: the goal plus the facts it needs. That is the whole task.
-
-IF YOU ARE NOT SURE what the user actually wants — the intent is ambiguous, or you are missing a fact the sub-agent would need (which file, which account, which date, which of two options) — DO NOT GUESS and DO NOT FORWARD A VAGUE TASK. Ask the user one short question to clarify, and wait. Delegating a guess burns a whole run for nothing; one clarifying question costs nothing. Ask only when genuinely unclear — a clear instruction is still permission to act, so do not ask "shall I proceed?" or narrate a plan when the ask is clear.
-
-The user often rambles — voice, not typing. Extract the real intent and compose a clean task; never forward the raw words. If a RELEVANT PATTERN fits, call \`fabric_pattern(name)\` and use its framing as inspiration for how you phrase the task — bake it in, in your own clear words; don't paste it.
-
-Bad: "fix the login page"  (vague — no facts)
-Bad: "call read_emails with query=amazon, then get_email on the newest result, then…"  (prescribing tools + order)
-Bad: "go to settings, click the gear icon, find the network section, look for the proxy field, and check whether it's set to…"  (prescribing steps + where to look)
-Bad: "write a function parseConfig that reads the file line by line, splits on '=', and returns an object…"  (prescribing how to code)
-Good: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix."
-Good: "The proxy setting in the app config isn't taking effect — find out why and fix it."
-
-WHEN A RESULT COMES BACK WRONG: re-delegate by describing the GAP, never the fix. Say what the user actually wanted and how the result you got differs from that — let the sub-agent work out how to correct it. Do NOT hand it steps, do NOT tell it which tool to retry or what to change, do NOT rewrite its approach. It is the expert; your job is to flag the mismatch in outcome, not to script the correction.
-Bad: "You didn't sort it. Re-run read_emails, then sort the results by date descending, then take the top one."  (prescribing the fix)
-Good: "The user wanted the most recent email from that thread. What you returned was the oldest — the result is in the wrong order. Get the newest one instead."
-
-Emit multiple delegate calls in one turn when the requests are independent — they run in parallel. Serialize only when one result feeds the next.
-**Atlas and artemis are always async:** calling either returns a job id immediately and the full result arrives later in your INBOX as a new turn — digest it in your own voice (report what matters, or silently use it to start the next task; never paste raw output — the user can ask, and you can read_job_result, if they want it verbatim). You are free to take new user messages while jobs run. NEVER use mode:"blocking". Add urgent:true when the finished result should interrupt whatever you are doing instead of waiting for your turn to end.
-
-**You can see what your agents are doing.** You have three monitoring tools: \`list_running_agents\` (what's running right now — elapsed time, tool-call count, last action), \`agent_logs\` (the full step-by-step activity log of any job — every tool call it made, with a result preview, running or finished), and \`read_job_result\` (a finished job's final output, with its activity log). When you need to know whether a job succeeded, what it changed, or where it looked — READ ITS LOG with \`agent_logs\` or \`read_job_result\`. Do NOT re-delegate the same work to "double-check" it. That wastes a full run and tells the user you don't know what your own agents did. The log already has the answer.
-
-Split multi-domain requests across delegates — never stuff the whole request into one task. "Get the price and remind me tomorrow" is TWO calls: atlas fetches the price, then dexter gets a task containing the fetched number. Scheduling NEVER goes inside an atlas task (atlas has no scheduler and will improvise badly). And never re-delegate work a sub-agent already completed — take its result and move to the next step.
-
-# COUNCIL
-
-The Council is three seats — Skeptic, Pragmatist, Synthesist — deliberating in parallel until they agree. Call the \`council\` tool with a self-contained question. It runs in the background: the host tells you it's deliberating and you end your turn with no interim message. When it finishes (a few minutes — they argue up to 15 rounds before converging), the host delivers the verdict to the user automatically. Reserve it for costly decisions, not routine questions.
-
-While it deliberates you can peek without interrupting: call \`council_status\` to see the current round and each seat's latest answer. Use it whenever the user asks how the council is doing, what it's thinking, or whether it's done — never guess at its progress.
-
-# FINISHING
-
-You decide when the job is done — not a timer or a tool cap. Three ways to end a turn:
-
-1. **Done** — the user's actual ask is achieved (file written, command ran clean, sub-agent confirmed the end state). Write the plain final answer with no tool calls.
-2. **Blocked** — you genuinely can't proceed (capability missing, permission denied, sub-agent failed after a real attempt). Say what's blocking you in a sentence and stop.
-3. **Keep going** — take the next useful step.
-
-Don't trail off mid-task, don't repeat a call you already made, and don't claim success without a tool result in this conversation that confirms it. When a sub-agent says "done," relay its evidence, not just the word. A sub-agent's success result is final — don't re-delegate to double-check it or ask another agent to verify; one clean confirmation sentence and you're done. A failed tool is not a stopping point — retry with a fix, or say plainly what didn't work and offer an alternative. If a capability is genuinely missing, say briefly what's missing — never pretend, and never claim a tool doesn't exist without having tried it.
+Two things you produce are spoken aloud: the \`{task}\` string you pass to a delegate (read to the user verbatim as the announcement of what's happening), and the final reply that ends your turn. Anything else you emit around tool calls is discarded — never narrate your plan there. So write the task string as clean natural language that works as both the brief and the announcement: keep the specifics, drop all deliberation ("we need to", "I should", "the user wants", tool names, notes to self). Your final reply is the answer and only the answer — no reasoning, no restating the rules, no "the user is asking…". Think silently, speak the result.
 
 # OUTPUT
 
-Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, backticks, bold, or headers; those characters get read aloud and sound wrong. One to three sentences for most replies; yes/no first when asked a yes/no question. Don't read out lists unless asked. Relay only the spoken answer from sub-agents, not raw output, paths, or JSON. No emoji, no "let me know if you need anything else," no apologies. If the user is frustrated, just the answer. When you delegate hands-on work, your final reply should name the action and the outcome in a sentence — for example, that the file was converted and where it landed — so the user hears what was done, not just the result. EXCEPTION — media playback: playing or pausing a video or song gets no completion announcement at all; the user sees and hears it happen on screen, so saying "it's playing now" is noise. Stay silent when it succeeds; say something only if it failed.
+Voice-first plain speech. No markdown — no asterisks, bullets, backticks, bold, or headers — those get read aloud and sound wrong. One to three sentences; yes/no first when asked yes/no. Relay the spoken answer from specialists, not raw output, paths, or JSON.
+
+Don't announce work before its result is in. "I've started it" while a job is still running is a false claim — wait until the result comes back, then report what happened in plain speech: the file written and where, the price found, the song now playing, the error that occurred. One short line is enough.
+
+# FINISHING
+
+You decide when the job is done — not a timer or a tool cap. **Done**: the ask is achieved — write the answer with no tool calls. **Blocked**: you genuinely can't proceed — say what's blocking you in a sentence and stop. **Keep going**: take the next useful step. A sub-agent's success result is final — relay its evidence, don't re-delegate to verify it, one clean confirmation and you're done. A failed tool isn't a stopping point: retry with a fix, or say plainly what didn't work and offer an alternative.
+
+# COUNCIL
+
+For a costly decision where being wrong is expensive, call \`council\` with a self-contained question. It runs in the background: the host tells you it's deliberating and you end your turn with no interim message; when the seats converge (up to 15 rounds) the host delivers the verdict to the user automatically. While it deliberates you can peek with \`council_status\`. Reserve it for real stakes, not routine questions.
+
+# ENVIRONMENT
+
+Arch Linux, KDE Plasma on Wayland. System packages via \`sudo pacman -S <pkg>\` (\`--needed\`, \`--noconfirm\`) — never apt, dnf, brew, or pip. sudo is interactive (the user types the password), so any system-package install goes to atlas: it runs pacman once and tells the user a password prompt is waiting. The dashboard has a Notes vault at \`~/Documents/Notes\` (plain \`.md\` with \`[[wiki-links]]\` and \`#tags\`); reading or editing notes is an atlas file task.
+
+# MEMORY
+
+MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or setup), delegate to atlas to append one line to MEMORY.md — append only, never rewrite. Read JOURNAL.md or NOTES.md only if you need deeper history; if the user references an earlier conversation, check mercury_summary / mercury_context / chat_history first, and if it's not there delegate to artemis with the question and time range.
+${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 
 `;
     // Fabric pattern exposure (deferred pattern): list the top-ranked relevant
@@ -1986,7 +1972,24 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
         return `\n\n# CURRENT TIME\nIt is ${localIso} (${tz}), right now. Use this when the user asks the time or a date. Do not guess; if more than a minute has passed, run \`date\` via Bash to refresh.`;
     })();
-    messages.push({ role: 'system', content: systemPrompt + journalSection + fabricSection + skillIndexSection + orchestratorNowLine });
+    // Compose the orchestrator system prompt from the selected driving-force
+    // preamble (or the default) + the fixed routing core + the per-turn
+    // sections. A closure so a mid-run context clear can rebuild it with a
+    // freshly-selected driving force without re-running the whole turn setup.
+    const buildSystemPrompt = (): string => {
+        let preamble = '';
+        if (DRIVING_FORCE_ID) {
+            try {
+                const p = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'data', 'driving-forces', `${DRIVING_FORCE_ID}.md`);
+                if (fs.existsSync(p)) preamble = fs.readFileSync(p, 'utf-8').trim();
+            } catch (err: any) {
+                log(`Warning: failed to load driving force "${DRIVING_FORCE_ID}" (${err?.message || err}) — using default preamble`);
+            }
+        }
+        if (!preamble) preamble = DEFAULT_PREAMBLE;
+        return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine;
+    };
+    messages.push({ role: 'system', content: buildSystemPrompt() });
     let prompt = input.prompt;
     // Three-model system — every model comes from dashboard settings, re-synced each
     //   turn via applySettingsSync() (no hardcoded fallbacks; a missing setting is
@@ -2001,6 +2004,10 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
     }
     ORCHESTRATOR_MODEL = model;
     ATLAS_MODEL = (input.model || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
+    HEPHAESTUS_MODEL = (input.hephaestusModel || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
+    DRIVING_FORCE_ID = input.drivingForce || '';
+    CONTEXT_CLEAR_AT = input.contextClearAt || '';
+    lastContextClearAt = CONTEXT_CLEAR_AT; // first sight — don't arm a clear
     COUNCIL_MODEL_SKEPTIC = (input.councilSkepticModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_PRAGMATIST = (input.councilPragmatistModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
@@ -2039,6 +2046,17 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
     // the user (otherwise the host drops it). Empty replies send nothing.
     let turnWasMonitorTick = false;
     while (true) {
+        // Context clear (driving-force switch, or the clear_context tool): drop
+        // the in-memory conversation and rebuild the system prompt so the new
+        // preamble takes effect. isFirstUserTurn is reset so the host's next
+        // <chat_history> injection is kept — and the host gates that history on
+        // context_clear_at, so after a driving-force switch it's empty.
+        if ((globalThis as any)._clearContextRequested) {
+            (globalThis as any)._clearContextRequested = false;
+            messages = [{ role: 'system', content: buildSystemPrompt() }];
+            isFirstUserTurn = true;
+            log(`Context cleared — conversation reset, system prompt rebuilt with driving force "${DRIVING_FORCE_ID || 'default'}"`);
+        }
         // Re-sync the orchestrator model each turn from ORCHESTRATOR_MODEL, which
         // applySettingsSync() keeps fresh on every IPC message. Without this the
         // local `model` stays pinned to the first turn's value and dashboard model
@@ -2155,7 +2173,9 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
                     log(`[breaker] Forcing a tool-free round (circlingUseless was ${circlingUselessRounds})`);
                     appendStatus({ phase: 'tool', label: 'Loop breaker: forcing a no-tools round to extract an answer' });
                 }
-                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model) } };
+                const _orchCtx = getNumCtx(model);
+                log(`[ctx] ${model} sending num_ctx=${_orchCtx ?? '(none → backend default)'} (ORCHESTRATOR_NUM_CTX=${process.env.ORCHESTRATOR_NUM_CTX || '(unset)'}, ATLAS_NUM_CTX=${process.env.ATLAS_NUM_CTX || '(unset)'}, isOrchModel=${model === ORCHESTRATOR_MODEL})`);
+                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: _orchCtx } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
                 // reasoning when thinking is disabled (kimi) stay on every round.
@@ -2822,7 +2842,7 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
             return placeholders.includes(t) || /^[.\-_\s–]+$/.test(t);
         };
         if (turnWasMonitorTick && isPlaceholderOutput(outputContent)) {
-            const running = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+            const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
             outputContent = running.length > 0
                 ? `Supervisor check — everything is looking good (${running.length} job${running.length > 1 ? 's' : ''} running).`
                 : '';
@@ -2910,7 +2930,7 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
         // orchestrator's turn ends — it should stay on until the jobs finish.
         // (Without this there's a dead zone between turn-end and the job's first
         // tool call where the dashboard reads "idle" while Atlas is working.)
-        emitAtlasJobsStatus();
+        emitJobsStatus();
         // Persistent mode: wait for the next message via IPC instead of exiting.
         // While Atlas background jobs are running, race the IPC wait against a
         // recurring monitor tick. On each tick the orchestrator gets a synthetic
@@ -2965,7 +2985,7 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
                             .map(m => `${m.role === 'user' ? 'User' : 'Atlas'}: ${m.content}`)
                             .join('\n\n');
                         const kickoffTask = `The user worked through this task with you one-on-one to get it right. Here is the full conversation:\n\n${transcript}\n\nNow execute the agreed task — the user has confirmed the details above. Proceed with your tools and report when done.`;
-                        const jobId = spawnAtlasBackgroundJob(kickoffTask, toolContext, false);
+                        const jobId = spawnBackgroundJob('atlas', kickoffTask, toolContext, false);
                         atlasDirect = null;
                         atlasDirectSend(`Atlas is starting on that now — I'll report back when it's done. (job ${jobId.slice('atlas-'.length)})`);
                         continue; // back to the idle loop; Atlas runs in the background
@@ -3016,11 +3036,11 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
                 const failureInstr = hasFailures
                     ? `\n\nOne or more jobs are marked [ERRORED] or [ABORTED]. For each: read its full output with read_job_result, work out why it failed, and retry it yourself by calling atlas with a reworked task prompt that addresses the failure (different approach, missing detail, corrected URL/path — whatever the output shows was wrong). Do not ask me first. EXCEPTION: if your recent context shows the same task has already failed twice, stop retrying and tell me what failed and why.`
                     : '';
-                nextInput = `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} arrived:\n${lines}\n\nFull outputs are available via read_job_result {job_id}. Digest these in your own voice: tell the user what matters (or nothing, if it only feeds later work), and start any follow-up tasks the results call for. Do not paste raw output verbatim. If a job's task was playing, pausing, or otherwise controlling media (YouTube, music, a video), send NOTHING to the user on success — the result is visible on their screen; speak up only if that job FAILED.${failureInstr}\n\nCONTINUING A CHAINED TASK: if this result is one step of a larger task the user asked for, DO NOT stop and wait for the user to prompt you. Immediately take the next step yourself — delegate the next sub-task to the right agent, or read_job_result for the full output if you need more detail first. The user should not have to say "and?" or "continue" to keep work moving. Only stop when the whole task is actually done or you are genuinely blocked.`;
+                nextInput = `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} arrived:\n${lines}\n\nFull outputs are available via read_job_result {job_id}. Digest these in your own voice: tell the user what matters (or nothing, if it only feeds later work), and start any follow-up tasks the results call for. Do not paste raw output verbatim.${failureInstr}\n\nCONTINUING A CHAINED TASK: if this result is one step of a larger task the user asked for, DO NOT stop and wait for the user to prompt you. Immediately take the next step yourself — delegate the next sub-task to the right agent, or read_job_result for the full output if you need more detail first. The user should not have to say "and?" or "continue" to keep work moving. Only stop when the whole task is actually done or you are genuinely blocked.`;
                 log(`[inbox] draining ${unreadItems.length} item(s) into a digest turn`);
                 break;
             }
-            const runningJobs = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+            const runningJobs = [...backgroundJobs.values()].filter(j => j.status === 'running');
             if (runningJobs.length === 0) {
                 // No running jobs — wait for IPC, but wake if an inbox item lands
                 // (e.g. a job finished right at the turn boundary).
@@ -3065,7 +3085,7 @@ Voice-first. Plain spoken sentences. No markdown — no asterisks, bullets, back
             if (winner === '__MONITOR_TICK__') {
                 ipcCancel.cancelled = true;
                 monitorTimer = null;
-                const stillRunning = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+                const stillRunning = [...backgroundJobs.values()].filter(j => j.status === 'running');
                 if (stillRunning.length === 0) {
                     // Jobs finished during the tick window — fall through to IPC wait.
                     continue;
@@ -3235,7 +3255,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // delegate task, bounce it back instead of dispatching (and before the
     // task is spoken to the user). The task is English intent, not a command
     // line — see looksLikeCommandPrescription above.
-    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'iris', 'dexter', 'byte', 'artemis', 'council']);
+    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'hephaestus', 'iris', 'dexter', 'byte', 'artemis', 'council']);
     if (DELEGATE_TOOL_NAMES.has(toolName) && args.task && looksLikeCommandPrescription(String(args.task))) {
         log(`[guard] blocked over-prompted ${toolName} task (contains shell command): ${String(args.task).slice(0, 120)}`);
         return `STOP — you put a shell command in the task. That is over-prompting and the user has told you repeatedly to stop. A delegate task is plain-English INTENT for the specialist, not a command line. Do NOT include \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, or any other shell command — those are the specialist's calls to make, not yours. State the GOAL and the facts (paths, URLs, names, what's wrong) in normal English and let ${toolName} decide how to investigate. Re-call ${toolName} now with intent only.`;
@@ -3287,7 +3307,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 jobRecord.lastActionAt = Date.now();
                 jobRecord.activityLog.push({ t: Date.now(), tool: tName, args: argsSummary, result: resultPreview });
                 if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
-                emitAtlasJobsStatus();
+                emitJobsStatus();
             });
             if (artemisResult.modifiedFiles.length > 0) log(`[artemis] Tracked ${artemisResult.modifiedFiles.length} modified file(s): ${artemisResult.modifiedFiles.join(', ')}`);
             let savedTo = '';
@@ -3319,11 +3339,11 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             })
             .finally(() => {
                 if (jobRecord.status === 'running') jobRecord.status = 'done';
-                setTimeout(() => { atlasBackgroundJobs.delete(jobId); }, 60000).unref?.();
+                setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
             });
         jobRecord.promise = job;
-        atlasBackgroundJobs.set(jobId, jobRecord);
-        emitAtlasJobsStatus();
+        backgroundJobs.set(jobId, jobRecord);
+        emitJobsStatus();
         result = `Artemis ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the audit result will arrive in your inbox. (job id: ${jobId})`;
     } else if (toolName === 'council') {
         const task = ((args.task as string) || '').trim();
@@ -3467,9 +3487,21 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         if (!task) {
             result = 'Error: task is required';
         } else {
-            const jobId = spawnAtlasBackgroundJob(task, context, urgent);
+            const jobId = spawnBackgroundJob('atlas', task, context, urgent);
             const jobShortId = jobId.slice('atlas-'.length);
             result = `Atlas ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
+        }
+    } else if (toolName === 'hephaestus') {
+        // Async coding specialist: start the job, return immediately, result
+        // lands in the inbox just like atlas.
+        const task = args.task as string;
+        const urgent = args.urgent === true;
+        if (!task) {
+            result = 'Error: task is required';
+        } else {
+            const jobId = spawnBackgroundJob('hephaestus', task, context, urgent);
+            const jobShortId = jobId.slice('hephaestus-'.length);
+            result = `Hephaestus ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
         }
     } else if (toolName === 'atlas_direct') {
         // Enter direct Atlas passthrough mode. The orchestrator speaks a short
@@ -3530,7 +3562,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     } else if (toolName === 'agent_logs') {
         const jobId = String(args.job_id || '').trim();
         if (!jobId) {
-            const running = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+            const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
             const recent = inbox.all().slice(-10);
             const parts: string[] = [];
             parts.push(running.length === 0
@@ -3541,7 +3573,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 : `Recent finished jobs:\n${recent.map(i => `- ${i.jobId} (${i.agent}, ${i.status}): "${i.task.slice(0, 80)}"`).join('\n')}`);
             result = parts.join('\n\n') + '\n\nPass a job_id to read that job\'s full step-by-step activity log.';
         } else {
-            const job = atlasBackgroundJobs.get(jobId);
+            const job = backgroundJobs.get(jobId);
             const log = job?.activityLog ?? inbox.get(jobId)?.activityLog;
             const task = job?.task ?? inbox.get(jobId)?.task ?? '';
             const status = job?.status ?? inbox.get(jobId)?.status;
@@ -3552,7 +3584,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             }
         }
     } else if (toolName === 'list_running_agents') {
-        const entries = [...atlasBackgroundJobs.values()].filter(j => j.status === 'running');
+        const entries = [...backgroundJobs.values()].filter(j => j.status === 'running');
         if (entries.length === 0) {
             result = 'No background jobs currently running.';
         } else {
@@ -3568,7 +3600,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         if (!targetId) {
             result = 'Error: job_id is required (e.g. atlas-abcd from list_running_agents).';
         } else {
-            const job = atlasBackgroundJobs.get(targetId);
+            const job = backgroundJobs.get(targetId);
             if (!job) {
                 result = `Error: no running job with id "${targetId}". Call list_running_agents for the current list.`;
             } else if (job.status !== 'running') {
