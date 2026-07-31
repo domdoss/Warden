@@ -58,22 +58,21 @@ class Detector:
 
         if self.variant == "keypoint":
             try:
-                self._model = RFDETRKeypointPreview(device="cpu")
+                self._model = RFDETRKeypointPreview()
                 self._backend = "rfdetr-keypoint"
-                log.info("Loaded RF-DETR Keypoint Preview (Apache 2.0) on CPU")
+                log.info("Loaded RF-DETR Keypoint Preview (Apache 2.0)")
                 return
             except Exception as e:
                 log.warning("RFDETRKeypointPreview unavailable (%s); falling back to RFDETR", e)
 
-        # Detection-only (still Apache 2.0). `size` picks the checkpoint;
-        # default Small — fast + reliable for person detection on CPU.
+        # Detection-only (still Apache 2.0). `size` picks the checkpoint.
         size_cls = {
             "nano": RFDETRNano, "small": RFDETRSmall, "medium": RFDETRMedium,
             "large": RFDETRLarge, "base": RFDETR,
         }.get(self.size, RFDETRSmall)
-        self._model = size_cls(device="cpu")
+        self._model = size_cls()
         self._backend = f"rfdetr-detection-{self.size}"
-        log.info("Loaded RF-DETR %s (detection, Apache 2.0) on CPU", self.size)
+        log.info("Loaded RF-DETR %s (detection, Apache 2.0)", self.size)
 
     @property
     def backend(self) -> str:

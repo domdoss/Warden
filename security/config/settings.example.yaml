@@ -28,9 +28,8 @@ model:
   # large). Ignored for keypoint (xlarge only).
   size: small
   # Detection confidence floor. The keypoint model can hallucinate many
-  # overlapping low-confidence "person" boxes; keep this at 0.35+ and rely on
-  # the tracker + NMS to suppress duplicates.
-  threshold: 0.35
+  # overlapping low-confidence "person" boxes; 0.5+ suppresses most flicker.
+  threshold: 0.5
 
 # Motion detection. Frame differencing produces a motion mask; its nonzero area
 # is the motion signal. Used for "motion burst while empty" and for UI status.
@@ -48,7 +47,9 @@ awareness:
   # Min seconds between any two AWARENESS posts to Warden.
   cooldown_seconds: 30
   # Consecutive frames with/without a person before flipping room occupied/empty.
-  presence_debounce: 3
+  # Higher = less sensitive to brief detector flicker. At 3 fps, 6 frames = 2s.
+  presence_debounce: 6
+  absence_debounce: 9
   # Minimum motion-area to count as a "motion burst" while the room is empty.
   motion_min_area: 1500
   # Centroid shift (pixels) that counts as a tracked person "movement" event.
@@ -71,15 +72,16 @@ recognition:
   # Person recognition method. "insightface" uses local face embeddings (default);
   # "phash" falls back to whole-frame perceptual hashes.
   method: insightface
-  # cpu avoids VRAM contention with RF-DETR / vision models. cuda is supported.
-  device: cpu
+  # cuda is fast; cpu works too. Face recognition runs only on events / overlay,
+  # so a short GPU inference doesn't steal much time from RF-DETR detection.
+  device: cuda
   # Cosine-similarity threshold for a face to count as a known person.
   match_threshold: 0.42
   # Ignore faces smaller than this (too far away to ID reliably).
   min_face_size: 60
   # How often to run face recognition just for the live GUI overlay (seconds).
   # Awareness events do their own recognition; this is purely visual feedback.
-  # Lower = more responsive name labels; higher = less CPU use.
+  # Lower = more responsive name labels; higher = less GPU/CPU use.
   overlay_interval_seconds: 0.5
 
 # Optional Ollama scene caption for AWARENESS events. Disabled by default so the
@@ -97,7 +99,7 @@ caption:
 
 warden:
   # Desktop Warden service. The satellite POSTs AWARENESS JSON events here.
-  base_url: http://10.0.0.47:3200
+  base_url: http://127.0.0.1:3200
   owner_jid: owner@local
 
 # Frame server — lets the desktop Warden pull the latest frame over HTTP while
