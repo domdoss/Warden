@@ -165,6 +165,7 @@ class DockboxBridge:
             # A new turn starts a fresh "did we already speak the reply?" state.
             if "Entering tool loop" in line:
                 self._spoke_message = False
+                self._last_spoken_preview = None
             # A new tool iteration means the model is regenerating its reply
             # from scratch — drop the previous iteration's buffer so only the
             # final iteration survives to be spoken.
@@ -185,12 +186,6 @@ class DockboxBridge:
             self._in_tool_result = False
             preview = self._strip_attachments((event.get("message") or "").strip())
             if preview:
-                # Skip orchestrator delegation/prompt messages that look like task
-                # briefs rather than user-facing replies. The real reply arrives
-                # from a sub-agent's send_message later.
-                if self._is_delegation_prompt(preview):
-                    print(f"[bridge] skipping delegation preview: {preview[:60]}...")
-                    return
                 # Deduplicate: if we already spoke this exact content, don't repeat it.
                 if preview == getattr(self, "_last_spoken_preview", None):
                     return
