@@ -1,0 +1,73 @@
+# syntax=docker/dockerfile:1
+# Warden brain: orchestrator + dashboard + consolidated settings store.
+# No GPU required. Includes the browser/desktop tools the agent uses.
+
+FROM node:22-slim AS builder
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    python3 \
+    make \
+    g++ \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+COPY container/agent-runner/package*.json ./container/agent-runner/
+
+# Install all deps (including devDeps) so we can build TypeScript.
+RUN npm ci --loglevel=warn
+RUN (cd container/agent-runner && npm ci --loglevel=warn)
+
+COPY . .
+RUN npm run build
+
+# ── Runtime ─────────────────────────────────────────────────────────────────
+FROM node:22-slim
+WORKDIR /app
+
+# Browser / desktop-control / PDF / sqlite runtime dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
+    poppler-utils \
+    libnotify-bin \
+    xdg-utils \
+    ydotool \
+    wtype \
+    grim \
+    wl-clipboard \
+    xclip \
+    xdotool \
+    wmctrl \
+    scrot \
+    sqlite3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Point Playwright / agent browser tools at the system Chromium.
+ENV BROWSER_BIN=/usr/bin/chromium \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PLAYWRIGHT_BROWSERS_PATH=0 \
+    NODE_ENV=production
+
+COPY package*.json ./
+COPY container/agent-runner/package*.json ./container/agent-runner/
+RUN npm ci --omit=dev --loglevel=warn \
+    && (cd container/agent-runner && npm ci --omit=dev --loglevel=warn)
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/public ./public
+COPY docker/entrypoint-warden.sh ./
+
+# Runtime data/state directories.
+RUN mkdir -p /app/data /app/store /app/groups /app/logs /app/uploads /app/tmp
+ENV WORKSPACE_ROOT=/app \
+    GROUPS_DIR=/app/groups \
+    DATA_DIR=/app/data \
+    STORE_DIR=/app/store
+
+EXPOSE 3200
+
+ENTRYPOINT ["./entrypoint-warden.sh"]
+CMD ["node", "dist/index.js"]

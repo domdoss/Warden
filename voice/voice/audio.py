@@ -200,11 +200,17 @@ class AudioRecorder:
 
     def _frames_to_wav(self, frames) -> bytes:
         buffer = io.BytesIO()
+        data = b"".join(frames)
+        # Whisper expects 16 kHz mono. Resample if the recorder runs at a
+        # different rate (e.g. 48 kHz for better ALSA compatibility).
+        out_rate = 16000
+        if self.sample_rate != out_rate:
+            data, _ = audioop.ratecv(data, 2, self.channels, self.sample_rate, out_rate, None)
         with wave.open(buffer, "wb") as wf:
             wf.setnchannels(self.channels)
             wf.setsampwidth(2)
-            wf.setframerate(self.sample_rate)
-            wf.writeframes(b"".join(frames))
+            wf.setframerate(out_rate)
+            wf.writeframes(data)
         return buffer.getvalue()
 
     def save_to_file(self, wav_data: bytes, filepath: Path) -> None:
@@ -214,8 +220,10 @@ class AudioRecorder:
 class AudioPlayer:
     """Plays audio files or bytes. Cancellable mid-playback."""
 
-    def __init__(self, output_device: int = None):
+    def __init__(self, output_device: int = None, sample_rate: int = None):
         self.output_device = output_device
+        # sample_rate is a fallback hint; we prefer the WAV's native rate.
+        self.sample_rate = sample_rate
         self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
@@ -245,20 +253,45 @@ class AudioPlayer:
         try:
             with wave.open(buffer, "rb") as wf:
                 sampwidth = wf.getsampwidth()
+                channels = wf.getnchannels()
+                wav_rate = wf.getframerate()
                 with _suppress_alsa():
                     p = pyaudio.PyAudio()
-                stream = p.open(
-                    format=p.get_format_from_width(sampwidth),
-                    channels=wf.getnchannels(),
-                    rate=wf.getframerate(),
-                    output=True,
-                    output_device_index=self.output_device,
-                )
+
+                # Prefer the WAV's native rate; only fall back to the configured
+                # rate if the device rejects it. Resampling chunk-by-chunk can sound
+                # scratchy, so avoiding it is the default.
+                stream_rate = wav_rate
+                try:
+                    stream = p.open(
+                        format=p.get_format_from_width(sampwidth),
+                        channels=channels,
+                        rate=stream_rate,
+                        output=True,
+                        output_device_index=self.output_device,
+                    )
+                except Exception as e:
+                    fallback = self.sample_rate or 48000
+                    print(f"[audio] native rate {stream_rate} failed ({e}), trying {fallback}")
+                    stream_rate = fallback
+                    stream = p.open(
+                        format=p.get_format_from_width(sampwidth),
+                        channels=channels,
+                        rate=stream_rate,
+                        output=True,
+                        output_device_index=self.output_device,
+                    )
 
                 data = wf.readframes(1024)
+                state = None
                 while data:
                     if self._cancel_event.is_set():
                         break
+                    # Resample only when the device wouldn't open at the native rate.
+                    if wav_rate != stream_rate:
+                        data, state = audioop.ratecv(
+                            data, sampwidth, channels, wav_rate, stream_rate, state
+                        )
                     stream.write(data)
                     if sampwidth == 2:
                         rms = audioop.rms(data, 2)
