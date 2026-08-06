@@ -183,12 +183,18 @@ class DockboxBridge:
         if et in ("done", "turn_end", "complete", "agent_done", "chat_complete"):
             self._dim_active = False
             self._in_tool_result = False
-            # The real user-facing reply rides in ``message`` (say_to_user), but
-            # the notification truncates it to a preview — fetch the full stored
-            # message and speak that. Mark the turn handled so the agent_activity
-            # wrap-up is suppressed.
             preview = self._strip_attachments((event.get("message") or "").strip())
             if preview:
+                # Skip orchestrator delegation/prompt messages that look like task
+                # briefs rather than user-facing replies. The real reply arrives
+                # from a sub-agent's send_message later.
+                if self._is_delegation_prompt(preview):
+                    print(f"[bridge] skipping delegation preview: {preview[:60]}...")
+                    return
+                # Deduplicate: if we already spoke this exact content, don't repeat it.
+                if preview == getattr(self, "_last_spoken_preview", None):
+                    return
+                self._last_spoken_preview = preview
                 self._spoke_message = True
                 self._turn_text = []
                 full = await self._full_message(preview)
@@ -254,58 +260,39 @@ class DockboxBridge:
                 print(f"[bridge] on_turn_end raised: {e}")
 
     def _filter_agent_line(self, line: str) -> str:
-        """Filter an agent_activity line down to spoken response text.
+        """Return an agent_activity line for speaking.
 
-        Drops:
-          - ``[agent-runner] ...`` internal logs
-          - ``🤔 ... is generating``, separators, ``🔧 Tool calls`` headers,
-            ``  → tool_name`` lists
-          - ``✅``/``❌``/``⚠️`` tool-result headers AND the multi-line JSON
-            payload that follows them (state tracked until the next
-            ``[agent-runner]`` line)
-          - Reasoning wrapped in ANSI dim escapes ``\\x1b[2m ... \\x1b[0m``
-          - Truncated raw JSON fragments that occasionally leak as their
-            own activity line
+        The final user-facing reply now arrives reliably as a ``chat_complete``
+        event, so agent_activity lines should never be spoken. They still drive
+        turn-end signalling (``Query complete`` / ``Exited tool loop``), but
+        any text they carry is dropped to prevent the orchestrator's delegated
+        prompts or tool-loop chrome from being read aloud.
         """
-        if line.startswith("[agent-runner]"):
-            self._in_tool_result = False
-            return ""
-        if self._in_tool_result:
-            return ""
-        if line.startswith('{"model"') or line.startswith('{"id"') or line.startswith('{"role"'):
-            return ""
-        # Tool-loop chrome is emitted with varying indentation (headers flush
-        # left, tool lists/results indented two spaces), so match on the
-        # stripped line — otherwise an indented ✅ result header slips past and
-        # gets spoken along with its multi-line payload.
-        stripped = line.lstrip()
-        if stripped.startswith("🤔") or stripped.startswith("────") or stripped.startswith("🔧"):
-            return ""
-        if stripped.startswith("→"):
-            return ""
-        if stripped.startswith("✅") or stripped.startswith("❌") or stripped.startswith("⚠️"):
-            self._in_tool_result = True
-            return ""
-        if _CONTAINER_LOG_RE.match(stripped):
-            return ""
+        return ""
 
-        out: list[str] = []
-        pos = 0
-        while pos < len(line):
-            esc = line.find("\x1b", pos)
-            if esc < 0:
-                if not self._dim_active:
-                    out.append(line[pos:])
-                break
-            if esc > pos and not self._dim_active:
-                out.append(line[pos:esc])
-            end = line.find("m", esc)
-            if end < 0:
-                break
-            code = line[esc:end + 1]
-            if code == "\x1b[2m":
-                self._dim_active = True
-            elif code == "\x1b[0m":
-                self._dim_active = False
-            pos = end + 1
-        return "".join(out)
+    @staticmethod
+    def _is_delegation_prompt(text: str) -> bool:
+        """True if the text looks like an orchestrator task brief to a sub-agent
+        rather than a user-facing reply. These often start with action verbs or
+        name the specialist agent.
+        """
+        t = text.lower().strip()
+        # Direct imperative/task patterns at the start of the message.
+        task_starts = (
+            "find ", "research ", "look up ", "look into ", "investigate ",
+            "search for ", "summarize ", "write ", "create ", "update ",
+            "delete ", "analyze ", "compare ", "list ", "describe ",
+            "compile ", "generate ", "retrieve ", "get ", "fetch ",
+            "can you find", "please find", "please research", "i need you to",
+        )
+        if any(t.startswith(s) for s in task_starts):
+            return True
+        # Explicit delegation markers anywhere.
+        markers = (
+            "using the available tools", "atlas:", "iris:", "dexter:", "byte:",
+            "artemis:", "sentry:", "the council", ", atlas", ", iris",
+            ", dexter", ", byte", ", artemis", ", sentry", ", council",
+        )
+        if any(m in t for m in markers):
+            return True
+        return False
