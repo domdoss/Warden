@@ -2,7 +2,10 @@
 # or just run `python setup.py` to generate it via the setup wizard.
 
 voice:
-  sample_rate: 16000
+  # Native sample rate for the ALSA/PulseAudio device. 48000 is supported by
+  # most hardware; 16000/24000 often fail on PipeWire/Bluetooth. TTS/Whisper
+  # inputs are resampled as needed.
+  sample_rate: 48000
   channels: 1
   chunk_size: 1024
   silence_timeout: 0.6
@@ -56,3 +59,9 @@ ui:
 audio:
   playback_device: null
   input_device: null
+# Remote audio relay (Pi satellite). The host is given on the command line:
+#   ./run.sh --remote <ip>   or   python main.py --remote <ip>
+# The Pi runs the dumb audio relay (satellite/satellite_server.py), started from its
+# graice-tui.sh "Satellite mode" menu item. Only the port is configured here.
+satellite:
+  port: 8766

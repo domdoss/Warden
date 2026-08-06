@@ -76,6 +76,42 @@ class _JsApi:
     def exit_fullscreen(self) -> None:
         self._owner.exit_fullscreen()
 
+    def get_warden_url(self) -> str:
+        """Return the current dockbox.base_url (or "" if unset), for the
+        in-app settings field."""
+        try:
+            if self._owner.on_get_warden_url is not None:
+                return self._owner.on_get_warden_url() or ""
+        except Exception:
+            logger.exception("on_get_warden_url callback raised")
+        return ""
+
+    def save_warden_url(self, url: str) -> None:
+        """Persist a new dockbox.base_url and apply it to the live bridge."""
+        try:
+            if self._owner.on_save_warden_url is not None:
+                self._owner.on_save_warden_url(url or "")
+        except Exception:
+            logger.exception("on_save_warden_url callback raised")
+
+    def get_satellite_host(self) -> str:
+        """Return the current satellite host (or "" = standalone/local audio),
+        for the in-app settings field."""
+        try:
+            if self._owner.on_get_satellite_host is not None:
+                return self._owner.on_get_satellite_host() or ""
+        except Exception:
+            logger.exception("on_get_satellite_host callback raised")
+        return ""
+
+    def save_satellite_host(self, host: str) -> None:
+        """Persist a new satellite.host (takes effect on next launch)."""
+        try:
+            if self._owner.on_save_satellite_host is not None:
+                self._owner.on_save_satellite_host(host or "")
+        except Exception:
+            logger.exception("on_save_satellite_host callback raised")
+
 
 class JarvisWindow:
     """pywebview-backed window hosting Jarvis's HTML UI.
@@ -92,8 +128,16 @@ class JarvisWindow:
         on_button_press: Callable[[], None],
         width: int = 480,
         height: int = 480,
+        on_get_warden_url: Optional[Callable[[], str]] = None,
+        on_save_warden_url: Optional[Callable[[str], None]] = None,
+        on_get_satellite_host: Optional[Callable[[], str]] = None,
+        on_save_satellite_host: Optional[Callable[[str], None]] = None,
     ):
         self.on_button_press = on_button_press
+        self.on_get_warden_url = on_get_warden_url
+        self.on_save_warden_url = on_save_warden_url
+        self.on_get_satellite_host = on_get_satellite_host
+        self.on_save_satellite_host = on_save_satellite_host
         self.width = width
         self.height = height
 

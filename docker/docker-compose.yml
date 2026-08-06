@@ -1,0 +1,76 @@
+# Optional Docker deployment for Warden roles.
+# Default stack: Warden brain + Video security detector.
+# Audio (the headed hologram) is best run bare metal; see compose.audio.yml
+# for a headed passthrough example if you really want it in a container.
+
+services:
+  warden:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.warden
+    image: warden:latest
+    container_name: warden
+    restart: unless-stopped
+    ports:
+      - "${WARDEN_PORT:-3200}:3200"
+    environment:
+      STATUS_PORT: "${WARDEN_PORT:-3200}"
+      OLLAMA_URL: "${OLLAMA_URL:-http://127.0.0.1:11434}"
+      VIDEO_URL: "${VIDEO_URL:-http://video:8765}"
+      WHISPER_URL: "${WHISPER_URL:-}"
+      ASSISTANT_NAME: "${ASSISTANT_NAME:-Warden}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-warden}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - warden-data:/app/data
+      - warden-store:/app/store
+      - warden-groups:/app/groups
+      - warden-logs:/app/logs
+    networks:
+      - warden
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3200/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  video:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.video
+    image: video:latest
+    container_name: video
+    restart: unless-stopped
+    ports:
+      - "${VIDEO_PORT:-8765}:8765"
+    environment:
+      WARDEN_URL: "${WARDEN_URL:-http://warden:3200}"
+      OLLAMA_URL: "${OLLAMA_URL:-http://127.0.0.1:11434}"
+      FRAME_SERVER_HOST: "0.0.0.0"
+      FRAME_SERVER_PORT: "8765"
+      CAMERA_INDEX: "${CAMERA_INDEX:-0}"
+    devices:
+      - /dev/video0:/dev/video0
+    networks:
+      - warden
+    depends_on:
+      warden:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  warden-data:
+  warden-store:
+  warden-groups:
+  warden-logs:
+
+networks:
+  warden:
+    driver: bridge

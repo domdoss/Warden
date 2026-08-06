@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
+import json
 import logging
 import os
 import signal
@@ -21,6 +22,7 @@ import sys
 import threading
 import time
 import warnings
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 # When packaged (PyInstaller --windowed), there is no console and any accidental
@@ -56,6 +58,7 @@ from ui.jarvis_window import JarvisWindow
 from voice.audio import AudioPlayer, AudioRecorder, BeepGenerator, find_device
 from voice.capture import capture
 from voice.clap import ClapDetector
+from voice.satellite import SatelliteAudioPlayer, SatelliteAudioRecorder
 from voice.stt import STT
 from voice.tts import TTS
 
@@ -78,35 +81,157 @@ _EMOJI_RE = _re.compile(
 )
 
 
+class ControlServer:
+    """Tiny HTTP listener so a remote Pi button can trigger a Jarvis turn.
+
+    Mirrors satellite/satellite_server.py's ThreadingHTTPServer skeleton (silenced
+    logging, configurable bind). Binds 0.0.0.0 on a port distinct from the
+    satellite's 8766 (default 8767). All endpoint handlers are thread-safe: they
+    either read atomic-ish flags or schedule work onto the main asyncio loop via
+    ``asyncio.run_coroutine_threadsafe`` — no pywebview/UI code is called from
+    the HTTP thread.
+
+    Endpoints:
+        POST /press   → trigger a turn. Calls ``app._on_button_press()`` which
+                        schedules ``_handle_interaction`` on the main loop. That
+                        handler already implements barge-in: if Jarvis is
+                        mid-conversation, the press interrupts (stops playback,
+                        aborts in-flight request/recording) and starts a new
+                        turn — exactly like clicking the on-screen button or
+                        pressing F9.
+        POST /cancel  → stop any in-flight recording/playback (external
+                        barge-in). Calls recorder/player.cancel() directly
+                        (thread-safe) and schedules a bridge stop + turn abort
+                        on the main loop.
+        GET  /status  → {"ok": true, "remote": <bool>, "busy": <bool>}
+    """
+
+    def __init__(self, app: "JarvisApp", host: str = "0.0.0.0", port: int = 8767):
+        self.app = app
+        self.host = host
+        self.port = port
+        self._httpd: Optional[ThreadingHTTPServer] = None
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> bool:
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # silence default access logging
+                pass
+
+            def _send_json(self, status: int, payload: dict) -> None:
+                body = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/status":
+                    app = server.app
+                    busy = bool(app._conversation_active or app._is_speaking)
+                    self._send_json(200, {"ok": True, "remote": app._is_satellite, "busy": busy})
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def do_POST(self):
+                if self.path == "/press":
+                    server.app._on_button_press()
+                    self._send_json(200, {"ok": True})
+                elif self.path == "/cancel":
+                    server.app._external_cancel()
+                    self._send_json(200, {"ok": True})
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+        try:
+            self._httpd = ThreadingHTTPServer((self.host, self.port), Handler)
+        except OSError as e:
+            print(f"[jarvis] control server could not bind {self.host}:{self.port} ({e})")
+            return False
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread.start()
+        print(f"[jarvis] control server on http://{self.host}:{self.port}")
+        return True
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+            except Exception:
+                pass
+        self._httpd = None
+        self._thread = None
+
+
 class JarvisApp:
-    def __init__(self):
+    def __init__(self, remote: Optional[str] = None, control_port: int = 8767):
         self.config = Config()
         self.bridge = DockboxBridge(config=self.config)
+        self._control_port = control_port
+
+        # Standalone uses the local mic/speaker. Passing --remote <ip> (or saving
+        # a satellite host in the in-app settings panel) switches to a networked
+        # Pi's mic/speaker over HTTP — the Pi runs the dumb audio relay
+        # (satellite/satellite_server.py), started from its graice-tui.sh "Satellite
+        # mode" menu item. The local app keeps doing STT/TTS/UI; only the audio
+        # I/O is piped to/from the remote unit. The CLI flag overrides the
+        # persisted satellite.host for a one-off launch; the UI-saved value takes
+        # effect on the next start (clearing it returns to standalone).
+        if not remote:
+            remote = (self.config.get("satellite", {}) or {}).get("host") or None
+        self._is_satellite = bool(remote)
 
         voice_cfg = self.config.voice
         audio_cfg = self.config.audio
-        # Resolve audio devices. pyaudio's "default" device can't capture/play
-        # Bluetooth (HFP) on PipeWire — the "pipewire"/"pulse" devices can. Honor
-        # an explicit config index, else auto-detect by backend name.
-        in_dev = audio_cfg.get("input_device")
-        if in_dev is None:
-            in_dev = find_device("input")
-        out_dev = audio_cfg.get("playback_device")
-        if out_dev is None:
-            out_dev = find_device("output")
-        self._input_device = in_dev
-        print(f"[jarvis] audio devices — input={in_dev} output={out_dev}")
-        self.audio_recorder = AudioRecorder(
-            sample_rate=voice_cfg.get("sample_rate", 16000),
-            channels=voice_cfg.get("channels", 1),
-            silence_timeout=voice_cfg.get("silence_timeout", 1.0),
-            max_duration=voice_cfg.get("max_recording_seconds", 60.0),
-            input_device_index=in_dev,
-        )
-        self.audio_player = AudioPlayer(output_device=out_dev)
-        self.beep_generator = BeepGenerator(
-            sample_rate=voice_cfg.get("sample_rate", 16000)
-        )
+        self._input_device = None
+        if self._is_satellite:
+            sat_cfg = self.config.get("satellite", {}) or {}
+            host = remote
+            port = int(sat_cfg.get("port", 8766))
+            print(f"[jarvis] remote audio via {host}:{port}")
+            self._satellite_host = host
+            self._satellite_port = port
+            self.audio_recorder = SatelliteAudioRecorder(
+                host=host, port=port,
+                silence_timeout=voice_cfg.get("silence_timeout", 1.0),
+                max_duration=voice_cfg.get("max_recording_seconds", 60.0),
+            )
+            self.audio_player = SatelliteAudioPlayer(host=host, port=port)
+            self.beep_generator = BeepGenerator(
+                sample_rate=voice_cfg.get("sample_rate", 48000)
+            )
+        else:
+            # Resolve audio devices. pyaudio's "default" device can't capture/play
+            # Bluetooth (HFP) on PipeWire — the "pipewire"/"pulse" devices can. Honor
+            # an explicit config index, else auto-detect by backend name.
+            in_dev = audio_cfg.get("input_device")
+            if in_dev is None:
+                in_dev = find_device("input")
+            out_dev = audio_cfg.get("playback_device")
+            if out_dev is None:
+                out_dev = find_device("output")
+            self._input_device = in_dev
+            print(f"[jarvis] audio devices — input={in_dev} output={out_dev}")
+            self.audio_recorder = AudioRecorder(
+                sample_rate=voice_cfg.get("sample_rate", 48000),
+                channels=voice_cfg.get("channels", 1),
+                silence_timeout=voice_cfg.get("silence_timeout", 1.0),
+                max_duration=voice_cfg.get("max_recording_seconds", 60.0),
+                input_device_index=in_dev,
+            )
+            self.audio_player = AudioPlayer(
+                output_device=out_dev,
+                sample_rate=voice_cfg.get("sample_rate", 48000),
+            )
+            self.beep_generator = BeepGenerator(
+                sample_rate=voice_cfg.get("sample_rate", 48000)
+            )
         self.stt = STT(model=voice_cfg.get("whisper_model", "base"))
         self.tts = TTS(
             engine=voice_cfg.get("tts_engine", "kokoro"),
@@ -142,6 +267,7 @@ class JarvisApp:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._control_server: Optional[ControlServer] = None
 
     # ----- audio helpers (run blocking I/O in executor) -----
 
@@ -532,6 +658,92 @@ class JarvisApp:
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(self._handle_interaction(), self.loop)
 
+    # ----- Warden URL settings (in-app field + --set-warden-url) -----
+
+    def _get_warden_url(self) -> str:
+        return self.config.dockbox.get("base_url", "") or ""
+
+    def _save_warden_url(self, url: str) -> None:
+        """Persist dockbox.base_url and apply it to the live bridge client.
+
+        The SSE stream is a long-lived connection to the old URL; updating
+        base_url in-place affects new requests (send_text/send_image) but the
+        existing SSE task stays on the old server. A restart is the clean way
+        to fully rebind — we print a hint. This mirrors what `single.py` writes
+        but without the health check.
+        """
+        url = (url or "").strip()
+        self.config.set("dockbox.base_url", url)
+        self.config.save()
+        try:
+            self.bridge.client.base_url = url.rstrip("/")
+        except Exception as e:
+            print(f"[jarvis] apply warden url to bridge failed: {e}")
+        print(f"[jarvis] saved dockbox.base_url={url} (restart Jarvis to rebind the SSE stream)")
+
+    # ----- Satellite host settings (in-app field; mirrors --remote) -----
+
+    def _get_satellite_host(self) -> str:
+        """Show the effective satellite host: the live one if running remote,
+        else the persisted satellite.host (may be "" = standalone)."""
+        live = getattr(self, "_satellite_host", None) or ""
+        saved = (self.config.get("satellite", {}) or {}).get("host", "") or ""
+        return live or saved
+
+    def _save_satellite_host(self, host: str) -> None:
+        """Persist satellite.host so the next launch uses it as --remote.
+
+        The recorder/player are built at startup from the host, so a change
+        takes effect on restart (same caveat as the Warden URL SSE rebind).
+        Clearing the field returns to standalone (local mic/speaker) on next
+        launch.
+        """
+        host = (host or "").strip()
+        self.config.set("satellite.host", host)
+        self.config.save()
+        if host:
+            print(f"[jarvis] saved satellite.host={host} (restart Jarvis to use the remote mic/speaker)")
+        else:
+            print("[jarvis] cleared satellite.host (restart Jarvis for standalone/local audio)")
+
+    def _external_cancel(self):
+        """Thread-safe barge-in from the control server (POST /cancel).
+
+        recorder/player.cancel() are safe to call from any thread (they use
+        locks internally); the bridge stop + turn-bookkeeping is scheduled on
+        the main loop to avoid racing the asyncio pipeline.
+        """
+        try:
+            self.audio_recorder.cancel()
+        except Exception:
+            pass
+        try:
+            self.audio_player.cancel()
+        except Exception:
+            pass
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._cancel_async(), self.loop)
+
+    async def _cancel_async(self):
+        self._stop_requested = True
+        try:
+            await self.bridge.stop()
+        except Exception:
+            pass
+        if self._send_task is not None and not self._send_task.done():
+            self._send_task.cancel()
+            try:
+                await self._send_task
+            except asyncio.CancelledError:
+                pass
+        self._send_task = None
+        while not self._tts_queue.empty():
+            try:
+                self._tts_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self._turn_done.set()
+
     # ----- clap wake -----
 
     GREETING = "Hello. I'm ready to get to work."
@@ -605,6 +817,10 @@ class JarvisApp:
         voice_cfg = self.config.voice
         if not voice_cfg.get("clap_enabled", True):
             return
+        # Satellite mode has no local mic to clap into.
+        if self._is_satellite:
+            print("[jarvis] satellite mode — clap wake disabled (no local mic)")
+            return
         self.clap_detector = ClapDetector(
             on_double_clap=self._on_clap,
             # Don't wake mid-conversation, while Jarvis is speaking, or in the
@@ -661,11 +877,20 @@ class JarvisApp:
         self._setup_global_hotkey()
         self._setup_clap_detector()
 
+        # Control server: lets a remote Pi button trigger a turn over HTTP.
+        # Distinct from the satellite audio relay (port 8766); default 8767.
+        self._control_server = ControlServer(self, port=self._control_port)
+        self._control_server.start()
+
         ui_cfg = self.config.ui
         self.window = JarvisWindow(
             on_button_press=self._on_button_press,
             width=ui_cfg.get("window_width", 480),
             height=ui_cfg.get("window_height", 480),
+            on_get_warden_url=self._get_warden_url,
+            on_save_warden_url=self._save_warden_url,
+            on_get_satellite_host=self._get_satellite_host,
+            on_save_satellite_host=self._save_satellite_host,
         )
 
         asyncio.run_coroutine_threadsafe(self._bootstrap_async(), self.loop)
@@ -676,6 +901,8 @@ class JarvisApp:
     def _shutdown(self):
         print("Shutting down…")
         self.running = False
+        if self._control_server is not None:
+            self._control_server.stop()
         if self.clap_detector is not None:
             self.clap_detector.stop()
         try:
@@ -696,7 +923,32 @@ class JarvisApp:
 
 
 def main():
-    JarvisApp().run()
+    import argparse
+    p = argparse.ArgumentParser(description="Jarvis — Dockbox thin voice client")
+    p.add_argument("--remote", metavar="HOST", default=None,
+                   help="Use a remote Pi's mic/speaker over the network instead of "
+                        "the local ones. The Pi must be running the dumb audio relay "
+                        "(satellite/satellite_server.py, started from its graice-tui.sh "
+                        "\"Satellite mode\" menu). e.g. --remote <pi-ip>")
+    p.add_argument("--control-port", type=int, default=8767,
+                   help="Port for the remote-button control HTTP server "
+                        "(POST /press, /cancel; GET /status). Default 8767. "
+                        "Distinct from the satellite audio relay's 8766.")
+    p.add_argument("--set-warden-url", metavar="URL", default=None,
+                   help="Write dockbox.base_url to the user config and exit, "
+                        "without launching the UI. e.g. --set-warden-url "
+                        "http://10.0.0.47:3200. Scriptable alternative to the "
+                        "in-app settings field.")
+    args = p.parse_args()
+
+    if args.set_warden_url is not None:
+        cfg = Config()
+        cfg.set("dockbox.base_url", args.set_warden_url)
+        cfg.save()
+        print(f"[jarvis] saved dockbox.base_url={args.set_warden_url} → {cfg.config_path}")
+        return
+
+    JarvisApp(remote=args.remote, control_port=args.control_port).run()
 
 
 if __name__ == "__main__":

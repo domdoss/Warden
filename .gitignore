@@ -62,6 +62,8 @@ public/fonts.gstatic.com/
 public/fonts.googleapis.com/
 
 # ── Voice app: keep only main.py + its runtime closure ──
+# Local voice config (server URL, user id, Cloudflare token) — never commit.
+voice/config/settings.yaml
 # Flutter/Android app (separate product, not needed to run main.py)
 voice/dockbox_voice/
 # Windows installer / packaging artifacts

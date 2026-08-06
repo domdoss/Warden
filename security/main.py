@@ -70,6 +70,7 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--camera", type=int, help="Override webcam index")
     p.add_argument("--stream", help="Override camera with an HTTP/MJPEG stream URL (e.g. http://esp32-cam.local:81/stream)")
     p.add_argument("--no-window", action="store_true", help="Headless (no GUI window)")
+    p.add_argument("--warden-url", help="Override the Warden server URL (e.g. http://192.168.0.171:3200) instead of settings.yaml warden.base_url")
     return p.parse_args(argv)
 
 
@@ -303,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     known_persons = known.KnownPersons(cfg)
 
     warden = WardenClient(
-        base_url=warden_cfg.get("base_url", "http://127.0.0.1:3200"),
+        base_url=args.warden_url or warden_cfg.get("base_url", "http://127.0.0.1:3200"),
         owner_jid=warden_cfg.get("owner_jid", "owner@local"),
     )
 

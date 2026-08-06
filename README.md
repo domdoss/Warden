@@ -17,6 +17,7 @@
 **[📊 Dashboard](#-dashboard)** ·
 **[🧩 MCP](#-mcp-ecosystem)** ·
 **[🗣️ Voice](#%EF%B8%8F-voice-assistant)** ·
+**[🛰️ Satellite](#-satellite-pi-audio-relay)** ·
 **[🛡️ Security Mode](#-security-mode)** ·
 **[🚀 Quick Start](#%EF%B8%8F-quick-start)**
 
@@ -372,6 +373,38 @@ open http://localhost:3200
 ![Hologram voice assistant interface](docs/screenshots/voice.png)
 
 See `voice/README.md` for install and usage. Copy `voice/config/settings.example.yaml` to `voice/config/settings.yaml` (or run `python setup.py`) — `settings.yaml` holds your local server URL, user id, and an optional Cloudflare token, so it's gitignored and never committed.
+
+---
+
+## 🛰️ Satellite (Pi audio relay)
+
+`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is **either** the Warden brain **or** a dumb mic/speaker (or both at once); the hologram UI (`voice/`) runs on your laptop. When the Pi is a mic/speaker it's a **dumb pipe**: it streams raw microphone audio to the hologram and plays back the TTS the Warden returns. No STT, no TTS, no model inference happens on the Pi in that role — transcription runs on the Warden side (local Whisper by default, Groq API as a fallback), so a Pi Zero is plenty.
+
+Three modes, picked from the Pi TUI (`~/.graice-mode`):
+
+| Mode | What the Pi runs | Button behaviour |
+|------|------------------|------------------|
+| **standalone** | The Warden (`localhost:3200`) + button | Records here, hits the local Warden. All STT/TTS on the Pi. |
+| **satellite** | The mic/speaker relay (`:8766`) + button | POSTs `/press` to the laptop's hologram control server (`:8767`); the laptop does STT/TTS and talks to a Warden running *elsewhere*. |
+| **both** | The Warden **and** the mic/speaker relay + button | POSTs `/press` to the laptop's control server (`:8767`); the laptop does STT/TTS and talks back to the Pi's own Warden. |
+
+The Pi never needs a *remote* Warden URL: in standalone/both the Warden is `localhost:3200`, in satellite the button doesn't talk to the Warden at all. The **only remote IP the Pi ever needs** is the audio server (the laptop running the voice client, `:8767`) — set it from the TUI's *Edit audio server IP* option.
+
+| File | What it is |
+|------|------------|
+| `satellite_server.py` | HTTP audio relay (`:8766`). `GET /mic` streams 16 kHz PCM from the default mic; `POST /play` accepts a WAV body and plays it on the default speaker; `POST /cancel` stops playback (barge-in). |
+| `voice-button.py` | GPIO hold-to-talk button (gpiozero, BCM pin 17 to GND). In standalone it records here and hits the local Warden; in satellite/both it POSTs `/press` to the hologram's control server so the laptop does STT/TTS through the Pi's mic/speaker. Reads `~/.graice-mode`. |
+| `graice-tui.sh` | On-device settings menu (bash `select`): WiFi, Bluetooth, speaker/mic volume + device pick, **Mode (standalone / satellite / both)**, **audio server IP** (the laptop, `:8767`), and start/stop Warden/Satellite/Button. No whiptail, no curl, no JSON. |
+| `boot-defaults.sh` + `graice-boot-defaults.service` | systemd oneshot that restores saved WiFi SSID, Bluetooth device, and default audio sink/source at boot (reads `~/.graice-boot-defaults` written by the TUI). |
+| `install-deps-pi.sh` | apt-based installer for Raspberry Pi OS: Node toolchain, poppler, sqlite, tmux, NetworkManager, BlueZ, PipeWire, gpiozero. Pair with the main `install.sh`. |
+
+**Typical Pi setup** — the Pi runs the Warden **and** the mic at once (mode = both):
+
+1. `bash satellite/install-deps-pi.sh` — system deps.
+2. `bash satellite/graice-tui.sh` — Mode → **both**, set the **audio server IP** to the laptop running the voice client (`:8767`), then start Warden + Satellite + Button.
+3. On the laptop, run `./run.sh` — give the Pi's IP as the Warden IP and the satellite IP so the hologram records via `GET /mic` and plays via `POST /play`, and sends text to the Pi's Warden.
+
+See `satellite/README.md` for wiring and the full mode/URL flow.
 
 ---
 

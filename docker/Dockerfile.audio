@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+# Audio role — the headed Jarvis hologram client.
+# Does STT/TTS locally. Containerized Audio is best used with a remote Satellite
+# (Pi mic/speaker). For local mic/speaker + UI you usually want bare metal.
+
+FROM nvidia/cuda:12.5.1-runtime-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3-pip \
+    python3.12-venv \
+    portaudio19-dev \
+    libsndfile1 \
+    libportaudio2 \
+    libasound2 \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/voice
+
+COPY voice/requirements.txt ./
+RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt
+
+COPY voice/ ./
+COPY docker/entrypoint-audio.sh /app/
+
+ENV DOCKBOX_BASE_URL=http://127.0.0.1:3200 \
+    SATELLITE_URL=http://127.0.0.1:8766 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 3201
+
+WORKDIR /app/voice
+ENTRYPOINT ["/app/entrypoint-audio.sh"]
+CMD ["python3", "main.py"]
