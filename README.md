@@ -340,23 +340,182 @@ All LLM communication is raw HTTP fetch to Ollama. No vendor SDKs. You control t
 
 ## 🚀 Quick Start
 
+### What you need
+
+Warden is an autonomous AI that runs on your own hardware. It can operate fully locally, fully in the cloud, or mixed. The minimal setup is a single Linux machine with a local Ollama instance.
+
+| Component | Minimum | Recommended |
+|---|---|---|
+| OS | Linux (kernel 5+) | Arch Linux or Ubuntu LTS |
+| Node.js | 20+ | 22 LTS |
+| RAM | 8 GB | 16 GB+ (local models + browser tools) |
+| GPU | Optional | NVIDIA GPU for local vision / TTS / security models |
+| Browser | Chromium/Chrome | System Chromium for Playwright CDP tools |
+| Microphone/speaker | Optional | USB or Bluetooth headset for voice |
+| Webcam | Optional | For security / vision features |
+
+### Step 1 — Get the repo
+
 ```bash
 git clone <your-repo-url> warden
 cd warden
+```
+
+All commands below assume you are inside the project root.
+
+### Step 2 — Install system dependencies
+
+On Arch Linux (the primary target):
+
+```bash
+bash install-deps.sh
+```
+
+This installs Node.js, npm, git, build tools, Chromium, poppler, tmux, sqlite, Radicale, KDE PIM integration, and desktop-control utilities (`xdotool`, `ydotool`, `wtype`, `grim`, clipboard tools, etc.). It also enables `loginctl linger` so user systemd services keep running after logout.
+
+On other distros, install the equivalents manually. The key binaries Warden expects are:
+
+- `node` and `npm`
+- `chromium` or `google-chrome-stable`
+- `poppler` (for `pdftotext`)
+- `tmux`, `sqlite3`
+- `xdotool`, `ydotool`, `wtype`, `grim`, `wl-clipboard`, `xclip`, `scrot`
+- `radicale`, `akonadi`, `kdepim-runtime`, `kontact` (for calendar/contacts; optional)
+
+macOS users can try `bash install-macos.sh` as a best-effort alternative. Some Linux-only tools will not be available.
+
+### Step 3 — Run the installer
+
+```bash
 bash install.sh
 ```
 
-> 📦 The installer handles dependencies, TypeScript build, directory setup, and systemd service registration. Requires **Node.js 20+** and **Ollama**.
+`install.sh` is interactive and does the following:
+
+1. Shows a safety warning and asks you to type `I UNDERSTAND` before continuing.
+2. Verifies Node.js >= 20.
+3. Offers to run `install-deps.sh` if it detects `pacman`.
+4. Installs npm dependencies for the server and the agent-runner.
+5. Compiles TypeScript with `npm run build`.
+6. Creates runtime directories: `data/`, `store/`, `groups/`, `logs/`.
+7. Initializes the SQLite database.
+8. Writes a starter `data/env/env` config file if one does not exist.
+9. Registers and starts a systemd user service: `~/.config/systemd/user/warden.service`.
+10. Enables user linger so the service survives logout.
+
+After it finishes, the dashboard is available at `http://localhost:3200`.
+
+### Step 4 — Configure
+
+Open `data/env/env` and set at least the assistant identity and Ollama endpoint:
 
 ```bash
-# Service control (Linux)
-systemctl --user start warden
-systemctl --user kill warden   # fast stop
-systemctl --user start warden  # restart
+ASSISTANT_NAME=Warden
+ADMIN_PASSWORD=change-me-please
+TZ=America/Vancouver
+OLLAMA_URL=http://127.0.0.1:11434
+```
+
+If you want cloud models, set the appropriate keys later from the dashboard or env file. Channels (Telegram, Slack, WhatsApp) are optional — the dashboard works without them.
+
+Restart the service after editing:
+
+```bash
+systemctl --user restart warden
+```
+
+### Step 5 — Verify
+
+```bash
+# Service status
+systemctl --user status warden
+
+# API health
+curl -fsS http://localhost:3200/api/status
 
 # Dashboard
 open http://localhost:3200
 ```
+
+Log in with the `ADMIN_PASSWORD` you set.
+
+### Day-to-day control
+
+```bash
+# Start / stop / restart
+systemctl --user start warden
+systemctl --user kill warden     # fast stop
+systemctl --user restart warden
+
+# View logs
+journalctl --user -u warden -f
+tail -f logs/warden.log
+```
+
+### Running without systemd
+
+For development or one-off tests, use `run.sh` from the project root:
+
+```bash
+./run.sh              # server + voice client + security camera
+./run.sh --no-voice   # server + security camera only
+./run.sh --no-security # server + voice client only
+./run.sh --no-server  # voice client + security camera only
+./run.sh --remote <satellite-host>  # use a Pi satellite for mic/speaker
+```
+
+`run.sh` is useful on a workstation where you want the full stack in one terminal. For a permanent install, prefer the systemd service.
+
+---
+
+## 🌐 Multi-Machine / Bare-Metal Role Configuration
+
+Warden is split into roles that can run on different machines on the same LAN. By default everything assumes `localhost`, but you can point each role at another host by editing the right config.
+
+| Role | What to set | Where |
+|------|-------------|-------|
+| **Warden** (brain/dashboard) | `WARDEN_URL` or `dockbox.base_url` | `data/env/env` for server; `voice/config/settings.yaml` for the voice client |
+| **Video** (security detector) | Warden URL it POSTs awareness to | `security/config/settings.yaml` under `warden.base_url` |
+| **Audio** (hologram) | Warden URL + Satellite URL | `voice/config/settings.yaml` under `dockbox.base_url`; `--remote <satellite-ip>` on launch |
+| **Ollama** | `OLLAMA_URL` | `data/env/env` |
+| **Satellite** (Pi audio relay) | Audio server IP | Pi TUI (`graice-tui.sh`) |
+
+### Example: split across three machines
+
+- **Warden** on a small box at `http://<warden-host>:3200`
+- **Ollama** on a GPU box at `http://<ollama-host>:11434`
+- **Video** on a laptop with a webcam
+- **Audio** on the same laptop, using a Pi Satellite at `<satellite-host>`
+
+Set on the **Warden host** (`data/env/env`):
+
+```bash
+OLLAMA_URL=http://<ollama-host>:11434
+```
+
+Set on the **Video host** (`security/config/settings.yaml`):
+
+```yaml
+warden:
+  base_url: http://<warden-host>:3200
+```
+
+Set on the **Audio host** (`voice/config/settings.yaml`):
+
+```yaml
+dockbox:
+  base_url: http://<warden-host>:3200
+```
+
+Then start Audio pointed at the Satellite:
+
+```bash
+./run.sh --remote <satellite-host>
+```
+
+On the Pi, run the Satellite relay (`satellite_server.py`) and set the audio server IP in `graice-tui.sh` to the laptop running Audio.
+
+The dashboard has a **Servers** / **Satellite IP** field that sets where Warden pulls the security frame from. After the distributed-roles refactor, all of these URLs will live in one settings store and be editable from the dashboard itself.
 
 ---
 
@@ -370,73 +529,232 @@ open http://localhost:3200
 - ⌛ Timer: "take a break for 10 minutes".
 - 🔗 Talks to your existing Warden session — no new login.
 
-![Hologram voice assistant interface](docs/screenshots/voice.png)
+### Install the voice client
 
-See `voice/README.md` for install and usage. Copy `voice/config/settings.example.yaml` to `voice/config/settings.yaml` (or run `python setup.py`) — `settings.yaml` holds your local server URL, user id, and an optional Cloudflare token, so it's gitignored and never committed.
+1. Create a Python virtual environment:
+
+```bash
+cd voice
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Copy the example config and edit it:
+
+```bash
+cp config/settings.example.yaml config/settings.yaml
+```
+
+Set at least:
+
+```yaml
+dockbox:
+  base_url: http://localhost:3200
+
+voice:
+  sample_rate: 48000
+  whisper_model: base
+  tts_engine: kokoro
+  tts_voice: am_michael
+```
+
+3. Run it:
+
+```bash
+python main.py
+```
+
+### Common flags
+
+```bash
+python main.py --remote <satellite-host>   # use a Pi/headless box for mic + speaker
+```
+
+### Troubleshooting audio
+
+- If you see `Invalid sample rate`, try `48000` instead of `16000` in `settings.yaml`.
+- Bluetooth HFP headsets often need the `pipewire` or `pulse` backend devices. Set explicit `audio.input_device` / `audio.playback_device` indices if auto-detection fails.
+- The clap detector has its own sample rate (`clap_sample_rate`). Keep it at `48000` unless you know the mic supports the chosen rate.
+
+See `voice/README.md` for more.
 
 ---
 
 ## 🛰️ Satellite (Pi audio relay)
 
-`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is **either** the Warden brain **or** a dumb mic/speaker (or both at once); the hologram UI (`voice/`) runs on your laptop. When the Pi is a mic/speaker it's a **dumb pipe**: it streams raw microphone audio to the hologram and plays back the TTS the Warden returns. No STT, no TTS, no model inference happens on the Pi in that role — transcription runs on the Warden side (local Whisper by default, Groq API as a fallback), so a Pi Zero is plenty.
+`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is **either** the Warden brain **or** a dumb mic/speaker (or both at once); the hologram UI (`voice/`) runs on your laptop. When the Pi is a mic/speaker it's a **dumb pipe**: it streams raw microphone audio to the hologram and plays back the TTS the Warden returns. No STT, no TTS, no model inference happens on the Pi in that role — transcription runs on the Warden side, so a Pi Zero is plenty.
 
-Three modes, picked from the Pi TUI (`~/.graice-mode`):
-
-| Mode | What the Pi runs | Button behaviour |
-|------|------------------|------------------|
-| **standalone** | The Warden (`localhost:3200`) + button | Records here, hits the local Warden. All STT/TTS on the Pi. |
-| **satellite** | The mic/speaker relay (`:8766`) + button | POSTs `/press` to the laptop's hologram control server (`:8767`); the laptop does STT/TTS and talks to a Warden running *elsewhere*. |
-| **both** | The Warden **and** the mic/speaker relay + button | POSTs `/press` to the laptop's control server (`:8767`); the laptop does STT/TTS and talks back to the Pi's own Warden. |
-
-The Pi never needs a *remote* Warden URL: in standalone/both the Warden is `localhost:3200`, in satellite the button doesn't talk to the Warden at all. The **only remote IP the Pi ever needs** is the audio server (the laptop running the voice client, `:8767`) — set it from the TUI's *Edit audio server IP* option.
+### Pi files
 
 | File | What it is |
 |------|------------|
 | `satellite_server.py` | HTTP audio relay (`:8766`). `GET /mic` streams 16 kHz PCM from the default mic; `POST /play` accepts a WAV body and plays it on the default speaker; `POST /cancel` stops playback (barge-in). |
-| `voice-button.py` | GPIO hold-to-talk button (gpiozero, BCM pin 17 to GND). In standalone it records here and hits the local Warden; in satellite/both it POSTs `/press` to the hologram's control server so the laptop does STT/TTS through the Pi's mic/speaker. Reads `~/.graice-mode`. |
-| `graice-tui.sh` | On-device settings menu (bash `select`): WiFi, Bluetooth, speaker/mic volume + device pick, **Mode (standalone / satellite / both)**, **audio server IP** (the laptop, `:8767`), and start/stop Warden/Satellite/Button. No whiptail, no curl, no JSON. |
-| `boot-defaults.sh` + `graice-boot-defaults.service` | systemd oneshot that restores saved WiFi SSID, Bluetooth device, and default audio sink/source at boot (reads `~/.graice-boot-defaults` written by the TUI). |
-| `install-deps-pi.sh` | apt-based installer for Raspberry Pi OS: Node toolchain, poppler, sqlite, tmux, NetworkManager, BlueZ, PipeWire, gpiozero. Pair with the main `install.sh`. |
+| `voice-button.py` | GPIO hold-to-talk button (gpiozero, BCM pin 17 to GND). |
+| `graice-tui.sh` | On-device settings menu: WiFi, Bluetooth, speaker/mic volume, mode selection, and start/stop. |
+| `boot-defaults.sh` + `graice-boot-defaults.service` | Restores saved WiFi, Bluetooth, and default audio sink/source at boot. |
+| `install-deps-pi.sh` | apt-based installer for Raspberry Pi OS. |
 
-**Typical Pi setup** — the Pi runs the Warden **and** the mic at once (mode = both):
+### Install on the Pi
 
-1. `bash satellite/install-deps-pi.sh` — system deps.
-2. `bash satellite/graice-tui.sh` — Mode → **both**, set the **audio server IP** to the laptop running the voice client (`:8767`), then start Warden + Satellite + Button.
-3. On the laptop, run `./run.sh` — give the Pi's IP as the Warden IP and the satellite IP so the hologram records via `GET /mic` and plays via `POST /play`, and sends text to the Pi's Warden.
+1. Flash Raspberry Pi OS Lite or Desktop.
+2. Clone or copy the repo.
+3. Install system dependencies:
 
-See `satellite/README.md` for wiring and the full mode/URL flow.
+```bash
+bash satellite/install-deps-pi.sh
+```
+
+4. If the Pi is also the Warden brain, run the main installer too:
+
+```bash
+bash install.sh
+```
+
+5. Configure the Pi from the TUI:
+
+```bash
+bash satellite/graice-tui.sh
+```
+
+Pick a **mode** and, if using the Pi as a satellite, set the **audio server IP** to the laptop running the voice client.
+
+### Modes
+
+| Mode | What the Pi runs | Button behaviour |
+|---|---|---|
+| **standalone** | Warden + button | Records here, sends to local Warden. |
+| **satellite** | Audio relay + button | Streams mic to the laptop; laptop does STT/TTS. |
+| **both** | Warden + audio relay + button | Same as satellite, but talks back to the Pi's own Warden. |
+
+### Run the relay manually
+
+```bash
+cd satellite
+python3 satellite_server.py
+```
+
+The relay binds `:8766` by default.
 
 ---
 
 ## 🛡️ Security Mode
 
-`security/` is a webcam awareness system. The **laptop** (or any camera machine — including an ESP32-CAM HTTP stream) runs the cheap RF-DETR detector and sends only structured JSON events to the **desktop** Warden service. One background agent handles the rest:
+`security/` is a webcam awareness system. The camera machine runs the cheap RF-DETR detector and sends only structured JSON events to the Warden service. One background agent handles the rest.
 
-- 📷 **RF-DETR Keypoint** (Apache 2.0, commercially free — no YOLO) watches the webcam on the laptop CPU and builds a compact JSON situation each frame (persons, motion, camera state, objects). Accepts a local webcam index **or** an HTTP/MJPEG stream URL (`--stream http://esp32-cam.local:81/stream`, or `camera.stream_url` in config; press `s` in the window to switch live).
-- 🔔 **AWARENESS events** are POSTed to the dedicated **`/api/awareness`** endpoint on the desktop only when something changes (arrival, departure, camera covered/moved, motion burst). They are internal control messages — `/api/messages` rejects them — so routine awareness never pollutes chat, Telegram, or other channels.
-- 🛡️ **Sentry** (single light local model, vision-optional) receives the JSON, applies the editable `security/sentry.md` rules, and decides per event: **alert** (send a captioned frame to chat + Telegram, open the red STAND DOWN alert on the laptop, log it), **greet** (friendly arrival), or **stay silent**. It also owns arming/disarming the detector and the security log. There is no separate vision verifier — Sentry is the whole background security path.
-- 🎛️ **Sentry model and the laptop IP** are set from the dashboard — no hardcoded defaults.
-- 🗄️ `store/security.db` logs every AWARENESS event and Sentry assessment.
+### Features
 
-It's intentionally a starting framework. Upgradable later: **InsightFace face-ID** for stable person recognition, **ORB/RANSAC camera-motion detection**, multiple camera machines, and integration with **Home Assistant** or a real guard-dispatch service.
+- 📷 **RF-DETR Keypoint** watches the webcam and builds a compact JSON situation each frame.
+- 🔔 **AWARENESS events** are POSTed to `/api/awareness` only when something changes.
+- 🛡️ **Sentry** receives the JSON, applies editable `security/sentry.md` rules, and decides: alert, greet, or stay silent.
+- 🎛️ Sentry model and camera host are set from the dashboard.
+- 🗄️ `store/security.db` logs every event and assessment.
 
-See `security/README.md` for install, start/stop, and the full flow.
+### Install
+
+1. Create a Python virtual environment:
+
+```bash
+cd security
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Copy and edit the config:
+
+```bash
+cp config/settings.example.yaml config/settings.yaml
+```
+
+Set at least:
+
+```yaml
+warden:
+  base_url: http://localhost:3200
+
+camera:
+  index: 0
+```
+
+Use `camera.stream_url` instead of `index` if you want an ESP32-CAM or other HTTP/MJPEG stream.
+
+3. Run it:
+
+```bash
+python main.py
+```
+
+Or start it via `run.sh` from the project root:
+
+```bash
+./run.sh --no-voice --no-server
+```
+
+### Dashboard setup
+
+Open the dashboard, go to **Settings**, and set the **Video server** / **Satellite IP** to the host running `security/main.py`. Warden will pull frames from `http://<host>:8765/frame`.
+
+See `security/README.md` for tuning, arming/disarming, and the Sentry rules.
 
 ---
 
 ## ⚙️ Configuration
 
-All settings live in `data/env/env`:
+### Environment file
+
+The main config file is `data/env/env`. It is created by `install.sh` if it doesn't exist. Key variables:
 
 ```bash
+# Identity
 ASSISTANT_NAME=Warden
+LOCAL_ASSISTANT_NAME=Kimi
+
+# Server
+STATUS_PORT=3200               # dashboard / API port
+ADMIN_PASSWORD=warden          # dashboard login
 TZ=America/Vancouver
-IDLE_TIMEOUT=14400000          # 4h warm-runner window
+
+# Ollama / models
 OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_CHAT_MODEL=llama3.2:latest
+DEFAULT_MODEL_MODE=            # "local", "hybrid", or empty (Ollama only)
+IDLE_TIMEOUT=14400000          # how long the warm agent-runner stays alive
+
+# Optional channels
 TELEGRAM_BOT_TOKEN=            # from @BotFather
+SLACK_BOT_TOKEN=               # xoxb-...
+SLACK_TEAM_ID=                 # T...
+
+# Browser / desktop
+BROWSER_BIN=/usr/bin/chromium
+BROWSER_HEADLESS=false
 ```
 
-> 🎚️ Model selection is per-role via the dashboard — orchestrator, Atlas, sub-agents, and council seats can all use different models.
+Changes to `data/env/env` take effect on the next service restart:
+
+```bash
+systemctl --user restart warden
+```
+
+### Dashboard settings
+
+Most runtime behavior is controlled from the dashboard at `http://localhost:3200`:
+
+- **Models** — per-agent model selection: orchestrator, Atlas, Hephaestus, Sentry, council seats, etc.
+- **Servers** — Ollama URL, Whisper URL, video server / Satellite IP, and (after the distributed-roles refactor) Audio/Warden/Video role URLs.
+- **Heartbeat** — scheduled standing instructions.
+- **Skills & MCP** — toggle capabilities and external tools.
+
+Dashboard settings are stored in the router state and take effect immediately — no restart needed.
+
+### Voice config
+
+`voice/config/settings.yaml` holds STT/TTS parameters, audio devices, the Warden server URL (`dockbox.base_url`), and the Satellite port. Copy from `voice/config/settings.example.yaml` or run `python voice/setup.py` to generate it. This file is gitignored.
+
+### Security config
+
+`security/config/settings.yaml` controls the camera, detector model, awareness cooldown, face-ID settings, and the Warden URL the detector POSTs events to. Copy from `security/config/settings.example.yaml`.
 
 ---
 
