@@ -22,6 +22,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# ── Docker packaging (local build artifacts + optional runtime) ──
+docker/
+
 # ── Runtime data (DB, sessions, ipc, per-group folders) ──
 # Ignore everything under data/ EXCEPT the skills (those are tracked).
 data/*
