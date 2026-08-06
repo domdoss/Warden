@@ -771,7 +771,7 @@ function getStatusData() {
 
   return {
     assistant: ASSISTANT_NAME,
-    localAssistant: LOCAL_ASSISTANT_NAME,
+    localAssistant: ASSISTANT_NAME,
     uptime,
     channels: deps.channels.map((c) => c.name),
     activeContainers: Math.max(queueStatus.activeCount, queueStatus.groups.filter((g: any) => g.active).length),
@@ -1357,6 +1357,7 @@ function handleSettings(res: http.ServerResponse): void {
     'CALENDAR_TOKEN',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     'MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET',
+    'WARDEN_URL', 'AUDIO_URL', 'VIDEO_URL',
   ]);
   const googleId = process.env.GOOGLE_CLIENT_ID || envVals.GOOGLE_CLIENT_ID || '';
   const googleSecret = process.env.GOOGLE_CLIENT_SECRET || envVals.GOOGLE_CLIENT_SECRET || '';
@@ -1370,7 +1371,7 @@ function handleSettings(res: http.ServerResponse): void {
   const drivingForces = listDrivingForces();
   json(res, {
     assistantName: ASSISTANT_NAME,
-    localAssistantName: LOCAL_ASSISTANT_NAME,
+    localAssistantName: ASSISTANT_NAME,
     timezone: TIMEZONE,
     containerImage: CONTAINER_IMAGE,
     containerTimeout: parseInt(process.env.CONTAINER_TIMEOUT || '7200000', 10),
@@ -1391,6 +1392,9 @@ function handleSettings(res: http.ServerResponse): void {
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
     sentryModel: getRouterState('sentry:model') || '',
     securitySatelliteIp: getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_SATELLITE_IP || process.env.WARDEN_SECURITY_LAPTOP_IP || '',
+    wardenUrl: process.env.WARDEN_URL || envVals.WARDEN_URL || '',
+    audioUrl: process.env.AUDIO_URL || envVals.AUDIO_URL || '',
+    videoUrl: process.env.VIDEO_URL || envVals.VIDEO_URL || '',
     sentryMd,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     automationModel: getRouterState('automation:model') || '',
@@ -1421,7 +1425,6 @@ async function handleSettingsSave(
   const body = parseJson(await parseBody(req)) as Record<string, unknown>;
   const envMap: Record<string, string> = {
     assistantName: 'ASSISTANT_NAME',
-    localAssistantName: 'LOCAL_ASSISTANT_NAME',
     timezone: 'TZ',
     containerImage: 'CONTAINER_IMAGE',
     containerTimeout: 'CONTAINER_TIMEOUT',
@@ -1436,6 +1439,9 @@ async function handleSettingsSave(
     google_client_secret: 'GOOGLE_CLIENT_SECRET',
     microsoft_client_id: 'MICROSOFT_CLIENT_ID',
     microsoft_client_secret: 'MICROSOFT_CLIENT_SECRET',
+    wardenUrl: 'WARDEN_URL',
+    audioUrl: 'AUDIO_URL',
+    videoUrl: 'VIDEO_URL',
   };
 
   // Router-state settings (not env vars)
