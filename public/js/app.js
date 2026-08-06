@@ -280,7 +280,6 @@
     else if (name === 'accounts') refreshAccounts();
     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
     else if (name === 'email' && window.PIM) window.PIM.refreshEmail();
-    else if (name === 'notes' && window.Notes) window.Notes.refresh();
     else if (window.UserDash) {
       // Views ported from the groupware user dashboard (userdash-extras.js)
       const UD = window.UserDash;
@@ -861,35 +860,33 @@
     const drivingForceHtml = '<option value="">Warden (default)</option>' +
       (d.drivingForces || []).map(p => modelOption(p.id, p.label)).join('');
 
-    const tzOptions = (() => {
-      try {
-        return (Intl.supportedValuesOf('timeZone') || [])
-          .map(z => `<option value="${escAttr(z)}"${z === (d.timezone || 'UTC') ? ' selected' : ''}>${escAttr(z)}</option>`)
-          .join('');
-      } catch (e) {
-        return ['UTC','America/Vancouver','America/New_York','America/Los_Angeles','America/Chicago','America/Denver','America/Toronto','Europe/London','Europe/Paris','Europe/Berlin','Asia/Tokyo','Asia/Shanghai','Australia/Sydney']
-          .map(z => `<option value="${escAttr(z)}"${z === (d.timezone || 'UTC') ? ' selected' : ''}>${escAttr(z)}</option>`)
-          .join('');
-      }
-    })();
-
     const body = `
       <div class="setting-card">
         <h3>General</h3>
         <div class="hint">Assistant name, timezone. Changes propagate to all group WARDEN.md files on save.</div>
-        <div class="setting-row"><label>Assistant name</label><input class="input" id="sAssistantName" value="${escAttr(d.assistantName || '')}" placeholder="Warden"></div>
-        <div class="setting-row"><label>Timezone</label><select class="select" id="sTimezone">${tzOptions}</select></div>
+        <div class="setting-row"><label>Assistant</label><input class="input" id="sAssistantName" value="${escAttr(d.assistantName || '')}" placeholder="Warden"></div>
+        <div class="setting-row"><label>Timezone</label>
+          <select class="select" id="sTimezone">
+            <option value="America/Vancouver">America/Vancouver (PT)</option>
+            <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+            <option value="America/Edmonton">America/Edmonton (MT)</option>
+            <option value="America/Denver">America/Denver (MT)</option>
+            <option value="America/Winnipeg">America/Winnipeg (CT)</option>
+            <option value="America/Chicago">America/Chicago (CT)</option>
+            <option value="America/Toronto">America/Toronto (ET)</option>
+            <option value="America/New_York">America/New_York (ET)</option>
+            <option value="America/Halifax">America/Halifax (AT)</option>
+            <option value="America/St_Johns">America/St_Johns (NT)</option>
+            <option value="Europe/London">Europe/London (GMT/BST)</option>
+            <option value="Europe/Paris">Europe/Paris (CET)</option>
+            <option value="Europe/Berlin">Europe/Berlin (CET)</option>
+            <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+            <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+            <option value="Australia/Sydney">Australia/Sydney (AEDT)</option>
+            <option value="UTC">UTC</option>
+          </select>
+        </div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveGeneral">Save</button><span class="status" id="generalStatus"></span></div>
-      </div>
-
-      <div class="setting-card">
-        <h3>Servers</h3>
-        <div class="hint">Role URLs / IPs. Use localhost defaults when all roles run on this machine, or enter another host's IP when a role lives elsewhere. Satellite IP is the Pi audio relay. Audio URL also serves the transcription endpoint.</div>
-        <div class="setting-row"><label>Warden URL</label><input class="input" id="sWardenUrl" value="${escAttr(d.wardenUrl || '')}" placeholder="http://localhost:3200"></div>
-        <div class="setting-row"><label>Audio / Transcription URL</label><input class="input" id="sAudioUrl" value="${escAttr(d.audioUrl || '')}" placeholder="http://localhost:3201"></div>
-        <div class="setting-row"><label>Video URL</label><input class="input" id="sVideoUrl" value="${escAttr(d.videoUrl || '')}" placeholder="http://localhost:3202"></div>
-        <div class="setting-row"><label>Satellite IP</label><input class="input" id="sSatelliteIp" value="${escAttr(d.securitySatelliteIp || '')}" placeholder="10.0.0.254"></div>
-        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveServers">Save</button><span class="status" id="serversStatus"></span></div>
       </div>
 
       <div class="setting-card">
@@ -897,6 +894,10 @@
         <div class="hint">Orchestrator replies to you. Atlas does browser/research/review. The Council uses three Artemis seats. Tools (Iris/Byte/Dexter) execute fast tool calls.</div>
         <div class="setting-row"><label>Orchestrator</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
+        </div>
+        <div class="setting-row"><label>Orchestrator Ollama</label>
+          <select class="select" id="sOrchestratorOllamaServer"></select>
+          <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
         <div class="setting-row"><label>Orchestrator ctx</label>
           <select class="select small" id="sOrchestratorCtx">${buildCtxOptions(d.orchestratorCtx)}</select>
@@ -909,12 +910,20 @@
         <div class="setting-row"><label>Atlas</label>
           <select class="select" id="sAtlas">${anyModelHtml}</select>
         </div>
+        <div class="setting-row"><label>Atlas Ollama</label>
+          <select class="select" id="sAtlasOllamaServer"></select>
+          <span class="dim mono" style="font-size:10px">blank = default server</span>
+        </div>
         <div class="setting-row"><label>Atlas ctx</label>
           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
         <div class="setting-row"><label>Hephaestus</label>
           <select class="select" id="sHephaestus">${anyModelHtml}</select>
+        </div>
+        <div class="setting-row"><label>Hephaestus Ollama</label>
+          <select class="select" id="sHephaestusOllamaServer"></select>
+          <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
         <div class="setting-row" style="align-items:flex-start">
           <label>The Council</label>
@@ -952,6 +961,10 @@
           <select class="select" id="sSentryModel">${anyModelHtml}</select>
           <span class="dim mono" style="font-size:10px">data-only guard that decides normal vs anomaly; blank = inherit orchestrator</span>
         </div>
+        <div class="setting-row"><label>Sentry Ollama</label>
+          <select class="select" id="sSentryOllamaServer"></select>
+          <span class="dim mono" style="font-size:10px">blank = default server</span>
+        </div>
         <div class="setting-row"><label>Thinking</label>
           <select class="select" id="sThinking">
             <option value="true">On — first turn + always-think models</option>
@@ -961,6 +974,25 @@
           <span class="dim mono" style="font-size:10px">global default; chat-level override removed</span>
         </div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveModels">Save</button><span class="status" id="modelStatus"></span></div>
+      </div>
+
+      <div class="setting-card">
+        <h3>Servers</h3>
+        <div class="hint">Role URLs used by the Warden backend. Ollama servers below are referenced by per-agent dropdowns in Model Configuration.</div>
+        <div class="setting-row"><label>Audio server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://192.168.0.163:8766"></div>
+        <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://192.168.0.163:8765"></div>
+        <div class="setting-row"><label>Satellite (remote mic/speaker)</label><input class="input" id="sSatelliteUrl" value="${escAttr(d.satelliteUrl || '')}" placeholder="http://192.168.0.160:8766"></div>
+        <div class="setting-row"><label>Transcription (Whisper local)</label><input class="input" id="sTranscriptionUrl" value="${escAttr(d.transcriptionUrl || '')}" placeholder="http://127.0.0.1:8000"></div>
+        <div class="setting-row"><label>Whisper API fallback</label><input class="input" id="sTranscriptionApiUrl" value="${escAttr(d.transcriptionApiUrl || '')}" placeholder="https://api.groq.com/openai (Groq, autofilled)"></div>
+        <div class="setting-row" style="align-items:flex-start">
+          <label>Ollama servers</label>
+          <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;gap:6px;align-items:center"><input type="radio" name="ollamaDefault" value="1"><input class="input" id="sOllamaLabel1" placeholder="label" style="flex:0 0 120px"><input class="input" id="sOllamaUrl1" placeholder="http://127.0.0.1:11434" style="flex:1;min-width:0"></div>
+            <div style="display:flex;gap:6px;align-items:center"><input type="radio" name="ollamaDefault" value="2"><input class="input" id="sOllamaLabel2" placeholder="label" style="flex:0 0 120px"><input class="input" id="sOllamaUrl2" placeholder="http://127.0.0.1:11434" style="flex:1;min-width:0"></div>
+            <div style="display:flex;gap:6px;align-items:center"><input type="radio" name="ollamaDefault" value="3"><input class="input" id="sOllamaLabel3" placeholder="label" style="flex:0 0 120px"><input class="input" id="sOllamaUrl3" placeholder="http://127.0.0.1:11434" style="flex:1;min-width:0"></div>
+          </div>
+        </div>
+        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveServers">Save</button><span class="status" id="serversStatus"></span></div>
       </div>
 
       <div class="setting-card">
@@ -1025,15 +1057,61 @@
     setSelect('sMercuryModel', (d.mercuryModel || '').replace(/^local:/, ''));
     setSelect('sMercuryCtx', d.mercuryCtx || '');
     setSelect('sSentryModel', (d.sentryModel || '').replace(/^local:/, ''));
-    $('sWardenUrl').value = esc(d.wardenUrl || '');
-    $('sAudioUrl').value = esc(d.audioUrl || '');
-    $('sVideoUrl').value = esc(d.videoUrl || '');
-    $('sSatelliteIp').value = esc(d.securitySatelliteIp || '');
     setSelect('sThinking', d.thinking || 'true');
+    // Timezone dropdown: select the saved zone, appending it as an extra
+    // option if it isn't in the curated list (preserves custom values).
+    (function () {
+      const _sel = $('sTimezone'); if (!_sel) return;
+      const _tz = d.timezone || 'America/Vancouver';
+      if (!Array.from(_sel.options).some(o => o.value === _tz)) {
+        const _o = document.createElement('option');
+        _o.value = _tz; _o.textContent = _tz; _sel.appendChild(_o);
+      }
+      _sel.value = _tz;
+    })();
     setSelect('sOrchestratorCtx', d.orchestratorCtx || '');
     setSelect('sAtlasCtx', d.atlasCtx || '');
     setSelect('sToolsCtx', d.toolsCtx || '');
     setSelect('sAutomationModel', d.automationModel || '');
+
+    // Servers card
+    $('sAudioServerUrl').value = esc(d.audioServerUrl || '');
+    $('sVideoServerUrl').value = esc(d.videoServerUrl || '');
+    $('sSatelliteUrl').value = esc(d.satelliteUrl || '');
+    $('sTranscriptionUrl').value = esc(d.transcriptionUrl || '');
+    $('sTranscriptionApiUrl').value = esc(d.transcriptionApiUrl || '');
+
+    // Ollama servers list (up to 3 fixed slots, ids s1/s2/s3)
+    const ollamaServers = Array.isArray(d.ollamaServers) ? d.ollamaServers : [];
+    const slotIds = ['s1', 's2', 's3'];
+    for (let i = 0; i < 3; i++) {
+      const srv = ollamaServers[i];
+      $('sOllamaLabel' + (i + 1)).value = esc((srv && srv.label) || '');
+      $('sOllamaUrl' + (i + 1)).value = esc((srv && srv.url) || '');
+    }
+    // Default radio — map id s1/s2/s3 → 1/2/3
+    const defId = d.ollamaDefaultServerId || '';
+    const defIdx = slotIds.indexOf(defId) + 1;
+    const radio = document.querySelector('input[name="ollamaDefault"][value="' + defIdx + '"]');
+    if (radio) radio.checked = true;
+
+    // Per-agent Ollama server selects
+    const ollamaOptionsHtml = '<option value="">Default</option>' +
+      ollamaServers.filter(s => s && s.url).map(s =>
+        '<option value="' + escAttr(s.id || '') + '">' + esc(s.label || s.id || '') + '</option>'
+      ).join('');
+    const fillAgentServerSelect = (id, val) => {
+      const sel = $(id);
+      if (!sel) return;
+      sel.innerHTML = ollamaOptionsHtml;
+      const v = (val || '');
+      const opt = Array.from(sel.options).find(o => o.value === v);
+      if (opt) sel.value = v;
+    };
+    fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
+    fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
+    fillAgentServerSelect('sHephaestusOllamaServer', d.hephaestusOllamaServer || '');
+    fillAgentServerSelect('sSentryOllamaServer', d.sentryOllamaServer || '');
 
     // Friendly names list
     const fl = $('friendlyList');
@@ -1050,8 +1128,8 @@
 
     // Hook save buttons
     $('btnSaveGeneral').addEventListener('click', saveGeneral);
-    $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveModels').addEventListener('click', saveModels);
+    $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveAutomation').addEventListener('click', saveAutomation);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);
     $('btnSaveSentryMd').addEventListener('click', saveSentryMd);
@@ -1117,24 +1195,6 @@
     }
   }
 
-  async function saveServers() {
-    const st = $('serversStatus');
-    st.textContent = 'saving…'; st.className = 'status';
-    try {
-      const body = {
-        wardenUrl: $('sWardenUrl').value.trim(),
-        audioUrl: $('sAudioUrl').value.trim(),
-        videoUrl: $('sVideoUrl').value.trim(),
-        securitySatelliteIp: $('sSatelliteIp').value.trim(),
-      };
-      await postJson('/api/settings', body);
-      st.textContent = 'saved'; st.className = 'status ok';
-      toast('Server URLs saved', 'success');
-    } catch (e) {
-      st.textContent = 'failed: ' + e.message; st.className = 'status err';
-    }
-  }
-
   async function saveModels() {
     const st = $('modelStatus');
     st.textContent = 'saving…'; st.className = 'status';
@@ -1159,6 +1219,10 @@
         atlasCtx: $('sAtlasCtx').value,
         toolsCtx: $('sToolsCtx').value,
         ollamaUrl: $('sOllamaUrl').value,
+        orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
+        atlasOllamaServer: $('sAtlasOllamaServer').value,
+        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
+        sentryOllamaServer: $('sSentryOllamaServer').value,
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
@@ -1184,6 +1248,40 @@
       const model = $('sAutomationModel').value.trim();
       await postJson('/api/automation/model', { model });
       st.textContent = 'saved'; st.className = 'status ok';
+    } catch (e) {
+      st.textContent = 'failed: ' + e.message; st.className = 'status err';
+    }
+  }
+
+  async function saveServers() {
+    const st = $('serversStatus');
+    st.textContent = 'saving…'; st.className = 'status';
+    try {
+      const slotIds = ['s1', 's2', 's3'];
+      const ollamaServers = [];
+      for (let i = 0; i < 3; i++) {
+        const label = $('sOllamaLabel' + (i + 1)).value.trim();
+        const url = $('sOllamaUrl' + (i + 1)).value.trim();
+        if (url) ollamaServers.push({ id: slotIds[i], label: label || slotIds[i], url });
+      }
+      const defRadio = document.querySelector('input[name="ollamaDefault"]:checked');
+      const defIdx = defRadio ? Number(defRadio.value) : 0;
+      const body = {
+        audioServerUrl: $('sAudioServerUrl').value.trim(),
+        videoServerUrl: $('sVideoServerUrl').value.trim(),
+        satelliteUrl: $('sSatelliteUrl').value.trim(),
+        transcriptionUrl: $('sTranscriptionUrl').value.trim(),
+        transcriptionApiUrl: $('sTranscriptionApiUrl').value.trim(),
+        ollamaDefaultServerId: defIdx >= 1 && defIdx <= 3 ? slotIds[defIdx - 1] : '',
+        ollamaServers,
+        orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
+        atlasOllamaServer: $('sAtlasOllamaServer').value,
+        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
+        sentryOllamaServer: $('sSentryOllamaServer').value,
+      };
+      await postJson('/api/settings', body);
+      st.textContent = 'saved'; st.className = 'status ok';
+      toast('Server settings saved', 'success');
     } catch (e) {
       st.textContent = 'failed: ' + e.message; st.className = 'status err';
     }
