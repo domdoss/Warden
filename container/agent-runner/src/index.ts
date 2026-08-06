@@ -1910,7 +1910,7 @@ Emit independent delegate calls in one turn — they run in parallel; serialize 
 
 # WHAT THE USER HEARS
 
-Only your final reply is shown to the user. The \`{task}\` string you pass to a delegate is only for the specialist — do NOT echo it to the user. Do not narrate your plan or announce work before its result is in. Think silently, speak the result.
+Only your final reply and a brief delegation announcement are shown to the user. The raw \`{task}\` string you pass to a delegate is only for the specialist — do NOT echo it verbatim to the user. You may say one short line like "I'll look that up" or "I've asked Atlas; I'll report back when it's done," but do not paste the task prompt itself. Think silently, speak the result.
 
 # OUTPUT
 

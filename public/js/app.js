@@ -861,14 +861,35 @@
     const drivingForceHtml = '<option value="">Warden (default)</option>' +
       (d.drivingForces || []).map(p => modelOption(p.id, p.label)).join('');
 
+    const tzOptions = (() => {
+      try {
+        return (Intl.supportedValuesOf('timeZone') || [])
+          .map(z => `<option value="${escAttr(z)}"${z === (d.timezone || 'UTC') ? ' selected' : ''}>${escAttr(z)}</option>`)
+          .join('');
+      } catch (e) {
+        return ['UTC','America/Vancouver','America/New_York','America/Los_Angeles','America/Chicago','America/Denver','America/Toronto','Europe/London','Europe/Paris','Europe/Berlin','Asia/Tokyo','Asia/Shanghai','Australia/Sydney']
+          .map(z => `<option value="${escAttr(z)}"${z === (d.timezone || 'UTC') ? ' selected' : ''}>${escAttr(z)}</option>`)
+          .join('');
+      }
+    })();
+
     const body = `
       <div class="setting-card">
         <h3>General</h3>
         <div class="hint">Assistant name, timezone. Changes propagate to all group WARDEN.md files on save.</div>
-        <div class="setting-row"><label>Assistant</label><input class="input" id="sAssistantName" value="${escAttr(d.assistantName || '')}" placeholder="Warden"></div>
-        <div class="setting-row"><label>Local name</label><input class="input" id="sLocalAssistantName" value="${escAttr(d.localAssistantName || '')}" placeholder="Warden"></div>
-        <div class="setting-row"><label>Timezone</label><input class="input" id="sTimezone" value="${escAttr(d.timezone || '')}" placeholder="America/Vancouver"></div>
+        <div class="setting-row"><label>Assistant name</label><input class="input" id="sAssistantName" value="${escAttr(d.assistantName || '')}" placeholder="Warden"></div>
+        <div class="setting-row"><label>Timezone</label><select class="select" id="sTimezone">${tzOptions}</select></div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveGeneral">Save</button><span class="status" id="generalStatus"></span></div>
+      </div>
+
+      <div class="setting-card">
+        <h3>Servers</h3>
+        <div class="hint">Role URLs / IPs. Use localhost defaults when all roles run on this machine, or enter another host's IP when a role lives elsewhere. Satellite IP is the Pi audio relay. Audio URL also serves the transcription endpoint.</div>
+        <div class="setting-row"><label>Warden URL</label><input class="input" id="sWardenUrl" value="${escAttr(d.wardenUrl || '')}" placeholder="http://localhost:3200"></div>
+        <div class="setting-row"><label>Audio / Transcription URL</label><input class="input" id="sAudioUrl" value="${escAttr(d.audioUrl || '')}" placeholder="http://localhost:3201"></div>
+        <div class="setting-row"><label>Video URL</label><input class="input" id="sVideoUrl" value="${escAttr(d.videoUrl || '')}" placeholder="http://localhost:3202"></div>
+        <div class="setting-row"><label>Satellite IP</label><input class="input" id="sSatelliteIp" value="${escAttr(d.securitySatelliteIp || '')}" placeholder="10.0.0.254"></div>
+        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveServers">Save</button><span class="status" id="serversStatus"></span></div>
       </div>
 
       <div class="setting-card">
@@ -930,9 +951,6 @@
         <div class="setting-row"><label>Awareness / Security (Sentry)</label>
           <select class="select" id="sSentryModel">${anyModelHtml}</select>
           <span class="dim mono" style="font-size:10px">data-only guard that decides normal vs anomaly; blank = inherit orchestrator</span>
-        </div>
-        <div class="setting-row"><label>Satellite IP</label>
-          <input class="input" id="sSatelliteIp" value="${escAttr(d.securitySatelliteIp || '')}" placeholder="10.0.0.254">
         </div>
         <div class="setting-row"><label>Thinking</label>
           <select class="select" id="sThinking">
@@ -1007,6 +1025,9 @@
     setSelect('sMercuryModel', (d.mercuryModel || '').replace(/^local:/, ''));
     setSelect('sMercuryCtx', d.mercuryCtx || '');
     setSelect('sSentryModel', (d.sentryModel || '').replace(/^local:/, ''));
+    $('sWardenUrl').value = esc(d.wardenUrl || '');
+    $('sAudioUrl').value = esc(d.audioUrl || '');
+    $('sVideoUrl').value = esc(d.videoUrl || '');
     $('sSatelliteIp').value = esc(d.securitySatelliteIp || '');
     setSelect('sThinking', d.thinking || 'true');
     setSelect('sOrchestratorCtx', d.orchestratorCtx || '');
@@ -1029,6 +1050,7 @@
 
     // Hook save buttons
     $('btnSaveGeneral').addEventListener('click', saveGeneral);
+    $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveModels').addEventListener('click', saveModels);
     $('btnSaveAutomation').addEventListener('click', saveAutomation);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);
@@ -1084,13 +1106,30 @@
     try {
       const body = {
         assistantName: $('sAssistantName').value.trim(),
-        localAssistantName: $('sLocalAssistantName').value.trim(),
         timezone: $('sTimezone').value.trim(),
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
       if (body.assistantName) { STATE.assistantName = body.assistantName; $('assistantName').textContent = body.assistantName.toUpperCase(); }
       toast('General settings saved', 'success');
+    } catch (e) {
+      st.textContent = 'failed: ' + e.message; st.className = 'status err';
+    }
+  }
+
+  async function saveServers() {
+    const st = $('serversStatus');
+    st.textContent = 'saving…'; st.className = 'status';
+    try {
+      const body = {
+        wardenUrl: $('sWardenUrl').value.trim(),
+        audioUrl: $('sAudioUrl').value.trim(),
+        videoUrl: $('sVideoUrl').value.trim(),
+        securitySatelliteIp: $('sSatelliteIp').value.trim(),
+      };
+      await postJson('/api/settings', body);
+      st.textContent = 'saved'; st.className = 'status ok';
+      toast('Server URLs saved', 'success');
     } catch (e) {
       st.textContent = 'failed: ' + e.message; st.className = 'status err';
     }
@@ -1115,7 +1154,6 @@
         mercuryModel: stripLocal($('sMercuryModel').value),
         mercuryCtx: $('sMercuryCtx').value,
         sentryModel: stripLocal($('sSentryModel').value),
-        securitySatelliteIp: $('sSatelliteIp').value.trim(),
         thinking: $('sThinking').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
