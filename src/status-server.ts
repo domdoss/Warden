@@ -1377,6 +1377,7 @@ function handleSettings(res: http.ServerResponse): void {
     'CALENDAR_TOKEN',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     'MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET',
+    'TZ',
   ]);
   const googleId = process.env.GOOGLE_CLIENT_ID || envVals.GOOGLE_CLIENT_ID || '';
   const googleSecret = process.env.GOOGLE_CLIENT_SECRET || envVals.GOOGLE_CLIENT_SECRET || '';
@@ -1391,7 +1392,7 @@ function handleSettings(res: http.ServerResponse): void {
   json(res, {
     assistantName: ASSISTANT_NAME,
     localAssistantName: LOCAL_ASSISTANT_NAME,
-    timezone: TIMEZONE,
+    timezone: envVals.TZ || TIMEZONE,
     containerImage: CONTAINER_IMAGE,
     containerTimeout: parseInt(process.env.CONTAINER_TIMEOUT || '7200000', 10),
     idleTimeout: IDLE_TIMEOUT,
