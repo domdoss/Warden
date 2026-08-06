@@ -771,7 +771,7 @@ function getStatusData() {
 
   return {
     assistant: ASSISTANT_NAME,
-    localAssistant: ASSISTANT_NAME,
+    localAssistant: LOCAL_ASSISTANT_NAME,
     uptime,
     channels: deps.channels.map((c) => c.name),
     activeContainers: Math.max(queueStatus.activeCount, queueStatus.groups.filter((g: any) => g.active).length),
@@ -1352,12 +1352,31 @@ async function handleFiles(
   }
 }
 
+// ── Role URLs & named Ollama servers ────────────────────────────────────────
+// The consolidated settings store. Every role address lives in router_state so
+// it can be edited from the dashboard "Servers" card or the run.sh launcher UI
+// and take effect live (no restart). This replaces the scattered configs that
+// used to live in voice-button.py (hardcoded BASE), ~/.config/jarvis/config.yaml
+// (single.py dockbox.base_url), security/config/settings.yaml (warden.base_url),
+// and bare env vars (OLLAMA_URL / WHISPER_URL).
+// The helpers themselves live in ./ollama-servers.js (no import cycles).
+
+import {
+  OllamaServer,
+  readOllamaServers,
+  writeOllamaServers,
+  resolveOllamaServerUrl,
+  resolveAgentOllamaUrl,
+} from './ollama-servers.js';
+
+// Re-export so existing `from './status-server.js'` importers keep working.
+export { OllamaServer, readOllamaServers, writeOllamaServers, resolveOllamaServerUrl, resolveAgentOllamaUrl };
+
 function handleSettings(res: http.ServerResponse): void {
   const envVals = readEnvFile([
     'CALENDAR_TOKEN',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     'MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET',
-    'WARDEN_URL', 'AUDIO_URL', 'VIDEO_URL',
   ]);
   const googleId = process.env.GOOGLE_CLIENT_ID || envVals.GOOGLE_CLIENT_ID || '';
   const googleSecret = process.env.GOOGLE_CLIENT_SECRET || envVals.GOOGLE_CLIENT_SECRET || '';
@@ -1371,7 +1390,7 @@ function handleSettings(res: http.ServerResponse): void {
   const drivingForces = listDrivingForces();
   json(res, {
     assistantName: ASSISTANT_NAME,
-    localAssistantName: ASSISTANT_NAME,
+    localAssistantName: LOCAL_ASSISTANT_NAME,
     timezone: TIMEZONE,
     containerImage: CONTAINER_IMAGE,
     containerTimeout: parseInt(process.env.CONTAINER_TIMEOUT || '7200000', 10),
@@ -1392,9 +1411,21 @@ function handleSettings(res: http.ServerResponse): void {
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
     sentryModel: getRouterState('sentry:model') || '',
     securitySatelliteIp: getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_SATELLITE_IP || process.env.WARDEN_SECURITY_LAPTOP_IP || '',
-    wardenUrl: process.env.WARDEN_URL || envVals.WARDEN_URL || '',
-    audioUrl: process.env.AUDIO_URL || envVals.AUDIO_URL || '',
-    videoUrl: process.env.VIDEO_URL || envVals.VIDEO_URL || '',
+    // ── Consolidated role URLs (Servers card) ───────────────────────────────
+    wardenUrl: getRouterState('warden:url') || '',
+    audioServerUrl: getRouterState('audio:url') || '',
+    videoServerUrl: getRouterState('video:url')
+      || (satIp => satIp ? `http://${satIp}:8765` : '')(
+        getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || ''),
+    satelliteUrl: getRouterState('satellite:url') || '',
+    transcriptionUrl: getRouterState('transcription:whisper_url') || process.env.WHISPER_URL || '',
+    transcriptionApiUrl: getRouterState('transcription:whisper_api_url') || process.env.WHISPER_API_URL || '',
+    ollamaServers: readOllamaServers(),
+    ollamaDefaultServerId: getRouterState('ollama:default_server') || '',
+    orchestratorOllamaServer: getRouterState('orchestrator:ollama_server') || '',
+    atlasOllamaServer: getRouterState('atlas:ollama_server') || '',
+    hephaestusOllamaServer: getRouterState('hephaestus:ollama_server') || '',
+    sentryOllamaServer: getRouterState('sentry:ollama_server') || '',
     sentryMd,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     automationModel: getRouterState('automation:model') || '',
@@ -1425,6 +1456,7 @@ async function handleSettingsSave(
   const body = parseJson(await parseBody(req)) as Record<string, unknown>;
   const envMap: Record<string, string> = {
     assistantName: 'ASSISTANT_NAME',
+    localAssistantName: 'LOCAL_ASSISTANT_NAME',
     timezone: 'TZ',
     containerImage: 'CONTAINER_IMAGE',
     containerTimeout: 'CONTAINER_TIMEOUT',
@@ -1439,9 +1471,6 @@ async function handleSettingsSave(
     google_client_secret: 'GOOGLE_CLIENT_SECRET',
     microsoft_client_id: 'MICROSOFT_CLIENT_ID',
     microsoft_client_secret: 'MICROSOFT_CLIENT_SECRET',
-    wardenUrl: 'WARDEN_URL',
-    audioUrl: 'AUDIO_URL',
-    videoUrl: 'VIDEO_URL',
   };
 
   // Router-state settings (not env vars)
@@ -1496,6 +1525,54 @@ async function handleSettingsSave(
     setRouterState('security:satellite_ip', ip);
     if (ip) process.env.WARDEN_SECURITY_SATELLITE_IP = ip;
   }
+  // ── Consolidated role URLs (Servers card) ─────────────────────────────────
+  if (body.wardenUrl !== undefined) {
+    setRouterState('warden:url', String(body.wardenUrl || '').trim());
+  }
+  if (body.audioServerUrl !== undefined) {
+    setRouterState('audio:url', String(body.audioServerUrl || '').trim());
+  }
+  if (body.videoServerUrl !== undefined) {
+    setRouterState('video:url', String(body.videoServerUrl || '').trim());
+  }
+  if (body.satelliteUrl !== undefined) {
+    setRouterState('satellite:url', String(body.satelliteUrl || '').trim());
+  }
+  if (body.transcriptionUrl !== undefined) {
+    const w = String(body.transcriptionUrl || '').trim();
+    setRouterState('transcription:whisper_url', w);
+    if (w) process.env.WHISPER_URL = w;
+  }
+  if (body.transcriptionApiUrl !== undefined) {
+    const w = String(body.transcriptionApiUrl || '').trim();
+    setRouterState('transcription:whisper_api_url', w);
+    if (w) process.env.WHISPER_API_URL = w;
+  }
+  // Named Ollama servers (up to 3) + which one is default.
+  if (body.ollamaServers !== undefined) {
+    const arr = Array.isArray(body.ollamaServers) ? body.ollamaServers : [];
+    writeOllamaServers(arr.map((s: any) => ({
+      id: String(s?.id || ''),
+      label: String(s?.label || s?.id || ''),
+      url: String(s?.url || ''),
+    })));
+  }
+  if (body.ollamaDefaultServerId !== undefined) {
+    setRouterState('ollama:default_server', String(body.ollamaDefaultServerId || ''));
+  }
+  // Per-headline-agent Ollama server assignment (server id; '' = default).
+  if (body.orchestratorOllamaServer !== undefined) {
+    setRouterState('orchestrator:ollama_server', String(body.orchestratorOllamaServer || ''));
+  }
+  if (body.atlasOllamaServer !== undefined) {
+    setRouterState('atlas:ollama_server', String(body.atlasOllamaServer || ''));
+  }
+  if (body.hephaestusOllamaServer !== undefined) {
+    setRouterState('hephaestus:ollama_server', String(body.hephaestusOllamaServer || ''));
+  }
+  if (body.sentryOllamaServer !== undefined) {
+    setRouterState('sentry:ollama_server', String(body.sentryOllamaServer || ''));
+  }
   // Mirror toolcall model into router_state and live env so subprocess inherits it.
   if (body.ollamaChatModel !== undefined) {
     const mdl = String(body.ollamaChatModel);
@@ -1544,7 +1621,14 @@ async function handleSettingsSave(
     body.sentryModel !== undefined ||
     body.securitySatelliteIp !== undefined || body.mercuryMode !== undefined ||
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
-    body.thinking !== undefined;
+    body.thinking !== undefined ||
+    body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
+    body.videoServerUrl !== undefined || body.satelliteUrl !== undefined ||
+    body.transcriptionUrl !== undefined || body.transcriptionApiUrl !== undefined ||
+    body.ollamaServers !== undefined ||
+    body.ollamaDefaultServerId !== undefined ||
+    body.orchestratorOllamaServer !== undefined || body.atlasOllamaServer !== undefined ||
+    body.hephaestusOllamaServer !== undefined || body.sentryOllamaServer !== undefined;
 
   const vars: Record<string, string> = {};
   for (const [key, envKey] of Object.entries(envMap)) {
@@ -1736,6 +1820,27 @@ async function handleOllamaTest(res: http.ServerResponse): Promise<void> {
     const thinkingConfig = readOllamaThinking();
     json(res, { ok: false, error: 'Cannot reach Ollama at ' + ollamaUrl, friendlyNames, modelSizes: {}, cloudModels: CLOUD_MODELS, thinking: thinkingConfig });
   }
+}
+
+/** GET /api/ollama/servers — list the configured named Ollama servers with a
+ *  reachability + model probe of each (GET /api/tags). Used by the dashboard
+ *  "Servers" card to verify each endpoint. The legacy single-server
+ *  /api/ollama/test still probes the default/global endpoint. */
+async function handleOllamaServers(res: http.ServerResponse): Promise<void> {
+  const servers = readOllamaServers();
+  const defaultServerId = getRouterState('ollama:default_server') || '';
+  const probed = await Promise.all(servers.map(async (s) => {
+    const base = s.url.replace(/\/+$/, '');
+    try {
+      const resp = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(4000) });
+      if (!resp.ok) return { id: s.id, label: s.label, url: s.url, ok: false, error: `HTTP ${resp.status}`, models: [] as string[] };
+      const data = (await resp.json()) as { models?: Array<{ name: string }> };
+      return { id: s.id, label: s.label, url: s.url, ok: true, error: null as string | null, models: (data.models || []).map((m) => m.name) };
+    } catch (e: any) {
+      return { id: s.id, label: s.label, url: s.url, ok: false, error: String(e?.message ?? e), models: [] as string[] };
+    }
+  }));
+  json(res, { servers: probed, defaultServerId });
 }
 
 async function handleOllamaModelNames(
@@ -2400,7 +2505,7 @@ async function handleVoice(
   const senderName = params.get('sender_name') || 'Admin';
 
   try {
-    const transcript = await transcribeLocal(body);
+    const transcript = await transcribeLocal(body, 'wav');
     if (!transcript) return error(res, 'Transcription failed', 500);
 
     // Store as a regular message and trigger the agent
@@ -3648,6 +3753,7 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
       if (pathname === '/api/ollama/test') return await handleOllamaTest(res);
+      if (pathname === '/api/ollama/servers') return await handleOllamaServers(res);
       if (pathname === '/api/ollama/model-names')
         return await handleOllamaModelNames(req, res);
       if (pathname === '/api/ollama/thinking-support') {

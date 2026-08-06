@@ -5,7 +5,7 @@ import { readEnvFile } from './env.js';
 
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OLLAMA_URL', 'OLLAMA_CHAT_MODEL', 'LOCAL_ASSISTANT_NAME', 'DEFAULT_MODEL_MODE', 'IDLE_TIMEOUT', 'CONTAINER_TIMEOUT', 'ADMIN_DOMAIN', 'OAUTH_REDIRECT_BASE', 'WORKSPACE_ROOT', 'RADICALE_URL', 'RADICALE_USER', 'RADICALE_PASS', 'RADICALE_CAL_COLLECTION', 'RADICALE_CARD_COLLECTION', 'RADICALE_STORAGE_DIR', 'WARDEN_URL', 'AUDIO_URL', 'VIDEO_URL']);
+const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OLLAMA_URL', 'OLLAMA_CHAT_MODEL', 'LOCAL_ASSISTANT_NAME', 'DEFAULT_MODEL_MODE', 'IDLE_TIMEOUT', 'CONTAINER_TIMEOUT', 'ADMIN_DOMAIN', 'OAUTH_REDIRECT_BASE', 'WORKSPACE_ROOT', 'RADICALE_URL', 'RADICALE_USER', 'RADICALE_PASS', 'RADICALE_CAL_COLLECTION', 'RADICALE_CARD_COLLECTION', 'RADICALE_STORAGE_DIR']);
 
 // Propagate env-file values into process.env so child processes (agent-runner,
 // MCP servers, etc.) inherit them via spawn. Without this, a parent launched
@@ -96,7 +96,8 @@ export const OLLAMA_URL =
   process.env.OLLAMA_URL || envConfig.OLLAMA_URL || 'http://127.0.0.1:11434';
 export const OLLAMA_CHAT_MODEL =
   process.env.OLLAMA_CHAT_MODEL || envConfig.OLLAMA_CHAT_MODEL || DEFAULT_CLOUD_MODEL;
-export const LOCAL_ASSISTANT_NAME = ASSISTANT_NAME;
+export const LOCAL_ASSISTANT_NAME =
+  process.env.LOCAL_ASSISTANT_NAME || envConfig.LOCAL_ASSISTANT_NAME || 'Kimi';
 // Model routing mode: "" (Claude only), "local", "hybrid"
 export const DEFAULT_MODEL_MODE =
   process.env.DEFAULT_MODEL_MODE || envConfig.DEFAULT_MODEL_MODE || '';
