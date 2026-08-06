@@ -141,6 +141,9 @@ class ControlServer:
                 if self.path == "/press":
                     server.app._on_button_press()
                     self._send_json(200, {"ok": True})
+                elif self.path == "/release":
+                    server.app._on_button_release()
+                    self._send_json(200, {"ok": True})
                 elif self.path == "/cancel":
                     server.app._external_cancel()
                     self._send_json(200, {"ok": True})
@@ -201,11 +204,16 @@ class JarvisApp:
                 host=host, port=port,
                 silence_timeout=voice_cfg.get("silence_timeout", 1.0),
                 max_duration=voice_cfg.get("max_recording_seconds", 60.0),
+                aggressiveness=voice_cfg.get("vad_aggressiveness", 2),
             )
             self.audio_player = SatelliteAudioPlayer(host=host, port=port)
             self.beep_generator = BeepGenerator(
                 sample_rate=voice_cfg.get("sample_rate", 48000)
             )
+            # Push-to-talk on the Pi: hold the button to record the whole hold
+            # (no VAD), release to send — one turn per press, no auto-listen
+            # loop. false = VAD auto-stop (for a buttonless remote mic).
+            self._push_to_talk = bool(sat_cfg.get("push_to_talk", True))
         else:
             # Resolve audio devices. pyaudio's "default" device can't capture/play
             # Bluetooth (HFP) on PipeWire — the "pipewire"/"pulse" devices can. Honor
@@ -223,6 +231,7 @@ class JarvisApp:
                 channels=voice_cfg.get("channels", 1),
                 silence_timeout=voice_cfg.get("silence_timeout", 1.0),
                 max_duration=voice_cfg.get("max_recording_seconds", 60.0),
+                aggressiveness=voice_cfg.get("vad_aggressiveness", 2),
                 input_device_index=in_dev,
             )
             self.audio_player = AudioPlayer(
@@ -232,6 +241,8 @@ class JarvisApp:
             self.beep_generator = BeepGenerator(
                 sample_rate=voice_cfg.get("sample_rate", 48000)
             )
+            # The local laptop hologram always uses VAD + clap + the listen loop.
+            self._push_to_talk = False
         self.stt = STT(model=voice_cfg.get("whisper_model", "base"))
         self.tts = TTS(
             engine=voice_cfg.get("tts_engine", "kokoro"),
@@ -252,6 +263,9 @@ class JarvisApp:
         self._last_spoke_at = 0.0
         self._record_task: Optional[asyncio.Task] = None
         self._send_task: Optional[asyncio.Task] = None
+        # Push-to-talk (satellite only): the in-flight hold-turn task, tracked so a
+        # barge-in press can abort it and start a fresh recording cleanly.
+        self._hold_turn_task: Optional[asyncio.Task] = None
 
         # TTS pipeline: SSE chunks accumulate here; a worker speaks them in order.
         self._tts_queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
@@ -316,9 +330,16 @@ class JarvisApp:
             return
 
     async def _record_audio_async(self) -> bytes:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self.audio_recorder.record_until_silence
-        )
+        if self._push_to_talk:
+            # Hold-to-record (satellite/Pi): record the whole hold until the
+            # button is released; no VAD. Falls back to VAD if the recorder
+            # somehow lacks record_held (it shouldn't in satellite mode).
+            fn = getattr(self.audio_recorder, "record_held", None)
+            if fn is None:
+                fn = self.audio_recorder.record_until_silence
+        else:
+            fn = self.audio_recorder.record_until_silence
+        return await asyncio.get_running_loop().run_in_executor(None, fn)
 
     async def _transcribe_async(self, audio_data: bytes) -> str:
         return await asyncio.get_running_loop().run_in_executor(
@@ -408,7 +429,8 @@ class JarvisApp:
             # loop self-feeding. The clap detector honors the same cooldown via
             # _last_spoke_at, but it's paused mid-conversation, so the
             # in-conversation recorder has to apply this itself.
-            await self._wait_until_quiet()
+            if not self._push_to_talk:
+                await self._wait_until_quiet()
             self._update_ui_state("listening")
             await self._play_beep_async(self.beep_generator.start_beep)
 
@@ -423,6 +445,12 @@ class JarvisApp:
             if not text:
                 return False
             print(f"User said: {text}")
+
+            # A barge-in press may have landed while we were transcribing; bail
+            # before sending so the interrupted turn doesn't fire its utterance.
+            if self._stop_requested:
+                self._turn_done.set()
+                return False
 
             user_ended = self._user_ended(text)
             if user_ended:
@@ -526,7 +554,70 @@ class JarvisApp:
             self._update_ui_state("idle")
             self._resume_clap()
 
-    # ----- TTS pipeline (consumes SSE chunks) -----
+    async def _hold_turn(self, prev_task: Optional[asyncio.Task]) -> None:
+        """Push-to-talk turn (satellite/Pi only): exactly one turn per button
+        press, no auto-listen loop afterward. The user holds the Pi button to
+        record (no VAD — record_held captures the whole hold) and releases to
+        send; press again for the next turn.
+
+        Barge-in: if a previous turn is still in flight when the button is
+        pressed again, abort it (stop playback + cancel its recording/send),
+        let it unwind, then start a fresh recording so the held button records
+        the user's new utterance immediately."""
+        if prev_task is not None and not prev_task.done():
+            print("[jarvis] push-to-talk barge-in: aborting in-flight turn")
+            self._stop_requested = True
+            self._abort_in_flight()
+            try:
+                await asyncio.wait_for(asyncio.shield(prev_task), timeout=1.0)
+            except Exception:
+                try:
+                    prev_task.cancel()
+                except Exception:
+                    pass
+        self._conversation_active = True
+        self._stop_requested = False
+        self._pause_clap()
+        try:
+            await self._single_turn()
+        finally:
+            self._conversation_active = False
+            self._stop_requested = False
+            self._update_ui_state("idle")
+            self._resume_clap()
+
+    def _abort_in_flight(self) -> None:
+        """Synchronous teardown of whatever an in-flight turn is doing, so a
+        barge-in press can start clean. Mirror of _handle_interaction's
+        interrupt branch, but callable mid-turn from _hold_turn."""
+        try:
+            self.audio_recorder.cancel()
+        except Exception:
+            pass
+        try:
+            asyncio.get_running_loop().create_task(self.bridge.stop())
+        except Exception:
+            pass
+        if self._send_task is not None and not self._send_task.done():
+            self._send_task.cancel()
+        self._send_task = None
+        try:
+            self.audio_player.cancel()
+        except Exception:
+            pass
+        while not self._tts_queue.empty():
+            try:
+                self._tts_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self._turn_done.set()
+        if self._tts_worker is not None and not self._tts_worker.done():
+            try:
+                self._tts_queue.put_nowait(None)
+            except Exception:
+                pass
+        self._is_speaking = False
+
 
     def _enqueue_chunk(self, chunk: str) -> None:
         if not self.loop:
@@ -655,8 +746,36 @@ class JarvisApp:
             pass
 
     def _on_button_press(self):
-        if self.loop and self.loop.is_running():
+        if not (self.loop and self.loop.is_running()):
+            return
+        if self._push_to_talk:
+            # Satellite/Pi push-to-talk: schedule a single held turn on the loop
+            # thread. _start_hold_turn tracks the task so a barge-in press can
+            # abort the in-flight turn first. (Called from the HTTP control
+            # server thread, hence call_soon_threadsafe.)
+            self.loop.call_soon_threadsafe(self._start_hold_turn)
+        else:
             asyncio.run_coroutine_threadsafe(self._handle_interaction(), self.loop)
+
+    def _start_hold_turn(self) -> None:
+        """Runs on the event loop thread (scheduled by _on_button_press).
+        Captures the previous in-flight hold turn (if any) so _hold_turn can
+        abort it before starting a fresh recording on barge-in."""
+        prev = self._hold_turn_task
+        self._hold_turn_task = asyncio.create_task(self._hold_turn(prev))
+
+    def _on_button_release(self):
+        """Satellite/Pi push-to-talk release: stop the held recording and let
+        the turn proceed to transcribe/send/speak. No-op outside push-to-talk
+        mode (the local hologram ignores /release). Called from the HTTP
+        control server thread; recorder.stop() is thread-safe (sets an event
+        and closes the stream response under a lock)."""
+        if not self._push_to_talk:
+            return
+        try:
+            self.audio_recorder.stop()
+        except Exception as e:
+            print(f"[jarvis] button release stop failed: {e}")
 
     # ----- Warden URL settings (in-app field + --set-warden-url) -----
 
