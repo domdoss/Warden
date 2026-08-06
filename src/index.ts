@@ -462,14 +462,11 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           ),
         );
 
-        // Speak the alert over the voice client's SSE stream. The voice client
-        // TTS-es chat_complete events from /api/notifications; the orchestrator
-        // emits its own chat_complete for normal replies, so gate on security
-        // senders to avoid double-speaking. Throttled alerts returned above and
-        // never reach here.
-        if (SECURITY_SENDERS.has(senderName)) {
-          pushNotification('owner', { type: 'chat_complete', message: finalText, from: OWNER_JID });
-        }
+        // Push a chat_complete notification so the voice client can speak the
+        // reply. The orchestrator's own runAgent reply also emits one, so a
+        // direct orchestrator reply may double-speak if the agent also calls
+        // send_message. The voice client deduplicates by content to handle this.
+        pushNotification('owner', { type: 'chat_complete', message: finalText, from: OWNER_JID });
         return { ok: true, messageId };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };

@@ -280,6 +280,7 @@
     else if (name === 'accounts') refreshAccounts();
     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
     else if (name === 'email' && window.PIM) window.PIM.refreshEmail();
+    else if (name === 'notes' && window.Notes) window.Notes.refresh();
     else if (window.UserDash) {
       // Views ported from the groupware user dashboard (userdash-extras.js)
       const UD = window.UserDash;
