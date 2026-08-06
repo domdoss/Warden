@@ -984,9 +984,8 @@
         <div class="setting-row"><label>Satellite (remote mic/speaker)</label><input class="input" id="sSatelliteUrl" value="${escAttr(d.satelliteUrl || '')}" placeholder="http://192.168.0.160:8766"></div>
         <div class="setting-row"><label>Transcription (Whisper local)</label><input class="input" id="sTranscriptionUrl" value="${escAttr(d.transcriptionUrl || '')}" placeholder="http://127.0.0.1:8000"></div>
         <div class="setting-row"><label>Whisper API fallback</label><input class="input" id="sTranscriptionApiUrl" value="${escAttr(d.transcriptionApiUrl || '')}" placeholder="https://api.groq.com/openai (Groq, autofilled)"></div>
-        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:2px;margin-top:0">
-          <label style="margin-bottom:2px">Ollama servers</label>
-          <div style="width:100%;display:flex;flex-direction:column;gap:2px">
+        <div style="margin-bottom:6px"><span class="dim" style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:0.04em">Ollama servers</span>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-top:2px">
             <div style="display:flex;gap:6px;align-items:center"><input type="radio" name="ollamaDefault" value="1"><input class="input" id="sOllamaLabel1" placeholder="label" style="flex:0 0 120px"><input class="input" id="sOllamaUrl1" placeholder="http://127.0.0.1:11434" style="flex:1;min-width:0"></div>
             <div style="display:flex;gap:6px;align-items:center"><input type="radio" name="ollamaDefault" value="2"><input class="input" id="sOllamaLabel2" placeholder="label" style="flex:0 0 120px"><input class="input" id="sOllamaUrl2" placeholder="http://127.0.0.1:11434" style="flex:1;min-width:0"></div>
             <div style="display:flex;gap:6px;align-items:center"><input type="radio" name="ollamaDefault" value="3"><input class="input" id="sOllamaLabel3" placeholder="label" style="flex:0 0 120px"><input class="input" id="sOllamaUrl3" placeholder="http://127.0.0.1:11434" style="flex:1;min-width:0"></div>
