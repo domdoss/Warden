@@ -979,10 +979,9 @@
       <div class="setting-card">
         <h3>Servers</h3>
         <div class="hint">Role URLs used by the Warden backend. Ollama servers below are referenced by per-agent dropdowns in Model Configuration.</div>
-        <div class="setting-row"><label>Audio server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://192.168.0.163:8766"></div>
+        <div class="setting-row"><label>Audio / Transcription server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://192.168.0.163:8766"></div>
         <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://192.168.0.163:8765"></div>
         <div class="setting-row"><label>Satellite (remote mic/speaker)</label><input class="input" id="sSatelliteUrl" value="${escAttr(d.satelliteUrl || '')}" placeholder="http://192.168.0.160:8766"></div>
-        <div class="setting-row"><label>Transcription (Whisper local)</label><input class="input" id="sTranscriptionUrl" value="${escAttr(d.transcriptionUrl || '')}" placeholder="http://127.0.0.1:8000"></div>
         <div class="setting-row"><label>Whisper API fallback</label><input class="input" id="sTranscriptionApiUrl" value="${escAttr(d.transcriptionApiUrl || '')}" placeholder="https://api.groq.com/openai (Groq, autofilled)"></div>
         <div style="margin-bottom:6px"><span class="dim" style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:0.04em">Ollama servers</span>
           <div style="display:flex;flex-direction:column;gap:2px;margin-top:2px">
@@ -1077,7 +1076,6 @@
     $('sAudioServerUrl').value = esc(d.audioServerUrl || '');
     $('sVideoServerUrl').value = esc(d.videoServerUrl || '');
     $('sSatelliteUrl').value = esc(d.satelliteUrl || '');
-    $('sTranscriptionUrl').value = esc(d.transcriptionUrl || '');
     $('sTranscriptionApiUrl').value = esc(d.transcriptionApiUrl || '');
 
     // Ollama servers list (up to 3 fixed slots, ids s1/s2/s3)
@@ -1269,7 +1267,6 @@
         audioServerUrl: $('sAudioServerUrl').value.trim(),
         videoServerUrl: $('sVideoServerUrl').value.trim(),
         satelliteUrl: $('sSatelliteUrl').value.trim(),
-        transcriptionUrl: $('sTranscriptionUrl').value.trim(),
         transcriptionApiUrl: $('sTranscriptionApiUrl').value.trim(),
         ollamaDefaultServerId: defIdx >= 1 && defIdx <= 3 ? slotIds[defIdx - 1] : '',
         ollamaServers,
