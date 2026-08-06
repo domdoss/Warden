@@ -89,6 +89,7 @@ class SatelliteAudioRecorder:
         self._vad = webrtcvad.Vad(aggressiveness)
         self._bytes_per_frame = int(self._SAMPLE_RATE * self._FRAME_MS / 1000) * 2
         self._cancel_event = threading.Event()
+        self._stop_event = threading.Event()  # push-to-talk release (keeps audio)
         self._response = None
         self._lock = threading.Lock()
 
@@ -105,6 +106,79 @@ class SatelliteAudioRecorder:
             self._client.post("/cancel", timeout=5.0)
         except Exception as e:
             print(f"[satellite] cancel failed: {e}")
+
+    def stop(self) -> None:
+        """Push-to-talk release: stop the in-flight recording but KEEP the
+        captured audio (unlike cancel(), which discards it). Safe to call
+        when nothing is recording."""
+        self._stop_event.set()
+        with self._lock:
+            resp = self._response
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def record_held(self) -> bytes:
+        """Push-to-talk: capture every frame from stream start until stop()
+        (release) or cancel() (barge-in) or max_duration. No VAD — the button,
+        not silence, decides when the turn ends. Returns the WAV on stop(),
+        b"" on cancel()."""
+        self._cancel_event.clear()
+        self._stop_event.clear()
+        try:
+            resp = self._client.get_response(
+                "/mic", timeout=max(30.0, self.max_duration) + 10.0)
+        except Exception as e:
+            print(f"[satellite] mic stream failed: {e}")
+            return b""
+        with self._lock:
+            self._response = resp
+
+        frames: list[bytes] = []
+        elapsed_ms = 0
+        max_duration_ms = int(self.max_duration * 1000)
+
+        try:
+            self._strip_au_header(resp)
+            while True:
+                if self._stop_event.is_set():
+                    print("[sat-rec] released")
+                    break
+                if self._cancel_event.is_set():
+                    print("[sat-rec] cancelled")
+                    return b""
+                try:
+                    frame = self._read_exact(resp, self._bytes_per_frame)
+                except Exception:
+                    if self._cancel_event.is_set():
+                        return b""
+                    if not self._stop_event.is_set():
+                        print("[sat-rec] mic stream ended")
+                    break
+                if not frame or len(frame) != self._bytes_per_frame:
+                    if self._cancel_event.is_set():
+                        return b""
+                    print("[sat-rec] mic stream ended")
+                    break
+                frames.append(frame)
+                elapsed_ms += self._FRAME_MS
+                if elapsed_ms >= max_duration_ms:
+                    print("[sat-rec] hit max_duration")
+                    break
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            with self._lock:
+                if self._response is resp:
+                    self._response = None
+
+        if not frames:
+            return b""
+        return self._frames_to_wav(frames)
 
     def _read_exact(self, resp, n: int) -> bytes:
         """Read exactly n bytes from the streaming response; b"" on EOF."""

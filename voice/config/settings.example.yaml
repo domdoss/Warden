@@ -8,7 +8,12 @@ voice:
   sample_rate: 48000
   channels: 1
   chunk_size: 1024
-  silence_timeout: 0.6
+  # VAD sensitivity. silence_timeout = how long a pause (s) before the
+  # recorder stops; vad_aggressiveness = webrtcvad mode 0-3 (lower = less
+  # likely to flag quiet speech as silence, so fewer dropouts). Raise
+  # silence_timeout and/or lower aggressiveness if it cuts you off mid-sentence.
+  silence_timeout: 1.2
+  vad_aggressiveness: 1
   max_recording_seconds: 30
   silence_threshold: 500
   whisper_model: base
@@ -65,3 +70,10 @@ audio:
 # graice-tui.sh "Satellite mode" menu item. Only the port is configured here.
 satellite:
   port: 8766
+  # Push-to-talk on the Pi: hold the button to record the whole hold (no VAD —
+  # the button, not silence, ends the turn), release to send it. One turn per
+  # press; no auto-listen loop after the reply. true = button (default for a
+  # Pi with a push button); false = VAD auto-stop (for a buttonless remote mic
+  # that should record until speech pauses). Only affects satellite mode; the
+  # local laptop hologram always uses VAD + clap + the listen loop.
+  push_to_talk: true
