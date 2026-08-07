@@ -145,7 +145,8 @@ public/css/style-old.css
 /third-party/
 /training-data/
 /setup/
-/tests/
+/tests/*
+!/tests/audit-agent-behavior.sh
 /vitest.config.ts
 
 # ── Python runtime ──
