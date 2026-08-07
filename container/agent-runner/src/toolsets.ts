@@ -54,12 +54,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
 
     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin'] },
     'dexter-core':   { name: 'dexter-core',   includes: ['tasks'] },
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin','desktop-vision'] },
+    // Media (speaker/mic volume + playback) — atlas/hephaestus drive the hardware.
+    media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin','desktop-vision','media'] },
     // Hephaestus — the coding specialist. Like atlas-core but adds `file`
     // (Read/Write/Edit/Glob/Grep) so it can edit source, plus browser +
     // desktop-vision for webapp/UI testing. Both Atlas and Hephaestus merge
     // active skill tools at spawn, so the data/skills/ library is inherited.
-    'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision'] },
+    'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     'iris-core':     { name: 'iris-core',     includes: ['email','contacts','calendar','todos'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },

@@ -94,7 +94,7 @@ registry.register({
 
 registry.register({
     name: 'read_image',
-    description: 'Read an image file from the HOST filesystem (any path the Warden orchestrator can access, e.g. /home/dominic/Photos/x.jpg) and load it into YOUR vision context. Use this for images outside the container workspace. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the dimensions.',
+    description: 'Read an image file from the HOST filesystem (any absolute path the Warden orchestrator can access) and load it into YOUR vision context. Use this for images outside the container workspace. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the dimensions. Only call this when the user actually points you at a specific image file path.',
     schema: {
         type: 'object',
         properties: {

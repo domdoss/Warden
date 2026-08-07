@@ -1,5 +1,5 @@
 import { registry } from '../tool-registry.js';
-import { writeIpcFile, TASKS_DIR } from '../ipc-helpers.js';
+import { writeCallbackAsync } from '../index.js';
 
 // clear_context is a special tool — it sets a flag on the module-level variable in index.ts
 // We import and use the flag setter from the registry pattern.
@@ -18,11 +18,17 @@ registry.register({
     },
     handler: async (args, context) => {
         globalThis._clearContextRequested = true;
-        // Tell the server to record the clear boundary, otherwise pre-clear chat
-        // history gets re-injected into the next container's prompt.
+        // Tell the HOST to record the clear boundary (sets orchestrator:context_clear_at,
+        // which gates <chat_history> on the next turn). Without this the host re-injects
+        // pre-clear turns every turn — the in-container reset alone isn't enough.
         try {
-            writeIpcFile(TASKS_DIR, { type: 'context_cleared', chatJid: context?.chatJid, timestamp: new Date().toISOString() });
-        } catch { /* non-fatal — in-container clear still happens */ }
+            await writeCallbackAsync('clear_context', { reason: args?.reason, chatJid: context?.chatJid }, 10000);
+        } catch (err: any) {
+            // Non-fatal: the in-container clear (flag above) still happens. The host
+            // boundary just won't move this turn, so old history may resurface until
+            // the next New Thought / idle clear.
+            globalThis._clearContextRequested = true;
+        }
         return `Context cleared${args.reason ? ': ' + args.reason : ''}. Continuing with fresh conversation.`;
     },
     toolset: 'context',

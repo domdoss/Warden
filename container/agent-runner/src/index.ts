@@ -675,6 +675,8 @@ NATIVE APPS — For desktop apps that aren't a web page (Stremio, a media player
 
 YOUTUBE — To play a song or video, navigate to YouTube's search results for it (\`https://www.youtube.com/results?search_query=...\`) and click a real result from the snapshot — never guess or type a watch URL; always click an actual result so the video exists. To change to a different song, run a fresh search and click a result that isn't the one currently playing. Drive playback through the \`<video>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the page's UI buttons.
 
+AUDIO & MEDIA — Use the dedicated tools, not Bash amixer/playerctl commands. \`audio_volume\` (action get/set/toggle_mute, level 0-100) for the SPEAKER loudness; \`mic_volume\` for the MIC sensitivity; \`media_control\` (play/pause/play_pause/next/previous/stop) for a running media player (browser YouTube, Spotify, mpv). "Turn it up/down", "mute", "make it louder", "volume to 50" → audio_volume; "mute the mic", "mic too quiet/loud" → mic_volume; "pause/skip/next song" → media_control.
+
 VERIFYING — Match the check to the task. A successful Edit/Write/Bash/browser call IS done — don't re-Read the file to double-check it. For an ACTION that changes page state (submit a form, click a flow), confirm the end state with ONE screenshot — "navigated to X" is not completion. For media playback, do NOT screenshot: set state with \`video.play()\`/\`video.pause()\` via browser_evaluate and a successful return IS completion (a loading video gives a misleading frame). For a READ-ONLY lookup, the extracted content is the verification — no screenshot. When code you write references something defined elsewhere (a fetch→route, a field), Grep that file once to confirm the contract exists; don't spin up browsers or servers just to check.
 
 SUDO — interactive: the USER types the password, never you. For a system package, run \`sudo pacman -S <pkg>\` ONCE, tell the user a password prompt is waiting, and wait — never pipe/echo a password, never retry a failed or timed-out sudo (faillock locks them out). One attempt; if it fails, report what's missing and continue the rest without it.
@@ -1342,13 +1344,53 @@ async function unloadModel(ollamaUrl: string, model: string): Promise<void> {
     } catch { /* best-effort — model will expire via keep_alive anyway */ }
 }
 
+// On a GPU shared between the orchestrator and sub-agent models, two models
+// loaded at once squeeze KV cache out of VRAM → CPU-speed prefill (~250 tok/s
+// instead of ~1500+). Before switching to a model, evict every OTHER model
+// currently loaded on the same Ollama server so the new model gets full VRAM.
+// Best-effort: queries /api/ps and sends keep_alive:0 for each non-keep model.
+// (unloadModel above can't handle this — it skips ORCHESTRATOR_MODEL and
+// TOOL_MODEL as "shared", which is exactly why both linger and contend.)
+async function unloadOtherModelsOnSameGpu(ollamaUrl: string, keepModel: string): Promise<void> {
+    if (!keepModel) return;
+    // Cloud models don't touch the local GPU, so there's nothing to evict for
+    // them — and evicting local models to "make room" for a cloud call would
+    // just force a reload later. Only local models contend for local VRAM.
+    if (/cloud/i.test(keepModel)) return;
+    try {
+        const resp = await fetch(`${ollamaUrl}/api/ps`);
+        if (!resp.ok) return;
+        const data = await resp.json() as any;
+        const loaded = (data.models || []) as any[];
+        for (const m of loaded) {
+            const name = m.name || m.model;
+            if (!name || name === keepModel) continue;
+            try {
+                await fetch(`${ollamaUrl}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: name, keep_alive: 0 }),
+                });
+                log(`[gpu] evicted ${name} from VRAM (switching to ${keepModel})`);
+            } catch { /* best-effort */ }
+        }
+    } catch { /* /api/ps unavailable — skip */ }
+}
+
 // ─── Context budget for sub-agent message history ──────────────────────────
 // Cloud models hard-cap at ~1M tokens; we target a conservative 600K-char budget
 // (~150K tokens) so a single sub-agent turn can't blow the provider's limit.
 // Tool results are also truncated individually — a single browser snapshot or
 // web-search result can be 50K+ tokens otherwise.
-const SUBAGENT_MAX_TOOL_RESULT_CHARS = 20000;   // ~5K tokens per tool result
-const SUBAGENT_MSG_BUDGET_CHARS = 600000;       // ~150K tokens total history
+const SUBAGENT_MAX_TOOL_RESULT_CHARS = 4000;    // ~1K tokens — relevant bits, not 20K dumps
+// Running-context ceilings — keep only the last little bit. Both the
+// orchestrator and sub-agents trim their persistent `messages` to these char
+// budgets, dropping oldest entries and keeping a 6-message floor. Mercury holds
+// long-term memory for the orchestrator; sub-agents are fresh per task. Small
+// budgets mean the model gets the recent essentials (atlas/delegation results +
+// last chat turns), not 150K tokens of stale accumulation.
+const SUBAGENT_MSG_BUDGET_CHARS = 24000;        // ~6K tokens — sub-agent tool results
+const ORCHESTRATOR_MSG_BUDGET_CHARS = 40000;    // ~10K tokens — fits 60k ctx; keeps recent dispatches + their results paired across turns
 
 function truncateToolResult(toolName: string, result: string): string {
     if (typeof result !== 'string') result = String(result ?? '');
@@ -1376,18 +1418,63 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
     const system = msgs[0];
     const initialUser = msgs[1];
     const tail = msgs.slice(2);
-    // Drop oldest tail entries until under budget; never drop the last 6
-    // (recent tool calls + results need to stay paired or the API errors).
-    const minTailKeep = Math.min(6, tail.length);
-    let tailChars = estimateMessagesChars(tail);
+    // Group the tail into complete units and drop oldest WHOLE groups: a group
+    // is a user or assistant message plus any tool-result messages that follow
+    // it. Dropping whole groups keeps every retained tool_call paired with its
+    // tool result (the API errors on an orphaned tool result), so we can trim
+    // aggressively without the old "never drop the last 6" floor that forced 6
+    // messages to stay even when they overflowed the budget.
+    const groups: any[][] = [];
+    for (const m of tail) {
+        if (m?.role === 'tool' && groups.length) groups[groups.length - 1].push(m);
+        else groups.push([m]);
+    }
+    const headChars = estimateMessagesChars([system, initialUser]);
+    let groupChars = groups.reduce((s, g) => s + estimateMessagesChars(g), 0);
     let start = 0;
-    while (tailChars > budgetChars - estimateMessagesChars([system, initialUser]) && (tail.length - start) > minTailKeep) {
-        tailChars -= estimateMessagesChars([tail[start]]);
+    while (start < groups.length - 1 && groupChars > budgetChars - headChars) {
+        groupChars -= estimateMessagesChars(groups[start]!);
         start++;
     }
-    const kept = tail.slice(start);
-    log(`[context] trimmed ${start} oldest message(s); ${kept.length + 2} of ${msgs.length} remain (~${(estimateMessagesChars([system, initialUser, ...kept]) / 1000).toFixed(0)}K chars)`);
+    const kept = groups.slice(start).flat();
+    log(`[context] trimmed ${start} oldest group(s); ${kept.length + 2} of ${msgs.length} remain (~${(estimateMessagesChars([system, initialUser, ...kept]) / 1000).toFixed(0)}K chars)`);
     return [system, initialUser, ...kept];
+}
+
+/** Collapse the orchestrator's persistent `messages` to chat-history-only after
+ *  a turn ends: keep the system prompt + a bounded recent window of REAL user
+ *  turns and assistant FINAL responses, and truncate each to ~1K so a turn
+ *  contributes at most ~1K to the running context. Drop every tool call, tool
+ *  result, and bracketed system injection — the final response already
+ *  summarizes what the tools produced, and mercury is pinned (not relied on
+ *  for long-term memory here). This is what keeps the orchestrator from
+ *  ballooning: it never carries raw tool chatter across turns, only a lean
+ *  tail of the conversation itself. */
+function collapseToChatHistory(msgs: any[], keepMessages = 6, maxPerMsg = 1000): any[] {
+    if (msgs.length <= 1) return msgs;
+    const system = msgs[0];
+    const filtered = msgs.slice(1).filter((m: any) => {
+        if (!m) return false;
+        const role = m.role;
+        const content = typeof m?.content === 'string' ? m.content : '';
+        if (role === 'tool') return false;
+        if (role === 'assistant') {
+            // Keep only final responses: real text, no pending tool calls.
+            return content.trim() !== '' && !(m.tool_calls && m.tool_calls.length);
+        }
+        if (role === 'user') {
+            // Drop system injections (bracketed nudges: [Inbox…], [User interrupted], etc.).
+            return content.trim() !== '' && !content.trim().startsWith('[');
+        }
+        return false;
+    });
+    const kept = filtered.slice(-keepMessages).map((m: any) => {
+        const c = typeof m.content === 'string' ? m.content : '';
+        if (c.length > maxPerMsg) return { ...m, content: c.slice(0, maxPerMsg) + '\n[…truncated…]' };
+        return m;
+    });
+    log(`[context] collapsed to chat history: ${kept.length + 1} of ${msgs.length} messages (~${(estimateMessagesChars([system, ...kept]) / 1000).toFixed(0)}K chars, ≤${maxPerMsg} per turn)`);
+    return [system, ...kept];
 }
 
 async function runSubAgent(
@@ -1470,6 +1557,13 @@ async function runSubAgent(
 
     // Warm the native-ctx cache from Ollama so getNumCtx can cap/serve it below.
     await fetchModelCtx(OLLAMA_URL, model);
+
+    // NOTE: we deliberately do NOT evict the orchestrator model here. Evicting
+    // gemma4:12b to run a granite sub-agent forces gemma to RELOAD (~16s) on the
+    // next orchestrator turn — measured 30s send→first-token vs 1s warm. The
+    // orchestrator is the hot path; keep it warm. The orchestrator-side unload
+    // (before its own chat) evicts any lingering sub-agent model so gemma gets
+    // full VRAM back, without ever paying a gemma reload.
 
     // Context-overflow tripwire: if the initial payload (system prompt + tool
     // schemas + task) already exceeds the model's num_ctx, ollama context-shifts
@@ -1735,10 +1829,14 @@ async function runNativeOllama(input: ContainerInput) {
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request', 'list_api_keys',
         // Vision captures are orchestrator-only (sub-agents can't see images —
-        // _pendingImages is consumed only by runNativeOllama). Always expose them
-        // to the orchestrator so it can take a screenshot / webcam frame / read a
-        // host image and inspect it directly instead of delegating to a sub-agent.
-        'desktop_screenshot', 'webcam_capture', 'read_image',
+        // _pendingImages is consumed only by runNativeOllama). desktop_screenshot
+        // and webcam_capture are the orchestrator's "eyes" for awareness/security
+        // and take no user path, so they stay always-on. read_image takes an
+        // arbitrary HOST file path — always-exposing it dangled a host-path
+        // reader on every trivial turn, which the small model hallucinated
+        // (it parroted the example path from the description on an empty-context
+        // greeting). It is now keyword-gated via the dynamic top-K instead.
+        'desktop_screenshot', 'webcam_capture',
         // Orchestrator → Sentry direct line (registered by awareness-tools.ts,
         // toolset 'chat'). Always exposed so presence/schedule notes from the
         // user reach Sentry regardless of the dynamic top-K ranking.
@@ -1751,22 +1849,36 @@ async function runNativeOllama(input: ContainerInput) {
         // the CURRENT room state instead of returning stale cached rows.
         'sentry_query',
     ]);
-    const DYNAMIC_TOOL_TOP_K = 12;
+    const DYNAMIC_TOOL_TOP_K = 5;
     let activeToolDefs = fullToolDefs;
     function refreshActiveToolDefs() {
         try {
             const keywords = extractKeywords(messages);
             if (keywords.length === 0) {
-                activeToolDefs = fullToolDefs;
-                log(`Tools: ${activeToolDefs.length} available (full — no keywords)`);
+                // Conversational turn (no extractable keywords — "hey", "thanks",
+                // "ok", etc.): don't dump the full 36-tool catalog at a small model.
+                // It hallucinates tool calls when it has nothing real to act on
+                // (the read_image parrot-path bug came from a tool being exposed on
+                // a trivial turn). Send an EMPTY base here; mergeSkillTools() still
+                // layers in the always-on "core" builtin skill on top — so the model
+                // sees only list_skills / activate_skill / deactivate_skill /
+                // install_mcp_server / create_skill + basic read/write/list_file. It
+                // can chat freely or pull in a skill, but sees no routing or hands-on
+                // tools it has no reason to call.
+                activeToolDefs = [];
+                log(`Tools: minimal (conversational — no keywords; skill meta-tools only via core skill)`);
                 return;
             }
             const coreDefs = fullToolDefs.filter((d: any) => ALWAYS_INCLUDED_TOOLS.has(d.function?.name));
             const restDefs = fullToolDefs.filter((d: any) => !ALWAYS_INCLUDED_TOOLS.has(d.function?.name));
             const rankedNames = new Set(rankTools(restDefs, keywords, DYNAMIC_TOOL_TOP_K));
             if (rankedNames.size === 0) {
-                activeToolDefs = fullToolDefs;
-                log(`Tools: ${activeToolDefs.length} available (full — nothing ranked)`);
+                // Keywords existed but matched no tool — effectively still
+                // conversational. Same treatment as the no-keyword path: don't
+                // dump all 36 at the small model. Empty base; mergeSkillTools()
+                // layers in the always-on core skill meta-tools only.
+                activeToolDefs = [];
+                log(`Tools: minimal (nothing ranked — skill meta-tools only via core skill)`);
                 return;
             }
             activeToolDefs = [...coreDefs, ...restDefs.filter((d: any) => rankedNames.has(d.function?.name))];
@@ -2087,6 +2199,22 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             }
         }
         isFirstUserTurn = false;
+        // messages[1] baked in the full turn-1 prompt (mercury summary + up to
+        // 12K of <chat_history> + <mercury_context>) and trim keeps it forever.
+        // Strip the stale re-injected blocks once so the permanent slot is just
+        // the mercury summary + the original ask — reclaiming that budget for the
+        // recent essentials.
+        const m1 = messages[1];
+        if (m1 && typeof m1?.content === 'string' && /<(chat_history|mercury_summary|mercury_context)/.test(m1.content)) {
+            // Mercury is pinned — strip its summary too, leaving just the first
+            // ask. The orchestrator keeps its own bounded chat history (see
+            // collapseToChatHistory) instead of relying on mercury.
+            m1.content = m1.content
+                .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
+                .replace(/<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g, '')
+                .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '')
+                .trim();
+        }
         const userMsg: any = { role: 'user', content: cleanedPrompt.trim() };
         // Attach any pending images from Read tool (vision)
         if ((globalThis as any)._pendingImages && (globalThis as any)._pendingImages.length > 0) {
@@ -2160,7 +2288,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 : `Warden is thinking...`;
             appendStatus({ phase: 'thinking', label: thinkLabel });
             // Trim history to fit context budget before each chat call.
-            const trimmedOrch = trimMessagesToBudget(messages, SUBAGENT_MSG_BUDGET_CHARS);
+            const trimmedOrch = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
             if (trimmedOrch.length !== messages.length) messages.length = 0, messages.push(...trimmedOrch);
             try {
                 // #3 Mid-loop breaker: if circling or runaway was detected last
@@ -2202,6 +2330,12 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     log(`No response headers after ${HEADERS_TIMEOUT_MS / 1000}s — aborting fetch (stalled cloud request)`);
                     try { streamController.abort(); } catch { /* already aborted */ }
                 }, HEADERS_TIMEOUT_MS);
+                // On a shared local GPU, evict any other model left loaded (e.g.
+                // the sub-agent model after a delegate call) so this orchestrator
+                // turn gets full VRAM — otherwise two models squeeze KV cache out
+                // and prefill drops to CPU speed. Skip when the orchestrator runs
+                // via the cloud proxy (no local GPU contention).
+                if (!API_PROXY_URL) await unloadOtherModelsOnSameGpu(OLLAMA_URL, model);
                 let response;
                 try {
                     response = await fetch(CHAT_URL, {
@@ -2368,8 +2502,19 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 if (streamAborted && collectedToolCalls.length === 0) {
                     throw new Error(`Stream aborted at the ${MAX_STREAM_DURATION_MS / 1000}s duration cap with no tool calls — discarded ${fullContent.length} chars of partial content`);
                 }
-                // Strip thinking tags from content before adding to history
-                const historyContent = (fullContent || '').replace(/<(?:think|reasoning)>[\s\S]*?<\/(?:think|reasoning)>\s*/g, '').replace(/<\/?(?:think|reasoning)>/g, '').trim();
+                // Strip thinking tags from content before adding to history.
+                // gemma4 (and some other small models) don't reliably use the
+                // `thinking` field — they dump their chain-of-thought into
+                // `content` and self-delimit it with a `<channel|>` marker
+                // (their reasoning, then `<channel|>`, then the real reply).
+                // When that marker is present, keep only what follows the last
+                // one so the leaked CoT never reaches the user or history.
+                let historyContent = (fullContent || '')
+                    .replace(/<(?:think|reasoning)>[\s\S]*?<\/(?:think|reasoning)>\s*/g, '')
+                    .replace(/<\/?(?:think|reasoning)>/g, '');
+                const channelIdx = historyContent.lastIndexOf('<channel|>');
+                if (channelIdx !== -1) historyContent = historyContent.slice(channelIdx + '<channel|>'.length);
+                historyContent = historyContent.trim();
                 if (collectedToolCalls.length > 0) {
                     messages.push({ role: 'assistant', content: historyContent, tool_calls: collectedToolCalls });
                 } else {
@@ -2584,7 +2729,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         log(`Retry ${attempt}/${MAX_RETRIES} in ${delay/1000}s...`);
                         await new Promise(r => setTimeout(r, delay));
                         try {
-                            const trimmedRetry = trimMessagesToBudget(messages, SUBAGENT_MSG_BUDGET_CHARS);
+                            const trimmedRetry = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
                             if (trimmedRetry.length !== messages.length) messages.length = 0, messages.push(...trimmedRetry);
                             const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model) } };
                             if (toolIteration <= 1 || modelRequiresThink(model)) {
@@ -2700,7 +2845,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             log(`Tool cap hit with no final answer — forcing a no-tools round`);
             appendStatus({ phase: 'tool', label: 'Tool cap reached — forcing final answer...' });
             try {
-                const forcedMessages = trimMessagesToBudget(messages, SUBAGENT_MSG_BUDGET_CHARS);
+                const forcedMessages = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
                 const forcedBody: any = {
                     model,
                     messages: forcedMessages,
@@ -2931,6 +3076,20 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // (Without this there's a dead zone between turn-end and the job's first
         // tool call where the dashboard reads "idle" while Atlas is working.)
         emitJobsStatus();
+        // Turn done — context retention. We deliberately do NOT collapse to
+        // chat-history-only here. collapseToChatHistory dropped every dispatch
+        // turn (assistant messages with tool_calls) and every tool result,
+        // leaving the orchestrator with amnesia between turns: it forgot it had
+        // dispatched a sub-agent (→ double-dispatch) and lost the job result it
+        // had just read (→ holding replies instead of relaying facts). Instead
+        // we rely on trimMessagesToBudget(ORCHESTRATOR_MSG_BUDGET_CHARS), which
+        // runs before each chat call and trims oldest WHOLE groups (dispatch +
+        // its result paired) to keep the window under budget — so recent
+        // dispatches and their results survive across turns. The budget is sized
+        // for the 60k num_ctx the orchestrator now runs at.
+        // const collapsed = collapseToChatHistory(messages);
+        // messages.length = 0;
+        // messages.push(...collapsed);
         // Persistent mode: wait for the next message via IPC instead of exiting.
         // While Atlas background jobs are running, race the IPC wait against a
         // recurring monitor tick. On each tick the orchestrator gets a synthetic
