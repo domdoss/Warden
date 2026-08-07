@@ -53,6 +53,7 @@ A single LLM — the **orchestrator** — runs the show. It's the only thing you
 
 ```
 You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orchestrator → You
+                                   → Hephaestus (coding, background)
                                    → Iris (email/calendar)
                                    → Dexter (scheduling)
                                    → Byte (projects)
@@ -66,7 +67,7 @@ You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orch
 
 This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. A 12B Gemma 4 nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
 
-The expensive generation lives one layer down, in the specialists. Atlas and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 12B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
+The expensive generation lives one layer down, in the specialists. Atlas, Hephaestus, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 12B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
 
 #### Babysitting the sub-agents
 
@@ -93,6 +94,7 @@ Each sub-agent has its own system prompt, its own toolset, and its own model. Th
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
 | **Atlas** | Local or cloud | Shell, browser (DOM control), desktop, files, web search/fetch, documents | Execution — anything that touches the internet or runs commands. |
+| **Hephaestus** | Local or cloud | Read, Edit, Grep, Glob, Bash, build & test runs | Coding, scripting, building, heavy bash — editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like Atlas. |
 | **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos | Personal information management. |
 | **Dexter** | Local or cloud (local recommended) | create / list / pause / resume / cancel / update scheduled tasks (cron, interval, once) | Scheduling — builds perfect schedule entries and never executes them. |
 | **Byte** | Local or cloud (local recommended) | Projects, deliverables, blockers, work tasks, time tracking | Work management. |
@@ -142,6 +144,23 @@ The orchestrator is trained to state **WHAT**, never **HOW**. It doesn't see the
 
 This is reinforced at three layers: the orchestrator's system prompt, the Atlas tool description (what the orchestrator sees when deciding to call it), and Atlas's own system prompt (which tells it to ignore prescribed steps).
 
+### 🎯 Driving Forces
+
+The orchestrator's reasoning posture is a dashboard dropdown, not a fixed trait. A **Driving Force** preset rewrites the orchestrator's preamble with a different bias — and switching it clears the orchestrator's context, so the new persona starts a fresh conversation instead of inheriting the old one's thread. The built-in presets:
+
+| Preset | Bias |
+|--------|------|
+| **ship-it** | Optimize for getting it done; accept a good-enough result in hand over a perfect one that isn't. |
+| **architect** | Think in systems and long-term structure before acting. |
+| **debugger** | Assume something is broken; trace the real data flow before changing anything. |
+| **first-principles** | Reason from fundamentals instead of analogy. |
+| **mentor** | Explain and teach rather than execute. |
+| **socratic** | Ask the user sharp questions instead of guessing. |
+| **paranoid-reviewer** | Assume the worst; double-check every claim before trusting it. |
+| **staff-engineer** | Own the outcome end to end and weigh trade-offs explicitly. |
+
+The presets are plain markdown in `data/driving-forces/` — add your own and it shows up in the dropdown. Empty selection is the built-in default preamble.
+
 ### 🧵 Fabric Pattern Integration
 
 Warden ships with 258 expert prompt patterns from the Fabric library. Every turn, the user's message is keyword-extracted and the top 5 most relevant patterns are injected into the system prompt by name and description. The orchestrator loads the full pattern on demand and bakes its framing into the Atlas task brief — giving the larger model the structure it needs without the orchestrator micromanaging the execution.
@@ -172,7 +191,10 @@ The orchestrator writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` �
 
 ### 🗜️ Context Compaction
 
-Long conversations are compacted by a Mercury summarization layer. Older turns are condensed into memory notes, keeping the active context window focused on what matters.
+The orchestrator keeps its running context lean by design, not by a giant ceiling. After every turn its persistent conversation collapses to chat-history-only — the last few turns' final responses (~1K each) — and drops all the tool calls, tool results, and system injections that produced them. Mercury is pinned; long-term memory isn't relied on for the working window. Trimming is group-aware (it drops whole tool-call→result groups, so it keeps fewer messages without orphaning a tool result), and each tool result is capped at ~1K tokens. Two manual resets sit on top:
+
+- **New Thought** (chat header) clears the orchestrator's context server-side — the next message starts a fresh conversation, no accumulated history.
+- **Idle auto-clear** (Settings → Model Configuration → *Idle clear*, default 30 min) drops context automatically when your last message was older than the threshold. `0` disables it.
 
 ### ✏️ Self-Editing
 
@@ -192,6 +214,7 @@ Every model selection in the dashboard is per-role:
 |------|-------------|-----|
 | **Orchestrator** | Local (gemma, granite) | Fast, cheap, always available. Only routes and supervises. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. |
+| **Hephaestus** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. |
 | **Iris / Dexter / Byte** | Local (recommended) | Light, structured tasks. Run them local; save cloud for Atlas and the Council. |
 | **Council seats** | Cloud (3 different models) | Diverse perspectives for deliberation. |
 | **Sub-agent tools** | Configurable | Tool-calling sub-agents can use a different model. |
@@ -644,9 +667,10 @@ The relay binds `:8766` by default.
 
 ### Features
 
-- 📷 **RF-DETR Keypoint** watches the webcam and builds a compact JSON situation each frame.
+- 📷 **RF-DETR Keypoint** watches the webcam (CPU or NVIDIA GPU) and builds a compact JSON situation each frame.
 - 🔔 **AWARENESS events** are POSTed to `/api/awareness` only when something changes.
 - 🛡️ **Sentry** receives the JSON, applies editable `security/sentry.md` rules, and decides: alert, greet, or stay silent.
+- 👤 **Face recognition** runs on every AWARENESS event — known people are identified by name, unknown faces escalate.
 - 🎛️ Sentry model and camera host are set from the dashboard.
 - 🗄️ `store/security.db` logs every event and assessment.
 
