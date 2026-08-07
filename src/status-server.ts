@@ -1447,6 +1447,9 @@ function handleSettings(res: http.ServerResponse): void {
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
+    // Minutes of user-message idle before the orchestrator context auto-clears.
+    // 0 = never. Default 30. Set by the Model Configuration card.
+    contextIdleClearMinutes: getRouterState('orchestrator:context_idle_clear_minutes') || '30',
   });
 }
 
@@ -1504,6 +1507,9 @@ async function handleSettingsSave(
       setRouterState('last_agent_timestamp', now);
       logger.info({ prev: prevForce, next: newForce }, 'Driving force changed — orchestrator context cleared');
     }
+  }
+  if (body.contextIdleClearMinutes !== undefined) {
+    setRouterState('orchestrator:context_idle_clear_minutes', String(body.contextIdleClearMinutes));
   }
   if (body.councilSkepticModel !== undefined) {
     setRouterState('council:skeptic_model', String(body.councilSkepticModel));
@@ -1621,6 +1627,7 @@ async function handleSettingsSave(
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
     body.sentryModel !== undefined ||
     body.securitySatelliteIp !== undefined || body.mercuryMode !== undefined ||
+    body.contextIdleClearMinutes !== undefined ||
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
     body.thinking !== undefined ||
     body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
@@ -2465,6 +2472,28 @@ async function handleChatStop(
     }
   }
   return json(res, { ok: true, killed });
+}
+
+// Clear the orchestrator's context — the "New Thought" button. Sets the
+// context-clear marker (the agent-runner resets its in-memory conversation
+// when it sees this timestamp change, and the host gates <chat_history> on
+// it) so the next message starts fresh, and advances the message cursor so
+// nothing retries under the old context. Mirrors what a driving-force switch
+// does, without changing the persona.
+async function handleClearContext(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const body = parseJson(await parseBody(req)) as any;
+  const jid = body.jid;
+  if (!jid || typeof jid !== 'string') {
+    return error(res, 'jid required');
+  }
+  const now = new Date().toISOString();
+  setRouterState('orchestrator:context_clear_at', now);
+  setRouterState('last_agent_timestamp', now);
+  logger.info({ jid }, 'Context cleared (New Thought)');
+  return json(res, { ok: true });
 }
 
 
@@ -3593,6 +3622,8 @@ export function startStatusServer(d: StatusDeps): void {
         return await handleAgentKill(req, res);
       if (pathname === '/api/chat/stop' && req.method === 'POST')
         return await handleChatStop(req, res);
+      if (pathname === '/api/chat/clear-context' && req.method === 'POST')
+        return await handleClearContext(req, res);
       if (pathname === '/api/server/restart' && req.method === 'POST') {
         json(res, { ok: true });
         logger.info('Server restart requested via dashboard');

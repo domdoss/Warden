@@ -632,8 +632,13 @@
     }
   }
 
-  function newThought() {
-    // Clear the cursor and reload — equivalent to starting a fresh conversation
+  async function newThought() {
+    // Tell the server to drop the orchestrator's in-memory context so the
+    // next message starts fresh (the agent-runner resets when it sees the
+    // context-clear marker change), then reset the chat view.
+    try {
+      await postJson('/api/chat/clear-context', { jid: STATE.currentJid });
+    } catch (e) { /* still reset the view below */ }
     STATE.chatLastTs = '';
     STATE.waitingForReply = false;
     waitingForReply = false;
@@ -973,6 +978,17 @@
           </select>
           <span class="dim mono" style="font-size:10px">global default; chat-level override removed</span>
         </div>
+        <div class="setting-row"><label>Idle clear</label>
+          <select class="select small" id="sContextIdleClear">
+            <option value="0">Off — never auto-clear</option>
+            <option value="15">15 min</option>
+            <option value="30">30 min</option>
+            <option value="60">60 min</option>
+            <option value="120">2 h</option>
+            <option value="240">4 h</option>
+          </select>
+          <span class="dim mono" style="font-size:10px">clear context if the last user message was older than this</span>
+        </div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveModels">Save</button><span class="status" id="modelStatus"></span></div>
       </div>
 
@@ -1056,6 +1072,7 @@
     setSelect('sMercuryCtx', d.mercuryCtx || '');
     setSelect('sSentryModel', (d.sentryModel || '').replace(/^local:/, ''));
     setSelect('sThinking', d.thinking || 'true');
+    setSelect('sContextIdleClear', d.contextIdleClearMinutes || '30');
     // Timezone dropdown: select the saved zone, appending it as an extra
     // option if it isn't in the curated list (preserves custom values).
     (function () {
@@ -1212,6 +1229,7 @@
         mercuryCtx: $('sMercuryCtx').value,
         sentryModel: stripLocal($('sSentryModel').value),
         thinking: $('sThinking').value,
+        contextIdleClearMinutes: $('sContextIdleClear').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
         toolsCtx: $('sToolsCtx').value,
