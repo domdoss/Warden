@@ -3610,6 +3610,91 @@ window.UserDash = (() => {
     } catch { toast('Rename failed', 'error'); }
   }
 
+  // ---- Drag & drop file upload into the shared group folder ----
+  // Dropped files are POSTed to /api/files/upload (the same endpoint the
+  // setup wizard uses) and land in the current session's group folder — which
+  // is the agent's workspace (/workspace/global/<folder>), so both the user
+  // and the agent can read them. The file paths are appended to the chat input
+  // so the next send tells the agent exactly what was shared: sendChat() reads
+  // only the textarea value, and the prompt-builder attach flow (sendPrompt)
+  // never reaches the agent, so the textarea is the only live send path.
+  async function uploadDroppedFile(file, gFolder) {
+    const body = await file.arrayBuffer();
+    const res = await fetch(fileUrl('/api/files/upload?path=' + encodeURIComponent(gFolder)), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
+      body,
+    });
+    if (!res.ok) throw new Error('upload failed: ' + res.status);
+    return (gFolder ? gFolder + '/' : '') + file.name;
+  }
+
+  function appendAttachedFilesToInput(paths) {
+    const input = document.getElementById('chatInput');
+    if (!input) return;
+    input.value = (input.value || '') + '\n\nAttached files:\n' + paths.map(p => '- ' + p).join('\n');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function initChatDropZone() {
+    const composer = document.querySelector('#view-chat .composer');
+    if (!composer || composer.dataset.dropBound) return;
+    composer.dataset.dropBound = '1';
+
+    let dragCounter = 0;
+    const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+
+    composer.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounter++;
+      composer.classList.add('drag-over');
+    });
+    composer.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    composer.addEventListener('dragleave', () => {
+      dragCounter = Math.max(0, dragCounter - 1);
+      if (dragCounter === 0) composer.classList.remove('drag-over');
+    });
+    composer.addEventListener('drop', async (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounter = 0;
+      composer.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer.files || []);
+      if (!files.length) return;
+      const gFolder = groupsMap[currentSession]?.folder || currentSession || '';
+      const paths = [];
+      let failures = 0;
+      for (const f of files) {
+        try { paths.push(await uploadDroppedFile(f, gFolder)); }
+        catch (err) { failures++; console.warn('drop upload failed:', f.name, err); }
+      }
+      if (paths.length) {
+        appendAttachedFilesToInput(paths);
+        loadAllPromptFiles().then(() => {
+          if (document.getElementById('promptBuilderModal') &&
+              !document.getElementById('promptBuilderModal').classList.contains('hidden')) {
+            renderPromptFileList((document.getElementById('promptFileSearch')?.value || '').toLowerCase());
+          }
+        });
+        if (currentView === 'files') loadFiles();
+        toast('Uploaded ' + paths.length + ' file' + (paths.length > 1 ? 's' : '') +
+              ' to ' + (gFolder || 'workspace'), 'success');
+      }
+      if (failures) toast(failures + ' file(s) failed to upload', 'error');
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initChatDropZone);
+  } else {
+    initChatDropZone();
+  }
+
   // === Split pane: shared terminal + in-container browser ===
   return {
     closePasswordModal,
@@ -3673,5 +3758,6 @@ window.UserDash = (() => {
     initTalkView,
     loadHeartbeat,
     loadAlarms,
+    initChatDropZone,
   };
 })();
