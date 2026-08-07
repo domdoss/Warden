@@ -158,10 +158,23 @@ function mercuryMode(): 'off' | 'rag' | 'summary' | 'full' {
   return 'full';
 }
 
-function loadMercurySummary(): string | undefined {
+function loadMercurySummary(clearAt = ''): string | undefined {
   try {
     const root = WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? '');
-    return fs.readFileSync(path.join(root, MERCURY_MEMORY_FILE), 'utf-8').trim() || undefined;
+    const text = fs.readFileSync(path.join(root, MERCURY_MEMORY_FILE), 'utf-8').trim();
+    if (!text) return undefined;
+    // A context clear (New Thought / driving-force switch / idle auto-clear /
+    // clear_context tool) sets orchestrator:context_clear_at. The summary file
+    // carries its own write timestamp on its first line; if it predates the
+    // clear boundary, ignore it — otherwise pre-clear topics (e.g. an old
+    // TaskPoints scope draft) keep bleeding into the fresh conversation even
+    // though <chat_history> is correctly empty post-clear.
+    if (clearAt) {
+      const m = text.match(/^#\s*Mercury summary updated\s+(\S+)/i);
+      const stamp = m?.[1] ?? '';
+      if (stamp && stamp <= clearAt) return undefined;
+    }
+    return text;
   } catch { return undefined; }
 }
 
@@ -174,7 +187,7 @@ function tokenizeMercury(text: string): string[] {
 }
 
 /** Lightweight RAG over conversation history: retrieve older turns relevant to the current user message(s). */
-function mercuryRetrieveRelevant(newMessages: NewMessage[], topK = MERCURY_CONTEXT_TURNS): NewMessage[] {
+function mercuryRetrieveRelevant(newMessages: NewMessage[], topK = MERCURY_CONTEXT_TURNS, clearAt = ''): NewMessage[] {
   const query = newMessages
     .filter((m) => !m.is_bot_message)
     .map((m) => m.content || '')
@@ -184,7 +197,12 @@ function mercuryRetrieveRelevant(newMessages: NewMessage[], topK = MERCURY_CONTE
 
   // Search a deeper window of older messages, excluding the recent verbatim window.
   const deepHistory = getChatHistory(OWNER_JID, 120) as unknown as NewMessage[];
-  const candidates = deepHistory.slice(0, -MERCURY_RECENT_MESSAGES);
+  // Gate by the clear boundary so a context clear also empties Mercury RAG —
+  // otherwise pre-clear turns resurface here even though <chat_history> is
+  // correctly empty post-clear (this was the "worse than overfilling" leak:
+  // the model answered stale topics pulled in only via Mercury).
+  const gated = clearAt ? deepHistory.filter((m) => (m.timestamp || '') > clearAt) : deepHistory;
+  const candidates = gated.slice(0, -MERCURY_RECENT_MESSAGES);
   if (candidates.length === 0) return [];
 
   const scored = candidates.map((m) => {
@@ -212,10 +230,13 @@ function buildPrompt(newMessages: NewMessage[]): string {
   let prompt = '';
 
   const mode = mercuryMode();
+  // Resolved once, up front, so both the Mercury summary/RAG injection and the
+  // <chat_history> gate share the same clear boundary this turn.
+  const clearAt = getRouterState('orchestrator:context_clear_at') || '';
 
   // Mercury rolling memory — compacted context from older conversation turns.
   if (mode === 'summary' || mode === 'full') {
-    const mercury = loadMercurySummary();
+    const mercury = loadMercurySummary(clearAt);
     if (mercury) {
       prompt += `<mercury_summary>\n${mercury}\n</mercury_summary>\n\n`;
     }
@@ -223,7 +244,7 @@ function buildPrompt(newMessages: NewMessage[]): string {
 
   // Mercury RAG: pull older conversation snippets relevant to the current ask.
   if (mode === 'rag' || mode === 'full') {
-    const relevant = mercuryRetrieveRelevant(newMessages);
+    const relevant = mercuryRetrieveRelevant(newMessages, MERCURY_CONTEXT_TURNS, clearAt);
     if (relevant.length > 0) {
       const lines = relevant.map((m) => {
         const role = m.is_bot_message ? ASSISTANT_NAME : (m.sender_name || 'User');
@@ -242,7 +263,6 @@ function buildPrompt(newMessages: NewMessage[]): string {
   // persona starts clean instead of inheriting the old conversation; the pending
   // cursor (last_agent_timestamp) is advanced separately on the clear.
   const allHistory = getChatHistory(OWNER_JID, MERCURY_RECENT_MESSAGES + 2) as unknown as NewMessage[];
-  const clearAt = getRouterState('orchestrator:context_clear_at') || '';
   const rawHistory = clearAt
     ? allHistory.filter((m) => (m.timestamp || '') > clearAt)
     : allHistory;
@@ -1448,6 +1468,24 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
+    // The orchestrator called its clear_context tool. Record the clear boundary
+    // on the host so <chat_history> is gated to messages AFTER this point —
+    // otherwise pre-clear turns (e.g. a STT-misheard "dental file" thread the
+    // small model keeps latching onto) get re-injected every turn. The
+    // agent-runner also resets its own in-memory messages when it sees
+    // input.contextClearAt change next turn.
+    clear_context: async (args: any) => {
+      try {
+        const now = new Date().toISOString();
+        setRouterState('orchestrator:context_clear_at', now);
+        setRouterState('last_agent_timestamp', now);
+        logger.info({ reason: args?.reason }, 'clear_context tool: host boundary recorded');
+        return { ok: true, clearedAt: now };
+      } catch (err: any) {
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
   };
 }
 
@@ -1473,7 +1511,13 @@ function maybeUpdateMercurySummary(): void {
  */
 async function updateMercurySummary(): Promise<void> {
   try {
-    const raw = getChatHistory(OWNER_JID, 45) as unknown as NewMessage[];
+    const clearAt = getRouterState('orchestrator:context_clear_at') || '';
+    const allRaw = getChatHistory(OWNER_JID, 45) as unknown as NewMessage[];
+    // Gate by the clear boundary so a context clear also stops Mercury from
+    // compacting pre-clear turns into the rolling summary — otherwise the next
+    // compaction rebuilds the very pre-clear content the clear was meant to
+    // drop, and <mercury_summary> re-injects it every turn.
+    const raw = clearAt ? allRaw.filter((m) => (m.timestamp || '') > clearAt) : allRaw;
     if (raw.length <= MERCURY_RECENT_MESSAGES + 3) return;
 
     const recent = raw.slice(-MERCURY_RECENT_MESSAGES);
@@ -1533,6 +1577,28 @@ async function processOwnerMessages(): Promise<void> {
   const since = lastAgentTimestamp;
   const pending = getMessagesSince(OWNER_JID, since, ASSISTANT_NAME);
   if (pending.length === 0) return;
+
+  // ── Idle context clear ──────────────────────────────────────────────────
+  // If the user's last message was older than the configured threshold (Model
+  // Configuration → Idle clear; default 30 min), drop the orchestrator's
+  // accumulated context before this turn so testing chatter can't bloat the
+  // working window. Setting orchestrator:context_clear_at to the latest pending
+  // timestamp makes the agent-runner reset its in-memory conversation (it
+  // resets when the marker changes) and gates <chat_history> to messages after
+  // it. 0 = disabled. We also remember this message's time so the next idle
+  // check measures from here.
+  const latestUserTs = pending[pending.length - 1]!.timestamp;
+  const idleRaw = getRouterState('orchestrator:context_idle_clear_minutes') || '';
+  const idleMin = idleRaw === '' ? 30 : (parseInt(idleRaw, 10) || 0);
+  const prevUserTs = getRouterState('orchestrator:last_user_message_at') || '';
+  if (idleMin > 0 && prevUserTs) {
+    const gapMin = (Date.parse(latestUserTs) - Date.parse(prevUserTs)) / 60000;
+    if (gapMin > idleMin) {
+      setRouterState('orchestrator:context_clear_at', latestUserTs);
+      logger.info({ idleMin: Math.round(gapMin) }, 'Orchestrator context auto-cleared after user idle');
+    }
+  }
+  setRouterState('orchestrator:last_user_message_at', latestUserTs);
 
   // ── "Close the alert" — the person at the keyboard re-arms the detector ──
   // Sentry never closes an ABNORMAL alert itself; the user closes it after
@@ -1887,7 +1953,12 @@ function spawnChrome(): void {
     fs.rmSync(path.join(WARDEN_CHROME_PROFILE, 'SingletonSocket'), { force: true });
   } catch { /* ignore */ }
   const displayEnv = discoverDisplayEnv();
-  const child = spawn(CHROME_BIN, [
+  // Headless hosts (the Pi runs Warden as a systemd user unit with no X/Wayland
+  // session) can't open a display, so Chrome exits immediately and the watchdog
+  // relaunches it in a boot loop. Run headless when there's no DISPLAY to attach
+  // to; --disable-gpu skips the EGL init noise on those boxes.
+  const headless = !displayEnv.DISPLAY;
+  const chromeArgs = [
     `--remote-debugging-port=${CHROME_CDP_PORT}`,
     `--user-data-dir=${WARDEN_CHROME_PROFILE}`,
     '--no-sandbox',
@@ -1897,7 +1968,11 @@ function spawnChrome(): void {
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--disable-features=LockProfileCookieDatabase',
-  ], {
+  ];
+  if (headless) {
+    chromeArgs.push('--headless=new', '--disable-gpu');
+  }
+  const child = spawn(CHROME_BIN, chromeArgs, {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ...displayEnv },
@@ -1912,7 +1987,7 @@ function spawnChrome(): void {
     logger.warn({ code, signal }, 'Chrome process exited');
   });
   child.unref();
-  logger.info({ cdpPort: CHROME_CDP_PORT, ...displayEnv }, 'Launched persistent Chrome');
+  logger.info({ cdpPort: CHROME_CDP_PORT, headless, ...displayEnv }, 'Launched persistent Chrome');
 }
 
 function startChromeWatchdog(): void {
