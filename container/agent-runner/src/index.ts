@@ -3264,10 +3264,13 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // Mid-turn, restate to the user what's about to happen (their intent, in
     // clean words) while the sub-agent runs in the background. The engineered
     // task string already is that restatement — speak it directly, no label.
-    const delegateDef = SUBAGENT_BY_DELEGATE.get(toolName);
-    if (delegateDef && args.task) {
-        try { writeCallback('send_message', { text: `${args.task as string}` }); } catch { /* best-effort */ }
-    }
+    // DROPPED: sending the delegation task as a chat message made TTS read the
+    // sub-agent's prompt aloud ("Find several interesting facts..."). The
+    // task now lives only in the dashboard activity panel, not chat/TTS.
+    // const delegateDef = SUBAGENT_BY_DELEGATE.get(toolName);
+    // if (delegateDef && args.task) {
+    //     try { writeCallback('send_message', { text: `${args.task as string}` }); } catch { /* best-effort */ }
+    // }
 
     // Sub-agent delegates: dispatch to runSubAgent with their tool defs
     if (toolName === 'artemis') {
