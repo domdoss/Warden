@@ -50,6 +50,8 @@ import {
   completeProject,
   deleteProject,
   resolveProjectId,
+  seedPersonalProject,
+  PERSONAL_PROJECT_ID,
   addProjectDeliverable,
   toggleDeliverable,
   deleteDeliverable,
@@ -79,13 +81,13 @@ import {
 import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
-import { computeNextRun, runDigestNow, startSchedulerLoop } from './task-scheduler.js';
+import { computeNextRun, runDigestNow, runSuggestNow, startSchedulerLoop } from './task-scheduler.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
 import { projectAllDeliverables, startKontactWatcher } from './kontact-projection.js';
 import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
-import { addDigestNote } from './digest-notes.js';
+import { addSuggestedTask } from './suggested-tasks.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
 import { securityLog, awarenessLog, recordAwarenessEvent, queryAwarenessHostEvents } from './security-log.js';
 
@@ -930,6 +932,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const id = typeof args?.projectId === 'string' ? args.projectId : '';
         const resolved = resolveProjectId(id) || id;
+        if (resolved === PERSONAL_PROJECT_ID) return { ok: false, error: 'Personal project cannot be archived' };
         const ok = archiveProject(resolved);
         return ok ? { ok: true } : { ok: false, error: 'project not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
@@ -938,6 +941,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const id = typeof args?.projectId === 'string' ? args.projectId : '';
         const resolved = resolveProjectId(id) || id;
+        if (resolved === PERSONAL_PROJECT_ID) return { ok: false, error: 'Personal project cannot be completed' };
         const ok = completeProject(resolved);
         return ok ? { ok: true } : { ok: false, error: 'project not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
@@ -946,6 +950,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const id = typeof args?.projectId === 'string' ? args.projectId : '';
         const resolved = resolveProjectId(id) || id;
+        if (resolved === PERSONAL_PROJECT_ID) return { ok: false, error: 'Personal project cannot be deleted' };
         const ok = deleteProject(resolved);
         return ok ? { ok: true } : { ok: false, error: 'project not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
@@ -1042,8 +1047,11 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const title = typeof args?.title === 'string' ? args.title : '';
         if (!title) return { ok: false, error: 'missing title' };
-        const projectId = typeof args?.projectId === 'string' ? args.projectId : '';
-        if (!projectId) return { ok: false, error: 'missing project_id' };
+        let projectId = typeof args?.projectId === 'string' ? args.projectId.trim() : '';
+        // No project given → land in the permanent Personal catch-all rather
+        // than failing. The system requires a project per task; assorted /
+        // email-driven tasks that don't fit a specific project go here.
+        if (!projectId) projectId = PERSONAL_PROJECT_ID;
         // Resolve name→id if the model passed the project name, and confirm the
         // project actually exists — Byte's retry loop created duplicates because
         // it kept re-creating projects when its task calls silently failed.
@@ -1093,23 +1101,23 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
-    // add_digest_note — core host callback (NOT routed through the ipc/api
-    // handler). Atlas (or any agent) drops a short finding into a shared pool
-    // (DATA_DIR/digest_notes.json) after a lookup. Iris's buildDigestContext
-    // reads recent notes and folds them into the digest — "Atlas gathers,
-    // Iris synthesizes." Kept as its own callback because it's a core digest
-    // function, not an API-keyed request.
-    add_digest_note: async (args: any) => {
+    // suggest_task — core host callback (NOT routed through the ipc/api
+    // handler). Byte writes an actionable item it found while scanning email
+    // into the Suggested Tasks store (DATA_DIR/suggested_tasks.json). This only
+    // records a suggestion for the user to review + commit in the dashboard —
+    // it never creates a real work task. Kept as its own callback because it's
+    // a core data function, not an API-keyed request.
+    suggest_task: async (args: any) => {
       try {
-        const text = typeof args?.text === 'string' ? args.text.trim() : '';
-        if (!text) return { ok: false, error: 'text required' };
+        const title = typeof args?.title === 'string' ? args.title.trim() : '';
+        if (!title) return { ok: false, error: 'title required' };
+        const body = typeof args?.body === 'string' ? args.body : '';
+        const suggested_project = typeof args?.suggested_project === 'string' && args.suggested_project ? args.suggested_project : 'personal';
+        const due_date = typeof args?.due_date === 'string' && args.due_date ? args.due_date : undefined;
         const source = typeof args?.source === 'string' ? args.source : '';
-        const expires_at = typeof args?.expires_at === 'string' && args.expires_at ? args.expires_at : undefined;
-        const ttl_minutes = typeof args?.ttl_minutes === 'number' ? args.ttl_minutes : undefined;
-        const spans = Array.isArray(args?.spans) ? args.spans.filter((s: any) => typeof s === 'string') : undefined;
-        addDigestNote(text, source, { expires_at, ttl_minutes, spans });
-        logger.info({ source: source || '', expires_at, spans }, 'add_digest_note: added');
-        return { ok: true };
+        const r = addSuggestedTask(title, { body, suggested_project, due_date, source });
+        logger.info({ title, suggested_project, source: source || '', duplicate: r.duplicate }, 'suggest_task: added');
+        return { ok: r.ok, duplicate: r.duplicate };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
@@ -2050,19 +2058,19 @@ const IRIS_DIGEST_TASKS = [
     id: 'iris-digest-hourly',
     cron: '7 * * * *',
     prompt:
-      'You are Iris, the digest compiler. Your job: compile the Iris hourly digest and publish it with the post_summary tool.\n\nINPUT (above) already has current time, user bio/habits, calendar events, active work tasks, and weather — pulled from the local DB. Use INPUT as your source for calendar, tasks, weather, and bio. If a section is empty, say so. You may call read_emails to add recent inbox activity.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails.\n2. Compose the digest as markdown with bold **headers** and - bullets. Cover the present and next ~2h. Add one short nudge if it fits (late night + early wake → "go to bed"; heat coming → "close windows now").\n3. Call the post_summary tool with span="hourly" and text=<your markdown digest>.\n\nYour final action is the post_summary tool call — that is what publishes the digest. End your turn with that call.',
+      'You are Iris, the digest compiler.\n\nCAPABILITIES: You compile short, useful digests from local data (calendar, work tasks, weather, user bio) and recent emails, then publish them to the dashboard.\n\nGUIDELINES: INPUT (above) is your single source for calendar, tasks, weather, and bio — it is pulled from the local DB. Report only what INPUT or read_emails returns; if a section is empty, say so plainly. You may call read_emails once for recent inbox activity. Be concise and specific.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails for recent emails.\n2. Compose the digest in the FORMAT below. Cover the present and the next ~2h.\n3. Call the post_summary tool with span="hourly" and text=<your markdown digest>. This is your final action — end your turn with that call.\n\nFORMAT (markdown):\n- Title: **🕒 Hourly Digest — <current date/time>**\n- **📦 Recent Emails** — one bullet per email: `- From: <sender>: <subject> (<time>)`. If none, "Inbox quiet this hour."\n- **📅 Calendar** — events in the next ~2h. If none, "Nothing in the next 2 hours."\n- **✅ Active Tasks** — work tasks in progress. If none, "No active tasks."\n- **🌤️ Weather** — one line from INPUT.\n- **💡 Nudge** — one short, specific nudge if it fits (late night → "Time to wind down"; heat coming → "Close the windows"). Omit if nothing is relevant.\n\nEXAMPLE (illustrative — use the real INPUT, not this):\n**🕒 Hourly Digest — 2026-08-08 09:07 (America/Vancouver)**\n**📦 Recent Emails**\n- From: Alex <alex@example.com>: Re: lunch Thursday (09:02)\n**📅 Calendar**\nNothing in the next 2 hours.\n**✅ Active Tasks**\nNo active tasks.\n**🌤️ Weather**\n14°C, light rain easing.\n**💡 Nudge**\nRain clearing by noon — windows can stay open.',
   },
   {
     id: 'iris-digest-daily',
     cron: '17 21 * * *',
     prompt:
-      'You are Iris, the digest compiler. Your job: compile the Iris end-of-day digest and publish it with the post_summary tool.\n\nINPUT (above) already has current time, user bio/habits, calendar events, active work tasks, and weather — pulled from the local DB. Use INPUT as your source for calendar, tasks, weather, and bio. If a section is empty, say so. You may call read_emails to add recent inbox activity.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails.\n2. Compose the digest as markdown with bold **headers** and - bullets. Cover the past (today), present (still active), and future (tomorrow). Add one short time/weather/habit nudge if relevant.\n3. Call the post_summary tool with span="daily" and text=<your markdown digest>.\n\nYour final action is the post_summary tool call — that is what publishes the digest. End your turn with that call.',
+      'You are Iris, the digest compiler.\n\nCAPABILITIES: You compile a concise end-of-day digest from local data (calendar, work tasks, weather, user bio) and recent emails, then publish it to the dashboard.\n\nGUIDELINES: INPUT (above) is your single source for calendar, tasks, weather, and bio — it is pulled from the local DB. Report only what INPUT or read_emails returns; if a section is empty, say so plainly. You may call read_emails once for recent inbox activity. Be concise and specific.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails for recent emails.\n2. Compose the digest in the FORMAT below. Cover the past (today), the present (still active), and the future (tomorrow).\n3. Call the post_summary tool with span="daily" and text=<your markdown digest>. This is your final action — end your turn with that call.\n\nFORMAT (markdown):\n- Title: **📋 Daily Digest — <date>**\n- **📦 Recent Emails (last 24h)** — one bullet per email: `- From: <sender>: <subject> (<time>)`. If none, "Inbox quiet today."\n- **📅 Calendar** — today\'s events, past and remaining. If none, "Nothing on the calendar today."\n- **✅ Active Tasks** — work tasks in progress. If none, "No active tasks."\n- **🌤️ Weather** — one line from INPUT.\n- **👀 Tomorrow** — one line on the next notable calendar event or task. Omit if nothing is coming.\n- **💡 Nudge** — one short, specific time/weather/habit nudge if relevant. Omit if nothing fits.\n\nEXAMPLE (illustrative — use the real INPUT, not this):\n**📋 Daily Digest — 2026-08-08**\n**📦 Recent Emails (last 24h)**\n- From: Alex <alex@example.com>: Re: lunch Thursday (09:02)\n**📅 Calendar**\nNothing on the calendar today.\n**✅ Active Tasks**\nNo active tasks.\n**🌤️ Weather**\n14°C, light rain easing.\n**👀 Tomorrow**\n10:00 — Dentist appointment.',
   },
   {
     id: 'iris-digest-weekly',
     cron: '30 20 * * 0',
     prompt:
-      'You are Iris, the digest compiler. Your job: compile the Iris weekly roundup and publish it with the post_summary tool.\n\nINPUT (above) already has current time, user bio/habits, calendar events, active work tasks, and weather — pulled from the local DB. Use INPUT as your source for calendar, tasks, weather, and bio. If a section is empty, say so. You may call read_emails to add recent inbox activity.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails.\n2. Compose the roundup as markdown with bold **headers** and - bullets. Cover the past (last week) and future (this week). Add one short time/weather/habit note if relevant.\n3. Call the post_summary tool with span="weekly" and text=<your markdown roundup>.\n\nYour final action is the post_summary tool call — that is what publishes the digest. End your turn with that call.',
+      'You are Iris, the digest compiler.\n\nCAPABILITIES: You compile a weekly roundup from local data (calendar, work tasks, weather, user bio) and recent emails, then publish it to the dashboard.\n\nGUIDELINES: INPUT (above) is your single source for calendar, tasks, weather, and bio — it is pulled from the local DB. Report only what INPUT or read_emails returns; if a section is empty, say so plainly. You may call read_emails once for recent inbox activity. Be thorough: a weekly roundup covers seven days, so list the notable emails and threads (aim for the 6–10 most relevant) and call out any recurring theme.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails for recent emails.\n2. Compose the roundup in the FORMAT below. Cover the past (last week) and the future (this week).\n3. Call the post_summary tool with span="weekly" and text=<your markdown roundup>. This is your final action — end your turn with that call.\n\nFORMAT (markdown):\n- Title: **🗓️ Weekly Roundup — week of <date>**\n- **📝 Week in Review** — one or two sentences on the shape of the week (what dominated, what slipped).\n- **📦 Email Activity (past 7 days)** — one bullet per notable email or thread: `- From: <sender>: <subject> (<date>)`. Group by theme if several relate. If none, "Inbox was quiet this week."\n- **📅 Calendar** — past and upcoming events this week. If none, "Nothing on the calendar this week."\n- **✅ Tasks** — work tasks worked on or due this week, with status where known. If none, "No active tasks this week."\n- **🌤️ Weather** — one line from INPUT.\n- **💡 Nudge** — one short, specific nudge for the week ahead if relevant. Omit if nothing fits.\n\nEXAMPLE (illustrative — use the real INPUT, not this):\n**🗓️ Weekly Roundup — week of 2026-08-04**\n**📝 Week in Review**\nA quiet week — most inbox volume was order confirmations and security alerts; the focus was the aionsystems.ca indexing fixes.\n**📦 Email Activity (past 7 days)**\n- From: Google Search Console <no-reply@google.com>: Indexing issues for aionsystems.ca (Aug 7)\n- From: THC Canada <info@thc.ca>: Order confirmation (Aug 6)\n- From: CanFleet <tracking@canfleet.com>: Order tracking (Aug 5)\n- From: Star Citizen <updates@rsi.com>: Weekly update (Aug 4)\n**📅 Calendar**\nNothing on the calendar this week.\n**✅ Tasks**\nNo active tasks this week.\n**🌤️ Weather**\n14°C, light rain easing.',
   },
 ];
 
@@ -2100,6 +2108,75 @@ function seedIrisDigestTasks(): void {
     };
     createTask(task);
     logger.info({ taskId: t.id, cron: t.cron }, 'seeded Iris digest task');
+  }
+}
+
+// ── Byte suggest-task seeding ─────────────────────────────────────────────
+// Three tasks (today/week/month) that ask the orchestrator to delegate to Byte
+// to scan email for actionable tasks and write them as suggestions. They carry
+// crons staggered +10 min after the matching Iris digest cron, but are seeded
+// PAUSED — the user decides if/when to enable automatic scanning via the
+// Scheduled Tasks UI. The dashboard Scan button runs them on demand via
+// runSuggestNow regardless of pause state. Idempotent via stable ids.
+const BYTE_SUGGEST_TASKS = [
+  {
+    id: 'byte-suggest-today',
+    cron: '17 * * * *',
+    rangeLabel: 'today',
+    prompt:
+      'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from today. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
+  },
+  {
+    id: 'byte-suggest-week',
+    cron: '27 21 * * *',
+    rangeLabel: 'this week',
+    prompt:
+      'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 7 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
+  },
+  {
+    id: 'byte-suggest-month',
+    cron: '40 20 * * 0',
+    rangeLabel: 'this month',
+    prompt:
+      'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 30 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
+  },
+];
+
+function seedByteSuggestTasks(): void {
+  const existing = new Map((getAllTasks() ?? []).map((t) => [t.id, t]));
+  for (const t of BYTE_SUGGEST_TASKS) {
+    const found = existing.get(t.id);
+    // Re-sync the prompt (and cron) on already-seeded tasks so edits propagate
+    // without deleting/recreating. We do NOT force the status back to paused
+    // once it exists — if the user enabled the cron, leave it enabled.
+    if (found) {
+      if (found.prompt !== t.prompt || found.schedule_value !== t.cron) {
+        updateTask(t.id, { prompt: t.prompt, schedule_value: t.cron });
+        logger.info({ taskId: t.id }, 'updated Byte suggest task prompt');
+      }
+      continue;
+    }
+    const task: Omit<ScheduledTask, 'last_run' | 'last_result'> = {
+      id: t.id,
+      chat_jid: OWNER_JID,
+      prompt: t.prompt,
+      schedule_type: 'cron',
+      schedule_value: t.cron,
+      context_mode: 'isolated',
+      next_run: computeNextRun({
+        id: t.id, chat_jid: OWNER_JID, prompt: t.prompt,
+        schedule_type: 'cron', schedule_value: t.cron,
+        context_mode: 'isolated', next_run: null,
+        last_run: null, last_result: null, status: 'paused', created_at: '',
+      }),
+      // Paused by default — the user opts in via the Scheduled Tasks UI. The
+      // dashboard Scan button runs the task on demand via runSuggestNow, which
+      // bypasses the active-status check, so manual scans work while paused.
+      status: 'paused',
+      created_at: new Date().toISOString(),
+    };
+    createTask(task);
+    logger.info({ taskId: t.id, cron: t.cron }, 'seeded Byte suggest task (paused)');
   }
 }
 
@@ -2445,6 +2522,7 @@ async function main(): Promise<void> {
       }
     },
     triggerDigest: (span: string) => runDigestNow(span, schedulerDeps),
+    triggerSuggest: (range: string) => runSuggestNow(range, schedulerDeps),
   });
 
   // Start the scheduled-task loop. The scheduler no longer runs agents — it
@@ -2461,6 +2539,20 @@ async function main(): Promise<void> {
   // and POSTs it to /api/summaries — feeding the dashboard digest panel.
   // Idempotent: seeded only if a task with the stable id doesn't yet exist.
   seedIrisDigestTasks();
+
+  // ── Byte suggest-task tasks (today / week / month) ─────────────────────
+  // Three tasks that delegate to Byte to scan email for actionable tasks and
+  // write them as suggestions for the dashboard Suggested Tasks box. Paused by
+  // default — the user enables the cron via the Scheduled Tasks UI. The
+  // dashboard Scan button runs them on demand. Idempotent via stable ids.
+  seedByteSuggestTasks();
+
+  // ── Personal catch-all project ────────────────────────────────────────
+  // The system requires every work task to belong to a project. Personal is
+  // the permanent default home for assorted / email-driven tasks that don't
+  // fit a specific project. Seeded with a stable id; cannot be deleted,
+  // archived, or completed (guarded in db.ts).
+  seedPersonalProject(OWNER_JID);
 
   startCalendarSyncPoller();
   // Kontact projection: mirror project deliverables to/from the shared

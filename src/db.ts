@@ -1220,6 +1220,16 @@ export interface Project {
   updated_at: string;
 }
 
+/**
+ * The permanent catch-all project. The system requires every work task to
+ * belong to a project, so tasks that don't fit a specific project — assorted
+ * to-dos, email-driven items — land here instead of forcing the model to
+ * invent a project. Seeded at startup with a STABLE id so it can be referenced
+ * without a lookup, and guarded so it can never be deleted, archived, or
+ * completed: it's always present as the default home.
+ */
+export const PERSONAL_PROJECT_ID = 'personal';
+
 export interface ProjectFinancials {
   project_id: string;
   budget: number;
@@ -1299,6 +1309,40 @@ export function getProject(projectId: string): Project | undefined {
   return db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined;
 }
 
+/**
+ * Ensure the Personal catch-all project exists with the stable id
+ * PERSONAL_PROJECT_ID. Idempotent: if it's already there (even archived or
+ * renamed), restore it to active + the right label. Called once at startup.
+ */
+export function seedPersonalProject(groupJid: string): Project {
+  const now = new Date().toISOString();
+  const existing = getProject(PERSONAL_PROJECT_ID);
+  if (existing) {
+    if (existing.archived || existing.name !== 'Personal' || existing.status === 'Completed') {
+      db.prepare(
+        `UPDATE projects SET archived = 0, archived_at = NULL, completed_at = NULL,
+         name = 'Personal', status = 'On Track', progress = 0, updated_at = ? WHERE id = ?`
+      ).run(now, PERSONAL_PROJECT_ID);
+    }
+    return getProject(PERSONAL_PROJECT_ID)!;
+  }
+  db.prepare(
+    `INSERT INTO projects (id, name, description, status, progress, due_date, project_code, group_jid, owner, shared_with, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 0, NULL, ?, ?, '', '[]', ?, ?)`
+  ).run(
+    PERSONAL_PROJECT_ID,
+    'Personal',
+    'Catch-all for assorted tasks that don\'t belong to a specific project.',
+    'On Track',
+    'personal',
+    groupJid,
+    now,
+    now,
+  );
+  db.prepare('INSERT INTO project_financials (project_id) VALUES (?)').run(PERSONAL_PROJECT_ID);
+  return getProject(PERSONAL_PROJECT_ID)!;
+}
+
 /** Resolve a project ID — accepts either the real ID or a project_code. */
 export function resolveProjectId(idOrCode: string): string | undefined {
   const direct = db.prepare('SELECT id FROM projects WHERE id = ?').get(idOrCode) as { id: string } | undefined;
@@ -1338,6 +1382,7 @@ export function updateProject(projectId: string, updates: Partial<Pick<Project, 
 }
 
 export function archiveProject(projectId: string): boolean {
+  if (projectId === PERSONAL_PROJECT_ID) return false; // permanent project
   const now = new Date().toISOString();
   return db.prepare('UPDATE projects SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?').run(now, now, projectId).changes > 0;
 }
@@ -1348,11 +1393,13 @@ export function restoreProject(projectId: string): boolean {
 }
 
 export function completeProject(projectId: string): boolean {
+  if (projectId === PERSONAL_PROJECT_ID) return false; // permanent project
   const now = new Date().toISOString();
   return db.prepare("UPDATE projects SET status = 'Completed', progress = 100, completed_at = ?, archived = 1, archived_at = ?, updated_at = ? WHERE id = ?").run(now, now, now, projectId).changes > 0;
 }
 
 export function deleteProject(projectId: string): boolean {
+  if (projectId === PERSONAL_PROJECT_ID) return false; // permanent project
   return db.prepare('DELETE FROM projects WHERE id = ?').run(projectId).changes > 0;
 }
 

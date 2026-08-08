@@ -37,9 +37,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_sentry'], tier: 'both' },
     // admin tools must be listed explicitly — resolveToolset() only walks the
     // `tools` array + `includes`, NOT the `toolset` property tools are
-    // registered with. add_digest_note + post_summary were registered with
-    // toolset:'admin' but never listed here, so they were unreachable.
-    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request','add_digest_note','post_summary'], tier: 'public' },
+    // registered with. post_summary + suggest_task were registered with
+    // toolset:'admin' but must be listed here to be reachable.
+    // (add_digest_note was removed — the digest-notes expiry system is gone;
+    // a time-bound reminder is just a calendar event.)
+    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request','post_summary','suggest_task'], tier: 'public' },
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
@@ -56,7 +58,10 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     awareness:    { name: 'awareness',    tools: ['send_message'], tier: 'public' },
     'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
 
-    'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin'] },
+    // Byte — work management. `email` is included so Byte can read the inbox
+    // and surface actionable tasks as suggestions (suggest_task, in admin) in
+    // one subagent turn during an on-demand scan.
+    'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin','email'] },
     'dexter-core':   { name: 'dexter-core',   includes: ['tasks'] },
     // Media (speaker/mic volume + playback) — atlas/hephaestus drive the hardware.
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
@@ -68,7 +73,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris (digest compiler) — email (IMAP read_emails, works) + admin
-    // (add_digest_note, post_summary, list_api_keys, api_request). The
+    // (post_summary, list_api_keys, api_request). The
     // contacts/calendar/todos toolsets were dropped: those tools hit Radicale
     // (127.0.0.1:5232) which isn't provisioned, so every list_calendar_events /
     // list_todos / list_contacts call failed with ECONNREFUSED and tempted Iris

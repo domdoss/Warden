@@ -283,7 +283,7 @@
     else if (window.UserDash) {
       // Views ported from the groupware user dashboard (userdash-extras.js)
       const UD = window.UserDash;
-      if (name === 'projects' && UD.loadProjects) UD.loadProjects();
+      if (name === 'projects' && UD.loadProjects) { UD.loadProjects(); UD.loadSuggestedTasks && UD.loadSuggestedTasks(); }
       else if (name === 'heartbeat' && UD.loadHeartbeat) UD.loadHeartbeat();
       else if (name === 'alarms' && UD.loadAlarms) UD.loadAlarms();
       else if (name === 'vault' && UD.loadVault) UD.loadVault();

@@ -596,6 +596,24 @@
             </div>
           </div>
           <div class="view-body-padded" style="overflow-y:auto">
+            <!-- Suggested Tasks — Byte scans email and surfaces actionable
+                 items here. Blank until you click Scan. The user edits each
+                 suggestion + picks a project + Add to commit it as a real
+                 work task; AI never creates tasks directly. -->
+            <div class="suggested-tasks-box" id="suggestedTasksBox" style="margin-bottom:18px;padding:14px 16px;border:1px solid var(--border,#333);border-radius:10px;background:var(--bg-secondary,#14142220)">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <h3 style="margin:0;font-size:.95rem;color:var(--text-primary,#e0e0e0)">Suggested Tasks</h3>
+                <span id="suggestedTasksBadge" class="hidden" style="background:var(--accent,#6366f1);color:#fff;font-size:.7rem;padding:1px 7px;border-radius:10px;font-weight:600">0</span>
+                <span style="flex:1"></span>
+                <select id="suggestRange" class="input" style="height:30px;font-size:.78rem;padding:0 8px;min-width:120px">
+                  <option value="today">Today</option>
+                  <option value="week">This Week</option>
+                  <option value="month">This Month</option>
+                </select>
+                <button class="btn btn-accent btn-sm" id="btnScanSuggest">Scan</button>
+              </div>
+              <div id="suggestedTasksList"></div>
+            </div>
             <div class="project-list" id="projectList">
               <div class="empty-state"><p class="empty-title">No projects yet</p></div>
             </div>

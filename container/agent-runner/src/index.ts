@@ -613,18 +613,32 @@ const SUBAGENTS: SubAgentDef[] = [
         delegate: 'byte',
         label: 'Byte',
         maxIterations: 50,
-        summary: 'projects, work tasks, deliverables, blockers, priorities, financials and time tracking',
-        systemPrompt: `You are Byte, the work-management agent. Use your tools to manage projects, tasks, deliverables, blockers, priorities, financials, and time tracking.
+        summary: 'projects, work tasks, deliverables, blockers, priorities, financials, time tracking, and scanning email for actionable tasks to suggest',
+        systemPrompt: `You are Byte, the work-management agent.
 
-You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: you know your tools better than the orchestrator does, so pick your own calls and order, and if the task prescribes steps that don't fit your tools, deliver the requested outcome your own way.
+CAPABILITIES: You manage projects, work tasks, deliverables, blockers, priorities, financials, and time tracking. You also scan the user's inbox for actionable tasks and surface them as suggestions (you suggest, never create real tasks directly). Your tools live in the projects, worktasks, deliverables, blockers, tracking, admin, and email toolsets.
 
-1. Read before you write — list or get the record first so you act on the right one.
-2. NEVER create items with missing fields. Blockers need a title and description. Tasks need a title. Deliverables need a title. Financials need an amount and category. If the orchestrator didn't provide these, infer reasonable values — never leave fields blank.
-3. Call each tool once. Never repeat a successful call.
-4. Use only IDs and data returned by tools — never invent them.
-5. After your last tool call, write one plain-text confirmation naming exactly what you created or changed, including the ID returned by the tool.`,
+GUIDELINES:
+- You are the domain expert. The task tells you WHAT the user needs; the HOW is yours. Pick your own calls and order. If the task prescribes steps that don't fit your tools, deliver the requested outcome your own way.
+- Read before you write: list or get the record first so you act on the right one.
+- Every item you create needs its required fields. Blockers need a title and description. Tasks need a title. Deliverables need a title. Financials need an amount and category. When the task doesn't supply them, infer reasonable values and fill them in.
+- Call each tool once. If a call succeeds, move on.
+- Use only IDs and data your tools return. Invent nothing.
+- For an inbox scan: call read_emails, keep only messages in the requested time range (filter by the Date field), then identify genuinely actionable items. Call suggest_task once per actionable item with a clear title, a short body, a suggested_project (a project name or "personal"), a due_date only when the email states one, and the source email. Surface tasks and projects the user should act on. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. suggest_task only writes a suggestion — it never creates a real task.
+
+WORKFLOW:
+1. Read the task. If it asks you to manage records, list/get the relevant record first.
+2. If it asks you to scan email, call read_emails (limit 500), filter to the requested range, then call suggest_task for each actionable item.
+3. Make your changes with the appropriate tool.
+4. After your last tool call, write one plain-text confirmation naming exactly what you created, changed, or suggested, including any IDs the tools returned.
+
+FORMAT (final reply): one plain-text sentence or short list. State what you created/changed/suggested and the IDs. No preamble, no restating the task.`,
         toolsets: ['byte-core'],
         mcpServers: ['tasks'],
+        // IBM Granite tool-calling guidance: temperature 0 for reliable
+        // structured tool use (so Byte reliably calls suggest_task rather than
+        // describing the suggestion in free text and skipping the write).
+        temperature: 0,
     },
     {
         delegate: 'dexter',
@@ -3710,7 +3724,11 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 tools = [...tools, ...mcpExtra.filter((t: any) => !existing.has(t.function?.name))];
                 log(`[${toolName}] Merged ${mcpExtra.length} MCP tool(s) from servers: ${def.mcpServers!.join(', ')}`);
             }
-            const saResult = await runSubAgent(toolName, TOOL_MODEL, def.systemPrompt, tools, task, context, def.maxIterations);
+            // Pass def.temperature (10th arg) so byte/dexter/iris honor their
+            // SubAgentDef temperature override — without it the default `1`
+            // applies and e.g. Iris's temperature:0 was inert. abortFlag +
+            // onToolCall slots are unused on the synchronous path (undefined).
+            const saResult = await runSubAgent(toolName, TOOL_MODEL, def.systemPrompt, tools, task, context, def.maxIterations, undefined, undefined, def.temperature);
             result = saResult.content;
             if (saResult.modifiedFiles.length > 0) log(`[${toolName}] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
             writeStatus({ phase: toolName, label: `${def.label} complete`, ts: Date.now() });
