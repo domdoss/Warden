@@ -37,11 +37,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_sentry'], tier: 'both' },
     // admin tools must be listed explicitly — resolveToolset() only walks the
     // `tools` array + `includes`, NOT the `toolset` property tools are
-    // registered with. post_summary + suggest_task were registered with
-    // toolset:'admin' but must be listed here to be reachable.
+    // registered with. post_summary was registered with toolset:'admin' but
+    // must be listed here to be reachable.
     // (add_digest_note was removed — the digest-notes expiry system is gone;
     // a time-bound reminder is just a calendar event.)
-    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request','post_summary','suggest_task'], tier: 'public' },
+    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request','post_summary'], tier: 'public' },
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
@@ -59,8 +59,8 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
 
     // Byte — work management. `email` is included so Byte can read the inbox
-    // and surface actionable tasks as suggestions (suggest_task, in admin) in
-    // one subagent turn during an on-demand scan.
+    // and turn actionable messages into real projects/work tasks when the
+    // user asks in chat.
     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin','email'] },
     'dexter-core':   { name: 'dexter-core',   includes: ['tasks'] },
     // Media (speaker/mic volume + playback) — atlas/hephaestus drive the hardware.
