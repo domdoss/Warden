@@ -81,13 +81,12 @@ import {
 import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
-import { computeNextRun, runDigestNow, runSuggestNow, startSchedulerLoop } from './task-scheduler.js';
+import { computeNextRun, runDigestNow, startSchedulerLoop } from './task-scheduler.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
 import { projectAllDeliverables, startKontactWatcher } from './kontact-projection.js';
 import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
-import { addSuggestedTask } from './suggested-tasks.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
 import { securityLog, awarenessLog, recordAwarenessEvent, queryAwarenessHostEvents } from './security-log.js';
 
@@ -1101,26 +1100,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
-    // suggest_task — core host callback (NOT routed through the ipc/api
-    // handler). Byte writes an actionable item it found while scanning email
-    // into the Suggested Tasks store (DATA_DIR/suggested_tasks.json). This only
-    // records a suggestion for the user to review + commit in the dashboard —
-    // it never creates a real work task. Kept as its own callback because it's
-    // a core data function, not an API-keyed request.
-    suggest_task: async (args: any) => {
-      try {
-        const title = typeof args?.title === 'string' ? args.title.trim() : '';
-        if (!title) return { ok: false, error: 'title required' };
-        const body = typeof args?.body === 'string' ? args.body : '';
-        const suggested_project = typeof args?.suggested_project === 'string' && args.suggested_project ? args.suggested_project : 'personal';
-        const due_date = typeof args?.due_date === 'string' && args.due_date ? args.due_date : undefined;
-        const source = typeof args?.source === 'string' ? args.source : '';
-        const r = addSuggestedTask(title, { body, suggested_project, due_date, source });
-        logger.info({ title, suggested_project, source: source || '', duplicate: r.duplicate }, 'suggest_task: added');
-        return { ok: r.ok, duplicate: r.duplicate };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-
     install_mcp_server: async (args: any) => {
       try {
         const name = typeof args?.name === 'string' ? args.name : '';
@@ -2111,22 +2090,6 @@ function seedIrisDigestTasks(): void {
   }
 }
 
-// ── Byte suggest-task prompts (on-demand only — NO cron tasks) ─────────────
-// The dashboard Suggested Tasks box is purely on-demand: the user clicks Scan,
-// runSuggestNow builds a TRANSIENT task from the matching prompt below and runs
-// it (no DB row, no crontab entry). There are deliberately NO seeded cron tasks
-// for this — suggestion scans are not scheduled jobs and must not pollute the
-// Ops "Tasks" list (which shows /api/tasks). runSuggestNow takes the prompt +
-// chat_jid so it never needs a DB lookup.
-const BYTE_SUGGEST_PROMPTS: Record<string, string> = {
-  today:
-    'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from today. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
-  week:
-    'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 7 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
-  month:
-    'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 30 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
-};
-
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
     logger.debug('Message loop already running, skipping duplicate start');
@@ -2469,7 +2432,6 @@ async function main(): Promise<void> {
       }
     },
     triggerDigest: (span: string) => runDigestNow(span, schedulerDeps),
-    triggerSuggest: (range: string) => runSuggestNow(range, schedulerDeps, BYTE_SUGGEST_PROMPTS[range], OWNER_JID),
   });
 
   // Start the scheduled-task loop. The scheduler no longer runs agents — it

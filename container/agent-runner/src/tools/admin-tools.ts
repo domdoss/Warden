@@ -39,41 +39,6 @@ registry.register({
 });
 
 registry.register({
-    name: 'suggest_task',
-    description: 'Suggest an actionable task for the user to review in the dashboard Suggested Tasks box. This only writes a suggestion — it never creates a real task; the user edits and commits it via the UI. Call once per actionable item found while scanning email. Give each suggestion a clear, self-contained title.',
-    schema: {
-        type: 'object',
-        properties: {
-            title: { type: 'string', description: 'A short, actionable task title, phrased as an imperative the user can do.' },
-            body: { type: 'string', description: 'A short note on what the task is and why (1-2 sentences).' },
-            suggested_project: { type: 'string', description: 'A project name the task fits, or "personal" if none fits. Default "personal".' },
-            due_date: { type: 'string', description: 'Due date as YYYY-MM-DD, only if the email states a deadline. Omit otherwise.' },
-            source: { type: 'string', description: 'The source email, e.g. "Alex <alex@example.com>: Re: send the Q3 budget draft".' },
-        },
-        required: ['title'],
-    },
-    handler: async (args, _context) => {
-        try {
-            const data = await writeCallbackAsync('suggest_task', {
-                title: String(args.title || ''),
-                body: String(args.body || ''),
-                suggested_project: String(args.suggested_project || 'personal'),
-                due_date: args.due_date ? String(args.due_date) : undefined,
-                source: String(args.source || ''),
-            }, 15000);
-            if (data && data.error) return `Error: ${data.error}`;
-            return data && data.ok
-                ? `Suggested task: ${args.title}${data.duplicate ? ' (already suggested — skipped duplicate)' : ''}.`
-                : 'Failed to suggest task.';
-        } catch (err: any) {
-            return `Error: ${err?.message ?? String(err)}`;
-        }
-    },
-    toolset: 'admin',
-    tier: 'public',
-});
-
-registry.register({
     name: 'api_request',
     description: 'Call any external API with automatic key injection. The system injects stored API keys automatically — never hardcode keys. Use list_api_keys first to discover available services.',
     schema: {

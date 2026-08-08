@@ -218,11 +218,6 @@ function probeLocalPort(port: number, path: string): Promise<boolean> {
 import { generateICS, parseICS } from './ical.js';
 import { fetchEmails, sendEmail, testConnection } from './email.js';
 import { sendSMS, fetchMessages as fetchSmsMessages, testConnection as testSmsConnection, testCredentials as testSmsCredentials } from './sms.js';
-import {
-  getSuggestedTasks,
-  getSuggestedTask,
-  updateSuggestedTask,
-} from './suggested-tasks.js';
 
 const STATUS_PORT = parseInt(process.env.STATUS_PORT || '3200', 10);
 
@@ -255,11 +250,6 @@ interface StatusDeps {
   // grounded runTask path as the cron (buildDigestContext: real calendar,
   // tasks, bio, weather, notes). Wired in src/index.ts.
   triggerDigest?: (span: string) => Promise<{ ok: boolean; error?: string }>;
-  // Manual suggested-tasks scan trigger: runs the byte-suggest-<range> task on
-  // demand via runSuggestNow (bypasses the paused check so a Scan works even
-  // while the cron is disabled). Byte reads email + calls suggest_task; the
-  // client polls GET /api/suggested-tasks for the new suggestions to land.
-  triggerSuggest?: (range: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 let deps: StatusDeps;
@@ -4210,95 +4200,6 @@ export function startStatusServer(d: StatusDeps): void {
           const ok = deleteWorkTaskDb(tid);
           res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok }));
-          return;
-        }
-      }
-
-      // ── Suggested Tasks ─────────────────────────────────────────────────
-      // Byte writes suggestions to the store during an email scan; the user
-      // reviews, edits, and commits them to a real work task via the
-      // dashboard Suggested Tasks box. AI never creates real tasks directly.
-      if (pathname === '/api/suggested-tasks' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ suggestedTasks: getSuggestedTasks() }));
-        return;
-      }
-      if (pathname === '/api/suggested-tasks/scan' && req.method === 'POST') {
-        const range = (params.get('range') || 'today').toLowerCase();
-        if (!['today', 'week', 'month'].includes(range)) {
-          return json(res, { error: 'invalid range (use today, week, or month)' }, 400);
-        }
-        if (!deps.triggerSuggest) return json(res, { error: 'suggest trigger unavailable' }, 503);
-        try {
-          const r = await deps.triggerSuggest(range);
-          return json(res, r, r.ok ? 200 : 404);
-        } catch (err: any) {
-          return json(res, { error: String(err?.message ?? err) }, 500);
-        }
-      }
-      const suggestMatch = pathname.match(/^\/api\/suggested-tasks\/([^/]+)$/);
-      if (suggestMatch) {
-        const sid = decodeURIComponent(suggestMatch[1]);
-        if (req.method === 'PATCH') {
-          try {
-            const body = parseJson(await parseBody(req)) as {
-              title?: string; body?: string; suggested_project?: string;
-              due_date?: string | null;
-            };
-            const ok = updateSuggestedTask(sid, body);
-            res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok }));
-          } catch (err: any) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          }
-          return;
-        }
-        if (req.method === 'DELETE') {
-          // Dismiss — mark dismissed (keep the record so a re-scan's dedup
-          // still sees it was already handled, not re-suggested).
-          const ok = updateSuggestedTask(sid, { status: 'dismissed' });
-          res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok }));
-          return;
-        }
-        if (req.method === 'POST') {
-          // Commit: turn a suggestion into a real work task. The user edits
-          // the title + picks a project in the UI, then clicks Add → this
-          // creates the work task (default Personal) and marks the suggestion
-          // 'added'. Direct HTTP, no AI.
-          try {
-            const body = parseJson(await parseBody(req)) as {
-              title?: string; project_id?: string; due_date?: string;
-              priority?: string; body?: string;
-            };
-            const s = getSuggestedTask(sid);
-            if (!s) {
-              res.writeHead(404, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'suggestion not found' }));
-              return;
-            }
-            const title = (body.title || s.title).trim();
-            if (!title) {
-              res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'title required' }));
-              return;
-            }
-            const task = createWorkTask({
-              title,
-              description: body.body || s.body || '',
-              priority: body.priority,
-              due_date: body.due_date || s.due_date || undefined,
-              created_by: OWNER_JID,
-              project_id: body.project_id || PERSONAL_PROJECT_ID,
-            });
-            updateSuggestedTask(sid, { status: 'added' });
-            res.writeHead(201, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, task }));
-          } catch (err: any) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          }
           return;
         }
       }
