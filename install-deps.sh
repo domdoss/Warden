@@ -3,14 +3,17 @@ set -e
 
 echo "Installing Warden system dependencies..."
 
-# Core toolchain
+# Core toolchain. base-devel (gcc/make) + python are needed by node-gyp to build
+# native npm addons (better-sqlite3, node-pty, sharp, @napi-rs/canvas).
 sudo pacman -S --needed --noconfirm \
   nodejs npm \
   git \
   base-devel \
   poppler \
   tmux \
-  sqlite
+  sqlite \
+  libvips \
+  cairo pango libjpeg-turbo giflib librsvg
 
 # Browser for the agent's native browser_* DOM tools. playwright-core
 # attaches to it over CDP and downloads no browser of its own, so a system
@@ -44,6 +47,27 @@ sudo pacman -S --needed --noconfirm \
   akonadi \
   kdepim-runtime \
   kontact
+
+# Python (voice + security apps) and the native headers/libraries their pip
+# packages build or run against: portaudio for pyaudio, ffmpeg for
+# openai-whisper, pipewire for the satellite relay's pw-record/pw-play (and
+# the desktop audio path), espeak-ng for kokoro's phonemizer, rsync for the
+# installer's deploy step. opencv + cmake let opencv-python use the system
+# lib instead of building from source (security app). qt6-wayland is needed
+# for pywebview[qt] to render on Wayland (KDE Plasma target). The venvs
+# themselves are created by install.sh.
+sudo pacman -S --needed --noconfirm \
+  python \
+  python-pip \
+  python-setuptools \
+  portaudio \
+  ffmpeg \
+  pipewire \
+  espeak-ng \
+  rsync \
+  opencv \
+  cmake \
+  qt6-wayland
 
 # Enable linger so the systemd --user service keeps running when no login
 # session is active (needed for scheduled tasks etc.)

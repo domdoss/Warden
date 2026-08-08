@@ -1,17 +1,50 @@
 #!/usr/bin/env bash
-# run.sh — launch the Jarvis voice app with Kokoro TTS (GPU via ROCm).
+# run.sh — the Jarvis voice entrypoint.
 #
-# Kokoro is a small (82M) TTS model that runs on the AMD Radeon VII via
-# PyTorch ROCm. The PyTorch ROCm wheel bundles rocBLAS without gfx906 kernels;
-# ROCBLAS_TENSILE_LIBPATH points to the system rocBLAS which has full gfx906
-# support. Triton (NVIDIA-only) must NOT be installed — it segfaults on AMD.
+# The voice app (STT + TTS + UI + Warden bridge) always runs locally; only the
+# audio I/O can be local or remote, and mic/speaker can be chosen independently:
 #
-# Any extra args are forwarded to main.py (e.g. --remote <pi-ip> for satellite).
+#   ./run.sh                                            # fully local (default)
+#   ./run.sh --remote                                   # mic+speaker on the default Pi
+#   ./run.sh --remote 192.168.0.171                     # mic+speaker on a given Pi
+#   ./run.sh --mic remote:192.168.0.171 --speaker local # Pi mic, desk speaker
+#   ./run.sh --mic local --speaker remote:192.168.0.171# desk mic, Pi speaker
+#
+# The Pi (the "satellite") runs the dumb audio relay (satellite/satellite_server.py),
+# a pure PipeWire-CLI HTTP pipe. Launch that relay on the Pi itself with:
+#
+#   ./run.sh --satellite            # (optional --host/--port forwarded)
+#
+# TTS engine/voice are env-driven (defaults: kokoro / af_bella):
+#
+#   TTS_ENGINE=orpheus_cpp KOKORO_VOICE=zoe ./run.sh ...
+#
+# Any other args are forwarded to main.py (e.g. --control-port).
 set -euo pipefail
 
 # Always run from the voice/ directory this script lives in.
 cd "$(dirname "$0")"
 
+# ── --satellite: run the dumb audio relay on THIS machine ────────────────────
+# The relay is stdlib-only (pw-record/pw-play): no venv, no GPU env. Short-circuit
+# before the voice-client setup so it runs on a bare Pi with no voice/.venv.
+for a in "$@"; do
+  if [ "$a" = "--satellite" ]; then SATELLITE_MODE=1; fi
+done
+if [ "${SATELLITE_MODE:-0}" = 1 ]; then
+  SAT_BIN="$PWD/../satellite/satellite_server.py"
+  if [ ! -f "$SAT_BIN" ]; then
+    echo "[run.sh] satellite relay not found at $SAT_BIN" >&2
+    exit 1
+  fi
+  # Forward everything except --satellite (e.g. --host 0.0.0.0 --port 8766).
+  fwd=()
+  for a in "$@"; do [ "$a" != "--satellite" ] && fwd+=("$a"); done
+  echo "[run.sh] satellite audio relay mode — pw-record/pw-play on :8766"
+  exec python3 "$SAT_BIN" "${fwd[@]}"
+fi
+
+# ── voice client mode ─────────────────────────────────────────────────────────
 VENV=".venv"
 if [ ! -x "$VENV/bin/python" ]; then
   echo "[run.sh] voice venv not found at $VENV/bin/python" >&2
@@ -36,18 +69,35 @@ export MIOPEN_FIND_MODE="${MIOPEN_FIND_MODE:-1}"  # 1 = use cache, don't re-benc
 # renderer processes total instead of 5.
 export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---no-sandbox --password-store=basic --allow-file-access-from-files}"
 
-# The Pi is the satellite (mic + speaker relay, satellite_server.py on :8766).
-REMOTE_IP="${ORPHEUS_REMOTE:-192.168.0.171}"
+# Default satellite (Pi) IP for bare --remote / --mic remote / --speaker remote.
+# Override with ORPHEUS_REMOTE or by passing an explicit host on the flag.
+export SATELLITE_IP="${ORPHEUS_REMOTE:-192.168.0.171}"
 
-# Persist Kokoro as the TTS engine.
+# Persist the TTS engine + voice from env (defaults: kokoro / af_bella) so the
+# in-process TTS picks them up at launch.
+TTS_ENGINE="${TTS_ENGINE:-kokoro}"
 VOICE="${KOKORO_VOICE:-af_bella}" python - <<'PY'
+import os
 from core.config import Config
 c = Config()
-c.set("voice.tts_engine", "kokoro")
-c.set("voice.tts_voice", __import__("os").environ["VOICE"])
+c.set("voice.tts_engine", os.environ["TTS_ENGINE"])
+c.set("voice.tts_voice", os.environ["VOICE"])
 c.save()
-print(f"[run.sh] tts_engine=kokoro voice={__import__('os').environ['VOICE']}")
+print(f"[run.sh] tts_engine={os.environ['TTS_ENGINE']} voice={os.environ['VOICE']}")
 PY
 
-echo "[run.sh] launching Jarvis voice — Kokoro on GPU, satellite audio at $REMOTE_IP."
-exec python main.py --remote "$REMOTE_IP" "$@"
+# If the caller gave no audio-mode flag, default to fully local (desk mic +
+# desk speaker). Otherwise forward the flags untouched; main.py resolves bare
+# --remote / --mic remote / --speaker remote against $SATELLITE_IP.
+has_audio=0
+for a in "$@"; do
+  case "$a" in --mic|--speaker|--remote) has_audio=1 ;; esac
+done
+
+if [ "$has_audio" -eq 0 ]; then
+  echo "[run.sh] launching Jarvis voice — local mic + local speaker (Kokoro on GPU)."
+  exec python main.py --mic local --speaker local "$@"
+fi
+
+echo "[run.sh] launching Jarvis voice — audio flags: $* (Kokoro on GPU)."
+exec python main.py "$@"

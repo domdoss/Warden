@@ -1,0 +1,12 @@
+# Optional GPU TTS engines — NOT installed by install.sh (best-effort only).
+# These are heavy and CUDA-oriented; they are not needed for the default kokoro
+# engine or the orpheus_cpp ROCm backend the AMD box actually uses.
+#
+#   orpheus-speech — the vLLM "orpheus" engine (voice/tts.py engine="orpheus").
+#                    Needs a CUDA GPU + vllm; will not work on the Radeon VII.
+#   vllm           — pulled in by orpheus-speech.
+#
+# Install manually only if you want the vLLM orpheus engine on a CUDA box:
+#   pip install -r requirements-tts-optional.txt
+orpheus-speech>=0.1.0
+vllm>=0.7.3
