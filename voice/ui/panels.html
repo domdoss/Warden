@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Warden Dashboard</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:100%;height:100%;overflow:hidden;background:transparent!important;
+    font-family:'Segoe UI',system-ui,sans-serif;
+  }
+  /* The dashboard is one transparent window holding the 4 Iron Man panels
+     side by side as iframes. Collapsing 4 windows into 1 cuts Qt WebEngine
+     renderer-process startup (the main cause of the ~3min cold load). */
+  /* The dashboard is one transparent window holding the Iron Man panels
+     side by side as iframes, with a full-width OLED summary strip across
+     the bottom. Collapsing the windows into 1 cuts Qt WebEngine
+     renderer-process startup (the main cause of the ~3min cold load). */
+  .stage{
+    display:flex;flex-direction:column;width:100%;height:100%;
+  }
+  .row{
+    display:flex;gap:14px;padding:14px;width:100%;flex:1;min-height:0;
+  }
+  .strip{
+    flex:0 0 224px;height:224px;padding:0 14px 14px;width:100%;
+  }
+  .frame-host{
+    position:relative;flex:0 0 auto;border-radius:6px;overflow:hidden;
+  }
+  .frame-host.hidden{display:none}
+  .strip.hidden{display:none}
+  .frame-host iframe{
+    width:100%;height:100%;border:0;display:block;background:transparent;
+  }
+
+  /* ── Settings gear + overlay (moved here from the hologram window) ── */
+  .settings-gear{
+    position:fixed;top:10px;right:12px;z-index:100;
+    width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+    font-size:16px;color:rgba(0,255,255,0.4);cursor:pointer;user-select:none;
+    transition:color .15s,transform .5s;text-shadow:0 0 6px rgba(0,255,255,0.3);
+  }
+  .settings-gear:hover{color:#00ffff}
+  .settings-gear:active{transform:rotate(60deg)}
+  .settings-overlay{
+    display:none;position:fixed;top:42px;right:12px;z-index:101;
+    background:rgba(0,10,20,0.94);border:1px solid rgba(0,255,255,0.4);
+    border-radius:8px;padding:14px 16px;min-width:260px;color:#cfefff;
+    box-shadow:0 0 18px rgba(0,255,255,0.25);font-size:12px;
+  }
+  .settings-overlay.show{display:block}
+  .settings-overlay h4{
+    font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#7fdfff;
+    margin-bottom:8px;font-weight:600;
+  }
+  .settings-overlay .section{margin-bottom:12px}
+  .settings-overlay .section:last-child{margin-bottom:0}
+  .widget-toggle{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:4px 0;cursor:pointer;color:#cfefff;
+  }
+  .widget-toggle:hover{color:#eafcff}
+  .widget-toggle .wname{font-size:11px}
+  .switch{
+    position:relative;width:30px;height:16px;background:rgba(0,255,255,0.12);
+    border:1px solid rgba(0,255,255,0.3);border-radius:10px;transition:background .15s;flex:0 0 auto;
+  }
+  .switch::after{
+    content:'';position:absolute;top:1px;left:1px;width:12px;height:12px;
+    background:rgba(0,255,255,0.5);border-radius:50%;transition:transform .15s,background .15s;
+  }
+  .widget-toggle.off .switch{background:rgba(255,255,255,0.04)}
+  .widget-toggle.off .switch::after{transform:translateX(0);background:rgba(127,127,127,0.5)}
+  .widget-toggle.on .switch::after{transform:translateX(14px);background:#00ffff}
+  .s-row{display:flex;align-items:center;gap:6px;margin:6px 0}
+  .s-row label{font-size:10px;color:#7fdfff;min-width:74px}
+  .s-row input{
+    flex:1;min-width:0;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,255,0.3);
+    border-radius:4px;color:#eafcff;font-size:11px;padding:5px 7px;outline:none;font-family:inherit;
+  }
+  .s-row input:focus{border-color:#00ffff}
+  .s-row button{
+    background:rgba(0,255,255,0.15);border:1px solid rgba(0,255,255,0.5);color:#eafcff;
+    font-size:9px;padding:5px 10px;border-radius:4px;cursor:pointer;letter-spacing:1px;
+    text-transform:uppercase;flex:0 0 auto;
+  }
+  .s-row button:hover{background:rgba(0,255,255,0.3)}
+  .s-status{font-size:9px;color:#7fff7f;min-height:10px;margin-left:2px}
+  .s-status.err{color:#ff8888}
+</style>
+</head>
+<body>
+<div class="stage">
+<div class="row" id="row">
+  <div class="frame-host" style="width:420px;height:540px">
+    <iframe id="digest" data-src="digest.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:400px;height:540px">
+    <iframe id="chat" data-src="chat.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:340px;height:540px">
+    <iframe id="agents" data-src="agents.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:320px;height:540px">
+    <iframe id="tasks" data-src="tasks.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:300px;height:540px">
+    <iframe id="upload" data-src="upload.html"></iframe>
+  </div>
+</div>
+<div class="strip" id="today-host">
+  <div class="frame-host" style="width:100%;height:100%">
+    <iframe id="today" data-src="today.html"></iframe>
+  </div>
+</div>
+</div>
+
+<!-- Settings gear + overlay -->
+<div class="settings-gear" id="settings-gear" title="Settings">⚙</div>
+<div class="settings-overlay" id="settings-overlay">
+  <div class="section">
+    <h4>Widgets</h4>
+    <div class="widget-toggle on" data-widget="digest"><span class="wname">Digest</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="chat"><span class="wname">Direct Line</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="agents"><span class="wname">Agents</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="tasks"><span class="wname">Ops</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="upload"><span class="wname">Upload</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="today"><span class="wname">Ambient Strip</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="hologram"><span class="wname">Hologram</span><span class="switch"></span></div>
+  </div>
+  <div class="section">
+    <h4>Warden URL</h4>
+    <div class="s-row">
+      <label>URL</label>
+      <input type="text" id="warden-url-input" placeholder="http://localhost:3200">
+      <button id="warden-url-save">Save</button>
+    </div>
+    <div class="s-status" id="warden-url-status"></div>
+  </div>
+  <div class="section">
+    <h4>Satellite Host</h4>
+    <div class="s-row">
+      <label>Host</label>
+      <input type="text" id="satellite-host-input" placeholder="satellite.local">
+      <button id="satellite-host-save">Save</button>
+    </div>
+    <div class="s-status" id="satellite-host-status"></div>
+  </div>
+  <div class="section">
+    <h4>Weather Location</h4>
+    <div class="s-row">
+      <label>Loc</label>
+      <input type="text" id="weather-loc-input" placeholder="City or lat,lon">
+      <button id="weather-loc-save">Save</button>
+    </div>
+    <div class="s-status" id="weather-loc-status"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // Each panel iframe calls window.pywebview.api.<method>(...). pywebview
+  // injects the bridge only into this top-level window, and file:// iframes
+  // are cross-origin so we can't assign onto their contentWindow. Instead we
+  // act as a postMessage bridge: each iframe forwards api calls here, we
+  // dispatch them on the real window.pywebview.api, and post the result back.
+  // The panels include a shim that builds the proxy when window.pywebview is
+  // absent (i.e. when running inside this iframe).
+
+  // pywebview injects window.pywebview.api AFTER the iframes load, but each
+  // iframe's shim is a Proxy that returns a function for ANY method — so
+  // window.pywebview.api.warden_api is truthy before the real bridge exists,
+  // and every panel fires its first API call too early. Rejecting those
+  // early calls (the old behaviour) made weather spin for 10 min and the
+  // digest/panels sit empty until a click or their slow retry. Instead we
+  // QUEUE calls made before the bridge is ready and flush them once
+  // pywebview truly exists — that's what makes every panel auto-load.
+  var _bridgeReady = false, _queued = [];
+  function dispatch(method, args){
+    if(_bridgeReady && window.pywebview && window.pywebview.api && typeof window.pywebview.api[method] === 'function'){
+      try { return Promise.resolve(window.pywebview.api[method].apply(window.pywebview.api, args)); }
+      catch (e) { return Promise.reject(e); }
+    }
+    return new Promise(function(resolve, reject){
+      _queued.push({ method: method, args: (args || []), resolve: resolve, reject: reject });
+    });
+  }
+  function flushQueued(){
+    if(_bridgeReady) return;
+    _bridgeReady = true;
+    var q = _queued; _queued = [];
+    q.forEach(function(item){
+      if(!window.pywebview || !window.pywebview.api || typeof window.pywebview.api[item.method] !== 'function'){
+        item.reject(new Error('bridge method "'+item.method+'" not available')); return;
+      }
+      try {
+        Promise.resolve(window.pywebview.api[item.method].apply(window.pywebview.api, item.args))
+          .then(item.resolve, item.reject);
+      } catch (e) { item.reject(e); }
+    });
+  }
+
+  window.addEventListener('message', function(ev){
+    var d = ev.data;
+    if(!d || !d.__pm) return;
+    // Iframes request the saved weather location (they can't read our
+    // localStorage across file:// origins).
+    if(d.type === 'weather_loc_request'){
+      try { ev.source.postMessage({__pm:true, type:'weather_loc', loc:localStorage.getItem(WX_KEY)||''}, '*'); } catch(e){}
+      return;
+    }
+    if(!d.id || !d.method) return;
+    dispatch(d.method, d.args || []).then(function(result){
+      try { ev.source.postMessage({__pm:true, id:d.id, result:result}, '*'); } catch(e){}
+    }, function(err){
+      try { ev.source.postMessage({__pm:true, id:d.id, error:String(err && err.message || err)}, '*'); } catch(e){}
+    });
+  });
+
+  // Tell iframes the host is ready so they can retry any early calls that
+  // fired before this listener was wired.
+  function announceReady(){
+    document.querySelectorAll('iframe').forEach(function(f){
+      try { f.contentWindow.postMessage({__pm:true, type:'host_ready'}, '*'); } catch(e){}
+    });
+  }
+
+  // Start the iframes after the proxy listener is in place.
+  document.querySelectorAll('iframe').forEach(function(f){
+    f.addEventListener('load', announceReady);
+    f.src = f.dataset.src;
+  });
+
+  // Re-announce once pywebview itself is ready (it may inject after load).
+  var t = setInterval(function(){
+    if(window.pywebview && window.pywebview.api){
+      announceReady();
+      // Flush any api calls the iframes fired before the real bridge existed
+      // (weather, digest, every panel's boot fetch) — now they can run.
+      flushQueued();
+      // The hologram pref is applied on load but the bridge wasn't ready
+      // when restore() ran, so re-apply it now that pywebview.api exists.
+      applyHologram(holoOn());
+      clearInterval(t);
+    }
+  }, 200);
+  setInterval(announceReady, 3000);
+
+  // ── Settings overlay ──────────────────────────────────────────────
+  // Widget show/hide is persisted to localStorage so the layout survives a
+  // restart. Warden URL + satellite host are stored host-side via the
+  // pywebview api bridge (get_/save_warden_url, get_/save_satellite_host).
+  var HIDDEN_KEY = 'warden.widgets.hidden';
+  var HOLO_KEY = 'warden.hologram.visible';
+  var gear = document.getElementById('settings-gear');
+  var overlay = document.getElementById('settings-overlay');
+  var toggles = document.querySelectorAll('.widget-toggle');
+
+  function hiddenSet(){
+    try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]')); }
+    catch(e){ return new Set(); }
+  }
+  function saveHidden(set){
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify(Array.from(set)));
+  }
+  function applyWidget(widgetId, visible){
+    var el = document.getElementById(widgetId);
+    if(!el) return;
+    // Hide the panel's frame-host (or the whole ambient strip) rather than
+    // the iframe itself, so the slot collapses out of the row/strip.
+    var host = (widgetId === 'today')
+      ? (document.getElementById('today-host') || el)
+      : (el.closest('.frame-host') || el);
+    host.classList.toggle('hidden', !visible);
+  }
+
+  // The hologram is a separate pywebview window, not a panel iframe, so it
+  // has its own persistence key and is toggled via set_hologram_visible
+  // rather than the hidden-set. Default visible (true) unless stored false.
+  function holoOn(){
+    try { return localStorage.getItem(HOLO_KEY) !== '0'; }
+    catch(e){ return true; }
+  }
+  function applyHologram(visible){
+    dispatch('set_hologram_visible', [!!visible]).catch(function(){});
+  }
+
+  // Restore saved visibility on load.
+  (function restore(){
+    var hidden = hiddenSet();
+    toggles.forEach(function(tg){
+      var wid = tg.getAttribute('data-widget');
+      if(wid === 'hologram'){
+        var on = holoOn();
+        tg.classList.toggle('on', on);
+        tg.classList.toggle('off', !on);
+        applyHologram(on);
+        return;
+      }
+      var isHidden = hidden.has(wid);
+      tg.classList.toggle('on', !isHidden);
+      tg.classList.toggle('off', isHidden);
+      applyWidget(wid, !isHidden);
+    });
+  })();
+
+  toggles.forEach(function(tg){
+    tg.addEventListener('click', function(){
+      var wid = tg.getAttribute('data-widget');
+      var turningOn = tg.classList.contains('off');
+      tg.classList.toggle('on', turningOn);
+      tg.classList.toggle('off', !turningOn);
+      if(wid === 'hologram'){
+        localStorage.setItem(HOLO_KEY, turningOn ? '1' : '0');
+        applyHologram(turningOn);
+        return;
+      }
+      var hidden = hiddenSet();
+      if(turningOn) hidden.delete(wid); else hidden.add(wid);
+      saveHidden(hidden);
+      applyWidget(wid, turningOn);
+    });
+  });
+
+  var urlInput = document.getElementById('warden-url-input');
+  var urlSave  = document.getElementById('warden-url-save');
+  var urlStat = document.getElementById('warden-url-status');
+  var satInput = document.getElementById('satellite-host-input');
+  var satSave  = document.getElementById('satellite-host-save');
+  var satStat = document.getElementById('satellite-host-status');
+  var wxInput = document.getElementById('weather-loc-input');
+  var wxSave  = document.getElementById('weather-loc-save');
+  var wxStat = document.getElementById('weather-loc-status');
+  var WX_KEY = 'warden.weather.loc';
+
+  function broadcastWeatherLoc(loc){
+    document.querySelectorAll('iframe').forEach(function(f){
+      try { f.contentWindow.postMessage({__pm:true, type:'weather_loc', loc:loc||''}, '*'); } catch(e){}
+    });
+  }
+
+  function openOverlay(){
+    overlay.classList.add('show');
+    urlStat.textContent=''; satStat.textContent=''; wxStat.textContent='';
+    dispatch('get_warden_url',[]).then(function(u){
+      if(typeof u === 'string') urlInput.value = u;
+    }, function(){});
+    dispatch('get_satellite_host',[]).then(function(h){
+      if(typeof h === 'string') satInput.value = h;
+    }, function(){});
+    try { wxInput.value = localStorage.getItem(WX_KEY) || ''; } catch(e){}
+  }
+  function closeOverlay(){ overlay.classList.remove('show'); }
+
+  gear.addEventListener('click', function(e){
+    e.stopPropagation();
+    if(overlay.classList.contains('show')) closeOverlay(); else openOverlay();
+  });
+  overlay.addEventListener('mousedown', function(e){ e.stopPropagation(); });
+  // Click outside closes the overlay.
+  document.addEventListener('mousedown', function(e){
+    if(!overlay.classList.contains('show')) return;
+    if(e.target === gear || overlay.contains(e.target)) return;
+    closeOverlay();
+  });
+
+  urlSave.addEventListener('click', function(){
+    urlStat.classList.remove('err');
+    urlStat.textContent = 'Saving…';
+    dispatch('save_warden_url', [urlInput.value.trim()]).then(function(){
+      urlStat.textContent = 'Saved — restart to rebind SSE.';
+    }, function(err){
+      urlStat.classList.add('err');
+      urlStat.textContent = 'Error: ' + String(err && err.message || err);
+    });
+  });
+  satSave.addEventListener('click', function(){
+    satStat.classList.remove('err');
+    satStat.textContent = 'Saving…';
+    dispatch('save_satellite_host', [satInput.value.trim()]).then(function(){
+      satStat.textContent = 'Saved — restart to apply audio routing.';
+    }, function(err){
+      satStat.classList.add('err');
+      satStat.textContent = 'Error: ' + String(err && err.message || err);
+    });
+  });
+  wxSave.addEventListener('click', function(){
+    var v = wxInput.value.trim();
+    try { localStorage.setItem(WX_KEY, v); } catch(e){}
+    broadcastWeatherLoc(v);
+    wxStat.classList.remove('err');
+    wxStat.textContent = 'Saved — weather updating.';
+    setTimeout(function(){ wxStat.textContent = ''; }, 3000);
+  });
+  [urlInput, satInput, wxInput].forEach(function(inp){
+    inp.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        (inp === urlInput ? urlSave : inp === satInput ? satSave : wxSave).click();
+      }
+      else if(e.key === 'Escape'){ e.preventDefault(); closeOverlay(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

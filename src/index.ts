@@ -59,7 +59,15 @@ import {
   deleteProjectPriority,
   getProjectFinancials,
   updateProjectFinancials,
+  getWorkTasks,
+  createWorkTask,
+  updateWorkTask,
+  deleteWorkTask,
+  getUserApiKeys,
+  getActiveUserApiKeyByType,
+  getAllUserApiKeys,
 } from './db.js';
+import { decryptApiKey } from './encryption.js';
 import { fetchEmails, sendEmail } from './email.js';
 import {
   listEvents, getEvent, upsertEvent, deleteEvent,
@@ -77,6 +85,7 @@ import { projectAllDeliverables, startKontactWatcher } from './kontact-projectio
 import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
+import { addDigestNote } from './digest-notes.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
 import { securityLog, awarenessLog, recordAwarenessEvent, queryAwarenessHostEvents } from './security-log.js';
 
@@ -1019,6 +1028,91 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
+    // ─── Work tasks (wired to db.ts user_work_tasks) ───────────────────────
+    // The agent-runner's create_work_task/list_work_tasks/update_work_task/
+    // delete_work_task tools delegate here via callHost(); without these the
+    // callbacks had "no registered handler" and Byte could never add a task.
+    list_work_tasks: async (args: any) => {
+      try {
+        const tasks = getWorkTasks(typeof args?.assignedTo === 'string' && args.assignedTo ? args.assignedTo : undefined);
+        return { ok: true, data: tasks };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    create_work_task: async (args: any) => {
+      try {
+        const title = typeof args?.title === 'string' ? args.title : '';
+        if (!title) return { ok: false, error: 'missing title' };
+        const projectId = typeof args?.projectId === 'string' ? args.projectId : '';
+        if (!projectId) return { ok: false, error: 'missing project_id' };
+        // Resolve name→id if the model passed the project name, and confirm the
+        // project actually exists — Byte's retry loop created duplicates because
+        // it kept re-creating projects when its task calls silently failed.
+        const resolved = resolveProjectId(projectId) || projectId;
+        if (!getProject(resolved)) return { ok: false, error: 'project not found' };
+        const task = createWorkTask({
+          title,
+          description: typeof args?.description === 'string' ? args.description : '',
+          notes: typeof args?.notes === 'string' ? args.notes : '',
+          priority: typeof args?.priority === 'string' ? args.priority : 'medium',
+          assigned_to: typeof args?.assignedTo === 'string' && args.assignedTo ? args.assignedTo : undefined,
+          created_by: typeof args?.createdBy === 'string' && args.createdBy ? args.createdBy : OWNER_JID,
+          due_date: typeof args?.dueDate === 'string' && args.dueDate ? args.dueDate : undefined,
+          project_id: resolved,
+        });
+        void projectAllDeliverables().catch(() => { /* best-effort: Radicale may be down */ });
+        return { ok: true, data: task };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    update_work_task: async (args: any) => {
+      try {
+        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+        if (!taskId) return { ok: false, error: 'missing task_id' };
+        const updates: any = {};
+        if (typeof args?.title === 'string') updates.title = args.title;
+        if (typeof args?.description === 'string') updates.description = args.description;
+        if (typeof args?.notes === 'string') updates.notes = args.notes;
+        if (typeof args?.status === 'string') updates.status = args.status;
+        if (typeof args?.priority === 'string') updates.priority = args.priority;
+        if (typeof args?.assignedTo === 'string') updates.assigned_to = args.assignedTo;
+        if (typeof args?.dueDate === 'string') updates.due_date = args.dueDate;
+        if (typeof args?.projectId === 'string') {
+          const resolved = resolveProjectId(args.projectId) || args.projectId;
+          updates.project_id = resolved;
+        }
+        const task = updateWorkTask(taskId, updates);
+        if (!task) return { ok: false, error: 'task not found' };
+        return { ok: true, data: task };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    delete_work_task: async (args: any) => {
+      try {
+        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+        if (!taskId) return { ok: false, error: 'missing task_id' };
+        const ok = deleteWorkTask(taskId);
+        return ok ? { ok: true } : { ok: false, error: 'task not found' };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+
+    // add_digest_note — core host callback (NOT routed through the ipc/api
+    // handler). Atlas (or any agent) drops a short finding into a shared pool
+    // (DATA_DIR/digest_notes.json) after a lookup. Iris's buildDigestContext
+    // reads recent notes and folds them into the digest — "Atlas gathers,
+    // Iris synthesizes." Kept as its own callback because it's a core digest
+    // function, not an API-keyed request.
+    add_digest_note: async (args: any) => {
+      try {
+        const text = typeof args?.text === 'string' ? args.text.trim() : '';
+        if (!text) return { ok: false, error: 'text required' };
+        const source = typeof args?.source === 'string' ? args.source : '';
+        const expires_at = typeof args?.expires_at === 'string' && args.expires_at ? args.expires_at : undefined;
+        const ttl_minutes = typeof args?.ttl_minutes === 'number' ? args.ttl_minutes : undefined;
+        const spans = Array.isArray(args?.spans) ? args.spans.filter((s: any) => typeof s === 'string') : undefined;
+        addDigestNote(text, source, { expires_at, ttl_minutes, spans });
+        logger.info({ source: source || '', expires_at, spans }, 'add_digest_note: added');
+        return { ok: true };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+
     install_mcp_server: async (args: any) => {
       try {
         const name = typeof args?.name === 'string' ? args.name : '';
@@ -1486,6 +1580,101 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
+    // api_request / list_api_keys — the agent-runner's `admin` toolset delegates
+    // to the host via a {tool:'ipc', args:{type:'api_request'|'list_api_keys',...}}
+    // callback. The agent-runner child never sees real API keys: it sends the
+    // key_type + path here, and the host resolves the key from the DB, injects
+    // auth, and makes the HTTP call. key_type "warden" is the internal case — a
+    // loopback to this status server with no auth (e.g. Iris POSTing a digest to
+    // /api/summaries). Without this handler Iris's api_request calls fail with
+    // "no handler for tool: ipc".
+    ipc: async (args: any) => {
+      try {
+        const type = args?.type;
+        let userId = args?.userId || OWNER_JID;
+
+        if (type === 'list_api_keys') {
+          let rows = getUserApiKeys(userId).filter((r: any) => r.is_active);
+          if (!rows.length && (userId === OWNER_JID || !userId)) {
+            rows = getAllUserApiKeys().filter((r: any) => r.is_active);
+          }
+          const keys = rows.map((r: any) => ({
+            key_type: r.key_type, label: r.label || r.key_type, base_url: r.base_url || '',
+          }));
+          // Always advertise the internal Warden API — it needs no configured
+          // key (it loopbacks to this status server). Agents discover it via
+          // list_api_keys, then POST digests / summaries with key_type "warden".
+          // Without this, an agent that calls list_api_keys first sees "no keys"
+          // and gives up before ever trying the keyless internal call.
+          if (!keys.some((k: any) => k.key_type === 'warden' || k.key_type === 'internal')) {
+            keys.unshift({ key_type: 'warden', label: 'Warden (internal, no key needed)', base_url: 'http://localhost:3200' });
+          }
+          return { ok: true, keys };
+        }
+
+        if (type === 'api_request') {
+          const keyType = String(args.key_type || '');
+          const method = String(args.method || 'GET').toUpperCase();
+          const headers: Record<string, string> = { ...(args.headers || {}) };
+          let url: string;
+
+          if (keyType === 'warden' || keyType === 'internal' || keyType === 'self' || keyType === 'localhost') {
+            // Internal loopback to this Warden status server — no auth needed.
+            // Iris's prompt says key_type "warden", but she often reads "the
+            // internal /api/summaries endpoint" and sends key_type "internal"
+            // instead — accept both (and self/localhost) so the POST still lands.
+            const port = process.env.STATUS_PORT || '3200';
+            const p = String(args.path || '/');
+            url = p.startsWith('http') ? p : `http://127.0.0.1:${port}${p.startsWith('/') ? '' : '/'}${p}`;
+          } else {
+            // External service — resolve the stored key + base_url, inject auth.
+            let row = getActiveUserApiKeyByType(userId, keyType);
+            if (!row && (userId === OWNER_JID || !userId)) {
+              row = getAllUserApiKeys().find((r: any) => r.key_type === keyType && r.is_active) as any;
+            }
+            if (!row) return { ok: false, error: `no API key configured for key_type "${keyType}"` };
+            const plainKey = decryptApiKey(row.encrypted_key, row.iv, row.auth_tag);
+            const base = (row.base_url || '').replace(/\/$/, '');
+            const p = String(args.path || '');
+            url = p.startsWith('http') ? p : `${base}${p.startsWith('/') ? '' : '/'}${p}`;
+            const fmt = row.auth_header_format || 'Bearer {key}';
+            const auth = fmt.includes('{key}') ? fmt.replace('{key}', plainKey) : `Bearer ${plainKey}`;
+            const cidx = auth.indexOf(':');
+            if (cidx > -1 && !/^authorization$/i.test(auth.slice(0, cidx).trim())) {
+              headers[auth.slice(0, cidx).trim()] = auth.slice(cidx + 1).trim();
+            } else {
+              headers['Authorization'] = auth;
+            }
+          }
+
+          const init: any = { method, headers };
+          if (args.body !== undefined && args.body !== null && method !== 'GET' && method !== 'HEAD') {
+            init.body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body);
+            if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json';
+          }
+
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 30000);
+          try {
+            const res = await fetch(url, { ...init, signal: controller.signal });
+            const text = await res.text().catch(() => '');
+            logger.info({ keyType, method, url, status: res.status }, 'ipc api_request: dispatched');
+            let body: any = text;
+            const ct = res.headers.get('content-type') || '';
+            if (ct.includes('application/json')) { try { body = JSON.parse(text); } catch { /* keep text */ } }
+            return { ok: res.ok, status: res.status, statusText: res.statusText, body };
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+
+        return { ok: false, error: `unknown ipc type: ${type}` };
+      } catch (err: any) {
+        logger.warn({ err, type: args?.type }, 'ipc callback: error');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
   };
 }
 
@@ -1821,6 +2010,70 @@ async function processOwnerMessages(): Promise<void> {
 // kill an in-flight agent run. Deliberately strict — the message must be
 // nothing but the stop word, so "stop by the store" never triggers it.
 const STOP_COMMAND_RE = /^\s*(stop|cancel|abort|halt|never\s?mind|nvm|shut up)[\s.!]*$/i;
+
+// ── Iris digest task seeding ──────────────────────────────────────────────
+// Three recurring tasks (hourly/daily/weekly) that ask Iris to compile a
+// digest and POST it to /api/summaries, feeding the dashboard digest panel.
+// The scheduler injects each prompt into the owner chat; the orchestrator
+// routes it to Iris. Cron times are deliberately off the :00 mark so the
+// fleet-wide API doesn't all hit at once. Idempotent via stable ids.
+const IRIS_DIGEST_TASKS = [
+  {
+    id: 'iris-digest-hourly',
+    cron: '7 * * * *',
+    prompt:
+      'Iris hourly digest.\n\nINPUT (above): current time, user bio/habits, calendar events, active work tasks, weather. Use ONLY this — never invent items not listed.\n\nCOVER: present + next ~2h.\nMAY add one short nudge if the context fits (late night + early wake habit → "go to bed"; heat coming → "close windows now").\nNo filler. Nothing scheduled/active → say so.\n\nOUTPUT: markdown, bold headers + bullets.\nPOST /api/summaries?span=hourly  body {"text":"<digest>"}  (keep ?span=hourly exactly).',
+  },
+  {
+    id: 'iris-digest-daily',
+    cron: '17 21 * * *',
+    prompt:
+      'Iris end-of-day digest.\n\nINPUT (above): current time, user bio/habits, calendar events, active work tasks, weather. Use ONLY this — never invent items not listed.\n\nCOVER: past (today) / present (still active) / future (tomorrow).\nMAY add one short time/weather/habit nudge if relevant.\nNo fabricated items; empty section → say so.\n\nOUTPUT: markdown, bold headers + bullets.\nPOST /api/summaries?span=daily  body {"text":"<digest>"}  (keep ?span=daily exactly).',
+  },
+  {
+    id: 'iris-digest-weekly',
+    cron: '30 20 * * 0',
+    prompt:
+      'Iris weekly roundup.\n\nINPUT (above): current time, user bio/habits, calendar events, active work tasks, weather. Use ONLY this — never invent items not listed.\n\nCOVER: past (last week) / future (this week).\nMAY add one short time/weather/habit note if relevant.\nNo fabricated items; empty section → say so.\n\nOUTPUT: markdown, bold headers + bullets.\nPOST /api/summaries?span=weekly  body {"text":"<roundup>"}  (keep ?span=weekly exactly).',
+  },
+];
+
+function seedIrisDigestTasks(): void {
+  const existing = new Map((getAllTasks() ?? []).map((t) => [t.id, t]));
+  for (const t of IRIS_DIGEST_TASKS) {
+    const found = existing.get(t.id);
+    // The span belongs in the URL path (?span=hourly) so the orchestrator
+    // can't drop it — the first cut put it in the body and the orchestrator
+    // posted hourly digests tagged "daily", leaving the Hourly tab empty.
+    // Re-sync the prompt (and cron) on already-seeded tasks so this fix
+    // propagates without needing to delete and recreate the tasks.
+    if (found) {
+      if (found.prompt !== t.prompt || found.schedule_value !== t.cron) {
+        updateTask(t.id, { prompt: t.prompt, schedule_value: t.cron });
+        logger.info({ taskId: t.id }, 'updated Iris digest task prompt');
+      }
+      continue;
+    }
+    const task: Omit<ScheduledTask, 'last_run' | 'last_result'> = {
+      id: t.id,
+      chat_jid: OWNER_JID,
+      prompt: t.prompt,
+      schedule_type: 'cron',
+      schedule_value: t.cron,
+      context_mode: 'isolated',
+      next_run: computeNextRun({
+        id: t.id, chat_jid: OWNER_JID, prompt: t.prompt,
+        schedule_type: 'cron', schedule_value: t.cron,
+        context_mode: 'isolated', next_run: null,
+        last_run: null, last_result: null, status: 'active', created_at: '',
+      }),
+      status: 'active',
+      created_at: new Date().toISOString(),
+    };
+    createTask(task);
+    logger.info({ taskId: t.id, cron: t.cron }, 'seeded Iris digest task');
+  }
+}
 
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
@@ -2168,6 +2421,13 @@ async function main(): Promise<void> {
     registeredGroups: () => ({ [OWNER_JID]: { name: 'Owner', folder: 'owner', trigger: '', added_at: '', isMain: true, requiresTrigger: false } }) as any,
     queue: { enqueueMessageCheck: () => {} },
   });
+
+  // ── Iris digest tasks (hourly / daily / weekly) ───────────────────────
+  // Three recurring tasks whose prompts the scheduler injects into the
+  // owner chat. The orchestrator routes each to Iris, who compiles a digest
+  // and POSTs it to /api/summaries — feeding the dashboard digest panel.
+  // Idempotent: seeded only if a task with the stable id doesn't yet exist.
+  seedIrisDigestTasks();
 
   startCalendarSyncPoller();
   // Kontact projection: mirror project deliverables to/from the shared

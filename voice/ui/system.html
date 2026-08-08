@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>System</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  .panel{
+    width:100%;height:100%;position:relative;display:flex;flex-direction:column;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(0,255,255,0.06) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-color: rgba(0,10,20,0.88);
+    border-radius: 6px;overflow:hidden;
+  }
+  .panel::before,.panel::after{
+    content:'';position:absolute;width:16px;height:16px;pointer-events:none;z-index:10;
+  }
+  .panel::before{top:0;left:0;border-top:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+  .panel::after{bottom:0;right:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-tr,.br-bl{position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .br-tr{top:0;right:0;border-top:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-bl{bottom:0;left:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+
+  /* ── header ── */
+  .header{
+    padding:14px 16px 0;flex-shrink:0;display:flex;align-items:center;gap:10px;
+  }
+  .header-icon{
+    font-size:12px;color:#ffaa00;text-shadow:0 0 6px rgba(255,170,0,0.5);
+  }
+  .header-title{
+    font-size:11px;font-weight:600;letter-spacing:2px;color:#ffaa00;
+    text-shadow:0 0 8px rgba(255,170,0,0.4);text-transform:uppercase;
+  }
+  .header-line{
+    flex:1;height:1px;background:linear-gradient(90deg,rgba(255,170,0,0.3),transparent);
+  }
+  .header-btn{
+    font-size:12px;color:rgba(255,170,0,0.45);cursor:pointer;padding:2px 6px;
+    border:1px solid rgba(255,170,0,0.2);border-radius:4px;line-height:1;
+    transition:color 0.15s,border-color 0.15s,transform 0.4s;user-select:none;
+  }
+  .header-btn:hover{color:#ffaa00;border-color:rgba(255,170,0,0.5)}
+  .header-btn:active{transform:rotate(180deg)}
+
+  /* ── gauges ── */
+  .gauges{
+    flex:1;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;
+    gap:16px 20px;padding:16px;
+  }
+  .gauge{
+    display:flex;flex-direction:column;align-items:center;gap:4px;
+  }
+  .gauge-ring{
+    position:relative;width:64px;height:64px;
+  }
+  .gauge-ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+  .gauge-ring .bg{fill:none;stroke:rgba(0,255,255,0.08);stroke-width:4}
+  .gauge-ring .fill{fill:none;stroke-width:4;stroke-linecap:round;
+    transition:stroke-dashoffset 0.6s ease}
+  .gauge-ring .fill.cpu{stroke:#00ffff}
+  .gauge-ring .fill.ram{stroke:#00ccff}
+  .gauge-ring .fill.gpu{stroke:#ffaa00}
+  .gauge-ring .fill.agents{stroke:#00ff88}
+  .gauge-value{
+    position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-size:15px;font-weight:700;font-family:'Courier New',monospace;
+    color:#00ffff;text-shadow:0 0 6px rgba(0,255,255,0.4);
+  }
+  .gauge-label{
+    font-size:8px;text-transform:uppercase;letter-spacing:1.5px;
+    color:rgba(0,255,255,0.4);
+  }
+
+  /* ── uptime ── */
+  .uptime{
+    text-align:center;padding:0 16px 14px;flex-shrink:0;
+  }
+  .uptime-val{
+    font-size:10px;font-family:'Courier New',monospace;color:rgba(0,255,255,0.5);
+    letter-spacing:0.5px;
+  }
+  .uptime-label{
+    font-size:7px;text-transform:uppercase;letter-spacing:1.5px;color:rgba(0,255,255,0.2);
+  }
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="br-tr"></div><div class="br-bl"></div>
+  <div class="header">
+    <div class="header-icon">⬡</div>
+    <div class="header-title">Systems</div>
+    <div class="header-line"></div>
+    <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
+  </div>
+  <div class="gauges">
+    <div class="gauge">
+      <div class="gauge-ring">
+        <svg viewBox="0 0 64 64"><circle class="bg" cx="32" cy="32" r="28"/><circle class="fill cpu" id="cpu-fill" cx="32" cy="32" r="28"/></svg>
+        <div class="gauge-value" id="cpu-val">--</div>
+      </div>
+      <div class="gauge-label">CPU</div>
+    </div>
+    <div class="gauge">
+      <div class="gauge-ring">
+        <svg viewBox="0 0 64 64"><circle class="bg" cx="32" cy="32" r="28"/><circle class="fill ram" id="ram-fill" cx="32" cy="32" r="28"/></svg>
+        <div class="gauge-value" id="ram-val">--</div>
+      </div>
+      <div class="gauge-label">RAM</div>
+    </div>
+    <div class="gauge">
+      <div class="gauge-ring">
+        <svg viewBox="0 0 64 64"><circle class="bg" cx="32" cy="32" r="28"/><circle class="fill gpu" id="gpu-fill" cx="32" cy="32" r="28"/></svg>
+        <div class="gauge-value" id="gpu-val">--</div>
+      </div>
+      <div class="gauge-label">Jobs</div>
+    </div>
+    <div class="gauge">
+      <div class="gauge-ring">
+        <svg viewBox="0 0 64 64"><circle class="bg" cx="32" cy="32" r="28"/><circle class="fill agents" id="agents-fill" cx="32" cy="32" r="28"/></svg>
+        <div class="gauge-value" id="agents-val">--</div>
+      </div>
+      <div class="gauge-label">Tasks</div>
+    </div>
+  </div>
+  <div class="uptime">
+    <div class="uptime-val" id="uptime-val">--</div>
+    <div class="uptime-label">uptime</div>
+  </div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim (see agents.html for full note) ──
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  var circumference=2*Math.PI*28; // r=28
+
+  function setGauge(id,pct,colorClass){
+    var el=document.getElementById(id+'-fill'),valEl=document.getElementById(id+'-val');
+    if(!el)return;
+    var p=Math.max(0,Math.min(100,Number(pct)||0));
+    var offset=circumference*(1-p/100);
+    el.setAttribute('stroke-dasharray',circumference);
+    el.setAttribute('stroke-dashoffset',offset);
+    if(valEl)valEl.textContent=Math.round(p);
+  }
+  // Count gauge: Jobs/Tasks are counts, not percentages — there's no
+  // meaningful "max" to divide by, so the ring is just an active/idle
+  // indicator (full when >0, empty when 0) and the center shows the real
+  // count. Showing (count/8)*100 as the number reads like "38 tasks" for 3.
+  function setCountGauge(id,count){
+    var el=document.getElementById(id+'-fill'),valEl=document.getElementById(id+'-val');
+    if(!el)return;
+    var c=Math.max(0,Number(count)||0);
+    el.setAttribute('stroke-dasharray',circumference);
+    el.setAttribute('stroke-dashoffset', c>0 ? 0 : circumference);
+    if(valEl)valEl.textContent=c;
+  }
+
+  async function fetchStatus(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      var raw=await window.pywebview.api.warden_api('/api/status');
+      if(!raw)return;
+      var d=JSON.parse(raw);
+      var sys=d.system||{};
+      setGauge('cpu',sys.cpuPercent||0);
+      setGauge('ram',sys.memPercent||0);
+      setCountGauge('gpu',d.runningJobs||0);
+      // Tasks gauge = the user's real todos, NOT the scheduledTasks counter
+      // (that's the 3 iris-digest cron jobs, which aren't "your tasks"). Fetch
+      // /api/tasks and count the ones that aren't iris-digest crons — same
+      // filter the Ops widget uses, so this matches what you actually have.
+      setCountGauge('agents', await taskCount());
+      if(d.uptime){
+        var h=Math.floor(d.uptime/3600),m=Math.floor((d.uptime%3600)/60);
+        document.getElementById('uptime-val').textContent=h+'h '+m+'m';
+      }
+    }catch(e){}
+  }
+
+  async function taskCount(){
+    try{
+      var raw=await window.pywebview.api.warden_api('/api/tasks');
+      var d=raw?JSON.parse(raw):null;
+      var tasks=(d&&d.tasks)||[];
+      return tasks.filter(function(t){return (t.id||'').indexOf('iris-digest-')!==0;}).length;
+    }catch(e){ return 0; }
+  }
+
+  fetchStatus();
+  setInterval(fetchStatus,30000);
+})();
+</script>
+</body>
+</html>

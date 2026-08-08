@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Direct Line</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  .panel{
+    width:100%;height:100%;position:relative;display:flex;flex-direction:column;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(0,255,255,0.06) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-color: rgba(0,10,20,0.88);
+    border-radius: 6px;overflow:hidden;
+  }
+  .panel::before,.panel::after{
+    content:'';position:absolute;width:16px;height:16px;pointer-events:none;z-index:10;
+  }
+  .panel::before{top:0;left:0;border-top:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+  .panel::after{bottom:0;right:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-tr,.br-bl{position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .br-tr{top:0;right:0;border-top:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-bl{bottom:0;left:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+
+  /* ── header ── */
+  .header{
+    padding:14px 16px 0;flex-shrink:0;display:flex;align-items:center;gap:10px;
+  }
+  .header-icon{
+    font-size:12px;color:#00ffff;text-shadow:0 0 6px rgba(0,255,255,0.5);
+  }
+  .header-title{
+    font-size:11px;font-weight:600;letter-spacing:2px;color:#00ffff;
+    text-shadow:0 0 8px rgba(0,255,255,0.5);text-transform:uppercase;
+  }
+  .header-line{
+    flex:1;height:1px;background:linear-gradient(90deg,rgba(0,255,255,0.3),transparent);
+  }
+  .header-status{
+    font-size:8px;color:rgba(0,255,255,0.4);letter-spacing:1px;text-transform:uppercase;
+  }
+
+  /* ── messages ── */
+  .messages{
+    flex:1;padding:12px 14px;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:8px;
+  }
+  .msg{
+    max-width:85%;padding:8px 12px;border-radius:4px;font-size:11px;line-height:1.5;
+    animation: msg-in 0.2s ease-out;
+  }
+  @keyframes msg-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+  .msg.user{
+    align-self:flex-end;background:rgba(255,170,0,0.08);
+    border:1px solid rgba(255,170,0,0.2);color:#ffcc66;
+    border-radius:6px 2px 6px 6px;
+  }
+  .msg.jarvis{
+    align-self:flex-start;background:rgba(0,255,255,0.05);
+    border:1px solid rgba(0,255,255,0.15);color:rgba(200,235,255,0.9);
+    border-radius:2px 6px 6px 6px;
+  }
+  .msg .ts{
+    display:block;font-size:7px;margin-top:3px;opacity:0.35;letter-spacing:0.5px;
+  }
+  .msg.user .ts{color:#ffaa00}
+  .msg.jarvis .ts{color:#00ffff}
+  .msg .sender{
+    font-size:7px;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;opacity:0.5;
+  }
+  .empty-chat{
+    flex:1;display:flex;align-items:center;justify-content:center;
+    color:rgba(0,255,255,0.2);font-size:10px;font-style:italic;
+  }
+
+  /* ── input ── */
+  .input-row{
+    display:flex;gap:0;padding:10px 14px 14px;flex-shrink:0;
+  }
+  .input-row input{
+    flex:1;min-width:0;background:rgba(0,20,40,0.6);border:1px solid rgba(0,255,255,0.2);
+    border-right:none;border-radius:4px 0 0 4px;color:#cfefff;font-size:11px;
+    padding:8px 10px;outline:none;font-family:inherit;
+  }
+  .input-row input:focus{border-color:rgba(0,255,255,0.5);box-shadow:0 0 8px rgba(0,255,255,0.1)}
+  .input-row input::placeholder{color:rgba(0,255,255,0.15)}
+  .input-row button{
+    background:rgba(0,255,255,0.08);border:1px solid rgba(0,255,255,0.2);
+    border-left:none;border-radius:0 4px 4px 0;color:#00ffff;font-size:10px;
+    padding:8px 14px;cursor:pointer;font-family:inherit;letter-spacing:1px;
+    text-transform:uppercase;font-weight:600;transition:background 0.15s;
+  }
+  .input-row button:hover{background:rgba(0,255,255,0.18)}
+  .input-row button:disabled{opacity:0.3;cursor:default}
+
+  /* scrollbar */
+  .messages::-webkit-scrollbar{width:3px}
+  .messages::-webkit-scrollbar-track{background:transparent}
+  .messages::-webkit-scrollbar-thumb{background:rgba(0,255,255,0.1);border-radius:2px}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="br-tr"></div><div class="br-bl"></div>
+  <div class="header">
+    <div class="header-icon">◈</div>
+    <div class="header-title">Direct Line</div>
+    <div class="header-line"></div>
+    <div class="header-status">secure</div>
+  </div>
+  <div class="messages" id="messages">
+    <div class="empty-chat">Direct line to Jarvis. Type a message.</div>
+  </div>
+  <div class="input-row">
+    <input type="text" id="input" placeholder="Message Jarvis…" maxlength="500">
+    <button id="send">Send</button>
+  </div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim (see agents.html for full note) ──
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  var messagesEl=document.getElementById('messages'),input=document.getElementById('input'),
+      sendBtn=document.getElementById('send'),config=null,emptyEl=null;
+
+  function emptyState(){
+    return messagesEl.querySelector('.empty-chat');
+  }
+
+  async function loadConfig(){
+    try{if(window.pywebview&&window.pywebview.api&&window.pywebview.api.get_widget_config){
+      var r=await window.pywebview.api.get_widget_config();config=JSON.parse(r);
+    }}catch(e){}
+  }
+
+  // ── history pulled straight from Warden's message store ──
+  // Single-user Warden stores every Direct Line exchange under OWNER_JID
+  // ('owner@local'); chat_send → /api/chat writes both sides server-side.
+  // We just pull the last 100 back on load — no local copy. (file:// iframe
+  // localStorage doesn't survive pywebview restarts, and a bridge JSON file
+  // was just a stale duplicate of what Warden already keeps.)
+
+  function fmtTs(ts){
+    var d;
+    if(!ts) d=new Date();
+    else if(typeof ts==='number') d=new Date(ts);
+    else if(typeof ts==='string'&&/^\d+$/.test(ts)) d=new Date(parseInt(ts,10));
+    else d=new Date(ts);
+    if(isNaN(d)) d=new Date();
+    return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+  }
+
+  function renderMessage(role,text,ts){
+    var el=emptyState();if(el)el.remove();
+    var div=document.createElement('div');
+    div.className='msg '+role;
+    var sender=role==='user'?'YOU':'JARVIS';
+    div.innerHTML='<span class="sender">'+sender+'</span>'+esc(text)+'<span class="ts">'+fmtTs(ts)+'</span>';
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop=messagesEl.scrollHeight;
+  }
+
+  async function loadHistory(){
+    try{
+      var raw=await window.pywebview.api.warden_api('/api/messages?limit=100');
+      if(!raw) return;
+      var d=JSON.parse(raw);
+      var arr=(d&&d.messages)||[];
+      arr.forEach(function(m){
+        if(!m||typeof m.content!=='string'||!m.content) return;
+        renderMessage(m.is_bot_message?'jarvis':'user', m.content, m.timestamp);
+      });
+    }catch(e){}
+  }
+
+  function addMessage(role,text){
+    renderMessage(role,text,null);
+  }
+
+  async function doSend(){
+    var text=input.value.trim();if(!text)return;
+    addMessage('user',text);input.value='';sendBtn.disabled=true;
+    try{
+      if(window.pywebview&&window.pywebview.api&&window.pywebview.api.chat_send){
+        var resp=await window.pywebview.api.chat_send(text);
+        if(resp)addMessage('jarvis',resp);
+      }else if(config&&config.warden_url){
+        var r=await fetch(config.warden_url.replace(/\/+$/,'')+'/api/chat',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({message:text}),signal:AbortSignal.timeout(30000)
+        });
+        if(r.ok){var d=await r.json();addMessage('jarvis',d.reply||d.text||d.response||'')}
+        else addMessage('jarvis','[unavailable]');
+      }else{
+        addMessage('jarvis','[Set Warden URL in hologram settings ⚙]');
+      }
+    }catch(e){addMessage('jarvis','[unavailable]')}
+    sendBtn.disabled=false;
+  }
+
+  sendBtn.addEventListener('click',doSend);
+  input.addEventListener('keydown',function(ev){if(ev.key==='Enter'){ev.preventDefault();doSend()}});
+
+  function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+  loadHistory();
+  if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);
+})();
+</script>
+</body>
+</html>

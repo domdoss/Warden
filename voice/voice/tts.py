@@ -11,6 +11,7 @@ The public API is unchanged:
 """
 
 import io
+import os
 import wave
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -63,32 +64,33 @@ class KokoroTTS(BaseTTS):
 
     @staticmethod
     def _pick_device():
-        """Best available device for Kokoro inference.
-
-        Priority: Intel XPU → DirectML → CUDA → CPU.
-        """
-        try:
-            import torch
-        except ImportError:
-            return "cpu"
-
-        try:
-            import intel_extension_for_pytorch  # noqa: F401
-        except ImportError:
-            pass
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            return "xpu"
-
-        try:
-            import torch_directml  # type: ignore
-            if torch_directml.is_available():
-                return torch_directml.device()
-        except Exception:
-            pass
-
-        if torch.cuda.is_available():
-            return "cuda"
+        """Kokoro-82M is tiny — GPU kernel-launch overhead makes it slower
+        than CPU on AMD ROCm. Always use CPU."""
         return "cpu"
+
+        # -- original device selection (kept for reference) --
+        # try:
+        #     import torch
+        # except ImportError:
+        #     return "cpu"
+        # try:
+        #     import intel_extension_for_pytorch  # noqa: F401
+        # except ImportError:
+        #     pass
+        # if hasattr(torch, "xpu") and torch.xpu.is_available():
+        #     return "xpu"
+        # try:
+        #     import torch_directml  # type: ignore
+        #     if torch_directml.is_available():
+        #         return torch_directml.device()
+        # except Exception:
+        #     pass
+        # if torch.cuda.is_available():
+        #     os.environ.setdefault("ROCBLAS_TENSILE_LIBPATH", "/opt/rocm/lib/rocblas/library")
+        #     os.environ.setdefault("MIOPEN_CACHE_DIR", os.path.expanduser("~/.cache/miopen"))
+        #     os.environ.setdefault("MIOPEN_FIND_MODE", "1")
+        #     return "cuda"
+        # return "cpu"
 
     def _get_pipeline(self):
         """Lazy load Kokoro pipeline."""
@@ -107,6 +109,15 @@ class KokoroTTS(BaseTTS):
             except TypeError:
                 self._pipeline = KPipeline(lang_code=self.lang_code)
         return self._pipeline
+
+    def warmup(self) -> None:
+        """Load the pipeline and run a short synthesis so the model is hot.
+        Call once at startup — subsequent synthesize() calls skip the load cost."""
+        pipeline = self._get_pipeline()
+        # Run a tiny utterance to warm GPU kernels / JIT / CPU cache
+        for _ in pipeline("Warmup.", voice=self.voice, speed=self.speed,
+                          split_pattern=r"\n+"):
+            pass
 
     def synthesize(self, text: str) -> bytes:
         """Synthesize text to speech audio bytes (WAV format)."""
@@ -243,6 +254,13 @@ class TTS(BaseTTS):
                 lang_code=lang_code or "a",
                 device=device,
             )
+        elif self.engine_name == "orpheus_cpp":
+            # llama.cpp/GGUF backend (orpheus-cpp) — ROCm-friendly, unlike the
+            # vLLM "orpheus" engine above. See voice/tts_orpheus_cpp.py.
+            from .tts_orpheus_cpp import OrpheusCppTTS
+
+            self._impl = OrpheusCppTTS(voice=voice, speed=speed,
+                                       lang_code=lang_code, device=device)
         else:
             raise ValueError(f"Unsupported tts_engine: {engine!r}")
 

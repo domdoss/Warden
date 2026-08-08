@@ -1,0 +1,13 @@
+Warden patch — chat history via /api/messages, clap detection on satellite mic,
+Iron Man dashboard (panels/today/digest/agents/chat/tasks/upload/system), Iris
+routing + summaries, disk endpoint, Orpheus TTS, layout/colour tweaks.
+
+Extract over the Warden repo root (paths are repo-relative). No dockbox->warden
+rename is included (deferred). chat_history.json is NOT used — Direct Line now
+fetches /api/messages?limit=100 from Warden.
+
+Files:
+  src/index.ts, src/status-server.ts, src/providers/google.ts
+  container/agent-runner/src/index.ts
+  voice/main.py, voice/voice/clap.py, voice/voice/tts.py, voice/run.sh
+  voice/ui/{agents,chat,digest,jarvis,jarvis_window,system,panels,tasks,today,upload}.html

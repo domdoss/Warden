@@ -183,71 +183,7 @@
             .timer-value { font-size: 13vmin; }
         }
 
-        /* Settings gear + panel (Warden URL) */
-        .settings-gear {
-            position: absolute;
-            top: 1.5vmin;
-            left: 1.5vmin;
-            font-size: 3vmin;
-            color: #00ffff;
-            opacity: 0.35;
-            cursor: pointer;
-            user-select: none;
-            z-index: 20;
-            transition: opacity 0.2s;
-        }
-        .settings-gear:hover { opacity: 0.9; }
-        .settings-panel {
-            position: absolute;
-            top: 5.5vmin;
-            left: 1.5vmin;
-            background: rgba(0, 10, 20, 0.92);
-            border: 1px solid rgba(0, 255, 255, 0.4);
-            border-radius: 1vmin;
-            padding: 1.5vmin;
-            z-index: 21;
-            min-width: 36vmin;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            color: #cfefff;
-            box-shadow: 0 0 2vmin rgba(0, 255, 255, 0.25);
-        }
-        .settings-row {
-            display: flex;
-            align-items: center;
-            gap: 1vmin;
-            margin: 0.8vmin 0;
-        }
-        .settings-row label {
-            font-size: 1.6vmin;
-            color: #7fdfff;
-            min-width: 9vmin;
-        }
-        .settings-row input {
-            flex: 1;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(0, 255, 255, 0.3);
-            border-radius: 0.5vmin;
-            color: #eafcff;
-            font-size: 1.6vmin;
-            padding: 0.6vmin 0.8vmin;
-            outline: none;
-        }
-        .settings-row input:focus { border-color: #00ffff; }
-        .settings-row button {
-            background: rgba(0, 255, 255, 0.15);
-            border: 1px solid rgba(0, 255, 255, 0.5);
-            color: #eafcff;
-            font-size: 1.6vmin;
-            padding: 0.5vmin 1.4vmin;
-            border-radius: 0.5vmin;
-            cursor: pointer;
-        }
-        .settings-row button:hover { background: rgba(0, 255, 255, 0.3); }
-        .settings-status {
-            font-size: 1.4vmin;
-            color: #7fff7f;
-            min-height: 1.4vmin;
-        }
+        /* Settings moved to the Warden Dashboard window (panels.html). */
     </style>
 </head>
 <body>
@@ -266,26 +202,9 @@
             <div id="timer-label" class="timer-label"></div>
         </div>
 
-        <!-- Top-left: settings gear (Warden URL + Satellite host) -->
-        <div id="settings-gear" class="settings-gear" title="Warden + satellite settings">⚙</div>
-        <div id="settings-panel" class="settings-panel" style="display:none;">
-            <div class="settings-row">
-                <label for="warden-url-input">Warden URL</label>
-                <input id="warden-url-input" type="text" placeholder="http://host:3200" />
-            </div>
-            <div class="settings-row">
-                <button id="warden-url-save">Save</button>
-                <span id="warden-url-status" class="settings-status"></span>
-            </div>
-            <div class="settings-row">
-                <label for="satellite-host-input">Satellite host</label>
-                <input id="satellite-host-input" type="text" placeholder="pi-ip (blank = local audio)" />
-            </div>
-            <div class="settings-row">
-                <button id="satellite-host-save">Save</button>
-                <span id="satellite-host-status" class="settings-status"></span>
-            </div>
-        </div>
+        <!-- Settings gear + panel moved to the Warden Dashboard (panels.html)
+             window — it lived on the hologram but wasn't obviously part of it,
+             and the dashboard is where widget show/hide controls belong. -->
 
         <!-- Bottom: mini hologram slots (6 blank stubs) -->
         <div class="mini-slots" id="mini-slots">
@@ -912,77 +831,9 @@
         // Suppress default context menu so right-clicks don't interfere.
         document.addEventListener('contextmenu', (ev) => ev.preventDefault());
 
-        // ── Settings panel (Warden URL + Satellite host) ─────────────────
-        (function () {
-            const gear = document.getElementById('settings-gear');
-            const panel = document.getElementById('settings-panel');
-            const input = document.getElementById('warden-url-input');
-            const saveBtn = document.getElementById('warden-url-save');
-            const statusEl = document.getElementById('warden-url-status');
-            const satInput = document.getElementById('satellite-host-input');
-            const satSaveBtn = document.getElementById('satellite-host-save');
-            const satStatusEl = document.getElementById('satellite-host-status');
-            let open = false;
-            function toggle() {
-                open = !open;
-                panel.style.display = open ? 'block' : 'none';
-                if (open) {
-                    statusEl.textContent = '';
-                    satStatusEl.textContent = '';
-                    const p = callApi('get_warden_url');
-                    if (p && p.then) {
-                        p.then(url => { if (typeof url === 'string') { input.value = url; } })
-                         .catch(() => {});
-                    }
-                    const sp = callApi('get_satellite_host');
-                    if (sp && sp.then) {
-                        sp.then(host => { if (typeof host === 'string') { satInput.value = host; } })
-                         .catch(() => {});
-                    }
-                    setTimeout(() => input.focus(), 50);
-                }
-            }
-            gear.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(); });
-            panel.addEventListener('mousedown', (ev) => ev.stopPropagation());
-            panel.addEventListener('touchstart', (ev) => ev.stopPropagation());
-            saveBtn.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                const url = (input.value || '').trim();
-                statusEl.textContent = 'Saving…';
-                const p = callApi('save_warden_url', url);
-                if (p && p.then) {
-                    p.then(() => { statusEl.textContent = 'Saved. Restart to rebind SSE.'; })
-                     .catch(err => { statusEl.textContent = 'Error: ' + err; });
-                } else {
-                    statusEl.textContent = 'API not ready';
-                }
-            });
-            satSaveBtn.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                const host = (satInput.value || '').trim();
-                satStatusEl.textContent = 'Saving…';
-                const p = callApi('save_satellite_host', host);
-                if (p && p.then) {
-                    p.then(() => { satStatusEl.textContent = 'Saved. Restart to apply audio routing.'; })
-                     .catch(err => { satStatusEl.textContent = 'Error: ' + err; });
-                } else {
-                    satStatusEl.textContent = 'API not ready';
-                }
-            });
-            // Enter in an input saves that field; Escape closes without saving.
-            input.addEventListener('keydown', (ev) => {
-                if (ev.key === 'Enter') { ev.preventDefault(); saveBtn.click(); }
-                else if (ev.key === 'Escape') { ev.preventDefault(); toggle(); }
-            });
-            satInput.addEventListener('keydown', (ev) => {
-                if (ev.key === 'Enter') { ev.preventDefault(); satSaveBtn.click(); }
-                else if (ev.key === 'Escape') { ev.preventDefault(); toggle(); }
-            });
-            // Stop the gear click from also triggering a button_press on the
-            // document-level mousedown handler (which fires before this).
-            gear.addEventListener('mousedown', (ev) => ev.stopPropagation());
-            gear.addEventListener('touchstart', (ev) => ev.stopPropagation());
-        })();
+        // ── Settings ─────────────────────────────────────────────────────
+        // Settings (Warden URL, satellite host, widget show/hide) moved to the
+        // Warden Dashboard window (panels.html).
 
         // pywebview readiness (only for logging; calls are guarded anyway)
         window.addEventListener('pywebviewready', () => {

@@ -291,6 +291,7 @@
       else if (name === 'actions' && UD.renderActions) UD.renderActions();
       else if (name === 'sms' && UD.loadSmsView) UD.loadSmsView();
       else if (name === 'talk' && UD.initTalkView) UD.initTalkView();
+      else if (name === 'bio' && UD.loadBio) UD.loadBio();
     }
   }
   window.__localSwitchView = switchView;

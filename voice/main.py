@@ -57,7 +57,7 @@ from core.session_store import SessionStore
 from ui.jarvis_window import JarvisWindow
 from voice.audio import AudioPlayer, AudioRecorder, BeepGenerator, find_device
 from voice.capture import capture
-from voice.clap import ClapDetector
+from voice.clap import ClapDetector, SatelliteClapDetector
 from voice.satellite import SatelliteAudioPlayer, SatelliteAudioRecorder
 from voice.stt import STT
 from voice.tts import TTS
@@ -243,20 +243,47 @@ class JarvisApp:
             )
             # The local laptop hologram always uses VAD + clap + the listen loop.
             self._push_to_talk = False
-        self.stt = STT(model=voice_cfg.get("whisper_model", "base"))
+        # STT is CPU-bound by default. On the Radeon VII (ROCm), torch's HIP
+        # backend exposes itself as torch.cuda.*, so STT._pick_device() would
+        # otherwise grab the GPU — and loading Whisper on the same GPU that
+        # Kokoro TTS already occupies segfaults the process. Whisper "small" on
+        # CPU is fast enough for short utterances and keeps the GPU free for TTS.
+        # Override with voice.stt_device: "cuda" if you want GPU STT back.
+        self.stt = STT(
+            model=voice_cfg.get("whisper_model", "base"),
+            device=voice_cfg.get("stt_device", "cpu"),
+        )
         self.tts = TTS(
             engine=voice_cfg.get("tts_engine", "kokoro"),
             voice=voice_cfg.get("tts_voice", None),
             speed=float(voice_cfg.get("tts_speed", 1.0)),
         )
+        # Warm the TTS model now so the first user turn doesn't pay load cost.
+        if hasattr(self.tts._impl, "warmup"):
+            self.tts._impl.warmup()
 
         self.window: Optional[JarvisWindow] = None
         self.clap_detector: Optional[ClapDetector] = None
+        # True while a clap-initiated interaction is running in push-to-talk
+        # mode. Push-to-talk normally records on hold (no VAD, button release
+        # ends the turn), but a clap wake has no button to release — so a
+        # clap-initiated turn uses VAD recording + the auto-listen loop, just
+        # like the local hologram. Cleared when the interaction ends.
+        self._clap_turn = False
 
         self.running = False
         self._conversation_active = False
         self._stop_requested = False
         self._is_speaking = False
+        # Serializes all _speak() calls so the app never POSTs two WAVs to the
+        # Pi at once. Without this, the bootstrap "Assistant online." _speak and
+        # the chat _tts_worker _speak run as independent coroutines and can hit
+        # the Pi's /play concurrently — and the Pi's satellite_server has no
+        # play mutex, so two pw-play overlap = "3 people talking over each
+        # other / cut up" garble. One play at a time = clean (like the desktop
+        # pw-play test). Barge-in still cancels: _external_cancel POSTs /cancel
+        # to the Pi, which kills the in-flight pw-play and releases the lock.
+        self._speak_lock = asyncio.Lock()
         # When Jarvis last finished speaking. The clap detector ignores claps
         # for _SPEAK_COOLDOWN seconds after, so Jarvis's own voice/echo (or a
         # trailing word) can't wake it and start a self-triggered loop.
@@ -330,10 +357,12 @@ class JarvisApp:
             return
 
     async def _record_audio_async(self) -> bytes:
-        if self._push_to_talk:
+        if self._push_to_talk and not self._clap_turn:
             # Hold-to-record (satellite/Pi): record the whole hold until the
             # button is released; no VAD. Falls back to VAD if the recorder
             # somehow lacks record_held (it shouldn't in satellite mode).
+            # A clap-initiated turn (self._clap_turn) has no button to release,
+            # so it falls through to VAD recording below.
             fn = getattr(self.audio_recorder, "record_held", None)
             if fn is None:
                 fn = self.audio_recorder.record_until_silence
@@ -429,7 +458,7 @@ class JarvisApp:
             # loop self-feeding. The clap detector honors the same cooldown via
             # _last_spoke_at, but it's paused mid-conversation, so the
             # in-conversation recorder has to apply this itself.
-            if not self._push_to_talk:
+            if not self._push_to_talk or self._clap_turn:
                 await self._wait_until_quiet()
             self._update_ui_state("listening")
             await self._play_beep_async(self.beep_generator.start_beep)
@@ -551,6 +580,7 @@ class JarvisApp:
         finally:
             self._conversation_active = False
             self._stop_requested = False
+            self._clap_turn = False
             self._update_ui_state("idle")
             self._resume_clap()
 
@@ -643,42 +673,43 @@ class JarvisApp:
         return text
 
     async def _tts_loop(self) -> None:
-        """Drains chunks from _tts_queue, batches into sentences, speaks them."""
-        buffer: list[str] = []
-        reply: list[str] = []  # whole turn's reply, for sign-off detection
+        """Drains chunks from _tts_queue and speaks the reply — but ONLY after
+        the orchestrator's stream is fully received, not on the fly.
+
+        Orpheus runs on the same GPU as the orchestrator (gemma4 on the Radeon
+        VII). If we synthesize each sentence as it streams in, Orpheus and the
+        LLM run concurrently and contend for VRAM/compute, which garbles the
+        audio (the greeting is clean because no LLM is generating then; live
+        replies aren't). So we buffer the whole turn, and once the turn-end
+        sentinel arrives — meaning the LLM is done and the GPU is free — we
+        split it into sentences and speak them sequentially. This trades a
+        little first-audio latency for clean synthesis.
+        """
+        reply: list[str] = []  # whole turn's reply
         while self.running:
             try:
                 chunk = await self._tts_queue.get()
             except asyncio.CancelledError:
                 return
             if chunk is None:
-                # Turn end: flush whatever's left
-                if buffer:
-                    text = self._join_chunks(buffer).strip()
-                    buffer.clear()
-                    if text:
-                        await self._speak(text)
-                # If Jarvis bid the user farewell, end the conversation.
-                self._end_conversation = self._is_signoff(self._join_chunks(reply))
+                # Turn end: the orchestrator is done. Now synthesize + speak.
+                full = self._join_chunks(reply).strip()
                 reply.clear()
+                self._end_conversation = self._is_signoff(full)
+                if full:
+                    await self._speak(full)
                 self._update_ui_state("idle")
                 self._turn_done.set()
                 continue
-
             reply.append(chunk)
-            buffer.append(chunk)
-            joined = self._join_chunks(buffer)
-            # Speak when we have at least one sentence boundary
-            for sep in (".", "!", "?", "\n"):
-                if sep in joined:
-                    head, _, tail = joined.rpartition(sep)
-                    head = head + sep
-                    buffer.clear()
-                    if tail.strip():
-                        buffer.append(tail)
-                    if head.strip():
-                        await self._speak(head)
-                    break
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split prose into speakable sentences on . ! ? and newlines, keeping
+        the delimiter attached (Orpheus voices punctuation better with it)."""
+        import re
+        parts = re.split(r"(?<=[.!?])\s+|(?<=\n)", text)
+        return [p.strip() for p in parts if p.strip()]
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
@@ -710,16 +741,17 @@ class JarvisApp:
             text = self._strip_markdown(text)
             if not text:
                 return
-            audio = await self._synthesize_async(text)
-            if not audio:
-                return
-            self._is_speaking = True
-            try:
-                await self._play_audio_async(audio)
-            finally:
-                self._is_speaking = False
-                self._last_spoke_at = time.monotonic()
-                self._on_audio_level(0.0)
+            async with self._speak_lock:
+                audio = await self._synthesize_async(text)
+                if not audio:
+                    return
+                self._is_speaking = True
+                try:
+                    await self._play_audio_async(audio)
+                finally:
+                    self._is_speaking = False
+                    self._last_spoke_at = time.monotonic()
+                    self._on_audio_level(0.0)
         except Exception as e:
             print(f"TTS error: {e}")
 
@@ -756,6 +788,54 @@ class JarvisApp:
             self.loop.call_soon_threadsafe(self._start_hold_turn)
         else:
             asyncio.run_coroutine_threadsafe(self._handle_interaction(), self.loop)
+
+    def _on_chat_send(self, text: str) -> str:
+        """Send a text message to Jarvis and return the reply. Called from the
+        Direct Line chat panel via pywebview's JS bridge (sync → async bridge)."""
+        if not (self.loop and self.loop.is_running()):
+            return "[Jarvis offline]"
+        if not text or not text.strip():
+            return ""
+        future = asyncio.run_coroutine_threadsafe(
+            self._chat_turn(text), self.loop
+        )
+        try:
+            return future.result(timeout=60)
+        except concurrent.futures.TimeoutError:
+            return "[response timed out]"
+        except Exception as e:
+            return f"[error: {e}]"
+
+    async def _chat_turn(self, text: str) -> str:
+        """Send a text message through the bridge and collect the text reply
+        (no TTS, no audio — just the text response for the chat panel)."""
+        chunks: list[str] = []
+        got_content = asyncio.Event()
+
+        def on_chunk(chunk: str) -> None:
+            chunks.append(chunk)
+            got_content.set()
+
+        # Wire temporary handlers. on_chunk/on_turn_end are *methods* that set
+        # the bridge's internal _on_chunk/_on_turn_end — assigning to them as
+        # attributes replaces the method and never updates the callback the SSE
+        # loop actually calls. Call them, and save/restore _on_chunk directly.
+        orig_chunk = self.bridge._on_chunk
+        self.bridge.on_chunk(on_chunk)
+        # Keep original on_turn_end so voice TTS still works — we only
+        # care about on_chunk for collecting the text reply.
+
+        try:
+            await self.bridge.send_text(text, sender_name="Jarvis")
+            # Wait for content (chat_complete event), not the premature
+            # on_turn_end from _finish_turn which fires before the real reply.
+            try:
+                await asyncio.wait_for(got_content.wait(), timeout=55)
+            except asyncio.TimeoutError:
+                pass
+            return self._join_chunks(chunks) if chunks else "[no response]"
+        finally:
+            self.bridge.on_chunk(orig_chunk)
 
     def _start_hold_turn(self) -> None:
         """Runs on the event loop thread (scheduled by _on_button_press).
@@ -886,11 +966,30 @@ class JarvisApp:
         if self._conversation_active:
             return
         self._pause_clap()
+        # A clap wake has no button release to end a hold recording, so force
+        # VAD recording (record_until_silence) for every turn of the
+        # conversation this kicks off. The auto-listen loop then runs until the
+        # user says the end phrase ("that's all for now") — same continuous
+        # behavior as the local hologram. _handle_interaction clears _clap_turn
+        # in its finally.
+        self._clap_turn = True
+        # A clap wake uses VAD recording (no button release), and the recorder's
+        # silence_timeout comes from config (~0.6s) — a natural speech pause
+        # ends the turn immediately and cuts the user off. Loosen it for the
+        # whole clap-initiated conversation so the user can pause between
+        # sentences, then restore the original value when the loop ends.
+        saved_silence_timeout = getattr(self.audio_recorder, "silence_timeout", None)
         try:
-            await self._speak(self.GREETING)
-        except Exception:
-            pass
-        await self._handle_interaction()
+            try:
+                await self._speak(self.GREETING)
+            except Exception:
+                pass
+            if saved_silence_timeout is not None:
+                self.audio_recorder.silence_timeout = 2.5
+            await self._handle_interaction()
+        finally:
+            if saved_silence_timeout is not None:
+                self.audio_recorder.silence_timeout = saved_silence_timeout
 
     # ----- async loop -----
 
@@ -936,23 +1035,40 @@ class JarvisApp:
         voice_cfg = self.config.voice
         if not voice_cfg.get("clap_enabled", True):
             return
-        # Satellite mode has no local mic to clap into.
+        threshold = int(voice_cfg.get("clap_threshold", 9000))
+        crest = float(voice_cfg.get("clap_crest", 4.0))
+        # Don't wake mid-conversation, while Jarvis is speaking, or in the
+        # brief tail after speech — otherwise Jarvis's own voice/echo can
+        # self-trigger a new prompt and loop.
+        can_fire = lambda: not (
+            self._conversation_active
+            or self._is_speaking
+            or (time.monotonic() - self._last_spoke_at) < self._SPEAK_COOLDOWN
+        )
         if self._is_satellite:
-            print("[jarvis] satellite mode — clap wake disabled (no local mic)")
+            # Satellite mode: clap into the Pi's mic over its /mic PCM stream
+            # instead of a local device. The detector holds its own /mic
+            # connection and releases it on pause() so the recorder can take
+            # the mic exclusively during a turn (same release pattern as the
+            # local detector's PyAudio open/close).
+            self.clap_detector = SatelliteClapDetector(
+                host=self._satellite_host,
+                port=self._satellite_port,
+                on_double_clap=self._on_clap,
+                can_fire=can_fire,
+                threshold=threshold,
+                crest_factor=crest,
+            )
+            self.clap_detector.start()
+            print(f"[jarvis] clap detection on — double-clap to wake "
+                  f"(satellite {self._satellite_host}:{self._satellite_port})")
             return
         self.clap_detector = ClapDetector(
             on_double_clap=self._on_clap,
-            # Don't wake mid-conversation, while Jarvis is speaking, or in the
-            # brief tail after speech — otherwise Jarvis's own voice/echo can
-            # self-trigger a new prompt and loop.
-            can_fire=lambda: not (
-                self._conversation_active
-                or self._is_speaking
-                or (time.monotonic() - self._last_spoke_at) < self._SPEAK_COOLDOWN
-            ),
+            can_fire=can_fire,
             sample_rate=int(voice_cfg.get("clap_sample_rate", 48000)),
-            threshold=int(voice_cfg.get("clap_threshold", 9000)),
-            crest_factor=float(voice_cfg.get("clap_crest", 4.0)),
+            threshold=threshold,
+            crest_factor=crest,
             input_device=self._input_device,
         )
         self.clap_detector.start()
@@ -1002,14 +1118,26 @@ class JarvisApp:
         self._control_server.start()
 
         ui_cfg = self.config.ui
+        widgets_cfg = self.config.widgets
+        feed_height = 0  # widgets live in their own window, not a feed band
+        widget_config = {
+            "feed_height": feed_height,
+            "refresh_minutes": int(widgets_cfg.get("refresh_minutes", 60)),
+            "enabled": widgets_cfg.get("enabled", ["weather", "email", "task", "notes"]),
+            "warden_url": self._get_warden_url(),
+            "notes_folder": (self.config.notes or {}).get("default_folder", "Inbox"),
+        }
         self.window = JarvisWindow(
             on_button_press=self._on_button_press,
             width=ui_cfg.get("window_width", 480),
             height=ui_cfg.get("window_height", 480),
+            feed_height=feed_height,
+            widget_config=widget_config,
             on_get_warden_url=self._get_warden_url,
             on_save_warden_url=self._save_warden_url,
             on_get_satellite_host=self._get_satellite_host,
             on_save_satellite_host=self._save_satellite_host,
+            on_chat_send=self._on_chat_send,
         )
 
         asyncio.run_coroutine_threadsafe(self._bootstrap_async(), self.loop)
