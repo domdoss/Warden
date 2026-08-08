@@ -270,7 +270,7 @@ A full PWA at `http://localhost:3200`. It includes:
 | 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
 | 📜 **Process Logs** | Live log tail | 📰 **Digest** | Daily briefing + news summaries |
-| 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | 💡 **Suggested Tasks** | AI-generated task suggestions based on your activity |
+| 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI |
 
 ### ⚡ Quick Actions
 
