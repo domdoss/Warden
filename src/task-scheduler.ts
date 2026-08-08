@@ -4,6 +4,7 @@ import path from 'path';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN, WORKSPACE_ROOT } from './config.js';
 import {
+  createTask,
   deleteTask,
   getDueTasks,
   getTaskById,
@@ -308,27 +309,72 @@ export async function runDigestNow(
 }
 
 /**
- * Run a Byte suggest-task immediately (manual "Scan" from the dashboard
- * Suggested Tasks box). Mirrors runDigestNow, but does NOT require
- * task.status === 'active' — the suggest tasks are seeded paused by default
- * (the user opts the cron in via the Scheduled Tasks UI), and a manual Scan
- * is an explicit user action that must work regardless of pause state.
- * runTask reschedules a cron task to computeNextRun (the next cron time after
- * now), which is harmless for a paused task the scheduler won't fire anyway.
+ * Run a Byte email-scan immediately (manual "Scan" from the dashboard Suggested
+ * Tasks box). The suggestion scan is purely on-demand — there is NO standing
+ * cron task for it (suggestion scans are not cron jobs and must not pollute the
+ * Ops Tasks list). So unlike runDigestNow, this does NOT look up a seeded task;
+ * the caller passes the prompt + chat_jid.
+ *
+ * We create a one-shot scheduled_tasks row for the run. This is required because
+ * runTask calls logTaskRun, and task_run_logs.task_id has a FOREIGN KEY to
+ * scheduled_tasks.id — a purely transient (non-DB) task id would violate it.
+ * The row is created with next_run:null (the scheduler loop never fires it —
+ * only this manual run does) and schedule_type:'once', so runTask's once-path
+ * auto-deletes the row immediately after injecting the prompt. It is therefore
+ * not a cron, never persists, and is hidden from the Ops Tasks list anyway by
+ * the byte-suggest-* filter. A leftover row from a previous scan that didn't
+ * clean up is cleared first (PK conflict → delete + recreate).
  */
 export async function runSuggestNow(
   range: string,
   deps: SchedulerDependencies,
+  prompt: string,
+  chatJid: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!['today', 'week', 'month'].includes(range)) {
     return { ok: false, error: `invalid range: ${range}` };
   }
-  const id = `byte-suggest-${range}`;
-  const task = getTaskById(id);
-  if (!task) {
-    return { ok: false, error: `no ${id} task` };
+  if (!prompt) {
+    return { ok: false, error: 'no prompt for range' };
   }
-  await runTask(task, deps);
+  const id = `byte-suggest-${range}`;
+  const now = new Date().toISOString();
+  const base = {
+    id,
+    chat_jid: chatJid,
+    prompt,
+    schedule_type: 'once' as const,
+    schedule_value: now,
+    context_mode: 'isolated' as const,
+    next_run: null,
+    status: 'active' as const,
+    created_at: now,
+  };
+  try {
+    createTask(base);
+  } catch (err: any) {
+    // Stale row from a prior scan that didn't auto-delete — clear and retry.
+    deleteTask(id);
+    try {
+      createTask(base);
+    } catch (err2: any) {
+      return { ok: false, error: String(err2?.message ?? err2) };
+    }
+  }
+  const task: ScheduledTask = {
+    ...base,
+    group_folder: 'owner',
+    last_run: null,
+    last_result: null,
+  };
+  try {
+    await runTask(task, deps);
+  } catch (err: any) {
+    // runTask threw before its once-path delete (e.g. storeMessage failed) —
+    // make sure we don't leave the row behind to pollute the Tasks list.
+    deleteTask(id);
+    return { ok: false, error: String(err?.message ?? err) };
+  }
   return { ok: true };
 }
 

@@ -2111,74 +2111,21 @@ function seedIrisDigestTasks(): void {
   }
 }
 
-// ── Byte suggest-task seeding ─────────────────────────────────────────────
-// Three tasks (today/week/month) that ask the orchestrator to delegate to Byte
-// to scan email for actionable tasks and write them as suggestions. They carry
-// crons staggered +10 min after the matching Iris digest cron, but are seeded
-// PAUSED — the user decides if/when to enable automatic scanning via the
-// Scheduled Tasks UI. The dashboard Scan button runs them on demand via
-// runSuggestNow regardless of pause state. Idempotent via stable ids.
-const BYTE_SUGGEST_TASKS = [
-  {
-    id: 'byte-suggest-today',
-    cron: '17 * * * *',
-    rangeLabel: 'today',
-    prompt:
-      'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from today. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
-  },
-  {
-    id: 'byte-suggest-week',
-    cron: '27 21 * * *',
-    rangeLabel: 'this week',
-    prompt:
-      'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 7 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
-  },
-  {
-    id: 'byte-suggest-month',
-    cron: '40 20 * * 0',
-    rangeLabel: 'this month',
-    prompt:
-      'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 30 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
-  },
-];
-
-function seedByteSuggestTasks(): void {
-  const existing = new Map((getAllTasks() ?? []).map((t) => [t.id, t]));
-  for (const t of BYTE_SUGGEST_TASKS) {
-    const found = existing.get(t.id);
-    // Re-sync the prompt (and cron) on already-seeded tasks so edits propagate
-    // without deleting/recreating. We do NOT force the status back to paused
-    // once it exists — if the user enabled the cron, leave it enabled.
-    if (found) {
-      if (found.prompt !== t.prompt || found.schedule_value !== t.cron) {
-        updateTask(t.id, { prompt: t.prompt, schedule_value: t.cron });
-        logger.info({ taskId: t.id }, 'updated Byte suggest task prompt');
-      }
-      continue;
-    }
-    const task: Omit<ScheduledTask, 'last_run' | 'last_result'> = {
-      id: t.id,
-      chat_jid: OWNER_JID,
-      prompt: t.prompt,
-      schedule_type: 'cron',
-      schedule_value: t.cron,
-      context_mode: 'isolated',
-      next_run: computeNextRun({
-        id: t.id, chat_jid: OWNER_JID, prompt: t.prompt,
-        schedule_type: 'cron', schedule_value: t.cron,
-        context_mode: 'isolated', next_run: null,
-        last_run: null, last_result: null, status: 'paused', created_at: '',
-      }),
-      // Paused by default — the user opts in via the Scheduled Tasks UI. The
-      // dashboard Scan button runs the task on demand via runSuggestNow, which
-      // bypasses the active-status check, so manual scans work while paused.
-      status: 'paused',
-      created_at: new Date().toISOString(),
-    };
-    createTask(task);
-    logger.info({ taskId: t.id, cron: t.cron }, 'seeded Byte suggest task (paused)');
-  }
-}
+// ── Byte suggest-task prompts (on-demand only — NO cron tasks) ─────────────
+// The dashboard Suggested Tasks box is purely on-demand: the user clicks Scan,
+// runSuggestNow builds a TRANSIENT task from the matching prompt below and runs
+// it (no DB row, no crontab entry). There are deliberately NO seeded cron tasks
+// for this — suggestion scans are not scheduled jobs and must not pollute the
+// Ops "Tasks" list (which shows /api/tasks). runSuggestNow takes the prompt +
+// chat_jid so it never needs a DB lookup.
+const BYTE_SUGGEST_PROMPTS: Record<string, string> = {
+  today:
+    'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from today. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
+  week:
+    'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 7 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
+  month:
+    'Delegate to Byte with this task: "Call read_emails (limit 500) and keep only emails from the last 30 days. Identify actionable tasks/projects the user should act on. For each, call suggest_task with a clear title, a short body, a suggested_project (a project name or \'personal\'), a due_date only if the email states one, and the source email. Skip newsletters, confirmations, receipts, shipping notices, ads, and anything uncertain. Do not create real tasks — only suggest_task. End your turn."',
+};
 
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
@@ -2522,7 +2469,7 @@ async function main(): Promise<void> {
       }
     },
     triggerDigest: (span: string) => runDigestNow(span, schedulerDeps),
-    triggerSuggest: (range: string) => runSuggestNow(range, schedulerDeps),
+    triggerSuggest: (range: string) => runSuggestNow(range, schedulerDeps, BYTE_SUGGEST_PROMPTS[range], OWNER_JID),
   });
 
   // Start the scheduled-task loop. The scheduler no longer runs agents — it
@@ -2539,13 +2486,6 @@ async function main(): Promise<void> {
   // and POSTs it to /api/summaries — feeding the dashboard digest panel.
   // Idempotent: seeded only if a task with the stable id doesn't yet exist.
   seedIrisDigestTasks();
-
-  // ── Byte suggest-task tasks (today / week / month) ─────────────────────
-  // Three tasks that delegate to Byte to scan email for actionable tasks and
-  // write them as suggestions for the dashboard Suggested Tasks box. Paused by
-  // default — the user enables the cron via the Scheduled Tasks UI. The
-  // dashboard Scan button runs them on demand. Idempotent via stable ids.
-  seedByteSuggestTasks();
 
   // ── Personal catch-all project ────────────────────────────────────────
   // The system requires every work task to belong to a project. Personal is

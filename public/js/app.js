@@ -283,7 +283,7 @@
     else if (window.UserDash) {
       // Views ported from the groupware user dashboard (userdash-extras.js)
       const UD = window.UserDash;
-      if (name === 'projects' && UD.loadProjects) { UD.loadProjects(); UD.loadSuggestedTasks && UD.loadSuggestedTasks(); }
+      if (name === 'projects' && UD.loadProjects) UD.loadProjects();
       else if (name === 'heartbeat' && UD.loadHeartbeat) UD.loadHeartbeat();
       else if (name === 'alarms' && UD.loadAlarms) UD.loadAlarms();
       else if (name === 'vault' && UD.loadVault) UD.loadVault();
@@ -291,7 +291,6 @@
       else if (name === 'actions' && UD.renderActions) UD.renderActions();
       else if (name === 'sms' && UD.loadSmsView) UD.loadSmsView();
       else if (name === 'talk' && UD.initTalkView) UD.initTalkView();
-      else if (name === 'bio' && UD.loadBio) UD.loadBio();
     }
   }
   window.__localSwitchView = switchView;

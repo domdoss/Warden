@@ -1020,248 +1020,7 @@ window.UserDash = (() => {
     if (['zip','tar','gz','rar','7z','bz2'].includes(ext)) return { cls: 'zip', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>' };
     if (['mp3','wav','flac','aac','ogg','m4a'].includes(ext)) return { cls: 'audio', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>' };
     if (['mp4','mov','avi','mkv','webm'].includes(ext)) return { cls: 'video', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>' };
-    // ---- User Bio page ----
-  // Quick-add word bubbles for common personal fields. Clicking a bubble
-  // drops a labeled line into the textarea at the cursor (or appends one),
-  // then the user types the value. The full markdown is also editable
-  // directly. Saves to /api/bio → USER_BIO.md in the workspace root, which
-  // Iris digests read (buildDigestContext) to ground summaries in real
-  // context (sleep, weather, habits).
-  const BIO_FIELDS = [
-    { label: 'Name', line: 'Name: ' },
-    { label: 'What to call me', line: 'Call me: ' },
-    { label: 'Location', line: 'Location: ' },
-    { label: 'Age', line: '- Age: ' },
-    { label: 'Pronouns', line: '- Pronouns: ' },
-    { label: 'Role / job', line: '- Role: ' },
-    { label: 'Wake time', line: '- Wake up around: ' },
-    { label: 'Bed time', line: '- Should be asleep by: ' },
-    { label: 'Sleep target', line: '- Sleep target: ' },
-    { label: 'Morning person', line: '- Morning person: ' },
-    { label: 'Favorite food', line: '- Favorite food: ' },
-    { label: 'Favorite book', line: '- Favorite book: ' },
-    { label: 'Favorite movie', line: '- Favorite movie: ' },
-    { label: 'Favorite song', line: '- Favorite song: ' },
-    { label: 'Favorite band/artist', line: '- Favorite band/artist: ' },
-    { label: 'Music taste', line: '- Music taste: ' },
-    { label: 'Hobbies', line: '- Hobbies: ' },
-    { label: 'Exercise', line: '- Exercise: ' },
-    { label: 'Beach or forest', line: '- Beach or forest: ' },
-    { label: 'Coffee or tea', line: '- Coffee or tea: ' },
-    { label: 'Dog or cat person', line: '- Dog or cat person: ' },
-    { label: 'Introvert or extrovert', line: '- Introvert/extrovert: ' },
-    { label: 'Favorite season', line: '- Favorite season: ' },
-    { label: 'Ideal weekend', line: '- Ideal weekend: ' },
-    { label: 'Spirit animal', line: '- Spirit animal: ' },
-    { label: 'Pet peeves', line: '- Pet peeves: ' },
-    { label: 'A weird talent', line: '- Weird talent: ' },
-    // --- day-to-day context an AI assistant needs ---
-    { label: 'Timezone', line: '- Timezone: ' },
-    { label: 'Languages spoken', line: '- Languages: ' },
-    { label: 'Communication style', line: '- Communication style: ' },
-    { label: 'Answer length', line: '- Answer length: ' },
-    { label: 'Answer tone', line: '- Answer tone: ' },
-    { label: 'Formality', line: '- Formality: ' },
-    { label: 'How to interrupt me', line: '- Interrupt me: ' },
-    { label: 'Decision style', line: '- Decisions: ' },
-    { label: 'Work hours', line: '- Work hours: ' },
-    { label: 'Focus / deep-work hours', line: '- Focus hours: ' },
-    { label: 'Energy peak (sharpest)', line: '- Sharpest around: ' },
-    { label: 'Company / job', line: '- Company: ' },
-    { label: 'Tech stack / tools', line: '- Tech stack: ' },
-    { label: 'Skills / expertise', line: '- Skills: ' },
-    { label: 'Learning goals', line: '- Learning: ' },
-    { label: 'Current priorities', line: '- Priorities: ' },
-    { label: 'Daily routine', line: '- Daily routine: ' },
-    { label: 'Diet / restrictions', line: '- Diet: ' },
-    { label: 'Allergies', line: '- Allergies: ' },
-    { label: 'Medications', line: '- Medications: ' },
-    { label: 'Health / fitness goals', line: '- Fitness goals: ' },
-    { label: 'Household', line: '- Household: ' },
-    { label: 'Pets', line: '- Pets: ' },
-    { label: 'Commute', line: '- Commute: ' },
-    { label: 'Frequent locations', line: '- Frequent locations: ' },
-    { label: 'Financial priorities', line: '- Money priorities: ' },
-    { label: 'Payday (money in)', line: '- Payday: ' },
-    { label: 'Money out day', line: '- Bills due: ' },
-    { label: 'Car payment day', line: '- Car payment: ' },
-    { label: 'Rent / mortgage day', line: '- Rent/mortgage: ' },
-    { label: 'Pay amount', line: '- Pay amount: ' },
-    { label: 'Rent amount', line: '- Rent amount: ' },
-    { label: 'Preferred units', line: '- Units (metric/imperial): ' },
-    { label: 'Currency', line: '- Currency: ' },
-    { label: 'News / topics I follow', line: '- Follows: ' },
-    { label: 'Avoid (topics/words)', line: '- Avoid: ' },
-    { label: 'Birthday', line: '- Birthday: ' },
-    { label: 'Important people', line: '- Important people: ' },
-    { label: 'Recurring commitments', line: '- Recurring: ' },
-    { label: 'Driving vs transit', line: '- Getting around: ' },
-    // --- sleep & morning (drives alarms + digests) ---
-    { label: 'Sleep style', line: '- Sleep style: ' },
-    { label: 'Snoozer?', line: '- Snooze habit: ' },
-    { label: 'Caffeine cutoff', line: '- No caffeine after: ' },
-    { label: 'Screen wind-down', line: '- Wind-down time: ' },
-    { label: 'Shower time', line: '- Showers: ' },
-    // --- home / environment (weather & comfort nudges) ---
-    { label: 'Runs hot / cold', line: '- Temperature: ' },
-    { label: 'Thermostat pref', line: '- Thermostat: ' },
-    { label: 'Windows open/closed', line: '- Windows: ' },
-    { label: 'AC / heating pref', line: '- AC/heating: ' },
-    { label: 'Light sensitivity', line: '- Light sensitivity: ' },
-    // --- chore days (recurring reminders) ---
-    { label: 'Grocery day', line: '- Grocery day: ' },
-    { label: 'Trash / recycling day', line: '- Trash day: ' },
-    { label: 'Laundry day', line: '- Laundry day: ' },
-    { label: 'Cleaning day', line: '- Cleaning day: ' },
-    { label: 'Cooking vs takeout', line: '- Cooking: ' },
-    { label: 'Water intake goal', line: '- Water goal: ' },
-    // --- work & productivity ---
-    { label: 'Meeting preference', line: '- Meetings: ' },
-    { label: 'Email style', line: '- Email: ' },
-    { label: 'Calendar style', line: '- Calendar: ' },
-    { label: 'Note-taking tool', line: '- Notes tool: ' },
-    { label: 'Productivity system', line: '- Productivity: ' },
-    { label: 'Procrastination triggers', line: '- Procrastinate on: ' },
-    { label: 'Distractions', line: '- Distractions: ' },
-    { label: 'How I decompress', line: '- Decompress by: ' },
-    { label: 'Stress signals', line: '- Stressed when: ' },
-    // --- dev / tech setup ---
-    { label: 'Primary device', line: '- Primary device: ' },
-    { label: 'Phone OS', line: '- Phone OS: ' },
-    { label: 'Browser', line: '- Browser: ' },
-    { label: 'Code editor', line: '- Editor: ' },
-    { label: 'Terminal', line: '- Shell: ' },
-    { label: 'Git workflow', line: '- Git: ' },
-    { label: 'AI tools used', line: '- AI tools: ' },
-    { label: 'Smart home devices', line: '- Smart home: ' },
-    { label: 'Car', line: '- Car: ' },
-    // --- relationships & people ---
-    { label: 'Partner / spouse', line: '- Partner: ' },
-    { label: 'Kids', line: '- Kids: ' },
-    { label: 'Family', line: '- Family: ' },
-    { label: 'Best friend', line: '- Best friend: ' },
-    { label: 'Emergency contact', line: '- Emergency contact: ' },
-    { label: 'People to avoid', line: '- Avoid people: ' },
-    { label: 'Anniversary', line: '- Anniversary: ' },
-    // --- health ---
-    { label: 'Chronic conditions', line: '- Conditions: ' },
-    { label: 'Blood type', line: '- Blood type: ' },
-    { label: 'Glasses / contacts', line: '- Vision: ' },
-    { label: 'Accessibility needs', line: '- Accessibility: ' },
-    { label: 'Doctor next due', line: '- Doctor: ' },
-    { label: 'Dentist next due', line: '- Dentist: ' },
-    // --- preferences & boundaries ---
-    { label: 'Humor style', line: '- Humor: ' },
-    { label: 'Swearing ok?', line: '- Swearing: ' },
-    { label: 'Emoji ok?', line: '- Emoji: ' },
-    { label: 'Dark mode', line: '- Dark mode: ' },
-    { label: 'Religion / practice', line: '- Religion: ' },
-    { label: 'Meditation', line: '- Meditation: ' },
-    // --- media & interests ---
-    { label: 'Podcasts', line: '- Podcasts: ' },
-    { label: 'YouTube follows', line: '- YouTube: ' },
-    { label: 'Sports teams', line: '- Sports: ' },
-    { label: 'Gaming', line: '- Gaming: ' },
-    { label: 'Streaming services', line: '- Streaming: ' },
-    { label: 'Subscriptions to cancel', line: '- Subscriptions: ' },
-    // --- security ---
-    { label: 'Password manager', line: '- Passwords: ' },
-    { label: '2FA preference', line: '- 2FA: ' },
-    // --- goals & future ---
-    { label: 'Bucket list', line: '- Bucket list: ' },
-    { label: 'Long-term goals', line: '- Long-term goals: ' },
-    { label: 'This year', line: '- This year: ' },
-    { label: 'Side projects', line: '- Side projects: ' },
-    { label: 'Travel plans', line: '- Travel: ' },
-    { label: 'Charity / causes', line: '- Causes: ' },
-    { label: '+ Custom', line: '- ' },
-  ];
-  let bioBound = false;
-
-  function bindBio() {
-    if (bioBound) return;
-    bioBound = true;
-    const bubbleEl = document.getElementById('bioBubbles');
-    if (bubbleEl) {
-      bubbleEl.innerHTML = BIO_FIELDS.map((f, i) =>
-        `<button type="button" class="chip" data-bio="${i}" style="cursor:pointer;padding:6px 12px;border:1px solid var(--border,#333);border-radius:999px;background:transparent;color:inherit">${esc(f.label)}</button>`
-      ).join('');
-      bubbleEl.querySelectorAll('[data-bio]').forEach(b => {
-        b.addEventListener('click', () => insertBioLine(BIO_FIELDS[parseInt(b.dataset.bio, 10)].line));
-      });
-    }
-    document.getElementById('btnBioSave')?.addEventListener('click', saveBio);
-    document.getElementById('btnBioReload')?.addEventListener('click', loadBio);
-    document.getElementById('btnBioAddIncome')?.addEventListener('click', () => {
-      const n = document.getElementById('bioIncName');
-      const d = document.getElementById('bioIncDay');
-      const a = document.getElementById('bioIncAmt');
-      if (!n || !n.value.trim()) return;
-      insertBioLine(`- Income: ${n.value.trim()} | day ${d.value.trim() || '?'} | ${a.value.trim() || '?'}`);
-      n.value = ''; d.value = ''; a.value = '';
-    });
-    document.getElementById('btnBioAddExpense')?.addEventListener('click', () => {
-      const n = document.getElementById('bioExpName');
-      const d = document.getElementById('bioExpDay');
-      const a = document.getElementById('bioExpAmt');
-      if (!n || !n.value.trim()) return;
-      insertBioLine(`- Expense: ${n.value.trim()} | day ${d.value.trim() || '?'} | ${a.value.trim() || '?'}`);
-      n.value = ''; d.value = ''; a.value = '';
-    });
-  }
-
-  function insertBioLine(label) {
-    const ta = document.getElementById('bioText');
-    if (!ta) return;
-    // If a line already starts with this label, jump to it instead of duplicating.
-    const existing = ta.value.indexOf(label);
-    if (existing >= 0) {
-      ta.focus();
-      ta.setSelectionRange(existing + label.length, existing + label.length);
-      return;
-    }
-    const atEnd = ta.value.length;
-    const needsNL = ta.value && !ta.value.endsWith('\n');
-    const ins = (needsNL ? '\n' : '') + label;
-    const pos = ta.selectionStart ?? atEnd;
-    ta.value = ta.value.slice(0, pos) + ins + ta.value.slice(pos);
-    ta.focus();
-    const caret = pos + ins.length;
-    ta.setSelectionRange(caret, caret);
-  }
-
-  async function loadBio() {
-    bindBio();
-    const ta = document.getElementById('bioText');
-    const status = document.getElementById('bioStatus');
-    try {
-      const r = await fetch(fileUrl('/api/bio'));
-      const d = await r.json();
-      if (ta) ta.value = d.text || '';
-      if (status) status.textContent = d.text ? 'Loaded.' : 'No bio yet — click a bubble to start.';
-    } catch (e) {
-      if (status) status.textContent = 'Failed to load bio.';
-    }
-  }
-
-  async function saveBio() {
-    const ta = document.getElementById('bioText');
-    const status = document.getElementById('bioStatus');
-    if (status) status.textContent = 'Saving…';
-    try {
-      const r = await fetch(fileUrl('/api/bio'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: ta ? ta.value : '' }),
-      });
-      const d = await r.json();
-      if (status) status.textContent = d.ok ? 'Saved.' : ('Error: ' + (d.error || 'unknown'));
-    } catch (e) {
-      if (status) status.textContent = 'Failed to save bio.';
-    }
-  }
-
-  return { cls: 'file', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' };
+    return { cls: 'file', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' };
   }
 
   function renderFileList(entries) {
@@ -1373,15 +1132,9 @@ window.UserDash = (() => {
 
   // --- Drag & Drop ---
 
-  // When the modal is opened from a project's Tasks tab, this is set to that
-  // project's id so the created task lands in the project (not the Personal
-  // default). Cleared to null for a generic home quick-task.
-  let quickTaskProjectId = null;
-
-  async function openQuickTask(projectId) {
+  async function openQuickTask() {
     const modal = document.getElementById('quickTaskModal');
     if (!modal) return;
-    quickTaskProjectId = projectId || null;
     // Populate assignee dropdown with group members only
     const sel = document.getElementById('qtAssignee');
     sel.innerHTML = '<option value="">— select person —</option>';
@@ -1401,7 +1154,7 @@ window.UserDash = (() => {
     document.getElementById('qtPriority').value = 'medium';
     document.getElementById('qtDueDate').value = '';
     document.getElementById('qtNotes').value = '';
-    document.getElementById('quickTaskModalTitle').textContent = quickTaskProjectId ? 'New Task' : 'Quick Task';
+    document.getElementById('quickTaskModalTitle').textContent = 'Quick Task';
     document.getElementById('btnSaveQuickTask').onclick = saveQuickTask;
     modal.classList.remove('hidden');
     setTimeout(() => document.getElementById('qtTitle').focus(), 50);
@@ -1421,20 +1174,10 @@ window.UserDash = (() => {
       await fetch('/api/work-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() },
-        body: JSON.stringify({ title, description, priority, assigned_to, due_date, project_id: quickTaskProjectId || undefined }),
+        body: JSON.stringify({ title, description, priority, assigned_to, due_date }),
       });
       document.getElementById('quickTaskModal').classList.add('hidden');
-      // Refresh whichever view the task was added from: the open project's
-      // Tasks tab, or the home My Tasks list.
-      if (quickTaskProjectId && currentProjectId === quickTaskProjectId && currentProjectData) {
-        const r = await fetch('/api/projects/' + encodeURIComponent(currentProjectId) + '/tasks', { headers: { 'x-user-session': userSession() } });
-        const d = await r.json();
-        currentProjectData.tasks = d.tasks || d || [];
-        renderProjectWorkTasks();
-      } else {
-        loadHome();
-      }
-      quickTaskProjectId = null;
+      loadHome();
     } catch (e) {
       btn.disabled = false;
       btn.textContent = 'Assign Task';
@@ -1490,138 +1233,6 @@ window.UserDash = (() => {
       document.getElementById('projectList').innerHTML = '<div class="empty-state"><p class="empty-title">Unable to load projects</p></div>';
     }
   }
-
-  // --- Suggested Tasks ---
-  // Byte scans email and writes suggestions to the store; the user reviews,
-  // edits the title + picks a project, and clicks Add to commit a real work
-  // task via HTTP (no AI creates tasks directly). Blank until a Scan runs.
-  let suggestScanInFlight = false;
-
-  async function loadSuggestedTasks() {
-    try {
-      const r = await fetch('/api/suggested-tasks', { headers: { 'x-user-session': userSession() } });
-      const d = await r.json();
-      renderSuggestedTasks(d.suggestedTasks || []);
-    } catch (e) {
-      console.error('loadSuggestedTasks error:', e);
-      renderSuggestedTasks([]);
-    }
-  }
-
-  function renderSuggestedTasks(tasks) {
-    const list = document.getElementById('suggestedTasksList');
-    const badge = document.getElementById('suggestedTasksBadge');
-    if (badge) {
-      if (tasks.length) { badge.textContent = String(tasks.length); badge.classList.remove('hidden'); }
-      else badge.classList.add('hidden');
-    }
-    if (!list) return;
-    if (!tasks.length) {
-      list.innerHTML = '<div style="color:var(--text-secondary,#888);font-size:.8rem;font-style:italic;padding:6px 2px">No suggestions yet — pick a range and click Scan.</div>';
-      return;
-    }
-    const projOpts = ['<option value="">Personal</option>']
-      .concat(projectsCache.map(function(p) { return '<option value="' + escAttr(p.id) + '">' + esc(p.name) + '</option>'; }))
-      .join('');
-    list.innerHTML = tasks.map(function(s) {
-      const projVal = s.suggested_project && projectsCache.find(function(p) { return p.name === s.suggested_project; })
-        ? projectsCache.find(function(p) { return p.name === s.suggested_project; }).id : '';
-      return '<div class="sug-card" data-sid="' + escAttr(s.id) + '" style="border:1px solid var(--border,#333);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--bg,#101018)">'
-        + '<input class="sug-title" value="' + escAttr(s.title) + '" style="width:100%;background:transparent;border:none;color:var(--text-primary,#e0e0e0);font-size:.85rem;font-weight:600;margin-bottom:4px;outline:none">'
-        + (s.body ? '<div style="color:var(--text-secondary,#999);font-size:.78rem;margin-bottom:6px">' + esc(s.body) + '</div>' : '')
-        + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
-        + '<select class="sug-project" style="height:28px;font-size:.74rem;padding:0 6px;max-width:160px">' + projOpts + '</select>'
-        + '<input type="date" class="sug-due" value="' + escAttr(s.due_date || '') + '" style="height:28px;font-size:.74rem;padding:0 6px;max-width:140px">'
-        + (s.source ? '<span style="color:var(--text-secondary,#777);font-size:.7rem;margin-left:auto" title="' + escAttr(s.source) + '">from: ' + esc(s.source).substring(0, 40) + '</span>' : '')
-        + '</div>'
-        + '<div style="display:flex;gap:6px;margin-top:8px">'
-        + '<button class="btn btn-accent btn-sm" onclick="UserDash.commitSuggestion(\'' + escAttr(s.id) + '\')">Add</button>'
-        + '<button class="btn btn-ghost btn-sm" onclick="UserDash.dismissSuggestion(\'' + escAttr(s.id) + '\')">Dismiss</button>'
-        + '</div></div>';
-    }).join('');
-    // Set the project <select> values after innerHTML (option values must exist first).
-    Array.prototype.forEach.call(list.querySelectorAll('.sug-card'), function(card) {
-      const sid = card.dataset.sid;
-      const s = tasks.find(function(t) { return t.id === sid; });
-      if (!s) return;
-      const sel = card.querySelector('.sug-project');
-      if (sel) {
-        const match = s.suggested_project && projectsCache.find(function(p) { return p.name === s.suggested_project; });
-        sel.value = match ? match.id : '';
-      }
-    });
-  }
-
-  async function scanSuggestedTasks(range) {
-    const btn = document.getElementById('btnScanSuggest');
-    if (!btn || suggestScanInFlight) return;
-    suggestScanInFlight = true;
-    btn.classList.add('busy'); btn.disabled = true; btn.textContent = 'Scanning…';
-    try {
-      await fetch('/api/suggested-tasks/scan?range=' + encodeURIComponent(range), {
-        method: 'POST', headers: { 'x-user-session': userSession() },
-      });
-    } catch (e) {}
-    // Byte reads email + suggests async (local model, slow — that's the point).
-    // Poll for fresh suggestions to land, mirroring the digest Generate poll.
-    const before = (document.getElementById('suggestedTasksList')?.querySelector('.sug-card')) ? 1 : 0;
-    let polls = 0;
-    const tick = function() {
-      setTimeout(async function() {
-        let landed = false;
-        try {
-          const r = await fetch('/api/suggested-tasks', { headers: { 'x-user-session': userSession() } });
-          const d = await r.json();
-          const tasks = d.suggestedTasks || [];
-          renderSuggestedTasks(tasks);
-          // Stop once we have suggestions, or after ~90s regardless.
-          landed = tasks.length > 0;
-        } catch {}
-        if (landed || polls++ >= 22) {
-          btn.classList.remove('busy'); btn.disabled = false; btn.textContent = 'Scan';
-          suggestScanInFlight = false;
-          return;
-        }
-        tick();
-      }, 4000);
-    };
-    tick();
-  }
-
-  async function commitSuggestion(sid) {
-    const card = document.querySelector('.sug-card[data-sid="' + cssEsc(sid) + '"]');
-    if (!card) return;
-    const title = (card.querySelector('.sug-title')?.value || '').trim();
-    const projectId = card.querySelector('.sug-project')?.value || '';
-    const dueDate = card.querySelector('.sug-due')?.value || undefined;
-    if (!title) { card.querySelector('.sug-title')?.focus(); return; }
-    try {
-      const r = await fetch('/api/suggested-tasks/' + encodeURIComponent(sid), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() },
-        body: JSON.stringify({ title, project_id: projectId || undefined, due_date: dueDate }),
-      });
-      const d = await r.json();
-      if (d.ok) {
-        toast('Task added', 'info');
-        loadSuggestedTasks();
-        if (currentView === 'projects') loadProjects();
-      } else {
-        toast(d.error || 'Failed to add task', 'error');
-      }
-    } catch (e) { toast('Failed to add task', 'error'); }
-  }
-
-  async function dismissSuggestion(sid) {
-    try {
-      await fetch('/api/suggested-tasks/' + encodeURIComponent(sid), {
-        method: 'DELETE', headers: { 'x-user-session': userSession() },
-      });
-      loadSuggestedTasks();
-    } catch (e) { toast('Failed to dismiss', 'error'); }
-  }
-
-  function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
   function getGroupName(jid) {
     var g = projectGroupsCache.find(function(g) { return g.jid === jid; });
@@ -1733,40 +1344,6 @@ window.UserDash = (() => {
   function switchProjectTab(tab) {
     document.querySelectorAll('.project-tab').forEach(t => t.classList.toggle('active', t.dataset.ptab === tab));
     document.querySelectorAll('.project-tab-content').forEach(c => c.classList.toggle('active', c.id === 'ptab-' + tab));
-  }
-
-  // Return from a project's detail view to the project list. The Back button
-  // (#btnBackToProjects) and the project-tab clicks are bound in
-  // initProjectDetailBindings(); without them the detail view was a dead end
-  // (the handlers only existed in app-old.js, which the page no longer loads).
-  function closeProject() {
-    document.getElementById('projectDetailView')?.classList.add('hidden');
-    document.getElementById('projectListView')?.classList.remove('hidden');
-    currentProjectId = null;
-    currentProjectData = null;
-  }
-
-  function initProjectDetailBindings() {
-    if (document.body.dataset.projectTabsBound) return;
-    document.body.dataset.projectTabsBound = '1';
-    document.getElementById('btnBackToProjects')?.addEventListener('click', closeProject);
-    document.querySelectorAll('.project-tab').forEach(function (t) {
-      t.addEventListener('click', function () { switchProjectTab(t.dataset.ptab); });
-    });
-    // Suggested Tasks Scan button — Byte reads email for the chosen range and
-    // writes suggestions; loadSuggestedTasks polls until they land.
-    const scanBtn = document.getElementById('btnScanSuggest');
-    if (scanBtn) scanBtn.addEventListener('click', function () {
-      const range = document.getElementById('suggestRange')?.value || 'today';
-      scanSuggestedTasks(range);
-    });
-    // Project Tasks tab "+ Add Task" — opens the quick-task modal scoped to
-    // the current project (so the created task lands in this project, not the
-    // Personal default). The save handler picks up quickTaskProjectId.
-    const addWorkBtn = document.getElementById('btnAddWorkTask');
-    if (addWorkBtn) addWorkBtn.addEventListener('click', function () {
-      openQuickTask(currentProjectId || null);
-    });
   }
 
   function renderProjectOverview() {
@@ -4008,10 +3585,6 @@ window.UserDash = (() => {
 
   document.getElementById('gwBtnAddApiKey')?.addEventListener('click', addApiKey);
 
-  // Wire the project-detail tabs + Back button (frozen without this — see
-  // closeProject/initProjectDetailBindings above).
-  initProjectDetailBindings();
-
   async function deleteFile(p) {
     if (!confirm('Delete ' + p.split('/').pop() + '?')) return;
     try {
@@ -4053,10 +3626,6 @@ window.UserDash = (() => {
       body,
     });
     if (!res.ok) throw new Error('upload failed: ' + res.status);
-    // Server returns the absolute host path — the agent's read_file accepts
-    // absolute paths, so we hand the model the full path it can read directly.
-    const data = await res.json().catch(() => ({}));
-    if (data.path) return data.path;
     return (gFolder ? gFolder + '/' : '') + file.name;
   }
 
@@ -4068,35 +3637,33 @@ window.UserDash = (() => {
   }
 
   function initChatDropZone() {
-    if (document.body.dataset.dropBound) return;
-    document.body.dataset.dropBound = '1';
+    const composer = document.querySelector('#view-chat .composer');
+    if (!composer || composer.dataset.dropBound) return;
+    composer.dataset.dropBound = '1';
 
+    let dragCounter = 0;
     const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
 
-    // Whole-page drop zone: bind to the document so a file dropped anywhere on
-    // the dashboard uploads + shares its absolute path with the agent. We only
-    // act on drags that carry files, so in-app drags (kanban cards, text) keep
-    // their native behavior. preventDefault on dragover/drop is what stops
-    // Chrome from navigating to (opening) the dropped file.
-    document.addEventListener('dragenter', (e) => {
+    composer.addEventListener('dragenter', (e) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
-      document.body.classList.add('drag-over-files');
+      dragCounter++;
+      composer.classList.add('drag-over');
     });
-    document.addEventListener('dragover', (e) => {
+    composer.addEventListener('dragover', (e) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     });
-    document.addEventListener('dragleave', (e) => {
-      if (!hasFiles(e)) return;
-      // relatedTarget === null means the drag left the window entirely
-      if (e.relatedTarget === null) document.body.classList.remove('drag-over-files');
+    composer.addEventListener('dragleave', () => {
+      dragCounter = Math.max(0, dragCounter - 1);
+      if (dragCounter === 0) composer.classList.remove('drag-over');
     });
-    document.addEventListener('drop', async (e) => {
+    composer.addEventListener('drop', async (e) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
-      document.body.classList.remove('drag-over-files');
+      dragCounter = 0;
+      composer.classList.remove('drag-over');
       const files = Array.from(e.dataTransfer.files || []);
       if (!files.length) return;
       const gFolder = groupsMap[currentSession]?.folder || currentSession || '';
@@ -4141,10 +3708,6 @@ window.UserDash = (() => {
     deleteFile,
     renameFile,
     openProject,
-    loadSuggestedTasks,
-    scanSuggestedTasks,
-    commitSuggestion,
-    dismissSuggestion,
     editFinancials: function() { openProjectItemModal('financials'); },
     changeWorkTaskStatus,
     deleteProjectWorkTask,
@@ -4186,7 +3749,6 @@ window.UserDash = (() => {
     setupWizardNext,
     togglePane,
     switchPaneTab,
-
     loadProjects,
     loadAutomations,
     renderAutoTemplates,
@@ -4196,7 +3758,6 @@ window.UserDash = (() => {
     initTalkView,
     loadHeartbeat,
     loadAlarms,
-    loadBio,
     initChatDropZone,
   };
 })();
