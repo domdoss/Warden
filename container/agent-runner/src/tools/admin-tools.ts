@@ -39,31 +39,32 @@ registry.register({
 });
 
 registry.register({
-    name: 'add_digest_note',
-    description: 'Add a finding for Iris to fold into the digest. Call AFTER looking something up. Short and factual.\n\nTargeting by WHEN it matters (set spans + expires_at accordingly):\n- Today / in-progress → spans=["hourly"], expires_at = when it ends (repeats each hour until then).\n- Tomorrow → spans=["daily"], expires_at = start of the event day (so the day-of, an hourly note takes over).\n- Next week or beyond → spans=["weekly"], expires_at = the day before the event.\n- Snapshot (a result, a fact, news) → omit expiry; shown once per target span then dropped.\nThe day before an event, also post a daily "X tomorrow" note.',
+    name: 'suggest_task',
+    description: 'Suggest an actionable task for the user to review in the dashboard Suggested Tasks box. This only writes a suggestion — it never creates a real task; the user edits and commits it via the UI. Call once per actionable item found while scanning email. Give each suggestion a clear, self-contained title.',
     schema: {
         type: 'object',
         properties: {
-            text: { type: 'string', description: 'The finding — one concise sentence or a few markdown bullets.' },
-            source: { type: 'string', description: 'Optional label, e.g. "canucks", "news", "tour", "aapl"' },
-            expires_at: { type: 'string', description: 'ISO timestamp when this stops being relevant (e.g. game end). While unexpired the note repeats in each target digest; after, it is purged. Omit for a one-shot snapshot.' },
-            ttl_minutes: { type: 'number', description: 'Alternative to expires_at: minutes from now until expiry (e.g. 180 for 3h).' },
-            spans: { type: 'array', items: { type: 'string', enum: ['hourly', 'daily', 'weekly'] }, description: 'Which digests should include this. Default all three. Use ["hourly"] for today-only items.' },
+            title: { type: 'string', description: 'A short, actionable task title, phrased as an imperative the user can do.' },
+            body: { type: 'string', description: 'A short note on what the task is and why (1-2 sentences).' },
+            suggested_project: { type: 'string', description: 'A project name the task fits, or "personal" if none fits. Default "personal".' },
+            due_date: { type: 'string', description: 'Due date as YYYY-MM-DD, only if the email states a deadline. Omit otherwise.' },
+            source: { type: 'string', description: 'The source email, e.g. "Alex <alex@example.com>: Re: send the Q3 budget draft".' },
         },
-        required: ['text'],
+        required: ['title'],
     },
     handler: async (args, _context) => {
         try {
-            const spans = Array.isArray(args.spans) ? args.spans.map(String) : undefined;
-            const data = await writeCallbackAsync('add_digest_note', {
-                text: String(args.text || ''),
+            const data = await writeCallbackAsync('suggest_task', {
+                title: String(args.title || ''),
+                body: String(args.body || ''),
+                suggested_project: String(args.suggested_project || 'personal'),
+                due_date: args.due_date ? String(args.due_date) : undefined,
                 source: String(args.source || ''),
-                expires_at: args.expires_at ? String(args.expires_at) : undefined,
-                ttl_minutes: typeof args.ttl_minutes === 'number' ? args.ttl_minutes : undefined,
-                spans,
             }, 15000);
             if (data && data.error) return `Error: ${data.error}`;
-            return data && data.ok ? 'Added to digest context — Iris will fold it into the next digest.' : 'Failed to add digest note.';
+            return data && data.ok
+                ? `Suggested task: ${args.title}${data.duplicate ? ' (already suggested — skipped duplicate)' : ''}.`
+                : 'Failed to suggest task.';
         } catch (err: any) {
             return `Error: ${err?.message ?? String(err)}`;
         }

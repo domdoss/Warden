@@ -16,7 +16,6 @@ import {
 } from './db.js';
 import { resolveGroupFolderPath, type RegisteredGroup } from './group-folder.js';
 import { logger } from './logger.js';
-import { getDigestNotesForSpan } from './digest-notes.js';
 import { ScheduledTask } from './types.js';
 
 /**
@@ -103,9 +102,6 @@ export interface SchedulerDependencies {
  * rather than invented.
  */
 async function buildDigestContext(span = 'hourly'): Promise<string> {
-  const sinceMs = span === 'weekly' ? 7 * 24 * 3600_000
-    : span === 'daily' ? 24 * 3600_000
-    : 6 * 3600_000;
   const lines: string[] = [];
   const now = new Date();
   lines.push(`Current local time: ${now.toLocaleString('en-US', { timeZone: TIMEZONE })} (timezone ${TIMEZONE})`);
@@ -181,21 +177,6 @@ async function buildDigestContext(span = 'hourly'): Promise<string> {
       }
     } catch (err) { lines.push(`\nWeather: unavailable (${String((err as any)?.message ?? err)})`); }
   }
-
-  // Atlas (or any agent) can drop short findings into a shared pool via the
-  // add_digest_note tool. getDigestNotesForSpan returns only notes this span
-  // hasn't delivered yet (so a finding appears once per cadence, not repeated
-  // every hour) and marks them delivered — consume-on-read. Purges fully
-  // consumed notes. "Atlas gathers, Iris synthesizes."
-  try {
-    const notes = getDigestNotesForSpan(span, sinceMs);
-    if (notes.length) {
-      const ns = notes.map(n => `- ${n.ts}${n.source ? ` [${n.source}]` : ''}: ${n.text}`).join('\n');
-      lines.push(`\nRecent lookups (added to digest context):\n${ns}`);
-    } else {
-      lines.push('\nRecent lookups: none');
-    }
-  } catch (err) { lines.push(`\nRecent lookups: unavailable (${String((err as any)?.message ?? err)})`); }
 
   return lines.join('\n');
 }
@@ -321,6 +302,31 @@ export async function runDigestNow(
   const task = getTaskById(id);
   if (!task || task.status !== 'active') {
     return { ok: false, error: `no active ${id} task` };
+  }
+  await runTask(task, deps);
+  return { ok: true };
+}
+
+/**
+ * Run a Byte suggest-task immediately (manual "Scan" from the dashboard
+ * Suggested Tasks box). Mirrors runDigestNow, but does NOT require
+ * task.status === 'active' — the suggest tasks are seeded paused by default
+ * (the user opts the cron in via the Scheduled Tasks UI), and a manual Scan
+ * is an explicit user action that must work regardless of pause state.
+ * runTask reschedules a cron task to computeNextRun (the next cron time after
+ * now), which is harmless for a paused task the scheduler won't fire anyway.
+ */
+export async function runSuggestNow(
+  range: string,
+  deps: SchedulerDependencies,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!['today', 'week', 'month'].includes(range)) {
+    return { ok: false, error: `invalid range: ${range}` };
+  }
+  const id = `byte-suggest-${range}`;
+  const task = getTaskById(id);
+  if (!task) {
+    return { ok: false, error: `no ${id} task` };
   }
   await runTask(task, deps);
   return { ok: true };

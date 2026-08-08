@@ -166,17 +166,26 @@
     interval=setInterval(fetchDigest,20000);
   }
 
-  async function fetchDigest(){
+  // Fetch a digest. span (optional) overrides the mutable activeSpan — the
+  // Generate poll passes the span captured at click time so a mid-poll tab
+  // switch doesn't make it fetch/compare the wrong span. render=false fetches
+  // without painting (the poll just wants the timestamp to compare); render
+  // defaults to true for tab clicks / interval / focus refreshes.
+  async function fetchDigest(span, render){
+    var useSpan=span||activeSpan, doRender=render!==false;
     try{
-      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api){showEmpty();return}
-      var raw=await window.pywebview.api.warden_api('/api/summaries?span='+activeSpan);
-      if(!raw){showEmpty();return}
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api){if(doRender)showEmpty();return ''}
+      var raw=await window.pywebview.api.warden_api('/api/summaries?span='+useSpan);
+      if(!raw){if(doRender)showEmpty();return ''}
       var d=JSON.parse(raw);
-      if(!d||!d.summaries||!d.summaries.length){showEmpty();return}
+      if(!d||!d.summaries||!d.summaries.length){if(doRender)showEmpty();return ''}
       var s=d.summaries[0];
-      body.innerHTML='<div class="summary-text">'+renderMd(s.text)+'</div>';
-      footerTs.textContent=s.generated_at||'';
-    }catch(e){showEmpty()}
+      if(doRender){
+        body.innerHTML='<div class="summary-text">'+renderMd(s.text)+'</div>';
+        footerTs.textContent=s.generated_at||'';
+      }
+      return s.generated_at||'';
+    }catch(e){if(doRender)showEmpty();return ''}
   }
 
   function showEmpty(){
@@ -218,9 +227,18 @@
     var polls=0;
     function wait(){
       setTimeout(async function(){
-        await fetchDigest();
-        var nowTs=footerTs.textContent||'';
-        if(nowTs && nowTs!==beforeTs){ genBtn.classList.remove('busy'); genBtn.textContent='Generate'; return; }
+        // Fetch the span captured at click time, WITHOUT rendering — we only
+        // want its timestamp to detect the fresh digest landing. If we rendered
+        // here via activeSpan, a tab switch mid-poll would paint the wrong span
+        // and a different timestamp would falsely end the poll.
+        var ts=await fetchDigest(span,false);
+        if(ts && ts!==beforeTs){
+          // Fresh digest landed. Only paint it if the user is still on this
+          // tab — don't yank them off a tab they switched to. If they moved,
+          // the digest is stored server-side and will show when they come back.
+          if(activeSpan===span) await fetchDigest(span,true);
+          genBtn.classList.remove('busy'); genBtn.textContent='Generate'; return;
+        }
         if(polls++<22){ wait(); }
         else{ genBtn.classList.remove('busy'); genBtn.textContent='Generate'; }
       },4000);

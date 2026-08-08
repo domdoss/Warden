@@ -1373,9 +1373,15 @@ window.UserDash = (() => {
 
   // --- Drag & Drop ---
 
-  async function openQuickTask() {
+  // When the modal is opened from a project's Tasks tab, this is set to that
+  // project's id so the created task lands in the project (not the Personal
+  // default). Cleared to null for a generic home quick-task.
+  let quickTaskProjectId = null;
+
+  async function openQuickTask(projectId) {
     const modal = document.getElementById('quickTaskModal');
     if (!modal) return;
+    quickTaskProjectId = projectId || null;
     // Populate assignee dropdown with group members only
     const sel = document.getElementById('qtAssignee');
     sel.innerHTML = '<option value="">— select person —</option>';
@@ -1395,7 +1401,7 @@ window.UserDash = (() => {
     document.getElementById('qtPriority').value = 'medium';
     document.getElementById('qtDueDate').value = '';
     document.getElementById('qtNotes').value = '';
-    document.getElementById('quickTaskModalTitle').textContent = 'Quick Task';
+    document.getElementById('quickTaskModalTitle').textContent = quickTaskProjectId ? 'New Task' : 'Quick Task';
     document.getElementById('btnSaveQuickTask').onclick = saveQuickTask;
     modal.classList.remove('hidden');
     setTimeout(() => document.getElementById('qtTitle').focus(), 50);
@@ -1415,10 +1421,20 @@ window.UserDash = (() => {
       await fetch('/api/work-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() },
-        body: JSON.stringify({ title, description, priority, assigned_to, due_date }),
+        body: JSON.stringify({ title, description, priority, assigned_to, due_date, project_id: quickTaskProjectId || undefined }),
       });
       document.getElementById('quickTaskModal').classList.add('hidden');
-      loadHome();
+      // Refresh whichever view the task was added from: the open project's
+      // Tasks tab, or the home My Tasks list.
+      if (quickTaskProjectId && currentProjectId === quickTaskProjectId && currentProjectData) {
+        const r = await fetch('/api/projects/' + encodeURIComponent(currentProjectId) + '/tasks', { headers: { 'x-user-session': userSession() } });
+        const d = await r.json();
+        currentProjectData.tasks = d.tasks || d || [];
+        renderProjectWorkTasks();
+      } else {
+        loadHome();
+      }
+      quickTaskProjectId = null;
     } catch (e) {
       btn.disabled = false;
       btn.textContent = 'Assign Task';
@@ -1474,6 +1490,138 @@ window.UserDash = (() => {
       document.getElementById('projectList').innerHTML = '<div class="empty-state"><p class="empty-title">Unable to load projects</p></div>';
     }
   }
+
+  // --- Suggested Tasks ---
+  // Byte scans email and writes suggestions to the store; the user reviews,
+  // edits the title + picks a project, and clicks Add to commit a real work
+  // task via HTTP (no AI creates tasks directly). Blank until a Scan runs.
+  let suggestScanInFlight = false;
+
+  async function loadSuggestedTasks() {
+    try {
+      const r = await fetch('/api/suggested-tasks', { headers: { 'x-user-session': userSession() } });
+      const d = await r.json();
+      renderSuggestedTasks(d.suggestedTasks || []);
+    } catch (e) {
+      console.error('loadSuggestedTasks error:', e);
+      renderSuggestedTasks([]);
+    }
+  }
+
+  function renderSuggestedTasks(tasks) {
+    const list = document.getElementById('suggestedTasksList');
+    const badge = document.getElementById('suggestedTasksBadge');
+    if (badge) {
+      if (tasks.length) { badge.textContent = String(tasks.length); badge.classList.remove('hidden'); }
+      else badge.classList.add('hidden');
+    }
+    if (!list) return;
+    if (!tasks.length) {
+      list.innerHTML = '<div style="color:var(--text-secondary,#888);font-size:.8rem;font-style:italic;padding:6px 2px">No suggestions yet — pick a range and click Scan.</div>';
+      return;
+    }
+    const projOpts = ['<option value="">Personal</option>']
+      .concat(projectsCache.map(function(p) { return '<option value="' + escAttr(p.id) + '">' + esc(p.name) + '</option>'; }))
+      .join('');
+    list.innerHTML = tasks.map(function(s) {
+      const projVal = s.suggested_project && projectsCache.find(function(p) { return p.name === s.suggested_project; })
+        ? projectsCache.find(function(p) { return p.name === s.suggested_project; }).id : '';
+      return '<div class="sug-card" data-sid="' + escAttr(s.id) + '" style="border:1px solid var(--border,#333);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--bg,#101018)">'
+        + '<input class="sug-title" value="' + escAttr(s.title) + '" style="width:100%;background:transparent;border:none;color:var(--text-primary,#e0e0e0);font-size:.85rem;font-weight:600;margin-bottom:4px;outline:none">'
+        + (s.body ? '<div style="color:var(--text-secondary,#999);font-size:.78rem;margin-bottom:6px">' + esc(s.body) + '</div>' : '')
+        + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+        + '<select class="sug-project" style="height:28px;font-size:.74rem;padding:0 6px;max-width:160px">' + projOpts + '</select>'
+        + '<input type="date" class="sug-due" value="' + escAttr(s.due_date || '') + '" style="height:28px;font-size:.74rem;padding:0 6px;max-width:140px">'
+        + (s.source ? '<span style="color:var(--text-secondary,#777);font-size:.7rem;margin-left:auto" title="' + escAttr(s.source) + '">from: ' + esc(s.source).substring(0, 40) + '</span>' : '')
+        + '</div>'
+        + '<div style="display:flex;gap:6px;margin-top:8px">'
+        + '<button class="btn btn-accent btn-sm" onclick="UserDash.commitSuggestion(\'' + escAttr(s.id) + '\')">Add</button>'
+        + '<button class="btn btn-ghost btn-sm" onclick="UserDash.dismissSuggestion(\'' + escAttr(s.id) + '\')">Dismiss</button>'
+        + '</div></div>';
+    }).join('');
+    // Set the project <select> values after innerHTML (option values must exist first).
+    Array.prototype.forEach.call(list.querySelectorAll('.sug-card'), function(card) {
+      const sid = card.dataset.sid;
+      const s = tasks.find(function(t) { return t.id === sid; });
+      if (!s) return;
+      const sel = card.querySelector('.sug-project');
+      if (sel) {
+        const match = s.suggested_project && projectsCache.find(function(p) { return p.name === s.suggested_project; });
+        sel.value = match ? match.id : '';
+      }
+    });
+  }
+
+  async function scanSuggestedTasks(range) {
+    const btn = document.getElementById('btnScanSuggest');
+    if (!btn || suggestScanInFlight) return;
+    suggestScanInFlight = true;
+    btn.classList.add('busy'); btn.disabled = true; btn.textContent = 'Scanning…';
+    try {
+      await fetch('/api/suggested-tasks/scan?range=' + encodeURIComponent(range), {
+        method: 'POST', headers: { 'x-user-session': userSession() },
+      });
+    } catch (e) {}
+    // Byte reads email + suggests async (local model, slow — that's the point).
+    // Poll for fresh suggestions to land, mirroring the digest Generate poll.
+    const before = (document.getElementById('suggestedTasksList')?.querySelector('.sug-card')) ? 1 : 0;
+    let polls = 0;
+    const tick = function() {
+      setTimeout(async function() {
+        let landed = false;
+        try {
+          const r = await fetch('/api/suggested-tasks', { headers: { 'x-user-session': userSession() } });
+          const d = await r.json();
+          const tasks = d.suggestedTasks || [];
+          renderSuggestedTasks(tasks);
+          // Stop once we have suggestions, or after ~90s regardless.
+          landed = tasks.length > 0;
+        } catch {}
+        if (landed || polls++ >= 22) {
+          btn.classList.remove('busy'); btn.disabled = false; btn.textContent = 'Scan';
+          suggestScanInFlight = false;
+          return;
+        }
+        tick();
+      }, 4000);
+    };
+    tick();
+  }
+
+  async function commitSuggestion(sid) {
+    const card = document.querySelector('.sug-card[data-sid="' + cssEsc(sid) + '"]');
+    if (!card) return;
+    const title = (card.querySelector('.sug-title')?.value || '').trim();
+    const projectId = card.querySelector('.sug-project')?.value || '';
+    const dueDate = card.querySelector('.sug-due')?.value || undefined;
+    if (!title) { card.querySelector('.sug-title')?.focus(); return; }
+    try {
+      const r = await fetch('/api/suggested-tasks/' + encodeURIComponent(sid), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() },
+        body: JSON.stringify({ title, project_id: projectId || undefined, due_date: dueDate }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast('Task added', 'info');
+        loadSuggestedTasks();
+        if (currentView === 'projects') loadProjects();
+      } else {
+        toast(d.error || 'Failed to add task', 'error');
+      }
+    } catch (e) { toast('Failed to add task', 'error'); }
+  }
+
+  async function dismissSuggestion(sid) {
+    try {
+      await fetch('/api/suggested-tasks/' + encodeURIComponent(sid), {
+        method: 'DELETE', headers: { 'x-user-session': userSession() },
+      });
+      loadSuggestedTasks();
+    } catch (e) { toast('Failed to dismiss', 'error'); }
+  }
+
+  function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
   function getGroupName(jid) {
     var g = projectGroupsCache.find(function(g) { return g.jid === jid; });
@@ -1604,6 +1752,20 @@ window.UserDash = (() => {
     document.getElementById('btnBackToProjects')?.addEventListener('click', closeProject);
     document.querySelectorAll('.project-tab').forEach(function (t) {
       t.addEventListener('click', function () { switchProjectTab(t.dataset.ptab); });
+    });
+    // Suggested Tasks Scan button — Byte reads email for the chosen range and
+    // writes suggestions; loadSuggestedTasks polls until they land.
+    const scanBtn = document.getElementById('btnScanSuggest');
+    if (scanBtn) scanBtn.addEventListener('click', function () {
+      const range = document.getElementById('suggestRange')?.value || 'today';
+      scanSuggestedTasks(range);
+    });
+    // Project Tasks tab "+ Add Task" — opens the quick-task modal scoped to
+    // the current project (so the created task lands in this project, not the
+    // Personal default). The save handler picks up quickTaskProjectId.
+    const addWorkBtn = document.getElementById('btnAddWorkTask');
+    if (addWorkBtn) addWorkBtn.addEventListener('click', function () {
+      openQuickTask(currentProjectId || null);
     });
   }
 
@@ -3979,6 +4141,10 @@ window.UserDash = (() => {
     deleteFile,
     renameFile,
     openProject,
+    loadSuggestedTasks,
+    scanSuggestedTasks,
+    commitSuggestion,
+    dismissSuggestion,
     editFinancials: function() { openProjectItemModal('financials'); },
     changeWorkTaskStatus,
     deleteProjectWorkTask,

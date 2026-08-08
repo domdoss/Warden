@@ -137,6 +137,7 @@ import {
   restoreProject,
   completeProject,
   deleteProject,
+  PERSONAL_PROJECT_ID,
   getProjectFinancials,
   updateProjectFinancials,
   getProjectDeliverables,
@@ -156,6 +157,10 @@ import {
   getTimesheetSummary,
   updateTimesheetEntry,
   getActiveTimers,
+  getWorkTasks,
+  createWorkTask,
+  updateWorkTask,
+  deleteWorkTask as deleteWorkTaskDb,
   startTimer,
   stopTimer,
   deleteTimer,
@@ -213,6 +218,11 @@ function probeLocalPort(port: number, path: string): Promise<boolean> {
 import { generateICS, parseICS } from './ical.js';
 import { fetchEmails, sendEmail, testConnection } from './email.js';
 import { sendSMS, fetchMessages as fetchSmsMessages, testConnection as testSmsConnection, testCredentials as testSmsCredentials } from './sms.js';
+import {
+  getSuggestedTasks,
+  getSuggestedTask,
+  updateSuggestedTask,
+} from './suggested-tasks.js';
 
 const STATUS_PORT = parseInt(process.env.STATUS_PORT || '3200', 10);
 
@@ -245,6 +255,11 @@ interface StatusDeps {
   // grounded runTask path as the cron (buildDigestContext: real calendar,
   // tasks, bio, weather, notes). Wired in src/index.ts.
   triggerDigest?: (span: string) => Promise<{ ok: boolean; error?: string }>;
+  // Manual suggested-tasks scan trigger: runs the byte-suggest-<range> task on
+  // demand via runSuggestNow (bypasses the paused check so a Scan works even
+  // while the cron is disabled). Byte reads email + calls suggest_task; the
+  // client polls GET /api/suggested-tasks for the new suggestions to land.
+  triggerSuggest?: (range: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 let deps: StatusDeps;
@@ -3629,11 +3644,6 @@ export function startStatusServer(d: StatusDeps): void {
         res.end(JSON.stringify({ error: 'company routes removed' }));
         return;
       }
-      if (pathname.startsWith('/api/work-tasks')) {
-        res.writeHead(410, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'work-task routes removed' }));
-        return;
-      }
       if (pathname.startsWith('/api/session-links')) {
         res.writeHead(410, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'session-link routes removed' }));
@@ -4098,6 +4108,201 @@ export function startStatusServer(d: StatusDeps): void {
         }
         return;
       }
+
+      // ── Work tasks ──────────────────────────────────────────────────────
+      // Revived (were 410-gated). The dashboard home "My Tasks" list, the
+      // Quick Task modal, and the project Tasks kanban all use these. A task
+      // with no project_id defaults to the permanent Personal project.
+      if (pathname === '/api/work-tasks' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ tasks: getWorkTasks() }));
+        return;
+      }
+      if (pathname === '/api/work-tasks' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as {
+            title: string; description?: string; priority?: string;
+            assigned_to?: string; due_date?: string; project_id?: string;
+          };
+          if (!body.title || !body.title.trim()) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'title required' }));
+            return;
+          }
+          const task = createWorkTask({
+            title: body.title.trim(),
+            description: body.description,
+            priority: body.priority,
+            assigned_to: body.assigned_to,
+            created_by: OWNER_JID,
+            due_date: body.due_date,
+            project_id: body.project_id || PERSONAL_PROJECT_ID,
+          });
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, task }));
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+      const workTaskMatch = pathname.match(/^\/api\/work-tasks\/([^/]+)$/);
+      if (workTaskMatch) {
+        const tid = decodeURIComponent(workTaskMatch[1]);
+        if (req.method === 'PUT' || req.method === 'PATCH') {
+          try {
+            const body = parseJson(await parseBody(req)) as Record<string, any>;
+            const task = updateWorkTask(tid, body);
+            if (!task) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'task not found' }));
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, task }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const ok = deleteWorkTaskDb(tid);
+          res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok }));
+          return;
+        }
+      }
+
+      // ── Project-scoped work tasks ───────────────────────────────────────
+      // /api/projects/:id/tasks — list a project's tasks. /api/projects/:id/
+      // tasks/:tid — update (assign) or delete a task in that project. The
+      // project Tasks kanban (renderProjectWorkTasks) + assign/delete handlers
+      // use these.
+      const projTasksListMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
+      if (projTasksListMatch && req.method === 'GET') {
+        const pid = decodeURIComponent(projTasksListMatch[1]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ tasks: getWorkTasks().filter((t) => t.project_id === pid) }));
+        return;
+      }
+      const projTaskMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks\/([^/]+)$/);
+      if (projTaskMatch) {
+        const tid = decodeURIComponent(projTaskMatch[2]);
+        if (req.method === 'PUT' || req.method === 'PATCH') {
+          try {
+            const body = parseJson(await parseBody(req)) as Record<string, any>;
+            const task = updateWorkTask(tid, body);
+            if (!task) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'task not found' }));
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, task }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const ok = deleteWorkTaskDb(tid);
+          res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok }));
+          return;
+        }
+      }
+
+      // ── Suggested Tasks ─────────────────────────────────────────────────
+      // Byte writes suggestions to the store during an email scan; the user
+      // reviews, edits, and commits them to a real work task via the
+      // dashboard Suggested Tasks box. AI never creates real tasks directly.
+      if (pathname === '/api/suggested-tasks' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ suggestedTasks: getSuggestedTasks() }));
+        return;
+      }
+      if (pathname === '/api/suggested-tasks/scan' && req.method === 'POST') {
+        const range = (params.get('range') || 'today').toLowerCase();
+        if (!['today', 'week', 'month'].includes(range)) {
+          return json(res, { error: 'invalid range (use today, week, or month)' }, 400);
+        }
+        if (!deps.triggerSuggest) return json(res, { error: 'suggest trigger unavailable' }, 503);
+        try {
+          const r = await deps.triggerSuggest(range);
+          return json(res, r, r.ok ? 200 : 404);
+        } catch (err: any) {
+          return json(res, { error: String(err?.message ?? err) }, 500);
+        }
+      }
+      const suggestMatch = pathname.match(/^\/api\/suggested-tasks\/([^/]+)$/);
+      if (suggestMatch) {
+        const sid = decodeURIComponent(suggestMatch[1]);
+        if (req.method === 'PATCH') {
+          try {
+            const body = parseJson(await parseBody(req)) as {
+              title?: string; body?: string; suggested_project?: string;
+              due_date?: string | null;
+            };
+            const ok = updateSuggestedTask(sid, body);
+            res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
+        if (req.method === 'DELETE') {
+          // Dismiss — mark dismissed (keep the record so a re-scan's dedup
+          // still sees it was already handled, not re-suggested).
+          const ok = updateSuggestedTask(sid, { status: 'dismissed' });
+          res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok }));
+          return;
+        }
+        if (req.method === 'POST') {
+          // Commit: turn a suggestion into a real work task. The user edits
+          // the title + picks a project in the UI, then clicks Add → this
+          // creates the work task (default Personal) and marks the suggestion
+          // 'added'. Direct HTTP, no AI.
+          try {
+            const body = parseJson(await parseBody(req)) as {
+              title?: string; project_id?: string; due_date?: string;
+              priority?: string; body?: string;
+            };
+            const s = getSuggestedTask(sid);
+            if (!s) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'suggestion not found' }));
+              return;
+            }
+            const title = (body.title || s.title).trim();
+            if (!title) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'title required' }));
+              return;
+            }
+            const task = createWorkTask({
+              title,
+              description: body.body || s.body || '',
+              priority: body.priority,
+              due_date: body.due_date || s.due_date || undefined,
+              created_by: OWNER_JID,
+              project_id: body.project_id || PERSONAL_PROJECT_ID,
+            });
+            updateSuggestedTask(sid, { status: 'added' });
+            res.writeHead(201, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, task }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
+      }
+
       // /api/projects/:id — project detail (dashboard openProject), update, delete.
       // Without GET the dashboard's project view 404s → "Failed to load project".
       const projectDetailMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
@@ -4124,6 +4329,9 @@ export function startStatusServer(d: StatusDeps): void {
             priorities: safe(() => getProjectPriorities(pid), []),
             timesheet: safe(() => getTimesheetEntries(pid), []),
             timesheet_summary: safe(() => getTimesheetSummary(pid), { total_hours: 0, by_user: [] }),
+            // Work tasks for this project — without these the project Tasks tab
+            // (renderProjectWorkTasks) always renders empty.
+            tasks: safe(() => getWorkTasks().filter((t) => t.project_id === pid), []),
           };
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(detail));
@@ -4147,6 +4355,11 @@ export function startStatusServer(d: StatusDeps): void {
           return;
         }
         if (req.method === 'DELETE') {
+          if (pid === PERSONAL_PROJECT_ID) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Personal project cannot be deleted' }));
+            return;
+          }
           const ok = deleteProject(pid);
           res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok }));
