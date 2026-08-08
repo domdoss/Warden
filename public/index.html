@@ -67,10 +67,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
         <span class="rail-tip">Notes</span>
       </button>
-      <button class="rail-btn" data-view="bio" data-tip="User Bio">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
-        <span class="rail-tip">User Bio</span>
-      </button>
       <!-- Automate -->
       <div class="rail-group-label">Auto</div>
       <button class="rail-btn" data-view="tasks" data-tip="Scheduled Tasks">
@@ -596,24 +592,6 @@
             </div>
           </div>
           <div class="view-body-padded" style="overflow-y:auto">
-            <!-- Suggested Tasks — Byte scans email and surfaces actionable
-                 items here. Blank until you click Scan. The user edits each
-                 suggestion + picks a project + Add to commit it as a real
-                 work task; AI never creates tasks directly. -->
-            <div class="suggested-tasks-box" id="suggestedTasksBox" style="margin-bottom:18px;padding:14px 16px;border:1px solid var(--border,#333);border-radius:10px;background:var(--bg-secondary,#14142220)">
-              <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-                <h3 style="margin:0;font-size:.95rem;color:var(--text-primary,#e0e0e0)">Suggested Tasks</h3>
-                <span id="suggestedTasksBadge" class="hidden" style="background:var(--accent,#6366f1);color:#fff;font-size:.7rem;padding:1px 7px;border-radius:10px;font-weight:600">0</span>
-                <span style="flex:1"></span>
-                <select id="suggestRange" class="input" style="height:30px;font-size:.78rem;padding:0 8px;min-width:120px">
-                  <option value="today">Today</option>
-                  <option value="week">This Week</option>
-                  <option value="month">This Month</option>
-                </select>
-                <button class="btn btn-accent btn-sm" id="btnScanSuggest">Scan</button>
-              </div>
-              <div id="suggestedTasksList"></div>
-            </div>
             <div class="project-list" id="projectList">
               <div class="empty-state"><p class="empty-title">No projects yet</p></div>
             </div>
@@ -1536,40 +1514,6 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
             <div class="notes-backlinks" id="notesBacklinks"></div>
           </div>
         </div>
-      </div>
-    </section>
-
-    <section class="view" id="view-bio">
-      <div class="view-header">
-        <h2 class="view-title">User Bio</h2>
-        <span class="chip">Personal context for Iris</span>
-        <div style="margin-left:auto;display:flex;gap:6px">
-          <button class="btn btn-accent btn-sm" id="btnBioSave">Save</button>
-          <button class="btn btn-ghost btn-sm" id="btnBioReload">Reload</button>
-        </div>
-      </div>
-      <div class="view-body-padded" style="overflow-y:auto">
-        <div class="dim" style="margin-bottom:10px">Click a bubble to drop that detail in, then type the value. Iris reads this to personalize your digests — sleep nudges, weather, habits, preferences.</div>
-        <div id="bioBubbles" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px"></div>
-        <div style="border:1px solid var(--border,#333);border-radius:10px;padding:12px;margin-bottom:14px">
-          <div style="font-weight:600;margin-bottom:8px">Recurring income &amp; expenses</div>
-          <div class="dim" style="margin-bottom:8px">Add a recurring income or expense — it drops into your bio as a structured line Iris reads. Edit the lines in the bio box below anytime.</div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px">
-            <input id="bioIncName" class="input" placeholder="e.g. Salary" style="flex:1;min-width:120px">
-            <input id="bioIncDay" class="input" placeholder="day (1-31)" style="width:90px">
-            <input id="bioIncAmt" class="input" placeholder="amount" style="width:100px">
-            <button type="button" class="btn btn-accent btn-sm" id="btnBioAddIncome">+ Income</button>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-            <input id="bioExpName" class="input" placeholder="e.g. Car payment" style="flex:1;min-width:120px">
-            <input id="bioExpDay" class="input" placeholder="day (1-31)" style="width:90px">
-            <input id="bioExpAmt" class="input" placeholder="amount" style="width:100px">
-            <button type="button" class="btn btn-ghost btn-sm" id="btnBioAddExpense">+ Expense</button>
-          </div>
-        </div>
-        <div class="dim" style="margin-bottom:6px">Your bio — edit freely (markdown)</div>
-        <textarea id="bioText" class="notes-textarea" style="min-height:340px;width:100%;font-family:inherit;resize:vertical" placeholder="# User Bio&#10;&#10;Name: ...&#10;Location: ...&#10;&#10;## Habits &amp; schedule&#10;- Wake up around: ...&#10;- Should be asleep by: ..."></textarea>
-        <div id="bioStatus" class="dim" style="margin-top:8px"></div>
       </div>
     </section>
 
