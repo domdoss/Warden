@@ -1,15 +1,28 @@
 """Double-clap wake detector (Iron Man style).
 
-Monitors the default input device for two sharp amplitude transients (claps)
-in quick succession and fires a callback. Runs in a background daemon thread
-while Jarvis is idle. Callers pause it during conversation / TTS playback to
-avoid mic contention and speaker feedback (see ``pause``/``resume``).
+Monitors an input device for two sharp amplitude transients (claps)
+in quick succession and fires a callback. Runs in a background daemon
+thread while Jarvis is idle. Callers pause it during conversation / TTS
+playback to avoid mic contention and speaker feedback (see
+``pause``/``resume``).
+
+Two frame sources share the same transient-detection logic:
+
+  * ``ClapDetector`` — the local mic via PyAudio (the laptop hologram).
+  * ``SatelliteClapDetector`` — the Pi's HTTP ``/mic`` PCM stream, used
+    when the voice app runs in satellite mode so a double-clap into the
+    Pi's mic still wakes the desktop loop. It opens its own long-lived
+    ``/mic`` connection and releases it on ``pause()`` so the recorder
+    can take the mic exclusively during a turn (the same release pattern
+    as the local detector). It never calls ``/cancel`` — closing the
+    response is enough to tear down the Pi's ``pw-record``.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+import urllib.request
 from typing import Callable, Optional
 
 import numpy as np
@@ -72,9 +85,11 @@ class ClapDetector:
     def resume(self) -> None:
         self._resume.set()
 
-    # ----- worker -----
+    # ----- frame source (overridable) -----
 
     def _open_stream(self):
+        """Open the input source. Returns an opaque (handle, stream) pair
+        or raises on failure. ``handle`` is anything the closer needs."""
         with _suppress_alsa():
             import pyaudio
 
@@ -89,18 +104,25 @@ class ClapDetector:
         )
         return p, stream
 
-    def _close(self, p, stream) -> None:
+    def _read_frame(self, stream) -> bytes:
+        """Read one frame (samples_per_frame int16 samples → samples_per_frame*2
+        bytes). Raises on error; an empty/short read is allowed."""
+        return stream.read(self.samples_per_frame, exception_on_overflow=False)
+
+    def _close(self, handle, stream) -> None:
         if stream is not None:
             try:
                 stream.stop_stream()
                 stream.close()
             except Exception:
                 pass
-        if p is not None:
+        if handle is not None:
             try:
-                p.terminate()
+                handle.terminate()
             except Exception:
                 pass
+
+    # ----- worker -----
 
     def _run(self) -> None:
         try:
@@ -113,32 +135,35 @@ class ClapDetector:
         last_onset = 0.0  # for refractory debounce
         fired_at = 0.0    # for cooldown
         in_loud = False
-        p = stream = None
+        handle = stream = None
 
         try:
             while not self._stop.is_set():
                 # Honor pause by fully releasing the input device.
                 if not self._resume.is_set():
-                    self._close(p, stream)
-                    p = stream = None
+                    self._close(handle, stream)
+                    handle = stream = None
                     self._resume.wait(timeout=0.5)
                     continue
 
                 if stream is None:
                     try:
-                        p, stream = self._open_stream()
+                        handle, stream = self._open_stream()
                     except Exception as e:
                         print(f"[clap] cannot open mic: {e}")
                         time.sleep(1.0)
                         continue
 
                 try:
-                    data = stream.read(
-                        self.samples_per_frame, exception_on_overflow=False
-                    )
+                    data = self._read_frame(stream)
                 except Exception:
-                    self._close(p, stream)
-                    p = stream = None
+                    self._close(handle, stream)
+                    handle = stream = None
+                    continue
+                if not data:
+                    # EOF on a network stream — tear down and reconnect.
+                    self._close(handle, stream)
+                    handle = stream = None
                     continue
 
                 samples = np.frombuffer(data, dtype=np.int16)
@@ -189,4 +214,107 @@ class ClapDetector:
                 if last_clap and (now - last_clap) > self.max_gap:
                     last_clap = 0.0
         finally:
-            self._close(p, stream)
+            self._close(handle, stream)
+
+
+class SatelliteClapDetector(ClapDetector):
+    """Double-clap detector that reads from the Pi's ``/mic`` PCM stream
+    (16 kHz mono s16le, AU-framed) instead of a local PyAudio device.
+
+    The stream is long-lived while idle and released on ``pause()`` so the
+    satellite recorder can take the mic for a turn — the same release
+    pattern as the local detector's PyAudio open/close. Closing the HTTP
+    response is enough to tear down the Pi's ``pw-record`` (the server's
+    ``write()`` raises BrokenPipe and kills the process); we deliberately
+    do NOT call ``/cancel`` here, since that would kill whichever
+    ``pw-record`` the server currently tracks — possibly the recorder's.
+    """
+
+    # The Pi always streams 16 kHz mono s16le (see satellite_server.py).
+    _SAT_RATE = 16000
+
+    # pw-record writes an AU container: 4-byte magic then a 20-byte header
+    # whose first uint32 (after magic) is the total header length in bytes.
+    _AU_MAGIC_BE = b"\x2e\x73\x6e\x64"   # ".snd"
+    _AU_MAGIC_LE = b"\x64\x6e\x73\x2e"
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        on_double_clap: Callable[[], None],
+        can_fire: Optional[Callable[[], bool]] = None,
+        threshold: int = 9000,
+        crest_factor: float = 4.0,
+        min_gap: float = 0.12,
+        max_gap: float = 0.8,
+        refractory: float = 0.15,
+        cooldown: float = 2.0,
+    ):
+        super().__init__(
+            on_double_clap=on_double_clap,
+            can_fire=can_fire,
+            sample_rate=self._SAT_RATE,
+            threshold=threshold,
+            crest_factor=crest_factor,
+            min_gap=min_gap,
+            max_gap=max_gap,
+            refractory=refractory,
+            cooldown=cooldown,
+        )
+        self._base = f"http://{host}:{port}"
+        self._timeout = 3600.0  # long-lived idle stream; reopen on timeout
+
+    def _read_exact(self, resp, n: int) -> bytes:
+        """Read exactly n bytes from the streaming response; b"" on EOF."""
+        out = b""
+        while len(out) < n:
+            if self._stop.is_set():
+                return b""
+            chunk = resp.read(n - len(out))
+            if not chunk:
+                return b""
+            out += chunk
+        return out
+
+    def _strip_au_header(self, resp) -> None:
+        """Consume the AU header pw-record writes so the read cursor sits at
+        the first PCM byte. If the stream isn't AU (already raw PCM), there's
+        no rewind — treat the whole stream as raw PCM."""
+        magic = self._read_exact(resp, 4)
+        if magic not in (self._AU_MAGIC_BE, self._AU_MAGIC_LE):
+            return
+        rest = self._read_exact(resp, 20)
+        if len(rest) < 20:
+            return
+        import struct
+        be = magic == self._AU_MAGIC_BE
+        data_offset = struct.unpack(">I" if be else "<I", rest[0:4])[0]
+        # data_offset is the total header length (incl. the 4 magic bytes).
+        # We've already read 24; skip any extra header bytes.
+        extra = max(0, data_offset - 24)
+        if extra:
+            self._read_exact(resp, extra)
+
+    def _open_stream(self):
+        req = urllib.request.Request(self._base + "/mic", method="GET")
+        resp = urllib.request.urlopen(req, timeout=self._timeout)
+        self._strip_au_header(resp)
+        # handle == stream == resp: the closer just closes the response.
+        return resp, resp
+
+    def _read_frame(self, stream) -> bytes:
+        # One frame = samples_per_frame int16 samples = samples_per_frame*2 bytes.
+        n = self.samples_per_frame * 2
+        data = self._read_exact(stream, n)
+        if len(data) < n:
+            return b""  # EOF → caller closes & reopens
+        return data
+
+    def _close(self, handle, stream) -> None:
+        # handle and stream are the same urllib response.
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass

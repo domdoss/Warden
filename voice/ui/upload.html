@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Upload</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  .panel{
+    width:100%;height:100%;position:relative;display:flex;flex-direction:column;
+    background:radial-gradient(circle at 1px 1px, rgba(0,255,136,0.06) 1px, transparent 1px);
+    background-size:20px 20px;background-color:rgba(0,12,18,0.88);
+    border-radius:6px;overflow:hidden;
+  }
+  .panel::before,.panel::after{content:'';position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .panel::before{top:0;left:0;border-top:1.5px solid rgba(0,255,136,0.5);border-left:1.5px solid rgba(0,255,136,0.5)}
+  .panel::after{bottom:0;right:0;border-bottom:1.5px solid rgba(0,255,136,0.5);border-right:1.5px solid rgba(0,255,136,0.5)}
+  .br-tr,.br-bl{position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .br-tr{top:0;right:0;border-top:1.5px solid rgba(0,255,136,0.5);border-right:1.5px solid rgba(0,255,136,0.5)}
+  .br-bl{bottom:0;left:0;border-bottom:1.5px solid rgba(0,255,136,0.5);border-left:1.5px solid rgba(0,255,136,0.5)}
+
+  .header{padding:14px 16px 0;flex-shrink:0;display:flex;align-items:center;gap:10px}
+  .header-icon{font-size:12px;color:#00ff88;text-shadow:0 0 6px rgba(0,255,136,0.5)}
+  .header-title{font-size:11px;font-weight:600;letter-spacing:2px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.4);text-transform:uppercase}
+  .header-line{flex:1;height:1px;background:linear-gradient(90deg,rgba(0,255,136,0.3),transparent)}
+
+  .body{flex:1;padding:14px 16px;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:10px}
+  .body::-webkit-scrollbar{width:3px}
+  .body::-webkit-scrollbar-thumb{background:rgba(0,255,136,0.15);border-radius:2px}
+
+  /* drop zone */
+  .drop{
+    flex:0 0 auto;border:1.5px dashed rgba(0,255,136,0.3);border-radius:8px;
+    padding:24px 12px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;
+    background:rgba(0,255,136,0.02);
+  }
+  .drop:hover{border-color:rgba(0,255,136,0.55);background:rgba(0,255,136,0.05)}
+  .drop.over{border-color:#00ff88;background:rgba(0,255,136,0.1);box-shadow:0 0 16px rgba(0,255,136,0.2) inset}
+  .drop.busy{opacity:0.5;pointer-events:none}
+  .drop .ico{font-size:22px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.5);margin-bottom:6px}
+  .drop .lbl{font-size:10px;color:#cfefe8;letter-spacing:1px;text-transform:uppercase}
+  .drop .hint{font-size:8px;color:rgba(0,255,136,0.35);margin-top:4px;font-family:'Courier New',monospace}
+
+  .status{font-size:9px;color:#7fff7f;min-height:12px;font-family:'Courier New',monospace}
+  .status.err{color:#ff8888}
+
+  .list-title{font-size:8px;letter-spacing:1.5px;color:rgba(0,255,136,0.4);text-transform:uppercase;margin-top:4px}
+  .item{position:relative;padding:7px 10px;border-radius:4px;background:rgba(0,255,136,0.04);border:1px solid rgba(0,255,136,0.1);margin-top:6px}
+  .item .name{font-size:10px;font-weight:600;color:#00ff88;text-shadow:0 0 4px rgba(0,255,136,0.3);word-break:break-all;padding-right:18px}
+  .item .path{font-size:8px;font-family:'Courier New',monospace;color:rgba(0,255,136,0.45);word-break:break-all;margin-top:3px;cursor:pointer}
+  .item .path:hover{color:#00ff88}
+  .item .copy{position:absolute;top:5px;right:5px;font-size:8px;color:rgba(0,255,136,0.5);cursor:pointer;
+    border:1px solid rgba(0,255,136,0.2);border-radius:3px;padding:2px 5px;letter-spacing:0.5px;text-transform:uppercase}
+  .item .copy:hover{color:#00ff88;border-color:rgba(0,255,136,0.5)}
+  .empty{font-size:9px;color:rgba(0,255,136,0.25);font-style:italic;text-align:center;padding:14px 0}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="br-tr"></div><div class="br-bl"></div>
+  <div class="header">
+    <div class="header-icon">⤓</div>
+    <div class="header-title">Upload</div>
+    <div class="header-line"></div>
+  </div>
+  <div class="body">
+    <div class="drop" id="drop" title="Drop files here or click to browse">
+      <div class="ico">⤓</div>
+      <div class="lbl">Drop files here</div>
+      <div class="hint">or click to browse · stored on the Pi</div>
+    </div>
+    <input type="file" id="file-input" multiple style="display:none">
+    <div class="status" id="status"></div>
+    <div class="list-title">Recent uploads</div>
+    <div id="list"></div>
+  </div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim (see agents.html for full note) ──
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},120000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  var drop=document.getElementById('drop');
+  var fileInput=document.getElementById('file-input');
+  var statusEl=document.getElementById('status');
+  var listEl=document.getElementById('list');
+  var STORE='warden.uploads.recent';
+
+  function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+
+  function recent(){ try{return JSON.parse(localStorage.getItem(STORE)||'[]')}catch(e){return []} }
+  function saveRecent(a){ localStorage.setItem(STORE, JSON.stringify(a.slice(0,12))); }
+
+  function renderList(){
+    var a=recent();
+    if(!a.length){ listEl.innerHTML='<div class="empty">No uploads yet.</div>'; return; }
+    listEl.innerHTML=a.map(function(u,i){
+      return '<div class="item" data-i="'+i+'">'+
+        '<div class="name">'+esc(u.name)+'</div>'+
+        '<div class="path" data-path="'+esc(u.path)+'">'+esc(u.path)+'</div>'+
+        '<div class="copy" data-copy="'+i+'">copy</div>'+
+      '</div>';
+    }).join('');
+  }
+
+  // Read a File as pure base64 (strip the data: URL prefix).
+  function readB64(file){
+    return new Promise(function(resolve,reject){
+      var r=new FileReader();
+      r.onload=function(){ var s=r.result||''; resolve(s.substring(s.indexOf(',')+1)); };
+      r.onerror=function(){ reject(r.error||new Error('read failed')); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  function fmtSize(n){ if(n<1024)return n+'B'; if(n<1048576)return (n/1024).toFixed(1)+'K'; return (n/1048576).toFixed(1)+'M'; }
+
+  async function uploadFile(file){
+    if(!file) return;
+    statusEl.classList.remove('err');
+    statusEl.textContent='Reading '+file.name+'…';
+    try{
+      var b64=await readB64(file);
+      statusEl.textContent='Uploading '+esc(file.name)+' ('+fmtSize(file.size)+')…';
+      var raw=await window.pywebview.api.warden_upload('owner/uploads', file.name, b64);
+      var d=raw?JSON.parse(raw):null;
+      if(d&&d.ok){
+        var a=recent();
+        a.unshift({name:file.name, path:d.path, size:file.size, at:new Date().toISOString().slice(0,16)});
+        saveRecent(a);
+        renderList();
+        statusEl.textContent='Uploaded → '+d.path;
+      }else{
+        statusEl.classList.add('err');
+        statusEl.textContent='Failed: '+((d&&d.error)||'unknown');
+      }
+    }catch(e){
+      statusEl.classList.add('err');
+      statusEl.textContent='Error: '+(e&&e.message||e);
+    }
+  }
+
+  async function handleFiles(files){
+    var arr=Array.prototype.slice.call(files||[]);
+    if(!arr.length) return;
+    drop.classList.add('busy');
+    for(var i=0;i<arr.length;i++){ await uploadFile(arr[i]); }
+    drop.classList.remove('busy');
+  }
+
+  // Drag-and-drop onto the zone.
+  ['dragenter','dragover'].forEach(function(ev){
+    drop.addEventListener(ev,function(e){ e.preventDefault(); e.stopPropagation(); drop.classList.add('over'); });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    drop.addEventListener(ev,function(e){ e.preventDefault(); e.stopPropagation(); drop.classList.remove('over'); });
+  });
+  drop.addEventListener('drop',function(e){ handleFiles(e.dataTransfer&&e.dataTransfer.files); });
+  // Click to browse.
+  drop.addEventListener('click',function(){ fileInput.click(); });
+  fileInput.addEventListener('change',function(){ handleFiles(fileInput.files); fileInput.value=''; });
+
+  // Copy path on click.
+  listEl.addEventListener('click',function(e){
+    var cp=e.target.closest('[data-copy]'); var p=e.target.closest('[data-path]');
+    var path='';
+    if(cp){ var it=listEl.querySelector('.item[data-i="'+cp.getAttribute('data-copy')+'"] [data-path]'); path=it&&it.getAttribute('data-path'); }
+    else if(p){ path=p.getAttribute('data-path'); }
+    if(!path) return;
+    navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(path):null;
+    statusEl.classList.remove('err'); statusEl.textContent='Copied: '+path;
+  });
+
+  renderList();
+})();
+</script>
+</body>
+</html>

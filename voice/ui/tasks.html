@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Tasks & Projects</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  .panel{
+    width:100%;height:100%;position:relative;display:flex;flex-direction:column;
+    background:radial-gradient(circle at 1px 1px, rgba(0,255,255,0.06) 1px, transparent 1px);
+    background-size:20px 20px;background-color:rgba(0,10,20,0.88);
+    border-radius:6px;overflow:hidden;
+  }
+  .panel::before,.panel::after{content:'';position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .panel::before{top:0;left:0;border-top:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+  .panel::after{bottom:0;right:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-tr,.br-bl{position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .br-tr{top:0;right:0;border-top:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-bl{bottom:0;left:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+
+  .header{padding:14px 16px 0;flex-shrink:0;display:flex;align-items:center;gap:10px}
+  .header-icon{font-size:12px;color:#cc88ff;text-shadow:0 0 6px rgba(204,136,255,0.5)}
+  .header-title{font-size:11px;font-weight:600;letter-spacing:2px;color:#cc88ff;text-shadow:0 0 8px rgba(204,136,255,0.4);text-transform:uppercase}
+  .header-line{flex:1;height:1px;background:linear-gradient(90deg,rgba(204,136,255,0.3),transparent)}
+  .header-btn{font-size:12px;color:rgba(204,136,255,0.45);cursor:pointer;padding:2px 6px;border:1px solid rgba(204,136,255,0.2);border-radius:4px;line-height:1;transition:color 0.15s,border-color 0.15s,transform 0.4s;user-select:none}
+  .header-btn:hover{color:#cc88ff;border-color:rgba(204,136,255,0.5)}
+  .header-btn:active{transform:rotate(180deg)}
+  .header-btn.add{font-size:8px;letter-spacing:1px;text-transform:uppercase;padding:3px 7px}
+  .header-btn.add.busy{color:#ffaa00;border-color:rgba(255,170,0,0.4)}
+
+  .tabs{display:flex;gap:0;padding:12px 16px 0;flex-shrink:0}
+  .tab{padding:6px 14px;font-size:9px;font-weight:600;letter-spacing:1.5px;color:rgba(204,136,255,0.35);cursor:pointer;border-bottom:2px solid transparent;transition:color 0.2s,border-color 0.2s;text-transform:uppercase}
+  .tab:hover{color:rgba(204,136,255,0.7)}
+  .tab.active{color:#cc88ff;border-bottom-color:#cc88ff;text-shadow:0 0 6px rgba(204,136,255,0.4)}
+  .tab .count{font-size:7px;opacity:0.5;margin-left:3px}
+
+  .body{flex:1;padding:12px 14px;overflow-y:auto;min-height:0}
+  .body::-webkit-scrollbar{width:3px}
+  .body::-webkit-scrollbar-thumb{background:rgba(204,136,255,0.15);border-radius:2px}
+
+  .item{position:relative;padding:8px 10px;margin-bottom:6px;border-radius:4px;background:rgba(204,136,255,0.03);border:1px solid rgba(204,136,255,0.08)}
+  .item .it-title{font-size:10px;font-weight:600;color:#cc88ff;text-shadow:0 0 4px rgba(204,136,255,0.3);margin-bottom:3px;word-break:break-word;padding-right:14px}
+  .item .it-sub{font-size:8px;font-family:'Courier New',monospace;color:rgba(204,136,255,0.4);line-height:1.4;word-break:break-word}
+  .item .it-badge{display:inline-block;font-size:7px;padding:1px 6px;border-radius:2px;text-transform:uppercase;letter-spacing:0.5px;margin-top:4px}
+  .item .it-row{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap}
+  .act-btn{font-size:7px;padding:2px 6px;border-radius:3px;cursor:pointer;letter-spacing:0.5px;text-transform:uppercase;
+    background:rgba(204,136,255,0.06);border:1px solid rgba(204,136,255,0.18);color:rgba(204,136,255,0.6);transition:color .15s,border-color .15s}
+  .act-btn:hover{color:#cc88ff;border-color:rgba(204,136,255,0.5)}
+  .act-btn.del{color:rgba(255,68,68,0.6);border-color:rgba(255,68,68,0.2)}
+  .act-btn.del:hover{color:#ff4444;border-color:rgba(255,68,68,0.5)}
+  .del-x{position:absolute;top:4px;right:5px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;
+    font-size:11px;color:rgba(255,68,68,0.35);cursor:pointer;border-radius:3px;line-height:1;transition:color .15s,background .15s;user-select:none}
+  .del-x:hover{color:#ff4444;background:rgba(255,68,68,0.12)}
+  .badge-active{background:rgba(0,255,136,0.1);color:#00ff88;border:1px solid rgba(0,255,136,0.2)}
+  .badge-paused{background:rgba(255,170,0,0.1);color:#ffaa00;border:1px solid rgba(255,170,0,0.2)}
+  .badge-done{background:rgba(0,255,255,0.06);color:rgba(0,255,255,0.5);border:1px solid rgba(0,255,255,0.15)}
+  .badge-track{background:rgba(0,255,136,0.08);color:#00ff88;border:1px solid rgba(0,255,136,0.18)}
+  .badge-risk{background:rgba(255,68,68,0.1);color:#ff4444;border:1px solid rgba(255,68,68,0.2)}
+
+  .empty{text-align:center;padding:40px 20px;font-size:10px;color:rgba(204,136,255,0.25);font-family:'Courier New',monospace}
+
+  .new-row{display:none;gap:6px;padding:0 16px 10px;flex-shrink:0;flex-wrap:wrap}
+  .new-row.show{display:flex}
+  .new-row input{flex:1;min-width:0;background:rgba(0,20,40,0.6);border:1px solid rgba(204,136,255,0.25);border-radius:4px;color:#e8d8ff;font-size:10px;padding:6px 8px;outline:none;font-family:inherit}
+  .new-row input#new-sched{flex:0 0 110px;font-family:'Courier New',monospace;font-size:9px}
+  .new-row input:focus{border-color:rgba(204,136,255,0.5);box-shadow:0 0 8px rgba(204,136,255,0.1)}
+  .new-row input::placeholder{color:rgba(204,136,255,0.2)}
+  .new-row button{background:rgba(204,136,255,0.12);border:1px solid rgba(204,136,255,0.25);border-radius:4px;color:#cc88ff;font-size:8px;padding:6px 10px;cursor:pointer;letter-spacing:1px;text-transform:uppercase;font-weight:600}
+
+  .footer{padding:6px 16px 10px;flex-shrink:0;text-align:right;font-size:7px;color:rgba(204,136,255,0.15);font-family:'Courier New',monospace;letter-spacing:0.5px}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="br-tr"></div><div class="br-bl"></div>
+  <div class="header">
+    <div class="header-icon">▣</div>
+    <div class="header-title">Ops</div>
+    <div class="header-line"></div>
+    <div class="header-btn add" id="add-btn" title="New project">+ Project</div>
+    <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-tab="tasks">Tasks <span class="count" id="tasks-count"></span></div>
+    <div class="tab" data-tab="projects">Projects <span class="count" id="projects-count"></span></div>
+  </div>
+  <div class="new-row" id="new-row">
+    <input type="text" id="new-name" placeholder="New project name…" maxlength="200">
+    <input type="text" id="new-sched" placeholder="cron e.g. 0 9 * * *" maxlength="40" style="display:none">
+    <button id="new-create">Create</button>
+  </div>
+  <div class="body" id="body"><div class="empty">Loading…</div></div>
+  <div class="footer" id="footer-ts">--</div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim (see agents.html for full note) ──
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  var body=document.getElementById('body'),footerTs=document.getElementById('footer-ts'),
+      tabs=document.querySelectorAll('.tab'),activeTab='tasks',lastTasks=[],lastProjects=[];
+
+  function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+
+  function api(path,opts){
+    opts=opts||{};
+    return window.pywebview.api.warden_api(path,opts.method||'GET',opts.body||'');
+  }
+
+  async function load(){
+    if(activeTab==='tasks') return loadTasks();
+    return loadProjects();
+  }
+
+  // Human-readable cron, matching the dockbox tasks tab (e.g. "0 9 * * *" →
+  // "daily at 9am"). Falls back to the raw expression if it doesn't parse.
+  function cronToHuman(c){
+    if(!c)return '';
+    var p=c.trim().split(/\s+/);
+    if(p.length!==5)return c;
+    var min=p[0],hr=p[1],dom=p[2],mon=p[3],dow=p[4];
+    var at=function(h,m){var hh=(+h)%12||12;var mm=m&&m!=='0'?':'+String(m).replace(/^\*/,''):(+h?':00':'');return hh+(mm||'')+((+h||0)>=12?'pm':'am')};
+    var day='';
+    if(dow!=='*'){var D=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];var ds=dow.split(',');day=ds.length===1?D[+ds[0]]:'weekly '+ds.map(function(d){return D[+d]}).join('/');}
+    if(dom!=='*'||mon!=='*')return c;
+    if(min==='*'&&hr==='*')return 'every minute';
+    if(min!=='*'&&hr!=='*')return (day?day+' ':'daily ')+(day?'at ':'')+at(hr,min);
+    if(hr!=='*'&&min==='*')return (day||'hourly')+' at '+at(hr,'0');
+    return c;
+  }
+
+  async function loadTasks(){
+    try{
+      var raw=await api('/api/tasks');
+      var d=raw?JSON.parse(raw):null;
+      lastTasks=((d&&d.tasks)||[]).filter(function(t){
+        // Internal Iris digest cron jobs produce the Summary-page content;
+        // they're not user tasks, so keep them out of the Ops list.
+        return (t.id||'').indexOf('iris-digest-')!==0;
+      });
+      document.getElementById('tasks-count').textContent=lastTasks.length||'';
+      if(!lastTasks.length){body.innerHTML='<div class="empty">No scheduled tasks.</div>';return;}
+      body.innerHTML=lastTasks.map(function(t){
+        var badge=t.status==='active'?'badge-active':(t.status==='paused'?'badge-paused':'badge-done');
+        var sched=t.schedule_type==='cron'?cronToHuman(t.schedule_value)
+                 :t.schedule_type==='interval'?'every '+Math.round((+t.schedule_value)/60000)+'m'
+                 :t.schedule_type==='once'?'once '+esc(t.schedule_value||''):'';
+        var next=t.next_run?'next '+esc(new Date(t.next_run).toLocaleString()):'';
+        var last=t.last_run?'last '+esc(new Date(t.last_run).toLocaleString())+
+                 (t.last_result?(' · '+esc(String(t.last_result).slice(0,80))):''):'';
+        var tog=t.status==='active'?['Pause','paused']:['Resume','active'];
+        var pr=esc((t.prompt||'(no prompt)').slice(0,120))+((t.prompt||'').length>120?'…':'');
+        return '<div class="item" data-kind="task" data-id="'+esc(t.id)+'">'+
+          '<div class="del-x" data-act="del" title="Delete">✕</div>'+
+          '<div class="it-title">'+pr+'</div>'+
+          '<div class="it-sub">'+esc(sched)+(next?' · '+next:'')+'</div>'+
+          (last?'<div class="it-sub">'+last+'</div>':'')+
+          '<div class="it-row">'+
+            '<span class="it-badge '+badge+'">'+esc(t.status||'active')+'</span>'+
+            '<span class="act-btn" data-act="toggle" data-status="'+tog[1]+'">'+tog[0]+'</span>'+
+          '</div>'+
+        '</div>';
+      }).join('');
+    }catch(e){body.innerHTML='<div class="empty">Unable to load tasks.</div>'}
+  }
+
+  async function loadProjects(){
+    try{
+      var raw=await api('/api/projects');
+      var d=raw?JSON.parse(raw):null;
+      lastProjects=(d&&d.projects)||[];
+      document.getElementById('projects-count').textContent=lastProjects.length||'';
+      if(!lastProjects.length){body.innerHTML='<div class="empty">No projects. Use “+ Project” to add one.</div>';return;}
+      var today=new Date().toISOString().slice(0,10);
+      body.innerHTML=lastProjects.map(function(p){
+        var st=esc(p.status||'On Track');
+        var badge=/risk|delay|block/i.test(st)?'badge-risk':/complet/i.test(st)?'badge-done':'badge-track';
+        var due=p.due_date?esc(p.due_date.slice(0,10)):'';
+        var overdue=due&&due<today&&!/complet/i.test(st);
+        var prog=p.progress!=null?(+p.progress)+'%':'';
+        var meta=[p.project_code?esc(p.project_code):'',due?(overdue?'OVERDUE ':'due ')+due:'',prog].filter(Boolean).join(' · ');
+        var desc=p.description?'<div class="it-sub">'+esc(p.description).slice(0,140)+'</div>':'';
+        var dels=(p.deliverables||[]),deldone=dels.filter(function(x){return x.done}).length;
+        var delLine=dels.length?('<div class="it-sub">'+deldone+'/'+dels.length+' deliverables</div>'):'';
+        return '<div class="item" data-kind="project" data-id="'+esc(p.id)+'">'+
+          '<div class="del-x" data-act="del" title="Delete">✕</div>'+
+          '<div class="it-title">'+esc(p.name)+'</div>'+
+          desc+
+          (meta?'<div class="it-sub"'+(overdue?' style="color:#ff4444"':'')+'>'+meta+'</div>':'')+
+          delLine+
+          '<div class="it-row"><span class="it-badge '+badge+'">'+st+'</span></div>'+
+        '</div>';
+      }).join('');
+    }catch(e){body.innerHTML='<div class="empty">Unable to load projects.</div>'}
+  }
+
+  async function createProject(name){
+    var addBtn=document.getElementById('add-btn');
+    addBtn.classList.add('busy');addBtn.textContent='Working…';
+    try{
+      var raw=await api('/api/projects',{method:'POST',body:JSON.stringify({name:name})});
+      var d=raw?JSON.parse(raw):null;
+      if(d&&d.ok){document.getElementById('new-row').classList.remove('show');document.getElementById('new-name').value='';await loadProjects();}
+      else body.innerHTML='<div class="empty">'+esc((d&&d.error)||'Create failed')+'</div>';
+    }catch(e){body.innerHTML='<div class="empty">Create failed.</div>'}
+    finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
+  }
+
+  async function createTask(prompt,cron){
+    var addBtn=document.getElementById('add-btn');
+    addBtn.classList.add('busy');addBtn.textContent='Working…';
+    try{
+      var raw=await api('/api/tasks',{method:'POST',body:JSON.stringify({
+        prompt:prompt,schedule_type:'cron',schedule_value:cron||'0 9 * * *',
+        chat_jid:'owner@local',context_mode:'isolated'
+      })});
+      var d=raw?JSON.parse(raw):null;
+      if(d&&d.id){document.getElementById('new-row').classList.remove('show');
+        document.getElementById('new-name').value='';document.getElementById('new-sched').value='';
+        await loadTasks();}
+      else body.innerHTML='<div class="empty">'+esc((d&&d.error)||'Create failed')+'</div>';
+    }catch(e){body.innerHTML='<div class="empty">Create failed.</div>'}
+    finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
+  }
+
+  // The header "+" button is context-aware: "New Task" on the Tasks tab (opens
+  // a prompt + cron row), "+ Project" on the Projects tab (name row). The
+  // schedule input is shown only for tasks.
+  function setAddMode(tab){
+    var addBtn=document.getElementById('add-btn');
+    var sched=document.getElementById('new-sched');
+    var name=document.getElementById('new-name');
+    if(tab==='tasks'){
+      addBtn.textContent='New Task';addBtn.title='New task';
+      name.placeholder='New task prompt…';sched.style.display='';
+    }else{
+      addBtn.textContent='+ Project';addBtn.title='New project';
+      name.placeholder='New project name…';sched.style.display='none';
+    }
+  }
+
+  function commitNew(){
+    var n=document.getElementById('new-name').value.trim();
+    if(!n)return;
+    if(activeTab==='tasks')createTask(n,document.getElementById('new-sched').value.trim());
+    else createProject(n);
+  }
+
+  tabs.forEach(function(t){
+    t.addEventListener('click',function(){
+      tabs.forEach(function(x){x.classList.remove('active')});
+      t.classList.add('active');
+      activeTab=t.dataset.tab;
+      setAddMode(activeTab);
+      document.getElementById('new-row').classList.toggle('show',false);
+      load();
+    });
+  });
+
+  document.getElementById('refresh-btn').addEventListener('click',load);
+
+  document.getElementById('add-btn').addEventListener('click',function(){
+    var row=document.getElementById('new-row');
+    row.classList.toggle('show');
+    if(row.classList.contains('show'))document.getElementById('new-name').focus();
+  });
+  document.getElementById('new-create').addEventListener('click',commitNew);
+  document.getElementById('new-name').addEventListener('keydown',function(ev){
+    if(ev.key==='Enter'){ev.preventDefault();commitNew();}
+  });
+  document.getElementById('new-sched').addEventListener('keydown',function(ev){
+    if(ev.key==='Enter'){ev.preventDefault();commitNew();}
+  });
+  setAddMode(activeTab);
+
+  // Event delegation for the red-X delete buttons and the Pause/Resume toggle
+  // on tasks. Items are re-rendered via innerHTML, so we listen on the body
+  // container and inspect the closest [data-act].
+  async function delTask(id){
+    try{await api('/api/tasks/'+encodeURIComponent(id),{method:'DELETE'});}catch(e){}
+    await loadTasks();
+  }
+  async function delProject(id){
+    try{await api('/api/projects/'+encodeURIComponent(id),{method:'DELETE'});}catch(e){}
+    await loadProjects();
+  }
+  async function toggleTask(id,status){
+    try{
+      await api('/api/tasks/'+encodeURIComponent(id),{method:'PATCH',
+        body:JSON.stringify({status:status})});
+    }catch(e){}
+    await loadTasks();
+  }
+  body.addEventListener('click',function(ev){
+    var el=ev.target.closest('[data-act]'); if(!el)return;
+    var item=el.closest('.item'); if(!item)return;
+    var kind=item.getAttribute('data-kind'),id=item.getAttribute('data-id'),act=el.getAttribute('data-act');
+    if(act==='del'){
+      if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
+      else delTask(id);
+    }else if(act==='toggle'){
+      toggleTask(id,el.getAttribute('data-status'));
+    }
+  });
+
+  async function tick(){
+    await load();
+    footerTs.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  }
+  tick();
+  setInterval(tick,15000);
+})();
+</script>
+</body>
+</html>

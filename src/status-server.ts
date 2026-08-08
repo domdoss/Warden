@@ -32,6 +32,7 @@ import {
   Channel,
   NewMessage,
   ScheduledTask,
+  OWNER_JID,
 } from './types.js';
 import type { RegisteredGroup } from './group-folder.js';
 import {
@@ -630,7 +631,35 @@ function getSystemMetrics() {
     memUsedBytes: usedMem,
     memTotalBytes: totalMem,
     memPercent: Math.round((usedMem / totalMem) * 100),
+    // Storage bars for the dashboard's Pi monitor. Reports each mount once
+    // (dedupes by underlying device so / and a bind-mounted /home don't both
+    // show). statfs is sync but cheap; failures (odd fs) just get skipped.
+    disks: getDiskUsage(),
   };
+}
+
+// Mounts worth showing as storage bars. Root plus common Pi data mounts.
+const _DISK_MOUNTS = ["/", "/home", "/mnt/data"];
+function getDiskUsage(): Array<{ mount: string; percent: number; usedBytes: number; totalBytes: number }> {
+  const out: Array<{ mount: string; percent: number; usedBytes: number; totalBytes: number }> = [];
+  // Dedupe by (total, free) so a bind-mounted /home doesn't double-report the
+  // same underlying filesystem as / — statfs has no stable device id across
+  // Node versions, but identical capacity+free means the same fs.
+  const seen = new Set<string>();
+  for (const m of _DISK_MOUNTS) {
+    try {
+      const st = fs.statfsSync(m);
+      const total = st.blocks * st.bsize;
+      if (total <= 0) continue;
+      const free = st.bfree * st.bsize;
+      const key = total + ":" + free;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const used = total - free;
+      out.push({ mount: m, percent: Math.min(100, Math.round((used / total) * 100)), usedBytes: used, totalBytes: total });
+    } catch { /* mount not present or unreadable */ }
+  }
+  return out;
 }
 
 async function handleStressTest(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -786,6 +815,57 @@ function getStatusData() {
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     system: getSystemMetrics(),
   };
+}
+
+// ── summaries (Iris digest) ──────────────────────────────────────────
+
+interface Summary {
+  text: string;
+  generated_at: string;
+  span: 'hourly' | 'daily' | 'weekly';
+}
+
+function summariesPath(): string {
+  return path.join(DATA_DIR, 'summaries.json');
+}
+
+function loadSummaries(): Summary[] {
+  try {
+    const raw = fs.readFileSync(summariesPath(), 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+function saveSummaries(summaries: Summary[]): void {
+  fs.writeFileSync(summariesPath(), JSON.stringify(summaries, null, 2), 'utf-8');
+}
+
+function getLatestSummary(span: string): Summary | null {
+  const summaries = loadSummaries();
+  // return newest matching span
+  for (let i = summaries.length - 1; i >= 0; i--) {
+    if (summaries[i].span === span) return summaries[i];
+  }
+  return null;
+}
+
+function addSummary(span: string, text: string): Summary {
+  const summaries = loadSummaries();
+  const entry: Summary = {
+    text,
+    span: span as Summary['span'],
+    generated_at: new Date().toISOString(),
+  };
+  // A new digest supersedes the previous one for its span — there is only ever
+  // one current hourly / daily / weekly. Drop the old entry for this span
+  // before pushing the new one (no history stacking; old digests are obsolete
+  // the moment a fresh one is written).
+  const kept = summaries.filter((s) => s.span !== span);
+  kept.push(entry);
+  saveSummaries(kept);
+  return entry;
 }
 
 const WEB_DASHBOARD_JID = 'web:dashboard';
@@ -1013,7 +1093,9 @@ async function handleFiles(
       fs.mkdirSync(dir, { recursive: true });
       const filePath = path.join(dir, filename);
       fs.writeFileSync(filePath, data);
-      return json(res, { ok: true });
+      // Return the absolute host path so the client can tell the agent exactly
+      // where the file landed — the agent's read_file accepts absolute paths.
+      return json(res, { ok: true, path: filePath });
     }
     if (pathname === '/api/files/mkdir') {
       const body = parseJson(await parseBody(req)) as { path?: string };
@@ -3631,6 +3713,22 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
       if (pathname === '/api/status') return json(res, getStatusData());
+      if (pathname === '/api/summaries') {
+        if (req.method === 'POST') {
+          const body = parseJson(await parseBody(req)) as { span?: string; text?: string };
+          // Accept the span from either the JSON body or the ?span= query param.
+          // The Iris digest tasks put it in the URL path (?span=hourly) so the
+          // orchestrator can't drop it; older callers put it in the body.
+          const span = body.span || params.get('span') || 'daily';
+          const text = body.text || '';
+          if (!text.trim()) return json(res, { error: 'text required' }, 400);
+          const entry = addSummary(span, text);
+          return json(res, entry, 201);
+        }
+        const span = params.get('span') || 'daily';
+        const latest = getLatestSummary(span);
+        return json(res, latest ? { summaries: [latest] } : { summaries: [] });
+      }
       if (pathname === '/api/process-logs' && req.method === 'GET') {
         try {
           const lines = Math.min(parseInt(params.get('lines') || '200', 10) || 200, 2000);
@@ -3666,6 +3764,34 @@ export function startStatusServer(d: StatusDeps): void {
           return error(res, 'unknown action');
         } catch (err: any) {
           return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      // User bio (USER_BIO.md in the workspace root) — the dashboard Bio page
+      // reads/writes this so the user can set name, location, sleep schedule,
+      // preferences, etc. Iris digests read the same file (buildDigestContext in
+      // task-scheduler.ts) to ground hourly/daily/weekly summaries in real
+      // context (weather, sleep nudges, habits).
+      if (pathname === '/api/bio') {
+        const bioPath = path.join(WORKSPACE_ROOT, 'USER_BIO.md');
+        if (req.method === 'GET') {
+          try {
+            const text = fs.existsSync(bioPath) ? fs.readFileSync(bioPath, 'utf-8') : '';
+            return json(res, { ok: true, text });
+          } catch (err: any) {
+            return json(res, { ok: false, error: String(err?.message ?? err) });
+          }
+        }
+        if (req.method === 'POST') {
+          try {
+            const body = parseJson(await parseBody(req)) as { text?: string };
+            const text = String(body?.text ?? '');
+            fs.mkdirSync(path.dirname(bioPath), { recursive: true });
+            fs.writeFileSync(bioPath, text, 'utf-8');
+            logger.info('User bio updated via dashboard');
+            return json(res, { ok: true });
+          } catch (err: any) {
+            return json(res, { ok: false, error: String(err?.message ?? err) });
+          }
         }
       }
       if (pathname === '/api/messages')
@@ -3918,9 +4044,92 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
       if (pathname === '/api/projects' && req.method === 'GET') {
+        const projects = getProjectsByGroup(OWNER_JID);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ projects: [] }));
+        res.end(JSON.stringify({ projects }));
         return;
+      }
+      if (pathname === '/api/projects' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as {
+            name: string; description?: string; status?: string;
+            due_date?: string; project_code?: string;
+          };
+          if (!body.name || !body.name.trim()) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'name required' }));
+            return;
+          }
+          const project = createProject({
+            name: body.name.trim(),
+            group_jid: OWNER_JID,
+            description: body.description,
+            status: body.status,
+            due_date: body.due_date,
+            project_code: body.project_code,
+          });
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, project }));
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+      // /api/projects/:id — project detail (dashboard openProject), update, delete.
+      // Without GET the dashboard's project view 404s → "Failed to load project".
+      const projectDetailMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+      if (projectDetailMatch) {
+        const pid = decodeURIComponent(projectDetailMatch[1]);
+        if (req.method === 'GET') {
+          const project = getProject(pid);
+          if (!project) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'project not found' }));
+            return;
+          }
+          // Aggregate the sub-collections the dockbox projects tab expects on
+          // the detail object (deliverables, blockers, priorities, timesheet +
+          // summary). Without these the home view's deliverable/blocker/time
+          // panes render as empty "blanks" even though the rows exist. Each is
+          // defensive — a missing table / query error on one sub-collection must
+          // not 500 the whole detail (the base project still renders).
+          const safe = <T>(fn: () => T, fallback: T): T => { try { return fn(); } catch { return fallback; } };
+          const detail = {
+            ...project,
+            deliverables: safe(() => getProjectDeliverables(pid), []),
+            blockers: safe(() => getProjectBlockers(pid), []),
+            priorities: safe(() => getProjectPriorities(pid), []),
+            timesheet: safe(() => getTimesheetEntries(pid), []),
+            timesheet_summary: safe(() => getTimesheetSummary(pid), { total_hours: 0, by_user: [] }),
+          };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(detail));
+          return;
+        }
+        if (req.method === 'PUT' || req.method === 'PATCH') {
+          try {
+            const body = parseJson(await parseBody(req)) as Record<string, any>;
+            const project = updateProject(pid, body);
+            if (!project) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'project not found' }));
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, project }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const ok = deleteProject(pid);
+          res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok }));
+          return;
+        }
       }
       if (pathname === '/api/chats/discovered' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });

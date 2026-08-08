@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Ambient Strip</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;
+    font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  /* ── Pip-Boy CRT: inky black, green phosphor, scanlines ── */
+  .strip{
+    width:100%;height:100%;position:relative;display:flex;
+    background:#000;border-radius:6px;overflow:hidden;
+  }
+  .strip::before{
+    content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
+    background:radial-gradient(circle at 1px 1px, rgba(0,255,170,0.05) 1px, transparent 1px);
+    background-size:22px 22px;
+  }
+  .strip::after{
+    content:'';position:absolute;inset:0;pointer-events:none;z-index:2;
+    background:repeating-linear-gradient(0deg,
+      rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,0.18) 3px, rgba(0,0,0,0) 4px);
+    mix-blend-mode:multiply;
+  }
+  .br{position:absolute;width:14px;height:14px;pointer-events:none;z-index:5}
+  .br.tl{top:0;left:0;border-top:1.5px solid rgba(0,255,170,0.5);border-left:1.5px solid rgba(0,255,170,0.5)}
+  .br.tr{top:0;right:0;border-top:1.5px solid rgba(0,255,170,0.5);border-right:1.5px solid rgba(0,255,170,0.5)}
+  .br.bl{bottom:0;left:0;border-bottom:1.5px solid rgba(0,255,170,0.5);border-left:1.5px solid rgba(0,255,170,0.5)}
+  .br.br2{bottom:0;right:0;border-bottom:1.5px solid rgba(0,255,170,0.5);border-right:1.5px solid rgba(0,255,170,0.5)}
+
+  .seg{position:relative;z-index:3;padding:10px 14px;display:flex;flex-direction:column;
+    border-right:1px solid rgba(0,255,170,0.14);min-width:0}
+  .seg:last-child{border-right:0}
+  .seg .lbl{font-size:8px;letter-spacing:2px;text-transform:uppercase;
+    color:rgba(0,255,170,0.35);font-weight:600;margin-bottom:4px}
+  .seg .val{flex:1;min-height:0;overflow:hidden}
+
+  /* ── clock segment ── */
+  .seg.clock{flex:0 0 auto;min-width:148px;justify-content:center}
+  .clock .time{font-family:'Courier New',monospace;font-size:34px;font-weight:700;
+    line-height:1;color:#00ffaa;letter-spacing:1px;
+    text-shadow:0 0 6px rgba(0,255,170,0.7),0 0 14px rgba(0,255,170,0.35)}
+  .clock .sec{font-size:14px;color:rgba(0,255,170,0.55);margin-left:3px}
+  .clock .date{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;
+    color:rgba(0,255,170,0.6);margin-top:5px;text-shadow:0 0 5px rgba(0,255,170,0.3)}
+
+  /* ── ambient segment (next event + status) ── */
+  .seg.amb{flex:0 0 auto;min-width:200px;max-width:250px;gap:6px}
+  .amb .ev-title{font-size:11px;font-weight:600;color:#00ffaa;line-height:1.25;
+    text-shadow:0 0 5px rgba(0,255,170,0.3);
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .amb .ev-when{font-size:9px;font-family:'Courier New',monospace;color:rgba(0,255,170,0.55)}
+  .amb .none{font-size:10px;color:rgba(0,255,170,0.3);font-style:italic}
+  .amb .st-line{font-size:9px;color:rgba(0,255,170,0.7);line-height:1.3;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .amb .st-meta{font-size:8px;font-family:'Courier New',monospace;color:rgba(0,255,170,0.4);letter-spacing:0.5px}
+  .amb .phase{display:inline-block;font-size:8px;letter-spacing:1px;text-transform:uppercase;
+    padding:1px 5px;border:1px solid rgba(0,255,170,0.4);border-radius:3px;
+    color:#00ffaa;margin-right:5px;text-shadow:0 0 4px rgba(0,255,170,0.3)}
+
+  /* ── Pip-Boy widget bay (segment 3) ── */
+  .seg.pip{flex:1;min-width:0;padding-top:14px}
+  .pip .val{display:flex;flex-direction:row;gap:10px;overflow-x:auto;overflow-y:hidden;align-items:stretch}
+  .pip .val::-webkit-scrollbar{height:3px;width:3px}
+  .pip .val::-webkit-scrollbar-thumb{background:rgba(0,255,170,0.25);border-radius:2px}
+
+  .pw{flex:0 0 auto;border:1px solid rgba(0,255,170,0.22);border-radius:6px;
+    background:rgba(0,30,22,0.35);padding:6px 9px;display:flex;flex-direction:column;
+    position:relative;overflow:hidden}
+  .pw::before{content:'';position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(0deg,transparent 0 2px,rgba(0,0,0,0.12) 2px 3px);opacity:0.4}
+  .pw .pw-head{font-size:8px;letter-spacing:1.5px;text-transform:uppercase;
+    color:rgba(0,255,170,0.6);margin-bottom:5px;display:flex;justify-content:space-between;gap:6px;
+    border-bottom:1px solid rgba(0,255,170,0.12);padding-bottom:3px;position:relative}
+  .pw .pw-body{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center;position:relative}
+
+  /* weather */
+  .pw.weather{width:170px}
+  .wx-main{display:flex;align-items:center;gap:8px}
+  .wx-icon{position:relative;width:44px;height:44px;flex:0 0 auto}
+  .wx-temp{font-family:'Courier New',monospace;font-size:22px;font-weight:700;color:#00ffaa;
+    text-shadow:0 0 6px rgba(0,255,170,0.5);line-height:1}
+  .wx-cond{font-size:9px;color:rgba(0,255,170,0.78);margin-top:3px}
+  .wx-meta{font-size:8px;font-family:'Courier New',monospace;color:rgba(0,255,170,0.45);
+    margin-top:4px;letter-spacing:0.5px}
+  .wx-sun{position:absolute;inset:0;border-radius:50%;
+    background:repeating-conic-gradient(from 0deg, rgba(0,255,170,0.55) 0 3deg, transparent 3deg 45deg);
+    animation:wx-pulse 3.2s ease-in-out infinite}
+  .wx-sun::after{content:'';position:absolute;inset:24%;border-radius:50%;
+    background:radial-gradient(circle at 35% 35%, #ccffe6, #00ffaa 70%);
+    box-shadow:0 0 10px rgba(0,255,170,0.6)}
+  .wx-sun.small{inset:0 44% 40% 0;animation-duration:4s}
+  .wx-cloud{position:absolute;left:8%;right:6%;top:36%;height:38%;
+    background:rgba(0,255,170,0.55);border-radius:50%/70%;
+    box-shadow:0 0 8px rgba(0,255,170,0.35);animation:wx-drift 7s ease-in-out infinite alternate}
+  .wx-cloud::before,.wx-cloud::after{content:'';position:absolute;background:inherit;border-radius:50%}
+  .wx-cloud::before{left:8%;top:-42%;width:42%;height:90%}
+  .wx-cloud::after{right:6%;top:-26%;width:38%;height:80%}
+  .wx-cloud.small{left:38%;right:0;top:48%;height:32%;opacity:0.9}
+  .wx-cloud.dim{opacity:0.45}
+  .wx-fog{position:absolute;left:6%;right:6%;bottom:14%;height:42%;
+    background:repeating-linear-gradient(rgba(0,255,170,0.5) 0 2px, transparent 2px 7px);
+    animation:wx-drift 5s ease-in-out infinite alternate}
+  .wx-drops{position:absolute;left:34%;top:64%;width:2px;height:3px;background:rgba(130,255,205,0.9);
+    border-radius:2px;box-shadow:-7px 2px 0 rgba(130,255,205,0.9),6px 7px 0 rgba(130,255,205,0.9),
+    -3px 11px 0 rgba(130,255,205,0.9),10px 13px 0 rgba(130,255,205,0.9);
+    animation:wx-fall 0.7s linear infinite}
+  .wx-drops.heavy{animation-duration:0.4s}
+  .wx-flakes{position:absolute;left:34%;top:62%;width:3px;height:3px;border-radius:50%;
+    background:rgba(190,255,225,0.95);box-shadow:-7px 3px 0 rgba(190,255,225,0.95),
+    6px 8px 0 rgba(190,255,225,0.95),-2px 13px 0 rgba(190,255,225,0.95),9px 14px 0 rgba(190,255,225,0.95);
+    animation:wx-snow 1.5s linear infinite}
+  .wx-bolt{position:absolute;left:44%;top:54%;width:12px;height:22px;background:#ccffe6;
+    clip-path:polygon(40% 0,0 62%,54% 62%,28% 100%,100% 38%,54% 38%);
+    box-shadow:0 0 8px rgba(0,255,170,0.7);animation:wx-bolt 1.8s steps(1) infinite}
+
+  /* calendar */
+  .pw.cal{width:236px}
+  .cal-head{display:flex;align-items:center;justify-content:space-between;
+    font-size:9px;letter-spacing:1px;color:#00ffaa;text-transform:uppercase}
+  .cal-nav{cursor:pointer;color:rgba(0,255,170,0.6);padding:0 5px;font-size:11px;line-height:1}
+  .cal-nav:hover{color:#00ffaa;text-shadow:0 0 5px rgba(0,255,170,0.5)}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-top:4px}
+  .cal-d{font-size:8px;text-align:center;line-height:13px;color:rgba(0,255,170,0.6);
+    font-family:'Courier New',monospace;cursor:pointer;border-radius:2px;position:relative}
+  .cal-d.hd{color:rgba(0,255,170,0.32);cursor:default}
+  .cal-d.blank{cursor:default}
+  .cal-d:not(.hd):not(.blank):hover{background:rgba(0,255,170,0.12)}
+  .cal-d.today{border:1px solid #00ffaa;color:#00ffaa;animation:cal-blink 1.4s ease-in-out infinite}
+  .cal-d.has{color:#00ffaa;text-shadow:0 0 4px rgba(0,255,170,0.5);
+    animation:cal-glow 2.6s ease-in-out infinite}
+  .cal-d.has::after{content:'';position:absolute;bottom:1px;left:50%;transform:translateX(-50%);
+    width:3px;height:3px;border-radius:50%;background:#00ffaa;box-shadow:0 0 4px #00ffaa}
+  .cal-d.sel{background:rgba(0,255,170,0.22);color:#00ffaa}
+  .cal-ev{font-size:8px;margin-top:3px;max-height:24px;overflow-y:auto;color:rgba(0,255,170,0.7);line-height:1.35}
+  .cal-ev::-webkit-scrollbar{width:2px}
+  .cal-ev::-webkit-scrollbar-thumb{background:rgba(0,255,170,0.2)}
+  .cal-ev .e{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cal-ev .e b{color:#00ffaa;font-weight:600;font-family:'Courier New',monospace;margin-right:4px}
+  .cal-ev .none{color:rgba(0,255,170,0.3);font-style:italic}
+
+  /* reticle */
+  .pw.ret{width:120px}
+  .ret-box{position:relative;width:72px;height:72px;margin:0 auto}
+  .ret-ring{position:absolute;inset:0;border-radius:50%;border:1px solid rgba(0,255,170,0.4)}
+  .ret-ring.r2{inset:22%;border-style:dashed;animation:ret-spin 9s linear infinite reverse}
+  .ret-sweep{position:absolute;inset:0;border-radius:50%;
+    background:conic-gradient(from 0deg, transparent 0 86deg, rgba(0,255,170,0.5) 86deg 94deg, transparent 94deg);
+    -webkit-mask:radial-gradient(circle, transparent 58%, #000 60%);
+            mask:radial-gradient(circle, transparent 58%, #000 60%);
+    animation:ret-spin 3s linear infinite}
+  .ret-cross::before,.ret-cross::after{content:'';position:absolute;background:rgba(0,255,170,0.45)}
+  .ret-cross::before{left:50%;top:0;width:1px;height:100%;transform:translateX(-50%)}
+  .ret-cross::after{top:50%;left:0;height:1px;width:100%;transform:translateY(-50%)}
+  .ret-txt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:8px;letter-spacing:1px;color:#00ffaa;text-shadow:0 0 5px rgba(0,255,170,0.6);
+    font-family:'Courier New',monospace}
+
+  /* system monitor bars (Pi + Local) */
+  .pw.mon{width:182px}
+  .pw.mon .pw-head .tag{font-size:7px;color:rgba(0,255,170,0.4);font-family:'Courier New',monospace;letter-spacing:0.5px}
+  .bar{margin-bottom:5px}
+  .bar:last-child{margin-bottom:0}
+  .bar .bar-h{display:flex;justify-content:space-between;font-size:8px;letter-spacing:0.5px;
+    color:rgba(0,255,170,0.65);font-family:'Courier New',monospace;margin-bottom:2px}
+  .bar .bar-h .bv{color:#00ffaa}
+  .bar .bar-t{height:6px;background:rgba(0,255,170,0.08);border:1px solid rgba(0,255,170,0.15);
+    border-radius:3px;overflow:hidden}
+  .bar .bar-f{height:100%;width:0;background:#00ffaa;border-radius:3px;
+    transition:width .6s ease;box-shadow:0 0 4px rgba(0,255,170,0.5)}
+  .bar .bar-f.hot{background:#ffaa00;box-shadow:0 0 4px rgba(255,170,0,0.5)}
+  .bar .bar-f.crit{background:#ff5555;box-shadow:0 0 4px rgba(255,85,85,0.55)}
+  .bar .bar-f.na{background:rgba(0,255,170,0.18);box-shadow:none;width:100%}
+  .bar-foot{font-size:8px;font-family:'Courier New',monospace;color:rgba(0,255,170,0.5);
+    margin-top:5px;letter-spacing:0.5px;line-height:1.4}
+
+  /* live Warden activity feed (thinking + agent output stream).
+     flex:1 so it grows to fill leftover strip width (the other widgets are
+     fixed) instead of leaving blank space on the right; min-width keeps it
+     from collapsing below its natural size and lets it scroll if cramped. */
+  .pw.feed{flex:1;min-width:312px}
+  .pw.feed .pw-body{justify-content:flex-start;min-height:0}
+  .feed-now{font-size:9px;line-height:1.3;color:#00ffaa;font-family:'Courier New',monospace;
+    margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid rgba(0,255,170,0.14);
+    white-space:normal;word-break:break-word;text-shadow:0 0 4px rgba(0,255,170,0.3)}
+  .feed-now .fp{display:inline-block;font-size:7px;letter-spacing:1px;text-transform:uppercase;
+    padding:0 4px;border:1px solid rgba(0,255,170,0.45);border-radius:3px;margin-right:5px;
+    color:#00ffaa}
+  .feed-now.idle{color:rgba(0,255,170,0.4);text-shadow:none}
+  .feed-log{font-family:'Courier New',monospace;font-size:9px;line-height:1.35;
+    color:rgba(0,255,170,0.8);overflow-y:auto;flex:1;min-height:0;padding-right:3px}
+  .feed-log::-webkit-scrollbar{width:3px}
+  .feed-log::-webkit-scrollbar-thumb{background:rgba(0,255,170,0.25);border-radius:2px}
+  .feed-row{padding:2px 0;border-bottom:1px solid rgba(0,255,170,0.07);
+    white-space:normal;word-break:break-word}
+  .feed-row .ft{color:rgba(0,255,170,0.4);margin-right:4px}
+  .feed-row .fk{display:inline-block;font-size:7px;letter-spacing:0.5px;text-transform:uppercase;
+    padding:0 3px;border:1px solid rgba(0,255,170,0.3);border-radius:2px;margin-right:4px;color:#00ffaa}
+  .feed-row .fk.supervisor{border-color:rgba(255,170,0,0.45);color:#ffaa00}
+  .feed-row .fk.error{border-color:rgba(255,85,85,0.5);color:#ff5555}
+  .feed-row .fk.done{border-color:rgba(0,255,170,0.4);color:#00ffaa}
+  .feed-row .fp{color:rgba(0,255,170,0.55);margin-right:3px}
+  .feed-row .fl{color:rgba(220,255,240,0.85)}
+  .feed-empty{color:rgba(0,255,170,0.3);font-style:italic;font-size:9px}
+
+  .empty{font-size:10px;color:rgba(0,255,170,0.3);font-style:italic}
+
+  @keyframes wx-spin{to{transform:rotate(360deg)}}
+  @keyframes wx-drift{to{transform:translateX(4px)}}
+  @keyframes wx-fall{0%{transform:translateY(-3px);opacity:0}15%{opacity:1}100%{transform:translateY(12px);opacity:0}}
+  @keyframes wx-snow{0%{transform:translate(0,-3px);opacity:0}15%{opacity:1}100%{transform:translate(2px,12px);opacity:0}}
+  @keyframes wx-bolt{0%,90%,100%{opacity:0}93%,97%{opacity:1}}
+  @keyframes cal-blink{0%,100%{box-shadow:0 0 4px rgba(0,255,170,0.6)}50%{box-shadow:0 0 9px rgba(0,255,170,0.9)}}
+  @keyframes cal-glow{0%,100%{background:rgba(0,255,170,0.05);box-shadow:0 0 2px rgba(0,255,170,0.2)}50%{background:rgba(0,255,170,0.16);box-shadow:0 0 7px rgba(0,255,170,0.45)}}
+  @keyframes ret-spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="strip">
+  <div class="br tl"></div><div class="br tr"></div><div class="br bl"></div><div class="br br2"></div>
+
+  <div class="seg clock">
+    <div class="lbl">Now</div>
+    <div class="val" style="display:flex;flex-direction:column;justify-content:center">
+      <div><span class="time" id="clk">--:--</span><span class="sec" id="clk-s">--</span></div>
+      <div class="date" id="clk-d">—</div>
+    </div>
+  </div>
+
+  <div class="seg amb">
+    <div style="flex:0 0 auto">
+      <div class="lbl">Next event</div>
+      <div class="val" id="ev" style="flex:0 0 auto"><div class="none">No upcoming events</div></div>
+    </div>
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column;justify-content:flex-end">
+      <div class="lbl">Warden</div>
+      <div class="st-line" id="st-line">idle</div>
+      <div class="st-meta" id="st-meta">—</div>
+    </div>
+  </div>
+
+  <div class="seg pip">
+    <div class="val">
+
+      <!-- weather -->
+      <div class="pw weather">
+        <div class="pw-head">Weather<span id="wx-loc">Vancouver</span></div>
+        <div class="pw-body">
+          <div class="wx-main">
+            <div class="wx-icon" id="wx-icon"><div class="wx-sun"></div></div>
+            <div>
+              <div class="wx-temp" id="wx-temp">--°</div>
+              <div class="wx-cond" id="wx-cond">—</div>
+            </div>
+          </div>
+          <div class="wx-meta" id="wx-meta">wind — · hum —</div>
+        </div>
+      </div>
+
+      <!-- calendar -->
+      <div class="pw cal">
+        <div class="pw-head cal-head">
+          <span class="cal-nav" id="cal-prev" title="Previous month">‹</span>
+          <span id="cal-title">—</span>
+          <span class="cal-nav" id="cal-next" title="Next month">›</span>
+        </div>
+        <div class="pw-body">
+          <div class="cal-grid" id="cal-grid"></div>
+          <div class="cal-ev" id="cal-ev"><div class="none">no events</div></div>
+        </div>
+      </div>
+
+      <!-- reticle -->
+      <div class="pw ret">
+        <div class="pw-head">Warden</div>
+        <div class="pw-body">
+          <div class="ret-box">
+            <div class="ret-ring"></div>
+            <div class="ret-ring r2"></div>
+            <div class="ret-sweep"></div>
+            <div class="ret-cross"></div>
+            <div class="ret-txt" id="ret-txt">ONLINE</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pi monitor (Warden server: CPU/RAM/disk + jobs/tasks) -->
+      <div class="pw mon">
+        <div class="pw-head">Pi · graice <span class="tag" id="pi-jobs">—</span></div>
+        <div class="pw-body">
+          <div class="bar"><div class="bar-h"><span>CPU</span><span class="bv" id="pi-cpu-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="pi-cpu-f"></div></div></div>
+          <div class="bar"><div class="bar-h"><span>RAM</span><span class="bv" id="pi-ram-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="pi-ram-f"></div></div></div>
+          <div class="bar"><div class="bar-h"><span>DISK</span><span class="bv" id="pi-disk-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="pi-disk-f"></div></div></div>
+          <div class="bar-foot" id="pi-foot">jobs — · tasks —</div>
+        </div>
+      </div>
+
+      <!-- Local monitor (this machine: CPU/RAM/GPU/VRAM) -->
+      <div class="pw mon">
+        <div class="pw-head">Local <span class="tag" id="loc-gpu-name">—</span></div>
+        <div class="pw-body">
+          <div class="bar"><div class="bar-h"><span>CPU</span><span class="bv" id="loc-cpu-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="loc-cpu-f"></div></div></div>
+          <div class="bar"><div class="bar-h"><span>RAM</span><span class="bv" id="loc-ram-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="loc-ram-f"></div></div></div>
+          <div class="bar"><div class="bar-h"><span>GPU</span><span class="bv" id="loc-gpu-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="loc-gpu-f"></div></div></div>
+          <div class="bar"><div class="bar-h"><span>VRAM</span><span class="bv" id="loc-vram-v">--</span></div>
+            <div class="bar-t"><div class="bar-f" id="loc-vram-f"></div></div></div>
+        </div>
+      </div>
+
+      <!-- Warden live feed (thinking + agent output stream) -->
+      <div class="pw feed">
+        <div class="pw-head">Warden Feed <span class="tag" id="feed-cnt">0</span></div>
+        <div class="pw-body">
+          <div class="feed-now idle" id="feed-now"><span class="fp">idle</span>awaiting input</div>
+          <div class="feed-log" id="feed-log"><div class="feed-empty">awaiting activity…</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim ──
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  // Weather location is owned by the dashboard gear cog (panels.html) and
+  // pushed here over postMessage since the file:// iframe can't read the
+  // parent's localStorage. Ask for it on load, and accept later pushes.
+  // host_ready is sent by panels.html once the real pywebview bridge is up
+  // (and re-announced every 3s) — that's the reliable signal to boot on. The
+  // shim proxy makes window.pywebview.api.* trivially truthy, so probing the
+  // proxy would fire boot before the bridge exists and the first weather
+  // fetch would 30s-timeout into the spinner.
+  var booted=false;
+  function bootOnce(){ if(booted)return; booted=true; boot(); }
+  window.addEventListener('message', function(ev){
+    var d=ev.data;
+    if(d&&d.__pm&&d.type==='weather_loc'){ applyWeatherLoc(d.loc); }
+    if(d&&d.__pm&&d.type==='host_ready'){ bootOnce(); }
+  });
+  if(window.parent && window.parent !== window){
+    try{ window.parent.postMessage({__pm:true,type:'weather_loc_request'},'*'); }catch(e){}
+  }
+
+  function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+  function pad(n){return String(n).padStart(2,'0')}
+  function ymd(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+  function stripMd(t){return (t||'').replace(/[#*`_>-]/g,'').replace(/\s+/g,' ').trim()}
+
+  var MONS=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  var DAYS=['SUN','MON','TUE','WED','THU','FRI','SAT'];
+
+  // ── clock ──
+  var clk=document.getElementById('clk'),clkS=document.getElementById('clk-s'),clkD=document.getElementById('clk-d');
+  function tick(){
+    var n=new Date();
+    clk.textContent=pad(n.getHours())+':'+pad(n.getMinutes()); clkS.textContent=pad(n.getSeconds());
+    clkD.textContent=DAYS[n.getDay()]+' '+n.getDate()+' '+MONS[n.getMonth()]+' '+n.getFullYear();
+  }
+  tick(); setInterval(tick,1000);
+
+  // ── next event (ambient segment) ──
+  function fmtWhen(start,end,allDay){
+    if(allDay) return 'all day';
+    var s=new Date(start);
+    return s.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'})+' · '+
+           s.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+  }
+  var allEvents=[];
+  async function loadEvents(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      var raw=await window.pywebview.api.warden_api('/api/calendar/events');
+      var d=raw?JSON.parse(raw):null;
+      allEvents=(d&&d.events)||[];
+      var now=Date.now();
+      var next=allEvents.filter(function(e){return new Date(e.start_time).getTime()>=now;})
+        .sort(function(a,b){return new Date(a.start_time)-new Date(b.start_time);})[0];
+      var box=document.getElementById('ev');
+      if(!next){ box.innerHTML='<div class="none">No upcoming events</div>'; }
+      else box.innerHTML='<div class="ev-title">'+esc(next.title||'Untitled')+'</div>'+
+                          '<div class="ev-when">'+fmtWhen(next.start_time,next.end_time,next.all_day)+'</div>';
+      renderCal();
+    }catch(e){}
+  }
+
+  // ── interactive calendar (Pip-Boy month grid) ──
+  var viewY,viewM,selDate=ymd(new Date());
+  var calGrid=document.getElementById('cal-grid'),calTitle=document.getElementById('cal-title'),
+      calEv=document.getElementById('cal-ev');
+  function evsOnDay(ds){ return allEvents.filter(function(e){return (e.start_time||'').slice(0,10)===ds;}); }
+  function renderCal(){
+    var first=new Date(viewY,viewM,1);
+    var startDow=(first.getDay()+6)%7; // Monday-first
+    var days=new Date(viewY,viewM+1,0).getDate();
+    var today=ymd(new Date());
+    var cells='';
+    ['M','T','W','T','F','S','S'].forEach(function(d){cells+='<div class="cal-d hd">'+d+'</div>';});
+    for(var i=0;i<startDow;i++) cells+='<div class="cal-d blank"></div>';
+    for(var dd=1;dd<=days;dd++){
+      var ds=viewY+'-'+pad(viewM+1)+'-'+pad(dd);
+      var cls='cal-d'+(ds===today?' today':'')+(evsOnDay(ds).length?' has':'')+(ds===selDate?' sel':'');
+      cells+='<div class="'+cls+'" data-d="'+ds+'">'+dd+'</div>';
+    }
+    calGrid.innerHTML=cells;
+    calTitle.textContent=MONS[viewM]+' '+viewY;
+    renderCalEvents();
+  }
+  function renderCalEvents(){
+    var ds=selDate, evs=evsOnDay(ds);
+    if(!evs.length){ calEv.innerHTML='<div class="none">'+(ds===ymd(new Date())?'no events today':'no events')+'</div>'; return; }
+    calEv.innerHTML=evs.map(function(e){
+      var when=e.all_day?'all day':new Date(e.start_time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+      return '<div class="e"><b>'+esc(when)+'</b>'+esc(e.title||'Untitled')+'</div>';
+    }).join('');
+  }
+  calGrid.addEventListener('click',function(e){
+    var c=e.target.closest('.cal-d:not(.hd):not(.blank)');
+    if(!c) return;
+    selDate=c.getAttribute('data-d'); renderCal();
+  });
+  document.getElementById('cal-prev').addEventListener('click',function(){
+    viewM--; if(viewM<0){viewM=11;viewY--;} renderCal();
+  });
+  document.getElementById('cal-next').addEventListener('click',function(){
+    viewM++; if(viewM>11){viewM=0;viewY++;} renderCal();
+  });
+  (function(){var n=new Date();viewY=n.getFullYear();viewM=n.getMonth();renderCal();})();
+
+  // ── live warden status (ambient + reticle) ──
+  function fmtUptime(s){
+    s=Math.max(0,Math.floor(s||0));
+    if(s<60)return s+'s';
+    var m=Math.floor(s/60),sec=s%60; if(m<60)return m+'m '+sec+'s';
+    var h=Math.floor(m/60),mm=m%60; if(h<24)return h+'h '+mm+'m';
+    return Math.floor(h/24)+'d '+(h%24)+'h';
+  }
+  // Horizontal bar helper for the Pi/Local monitor widgets. pct null/NaN →
+  // "unavailable" (dim full bar); >=90 red (crit), >=75 amber (hot), else green.
+  function setBar(fillId, valId, pct){
+    var f=document.getElementById(fillId), v=document.getElementById(valId);
+    if(!f)return;
+    var p=(pct==null||isNaN(pct))?null:Math.max(0,Math.min(100,Number(pct)));
+    if(p==null){ f.className='bar-f na'; f.style.width='100%'; if(v)v.textContent='--'; return; }
+    f.className='bar-f'+(p>=90?' crit':p>=75?' hot':'');
+    f.style.width=p+'%';
+    if(v)v.textContent=Math.round(p)+'%';
+  }
+
+  async function loadStatus(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      var raw=await window.pywebview.api.warden_api('/api/status');
+      var d=raw?JSON.parse(raw):null;
+      if(!d)return;
+      var groups=d.groups||[];
+      var act=groups.filter(function(g){return g.active;})[0];
+      var line=document.getElementById('st-line'),meta=document.getElementById('st-meta'),ret=document.getElementById('ret-txt');
+      if(act && act.liveLabel){
+        line.innerHTML='<span class="phase">'+esc(act.livePhase||'active')+'</span>'+esc(act.liveLabel);
+        if(ret) ret.textContent=(act.livePhase||'ACTIVE').toUpperCase();
+      }else{
+        line.innerHTML='<span class="phase">idle</span>awaiting input';
+        if(ret) ret.textContent='STANDBY';
+      }
+      var ch=(d.channels||[]).join('/')||'—';
+      // "tasks" = your real todos, not the iris-digest cron count (scheduledTasks).
+      var tcount='—';
+      try{
+        var tr=await window.pywebview.api.warden_api('/api/tasks');
+        var td=tr?JSON.parse(tr):null;
+        tcount=(td&&td.tasks||[]).filter(function(t){return (t.id||'').indexOf('iris-digest-')!==0;}).length;
+      }catch(e){}
+      meta.textContent='up '+fmtUptime(d.uptime)+' · '+ch+' · '+
+        (d.runningJobs||0)+' jobs · '+tcount+' tasks';
+
+      // Pi monitor (Warden server): CPU/RAM/DISK bars + jobs/tasks foot.
+      // Disk comes from system.disks[] (added to /api/status); prefer root.
+      var sys=d.system||{};
+      setBar('pi-cpu-f','pi-cpu-v',sys.cpuPercent);
+      setBar('pi-ram-f','pi-ram-v',sys.memPercent);
+      var disks=sys.disks||[], root=null;
+      for(var i=0;i<disks.length;i++){ if(disks[i].mount==='/'){root=disks[i];break;} }
+      if(!root && disks.length) root=disks[0];
+      setBar('pi-disk-f','pi-disk-v', root?root.percent:null);
+      var pj=document.getElementById('pi-jobs');
+      if(pj) pj.textContent=(d.runningJobs||0)+' job'+(d.runningJobs===1?'':'s');
+      var pf=document.getElementById('pi-foot');
+      if(pf) pf.textContent='up '+fmtUptime(d.uptime)+' · '+tcount+' tasks';
+    }catch(e){}
+  }
+
+  // Local monitor (this machine): CPU/RAM/GPU/VRAM from the local_stats
+  // bridge (Python /proc + rocm-smi). Polled separately from /api/status
+  // since it doesn't round-trip to the Pi.
+  async function loadLocal(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.local_stats)return;
+      var raw=await window.pywebview.api.local_stats();
+      var d=raw?JSON.parse(raw):null;
+      if(!d)return;
+      setBar('loc-cpu-f','loc-cpu-v',d.cpu);
+      setBar('loc-ram-f','loc-ram-v',d.ram);
+      setBar('loc-gpu-f','loc-gpu-v',d.gpu);
+      setBar('loc-vram-f','loc-vram-v',d.vram);
+      var gn=document.getElementById('loc-gpu-name');
+      if(gn && d.gpuName) gn.textContent=d.gpuName;
+    }catch(e){}
+  }
+
+  // ── Warden live feed (thinking + agent output) ──
+  // /api/status carries `progress[]` (a ring buffer of real status changes the
+  // agent-runner child emits — phase/label per council round, tool call,
+  // delegation, supervisor tick) plus the current live label/phase. We render
+  // that here as a scrolling terminal log, newest at the bottom. Polled faster
+  // (2.5s) than the bar monitors since it's the "what's it doing right now" view.
+  var feedLog=document.getElementById('feed-log'),feedNow=document.getElementById('feed-now'),
+      feedCnt=document.getElementById('feed-cnt');
+  function fmtFeedTs(ts){var d=ts?new Date(ts):new Date();
+    return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());}
+  function feedTag(k){
+    return k==='supervisor'?'SUP':k==='error'?'ERR':k==='done'?'DONE':'OK';
+  }
+  function renderFeed(d){
+    // current "now" line from the active group's live status
+    var groups=d.groups||[], act=groups.filter(function(g){return g.active;})[0];
+    if(act && act.liveLabel){
+      feedNow.className='feed-now';
+      feedNow.innerHTML='<span class="fp">'+esc(act.livePhase||'active')+'</span>'+esc(act.liveLabel);
+    } else {
+      feedNow.className='feed-now idle';
+      feedNow.innerHTML='<span class="fp">idle</span>awaiting input';
+    }
+    var prog=d.progress||[];
+    if(feedCnt) feedCnt.textContent=prog.length;
+    if(!prog.length){ feedLog.innerHTML='<div class="feed-empty">awaiting activity…</div>'; return; }
+    feedLog.innerHTML=prog.map(function(p){
+      var k=p.kind||'status';
+      return '<div class="feed-row"><span class="ft">'+fmtFeedTs(p.ts)+'</span>'+
+        '<span class="fk '+k+'">'+feedTag(k)+'</span>'+
+        '<span class="fp">'+esc(p.phase||'')+'</span>'+
+        '<span class="fl">'+esc(p.label||'')+'</span></div>';
+    }).join('');
+    feedLog.scrollTop=feedLog.scrollHeight;
+  }
+  async function loadFeed(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      var raw=await window.pywebview.api.warden_api('/api/status');
+      var d=raw?JSON.parse(raw):null;
+      if(d) renderFeed(d);
+    }catch(e){}
+  }
+
+  // ── weather (open-meteo, no key) ──
+  // Location comes from the dashboard gear cog (warden.weather.loc), accepted
+  // as a place name (geocoded via open-meteo) or "lat,lon". Default Vancouver.
+  // open-meteo allows CORS * so a file:// iframe can fetch directly; if it's
+  // unreachable the animated icon still runs with a placeholder.
+  var wxLat=49.28,wxLon=-123.12,wxLocName='Vancouver';
+  var wxTemp=document.getElementById('wx-temp'),wxCond=document.getElementById('wx-cond'),
+      wxMeta=document.getElementById('wx-meta'),wxIcon=document.getElementById('wx-icon'),
+      wxLocEl=document.getElementById('wx-loc'),pipTs=document.getElementById('pip-ts');
+  function wxText(c){
+    c=Number(c)||0;
+    if(c===0)return 'clear'; if(c<=2)return 'partly cloudy'; if(c===3)return 'overcast';
+    if(c===45||c===48)return 'fog'; if(c>=51&&c<=57)return 'drizzle';
+    if(c>=61&&c<=67)return 'rain'; if(c>=71&&c<=77)return 'snow';
+    if(c>=80&&c<=82)return 'showers'; if(c===85||c===86)return 'snow showers';
+    if(c>=95)return 'thunderstorm'; return '—';
+  }
+  function setWxIcon(c){
+    c=Number(c)||0;
+    var h;
+    if(c===0) h='<div class="wx-sun"></div>';
+    else if(c<=2) h='<div class="wx-sun small"></div><div class="wx-cloud small"></div>';
+    else if(c===3) h='<div class="wx-cloud"></div>';
+    else if(c===45||c===48) h='<div class="wx-cloud dim"></div><div class="wx-fog"></div>';
+    else if(c>=51&&c<=67) h='<div class="wx-cloud"></div><div class="wx-drops"></div>';
+    else if(c>=71&&c<=77||c===85||c===86) h='<div class="wx-cloud"></div><div class="wx-flakes"></div>';
+    else if(c>=80&&c<=82) h='<div class="wx-cloud"></div><div class="wx-drops heavy"></div>';
+    else if(c>=95) h='<div class="wx-cloud"></div><div class="wx-bolt"></div>';
+    else h='<div class="wx-cloud"></div>';
+    wxIcon.innerHTML=h;
+  }
+  async function loadWeather(){
+    try{
+      var url='https://api.open-meteo.com/v1/forecast?latitude='+wxLat+'&longitude='+wxLon+
+        '&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m&timezone=auto';
+      // Fetch through the pywebview bridge (Python urllib) — a file:// iframe
+      // can't fetch() cross-origin https in Qt WebEngine.
+      var raw=await window.pywebview.api.http_get(url);
+      var d=raw?JSON.parse(raw):null;
+      if(!d || d.ok===false) throw new Error((d&&d.error)||'weather fetch failed');
+      var cur=d.current||{};
+      wxTemp.textContent=Math.round(cur.temperature_2m)+'°';
+      wxCond.textContent=wxText(cur.weather_code);
+      wxMeta.textContent='wind '+Math.round(cur.wind_speed_10m||0)+'kph · '+(cur.relative_humidity_2m||0)+'%';
+      setWxIcon(cur.weather_code);
+      if(pipTs) pipTs.textContent='wx '+(cur.time||'').replace('T',' ');
+    }catch(e){
+      wxCond.textContent='offline'; setWxIcon(0);
+    }
+  }
+  // Resolve a location string (place name or "lat,lon") then refresh weather.
+  function applyWeatherLoc(raw){
+    raw=(raw||'').trim();
+    if(!raw){ wxLocEl.textContent=wxLocName; loadWeather(); return; }
+    if(/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(raw)){
+      var p=raw.split(','); wxLat=parseFloat(p[0]); wxLon=parseFloat(p[1]);
+      wxLocName=wxLat.toFixed(2)+','+wxLon.toFixed(2); wxLocEl.textContent=wxLocName; loadWeather(); return;
+    }
+    // geocode the place name (via the bridge → Python urllib)
+    var url='https://geocoding-api.open-meteo.com/v1/search?name='+encodeURIComponent(raw)+'&count=1&language=en&format=json';
+    window.pywebview.api.http_get(url).then(function(raw){
+      var d=raw?JSON.parse(raw):null;
+      if(d&&d.ok===false){ wxCond.textContent='location not found'; return loadWeather(); }
+      var hit=d&&d.results&&d.results[0];
+      if(hit){ wxLat=hit.latitude; wxLon=hit.longitude; wxLocName=hit.name+(hit.country_code?', '+hit.country_code:''); }
+      else wxCond.textContent='location not found';
+      wxLocEl.textContent=wxLocName; loadWeather();
+    }).catch(function(){ wxLocEl.textContent=wxLocName; loadWeather(); });
+  }
+
+  // ── boot: wait for the real bridge before the first fetch ──
+  function refresh(){ loadEvents(); loadStatus(); loadWeather(); loadLocal(); loadFeed(); }
+  function boot(){ refresh(); }
+  // Fallback in case host_ready never arrives: probe the real bridge with an
+  // actual call. The shim proxy is trivially truthy, so a presence check
+  // (window.pywebview.api.warden_api) lies — it returns truthy before panels.html
+  // has the real pywebview bridge, the first weather fetch would reject, and
+  // (with a 10-min retry) the widget would sit on the spinner. The probe only
+  // resolves once dispatch() in panels.html can actually reach pywebview.
+  var bootTries=0;
+  function bootWhenReady(){
+    if(booted)return;
+    if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){
+      window.pywebview.api.warden_api('/api/status').then(bootOnce, function(){
+        if(!booted && bootTries++<60) setTimeout(bootWhenReady,300);
+      });
+    } else if(bootTries++<60){ setTimeout(bootWhenReady,250); }
+  }
+  if(document.readyState==='complete')bootWhenReady();else window.addEventListener('load',bootWhenReady);
+  setInterval(loadStatus,5000);
+  setInterval(loadLocal,5000);
+  setInterval(loadFeed,2500);
+  setInterval(loadEvents,60000);
+  setInterval(loadWeather,600000);   // 10 min
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden && booted) refresh(); });
+  window.addEventListener('focus', function(){ if(booted) refresh(); });
+})();
+</script>
+</body>
+</html>

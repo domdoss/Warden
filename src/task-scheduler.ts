@@ -1,11 +1,14 @@
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
+import path from 'path';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN } from './config.js';
+import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN, WORKSPACE_ROOT } from './config.js';
 import {
   deleteTask,
   getDueTasks,
   getTaskById,
+  getWorkTasks,
+  listCalendarEvents,
   logTaskRun,
   pruneTaskRunLogs,
   storeMessage,
@@ -13,6 +16,7 @@ import {
 } from './db.js';
 import { resolveGroupFolderPath, type RegisteredGroup } from './group-folder.js';
 import { logger } from './logger.js';
+import { getDigestNotesForSpan } from './digest-notes.js';
 import { ScheduledTask } from './types.js';
 
 /**
@@ -91,6 +95,111 @@ export interface SchedulerDependencies {
   queue: SchedulerQueue;
 }
 
+/**
+ * Build a real-world context block for Iris digest tasks: current local time,
+ * the user's bio/habits (USER_BIO.md), calendar events around now, active work
+ * tasks, and the weather forecast (keyless wttr.in, only if the bio names a
+ * location). Injected into the prompt so the digest is grounded in real data
+ * rather than invented.
+ */
+async function buildDigestContext(span = 'hourly'): Promise<string> {
+  const sinceMs = span === 'weekly' ? 7 * 24 * 3600_000
+    : span === 'daily' ? 24 * 3600_000
+    : 6 * 3600_000;
+  const lines: string[] = [];
+  const now = new Date();
+  lines.push(`Current local time: ${now.toLocaleString('en-US', { timeZone: TIMEZONE })} (timezone ${TIMEZONE})`);
+
+  // User bio / habits
+  let bio = '';
+  try {
+    const bioPath = path.join(
+      WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? ''),
+      'USER_BIO.md',
+    );
+    bio = fs.readFileSync(bioPath, 'utf-8').trim();
+  } catch { /* no bio file */ }
+  if (bio) lines.push(`\nUser bio / habits:\n${bio}`);
+
+  // Calendar events: recent past (6h) → near future (48h)
+  try {
+    const since = new Date(now.getTime() - 6 * 3600_000).toISOString();
+    const until = new Date(now.getTime() + 48 * 3600_000).toISOString();
+    const events = listCalendarEvents({ start: since, end: until });
+    if (events.length) {
+      const ev = events.slice(0, 25)
+        .map(e => `- ${e.start_time} → ${e.end_time || '?'}: ${e.title}${e.location ? ' @ ' + e.location : ''}`)
+        .join('\n');
+      lines.push(`\nCalendar events (last 6h → next 48h):\n${ev}`);
+    } else {
+      lines.push('\nCalendar events (last 6h → next 48h): none');
+    }
+  } catch (err) { lines.push(`\nCalendar events: unavailable (${String((err as any)?.message ?? err)})`); }
+
+  // Active work tasks
+  try {
+    const tasks = getWorkTasks().filter(t => t.status !== 'done');
+    if (tasks.length) {
+      const ts = tasks.slice(0, 25)
+        .map(t => `- [${t.status || 'todo'}] ${t.title}${t.project_id ? ' (project ' + t.project_id + ')' : ''}`)
+        .join('\n');
+      lines.push(`\nActive work tasks:\n${ts}`);
+    } else {
+      lines.push('\nActive work tasks: none');
+    }
+  } catch (err) { lines.push(`\nActive work tasks: unavailable (${String((err as any)?.message ?? err)})`); }
+
+  // Weather via keyless wttr.in, only if the bio names a location
+  const locMatch = bio.match(/^Location:\s*(.+)$/m);
+  const loc = locMatch?.[1]?.replace(/#.*$/, '').trim();
+  if (loc) {
+    try {
+      const r = await fetch(`https://wttr.in/${encodeURIComponent(loc)}?format=j1`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.ok) {
+        const w = (await r.json()) as any;
+        const parts: string[] = [];
+        const cur = w.current_condition?.[0];
+        if (cur) parts.push(`Now: ${cur.temp_C}°C, ${(cur.weatherDesc?.[0]?.value || '').trim()}, humidity ${cur.humidity}%`);
+        const allHours: any[] = (w.weather || []).flatMap((d: any) => d.hourly || []);
+        const curHour = now.getHours();
+        let idx = allHours.findIndex(h => Math.floor(parseInt(h.time, 10) / 100) >= curHour);
+        if (idx < 0) idx = 0;
+        const next = allHours.slice(idx, idx + 3);
+        if (next.length) {
+          const peak = next.reduce((a, b) => (parseInt(b.tempC, 10) > parseInt(a.tempC, 10) ? b : a));
+          const hh = (t: string) => String(parseInt(t, 10) / 100).padStart(2, '0') + ':00';
+          const rain = next.find(h => parseInt(h.chanceofrain, 10) > 40);
+          parts.push(
+            `Next hours: ${next.map(h => `${hh(h.time)} ${h.tempC}°C`).join(', ')}` +
+            (parseInt(peak.tempC, 10) >= 28 ? ` — peaks at ${peak.tempC}°C around ${hh(peak.time)}` : '') +
+            (rain ? ` — rain ${rain.chanceofrain}% around ${hh(rain.time)}` : ''),
+          );
+        }
+        if (parts.length) lines.push(`\nWeather (${loc}):\n${parts.join('\n')}`);
+      }
+    } catch (err) { lines.push(`\nWeather: unavailable (${String((err as any)?.message ?? err)})`); }
+  }
+
+  // Atlas (or any agent) can drop short findings into a shared pool via the
+  // add_digest_note tool. getDigestNotesForSpan returns only notes this span
+  // hasn't delivered yet (so a finding appears once per cadence, not repeated
+  // every hour) and marks them delivered — consume-on-read. Purges fully
+  // consumed notes. "Atlas gathers, Iris synthesizes."
+  try {
+    const notes = getDigestNotesForSpan(span, sinceMs);
+    if (notes.length) {
+      const ns = notes.map(n => `- ${n.ts}${n.source ? ` [${n.source}]` : ''}: ${n.text}`).join('\n');
+      lines.push(`\nRecent lookups (added to digest context):\n${ns}`);
+    } else {
+      lines.push('\nRecent lookups: none');
+    }
+  } catch (err) { lines.push(`\nRecent lookups: unavailable (${String((err as any)?.message ?? err)})`); }
+
+  return lines.join('\n');
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -110,6 +219,21 @@ async function runTask(
       }
     } catch {
       // No HEARTBEAT.md — use the prompt as-is.
+    }
+  }
+
+  // Iris digest tasks get a real-world context block (current time, the user's
+  // bio/habits, today's calendar, active work tasks, and the weather forecast)
+  // prepended so the model writes a GROUNDED digest from real data instead of
+  // inventing plausible-but-fake tasks/meetings ("prepare meeting agenda for
+  // 10 AM sync" with nothing on the calendar).
+  if (task.id.startsWith('iris-digest-')) {
+    try {
+      const span = task.id.replace('iris-digest-', '');
+      const ctx = await buildDigestContext(span);
+      if (ctx) prompt = `${ctx}\n\n---\n\n${prompt}`;
+    } catch (err) {
+      logger.warn({ taskId: task.id, err }, 'Failed to build digest context');
     }
   }
 
@@ -140,6 +264,11 @@ async function runTask(
       timestamp: new Date().toISOString(),
       is_from_me: true,
       is_bot_message: false,
+      // Tag as a scheduled/automation message so getMessagesForDashboard (which
+      // excludes non-empty `idea`) keeps it out of /api/messages → the Direct
+      // Line chat. getNewMessages doesn't filter on `idea`, so the orchestrator
+      // still picks the prompt up and runs the task (e.g. Iris digests).
+      idea: 'scheduled',
     });
   } catch (err) {
     logger.warn({ taskId: task.id, err }, 'Failed to store Automation chat message');

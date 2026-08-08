@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Agents</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  .panel{
+    width:100%;height:100%;position:relative;display:flex;flex-direction:column;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(0,255,255,0.06) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-color: rgba(0,10,20,0.88);
+    border-radius: 6px;overflow:hidden;
+  }
+  .panel::before,.panel::after{
+    content:'';position:absolute;width:16px;height:16px;pointer-events:none;z-index:10;
+  }
+  .panel::before{top:0;left:0;border-top:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+  .panel::after{bottom:0;right:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-tr,.br-bl{position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .br-tr{top:0;right:0;border-top:1.5px solid rgba(0,255,255,0.5);border-right:1.5px solid rgba(0,255,255,0.5)}
+  .br-bl{bottom:0;left:0;border-bottom:1.5px solid rgba(0,255,255,0.5);border-left:1.5px solid rgba(0,255,255,0.5)}
+
+  /* ── header ── */
+  .header{
+    padding:14px 16px 0;flex-shrink:0;display:flex;align-items:center;gap:10px;
+  }
+  .header-dot{
+    width:8px;height:8px;border-radius:50%;background:#00ff88;
+    box-shadow:0 0 6px rgba(0,255,136,0.6);
+    animation:pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:1}
+    50%{opacity:0.3}
+  }
+  .header-title{
+    font-size:11px;font-weight:600;letter-spacing:2px;color:#00ff88;
+    text-shadow:0 0 8px rgba(0,255,136,0.4);text-transform:uppercase;
+  }
+  .header-count{
+    font-size:9px;font-family:'Courier New',monospace;color:rgba(0,255,136,0.5);
+    margin-left:auto;
+  }
+  .header-line{
+    flex:1;height:1px;background:linear-gradient(90deg,rgba(0,255,136,0.3),transparent);
+  }
+  .header-btn{
+    font-size:12px;color:rgba(0,255,136,0.45);cursor:pointer;padding:2px 6px;
+    border:1px solid rgba(0,255,136,0.2);border-radius:4px;line-height:1;
+    transition:color 0.15s,border-color 0.15s,transform 0.4s;user-select:none;
+  }
+  .header-btn:hover{color:#00ff88;border-color:rgba(0,255,136,0.5)}
+  .header-btn:active{transform:rotate(180deg)}
+
+  /* ── agent list ── */
+  .agent-list{
+    flex:1;overflow-y:auto;padding:8px 12px 12px;
+    scrollbar-width:thin;scrollbar-color:rgba(0,255,255,0.15) transparent;
+  }
+  .agent-list::-webkit-scrollbar{width:4px}
+  .agent-list::-webkit-scrollbar-thumb{background:rgba(0,255,255,0.15);border-radius:2px}
+
+  .agent-card{
+    display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
+    margin-bottom:6px;border-radius:4px;
+    background:rgba(0,255,255,0.03);
+    border:1px solid rgba(0,255,255,0.08);
+    transition:border-color 0.3s ease;
+  }
+  .agent-card.active{border-color:rgba(0,255,136,0.3);background:rgba(0,255,136,0.04)}
+  .agent-card.idle-pending{border-color:rgba(255,170,0,0.2);background:rgba(255,170,0,0.03)}
+
+  .agent-icon{
+    font-size:18px;width:24px;text-align:center;flex-shrink:0;margin-top:1px;
+    text-shadow:0 0 6px currentColor;
+  }
+
+  .status-dot{
+    width:8px;height:8px;border-radius:50%;margin-top:3px;flex-shrink:0;
+    background:rgba(255,255,255,0.15);
+    box-shadow:none;transition:all 0.3s ease;
+  }
+  .status-dot.active{
+    background:#00ff88;
+    box-shadow:0 0 8px rgba(0,255,136,0.6);
+    animation:pulse 1.5s ease-in-out infinite;
+  }
+  .status-dot.idle-pending{
+    background:#ffaa00;
+    box-shadow:0 0 6px rgba(255,170,0,0.4);
+  }
+
+  .agent-info{flex:1;min-width:0}
+  .agent-name{
+    font-size:11px;font-weight:600;color:#00ffff;
+    text-shadow:0 0 4px rgba(0,255,255,0.3);
+    margin-bottom:2px;
+  }
+  .agent-channel{
+    font-size:7px;text-transform:uppercase;letter-spacing:1px;
+    color:rgba(0,255,255,0.25);margin-bottom:4px;
+  }
+  .agent-activity{
+    font-size:9px;font-family:'Courier New',monospace;
+    color:rgba(0,255,255,0.5);line-height:1.4;
+    word-break:break-word;
+  }
+  .agent-tools{
+    display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;
+  }
+  .tool-tag{
+    font-size:7px;padding:1px 5px;border-radius:2px;
+    background:rgba(0,255,255,0.08);color:rgba(0,255,255,0.4);
+    border:1px solid rgba(0,255,255,0.12);
+    text-transform:uppercase;letter-spacing:0.5px;
+  }
+  .phase-badge{
+    display:inline-block;font-size:7px;padding:1px 6px;border-radius:2px;
+    background:rgba(255,170,0,0.1);color:#ffaa00;
+    border:1px solid rgba(255,170,0,0.2);
+    text-transform:uppercase;letter-spacing:0.5px;margin-top:3px;
+  }
+  .badge-row{display:flex;gap:4px;align-items:center;margin-top:3px;flex-wrap:wrap}
+
+  .empty{
+    text-align:center;padding:40px 20px;
+    font-size:10px;color:rgba(0,255,255,0.25);
+    font-family:'Courier New',monospace;
+  }
+
+  /* ── footer ── */
+  .footer{
+    padding:6px 16px 10px;flex-shrink:0;text-align:right;
+    font-size:7px;color:rgba(0,255,255,0.15);
+    font-family:'Courier New',monospace;letter-spacing:0.5px;
+  }
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="br-tr"></div><div class="br-bl"></div>
+  <div class="header">
+    <div class="header-dot"></div>
+    <div class="header-title">Agents</div>
+    <div class="header-line"></div>
+    <div class="header-count" id="agent-count">--</div>
+    <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
+  </div>
+  <div class="agent-list" id="agent-list">
+    <div class="empty">No agents registered.</div>
+  </div>
+  <div class="footer" id="footer-ts">--</div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim ──
+  // When this panel runs inside the panels.html host (a cross-origin file://
+  // iframe), window.pywebview is absent. Build a proxy that forwards api
+  // calls to the parent via postMessage and awaits the result. No-op when
+  // the panel runs as its own top-level window (pywebview injects the bridge).
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  var AGENT_COLORS={
+    orchestrator:'#ffaa00',
+    iris:'#ff66aa',
+    atlas:'#00ff88',
+    dexter:'#00ccff',
+    byte:'#cc88ff',
+    sentry:'#ff4444',
+    artemis:'#ff8800',
+    hephaestus:'#ff6600',
+    council:'#00ccff',
+    tool:'#00ffff',
+    thinking:'#8888ff'
+  };
+  var AGENT_ICONS={
+    orchestrator:'⬡',
+    iris:'✉',
+    atlas:'⚡',
+    dexter:'📅',
+    byte:'📋',
+    sentry:'🛡',
+    artemis:'🔍',
+    hephaestus:'🔧'
+  };
+  // The fixed Warden roster — always shown as cards even when idle, so the
+  // panel reads as a full team rather than only the agent with recent history.
+  // Live status (active/idle + label) is layered on top from progress + the
+  // live group phase below.
+  var KNOWN_AGENTS=[
+    {key:'orchestrator',name:'Orchestrator',channel:'owner'},
+    {key:'iris',name:'Iris',channel:'email'},
+    {key:'atlas',name:'Atlas',channel:'research'},
+    {key:'dexter',name:'Dexter',channel:'calendar'},
+    {key:'byte',name:'Byte',channel:'notes'},
+    {key:'artemis',name:'Artemis',channel:'browser'},
+    {key:'sentry',name:'Sentry',channel:'security'},
+    {key:'hephaestus',name:'Hephaestus',channel:'build'}
+  ];
+
+  function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+
+  function renderAgents(progress, groups, livePhase, liveLabel, liveTools){
+    var list=document.getElementById('agent-list');
+    var count=document.getElementById('agent-count');
+    var now=Date.now();
+
+    // Build agent cards — one card per unique agent. Active state is derived
+    // from the live group's livePhase (the actual current phase) and from the
+    // `jobs` field on each agent's most-recent progress event (jobs>0 = running).
+    // Progress events are HISTORY, so we never infer "active" from kind alone —
+    // a stale "atlas: iteration 13" status line lingers after atlas finishes.
+    var seen={};
+    var cards=[];
+
+    // Seed the full fixed roster first so every Warden agent always has a
+    // card. These start idle; live status is layered on below.
+    KNOWN_AGENTS.forEach(function(a){
+      seen[a.key]=true;
+      cards.push({
+        key:a.key,
+        name:a.name,
+        channel:a.channel,
+        isMain:a.key==='orchestrator',
+        active:false,
+        idle:true,
+        pendingTasks:0,
+        pendingMessages:false,
+        label:'',
+        phase:a.key==='orchestrator'?'orchestrator':a.key,
+        tools:[],
+        ts:0
+      });
+    });
+
+    // Most-recent progress event per agent phase (for label + jobs)
+    var latestByPhase={};
+    (progress||[]).forEach(function(e){
+      var ph=(e.phase||'').toLowerCase();
+      if(!ph||ph==='thinking'||ph==='tool'||ph==='tool_call')return;
+      if(!latestByPhase[ph]||(e.ts||0)>(latestByPhase[ph].ts||0))latestByPhase[ph]=e;
+    });
+
+    // Merge the live group status into the matching roster card (the
+    // orchestrator). The main group carries the orchestrator's live phase,
+    // label, and tools; groups[] only ever has the one "owner" entry.
+    (groups||[]).forEach(function(g){
+      var isMain=g.isMain||(g.name||g.jid||'').toLowerCase()==='owner';
+      var key=isMain?'orchestrator':(g.name||g.jid||'').toLowerCase();
+      var card=cards.find(function(c){return c.key===key;});
+      if(!card){
+        card={key:key,name:isMain?'Orchestrator':(g.name||g.jid),channel:g.channel||'',isMain:!!isMain,
+              active:false,idle:true,pendingTasks:0,pendingMessages:false,label:'',phase:'',tools:[],ts:0};
+        seen[key]=true;cards.push(card);
+      }else{
+        card.channel=g.channel||card.channel;
+      }
+      card.pendingTasks=g.pendingTasks||card.pendingTasks;
+      card.pendingMessages=g.pendingMessages||card.pendingMessages;
+      if(g.liveLabel)card.label=g.liveLabel;
+      if(g.livePhase)card.phase=g.livePhase;
+      if(g.liveTools&&g.liveTools.length)card.tools=g.liveTools;
+      if(g.liveTs)card.ts=(g.liveTs||0)*1000;
+    });
+
+    // Add subagent cards from progress events (iris, atlas, dexter, etc.)
+    Object.keys(latestByPhase).forEach(function(agent){
+      if(seen[agent])return; // already have a card from groups
+      seen[agent]=true;
+      var ev=latestByPhase[agent];
+      cards.push({
+        key:agent,
+        name:agent.charAt(0).toUpperCase()+agent.slice(1),
+        channel:'subagent',
+        active:false,
+        idle:false,
+        pendingTasks:0,
+        pendingMessages:false,
+        label:ev.label||'',
+        phase:agent,
+        tools:[],
+        ts:ev.ts||0
+      });
+    });
+
+    // Resolve active state. An agent is active iff its most-recent progress
+    // event has jobs>0 (a running job) OR it matches the live group's
+    // livePhase (the orchestrator's current phase). "complete"/"done"/"error"
+    // labels always clear active regardless. The most-recent progress label
+    // is surfaced as the card's activity line so idle agents show what they
+    // last did.
+    cards.forEach(function(c){
+      var ev=latestByPhase[c.key];
+      // Prefer the progress label for the activity line (the live group only
+      // carries the orchestrator's current label, not each subagent's).
+      if(ev&&ev.label){c.label=ev.label;c.ts=ev.ts||c.ts;}
+      var labelIsDone=/complete|done|finished|error|exited/i.test(c.label||'');
+      var jobsActive=!!ev&&ev.jobs>0;
+      var phaseActive=!!livePhase&&(c.key===livePhase||c.name.toLowerCase()===livePhase);
+      if((jobsActive||phaseActive)&&!labelIsDone){
+        c.active=true;c.idle=false;
+        if(phaseActive){c.label=liveLabel||c.label;c.tools=liveTools||c.tools;c.ts=Date.now();}
+      }else{
+        c.active=false;c.idle=true;
+      }
+    });
+
+    // Sort: orchestrator always first, then active agents, then idle by name
+    cards.sort(function(a,b){
+      if(a.isMain&&!b.isMain)return -1;
+      if(!a.isMain&&b.isMain)return 1;
+      if(a.active&&!b.active)return -1;
+      if(!a.active&&b.active)return 1;
+      return (a.name||'').localeCompare(b.name||'');
+    });
+
+    if(!cards.length){
+      list.innerHTML='<div class="empty">No agents registered.</div>';
+      count.textContent='0';
+      return;
+    }
+
+    count.textContent=cards.length;
+    var html='';
+    cards.forEach(function(c){
+      var statusClass='';
+      if(c.active) statusClass='active';
+      else if(c.pendingMessages||c.pendingTasks) statusClass='idle-pending';
+
+      var dotClass='';
+      if(c.active) dotClass='active';
+      else if(c.pendingMessages||c.pendingTasks) dotClass='idle-pending';
+
+      var color=AGENT_COLORS[c.key]||AGENT_COLORS[c.phase]||'#00ffff';
+      var icon=AGENT_ICONS[c.key]||AGENT_ICONS[c.phase]||'●';
+
+      var toolsHtml='';
+      if(c.tools&&c.tools.length){
+        toolsHtml='<div class="agent-tools">'+
+          c.tools.map(function(t){return '<span class="tool-tag">'+esc(t)+'</span>'}).join('')+
+          '</div>';
+      }
+
+      var phaseHtml='';
+      if(c.phase){
+        phaseHtml='<span class="phase-badge" style="color:'+color+';border-color:'+color+'">'+esc(c.phase)+'</span>';
+      }
+
+      var activity=c.label||'';
+      if(!activity&&c.active) activity='processing...';
+      if(!activity&&c.idle) activity='idle';
+
+      // Age of last activity
+      var ageStr='';
+      if(c.ts){
+        var sec=Math.floor((now-c.ts)/1000);
+        if(sec<60) ageStr='just now';
+        else if(sec<3600) ageStr=Math.floor(sec/60)+'m ago';
+        else ageStr=Math.floor(sec/3600)+'h ago';
+      }
+
+      html+='<div class="agent-card '+statusClass+'">'+
+        '<div class="agent-icon" style="color:'+color+'">'+icon+'</div>'+
+        '<div class="status-dot '+dotClass+'"></div>'+
+        '<div class="agent-info">'+
+          '<div class="agent-name" style="color:'+color+'">'+esc(c.name)+'</div>'+
+          '<div class="agent-channel">'+esc(c.channel)+(ageStr?' · '+ageStr:'')+'</div>'+
+          (activity?'<div class="agent-activity">'+esc(activity)+'</div>':'')+
+          '<div class="badge-row">'+
+            (phaseHtml||'')+
+            (c.pendingTasks?'<span class="phase-badge" style="color:#ffaa00;border-color:rgba(255,170,0,0.3)">'+c.pendingTasks+' tasks</span>':'')+
+            (c.pendingMessages?'<span class="phase-badge" style="color:#ffaa00;border-color:rgba(255,170,0,0.3)">unread</span>':'')+
+          '</div>'+
+          toolsHtml+
+        '</div>'+
+      '</div>';
+    });
+    list.innerHTML=html;
+  }
+
+  async function fetchAgents(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      var raw=await window.pywebview.api.warden_api('/api/status');
+      if(!raw)return;
+      var d=JSON.parse(raw);
+      // Use progress events to show subagent activity
+      var live=d.groups&&d.groups[0]||{};
+      renderAgents(d.progress||[], d.groups||[], live.livePhase, live.liveLabel, live.liveTools);
+      var now=new Date();
+      document.getElementById('footer-ts').textContent=
+        now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    }catch(e){}
+  }
+
+  var refreshBtn=document.getElementById('refresh-btn');
+  if(refreshBtn)refreshBtn.addEventListener('click',fetchAgents);
+
+  fetchAgents();
+  setInterval(fetchAgents,5000);
+})();
+</script>
+</body>
+</html>

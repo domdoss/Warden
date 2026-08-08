@@ -269,7 +269,8 @@ A full PWA at `http://localhost:3200`. It includes:
 | 🎤 **Talk** | Voice transcription | ✉️ **Email** | IMAP inbox + send |
 | 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
-| 📜 **Process Logs** | Live log tail ||
+| 📜 **Process Logs** | Live log tail | 📰 **Digest** | Daily briefing + news summaries |
+| 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI |
 
 ### ⚡ Quick Actions
 
@@ -301,6 +302,15 @@ An Obsidian-inspired markdown vault backed by the real filesystem — no databas
 - **Ignore** — hide individual files or whole folders from the corpus without deleting them.
 
 Files are plain markdown on disk; the dashboard is just a viewer/editor over them.
+
+### 📰 Digest
+
+A daily briefing panel that pulls news headlines, weather, and your day's agenda into one scrollable view. The digest is also available as a tab in the hologram UI (`voice/ui/digest.html`).
+
+- **News** — top headlines fetched via the configured news provider.
+- **Weather** — current conditions and forecast for your location.
+- **Agenda** — today's calendar events and scheduled tasks.
+- **Auto-refresh** — configurable refresh interval; fetches fresh data on each cycle.
 
 ---
 
@@ -353,7 +363,7 @@ Message from WhatsApp, continue on Telegram, check the dashboard — same contex
 | Messaging | grammy (Telegram), Baileys (WhatsApp), Slack SDK |
 | Email | IMAP via imapflow, SMTP via nodemailer |
 | Calendar/Contacts | CalDAV/CardDAV via Radicale, synced with KDE Kontact |
-| Voice | Whisper (STT), Kokoro (TTS) |
+| Voice | Whisper (STT), Kokoro or Orpheus (TTS) |
 | Logging | Pino |
 | Process | Single Node.js process, agent-runner as persistent child |
 
@@ -544,12 +554,14 @@ The dashboard has a **Servers** / **Satellite IP** field that sets where Warden 
 
 ## 🗣️ Voice Assistant
 
-`voice/` is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears, eyes, and a mouth.
+`voice/` is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro or Orpheus) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears, eyes, and a mouth.
 
-- 🎤 Local STT (Whisper) + TTS (Kokoro) — your voice never leaves the machine.
+- 🎤 Local STT (Whisper) + TTS (Kokoro or Orpheus) — your voice never leaves the machine.
 - 👻 Hologram UI that reflects state (idle / listening / thinking / speaking).
+- 👏 Double-clap wake word — clap twice to start a conversation (works on both local mic and satellite Pi mic).
 - 📸 Vision: capture a photo, describe a scene, read text (OCR), find objects.
-- ⌛ Timer: "take a break for 10 minutes".
+- 💬 Direct Line chat panel — type messages from the hologram UI instead of the dashboard.
+- 🖥️ Built-in dashboard panels — today, digest, agents, chat, tasks, upload, and system tabs in the hologram window.
 - 🔗 Talks to your existing Warden session — no new login.
 
 ### Install the voice client
@@ -578,7 +590,7 @@ dockbox:
 voice:
   sample_rate: 48000
   whisper_model: base
-  tts_engine: kokoro
+  tts_engine: kokoro   # or "orpheus" for higher-quality LLM-based TTS (needs ~6 GB VRAM)
   tts_voice: am_michael
 ```
 
@@ -607,6 +619,8 @@ See `voice/README.md` for more.
 ## 🛰️ Satellite (Pi audio relay)
 
 `satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is **either** the Warden brain **or** a dumb mic/speaker (or both at once); the hologram UI (`voice/`) runs on your laptop. When the Pi is a mic/speaker it's a **dumb pipe**: it streams raw microphone audio to the hologram and plays back the TTS the Warden returns. No STT, no TTS, no model inference happens on the Pi in that role — transcription runs on the Warden side, so a Pi Zero is plenty.
+
+The satellite mic also supports **double-clap wake** — clap twice near the Pi and the hologram starts listening, no button press needed.
 
 ### Pi files
 

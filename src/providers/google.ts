@@ -472,19 +472,13 @@ export class GoogleProvider implements OAuthProvider {
       .map((s) => s.trim())
       .filter(Boolean);
 
-    // Decode body: try top-level body first, then look in parts for text/plain
-    let bodyText = '';
-    const topBody = msg.payload?.body?.data;
-    if (topBody) {
-      bodyText = this.decodeBase64Url(topBody);
-    } else if (msg.payload?.parts) {
-      const textPart = msg.payload.parts.find(
-        (p) => p.mimeType === 'text/plain',
-      );
-      if (textPart?.body?.data) {
-        bodyText = this.decodeBase64Url(textPart.body.data);
-      }
-    }
+    // Decode body: recursively walk multipart structure. Prefer text/plain;
+    // fall back to text/html stripped to plain text. Gmail's API already
+    // resolves transfer encodings (base64/quoted-printable) and hands back
+    // base64url-encoded bytes of the decoded part, so decodeBase64Url is the
+    // only decoding needed. Without the recursive walk, nested multiparts
+    // (multipart/related → multipart/alternative) return an empty body.
+    const bodyText = this.extractEmailBody(msg.payload);
 
     const isRead = !(msg.labelIds ?? []).includes('UNREAD');
 
@@ -561,6 +555,61 @@ export class GoogleProvider implements OAuthProvider {
     // Gmail uses base64url encoding (RFC 4648 section 5)
     const base64 = data.replace(/-/g, '+').replace(/_/g, '/');
     return Buffer.from(base64, 'base64').toString('utf-8');
+  }
+
+  /**
+   * Recursively extract a readable body from a Gmail message payload.
+   * Prefers text/plain; falls back to text/html converted to plain text.
+   * Walks nested multipart structures (multipart/alternative, /related, /mixed).
+   */
+  private extractEmailBody(payload: any): string {
+    if (!payload) return '';
+    // Non-multipart: a single body part.
+    if (payload.body?.data) {
+      const text = this.decodeBase64Url(payload.body.data);
+      return payload.mimeType === 'text/html' ? this.htmlToText(text) : text;
+    }
+    const parts: any[] = payload.parts ?? [];
+    const plain = this.findPartData(parts, 'text/plain');
+    if (plain) return this.decodeBase64Url(plain);
+    const html = this.findPartData(parts, 'text/html');
+    if (html) return this.htmlToText(this.decodeBase64Url(html));
+    return '';
+  }
+
+  /** Depth-first search for a part's base64url body data by mimeType. */
+  private findPartData(parts: any[], mime: string): string | null {
+    for (const p of parts) {
+      if (p.mimeType === mime && p.body?.data) return p.body.data;
+      if (p.parts) {
+        const nested = this.findPartData(p.parts, mime);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  /** Minimal HTML → plain text: drop tags + styles/scripts, decode entities,
+   *  collapse whitespace. Good enough for digest/preview display. */
+  private htmlToText(html: string): string {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   private folderToLabel(folder: string): string {

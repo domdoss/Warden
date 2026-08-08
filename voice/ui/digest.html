@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Iris Digest</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:'Segoe UI',system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+
+  /* ── dot-grid background ── */
+  .panel{
+    width:100%;height:100%;position:relative;display:flex;flex-direction:column;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(199,125,255,0.06) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-color: rgba(0,10,20,0.88);
+    border-radius: 6px;
+    overflow:hidden;
+  }
+
+  /* ── corner brackets ── */
+  .panel::before,.panel::after{
+    content:'';position:absolute;width:16px;height:16px;pointer-events:none;z-index:10;
+  }
+  .panel::before{top:0;left:0;border-top:1.5px solid rgba(199,125,255,0.5);border-left:1.5px solid rgba(199,125,255,0.5)}
+  .panel::after{bottom:0;right:0;border-bottom:1.5px solid rgba(199,125,255,0.5);border-right:1.5px solid rgba(199,125,255,0.5)}
+  .br-tr,.br-bl{position:absolute;width:16px;height:16px;pointer-events:none;z-index:10}
+  .br-tr{top:0;right:0;border-top:1.5px solid rgba(199,125,255,0.5);border-right:1.5px solid rgba(199,125,255,0.5)}
+  .br-bl{bottom:0;left:0;border-bottom:1.5px solid rgba(199,125,255,0.5);border-left:1.5px solid rgba(199,125,255,0.5)}
+
+  /* ── header ── */
+  .header{
+    padding:14px 16px 0;flex-shrink:0;display:flex;align-items:center;gap:10px;
+  }
+  .header-dot{
+    width:8px;height:8px;border-radius:50%;background:#c77dff;
+    box-shadow:0 0 6px #c77dff,0 0 12px #c77dff;
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:0.3}}
+  .header-title{
+    font-size:11px;font-weight:600;letter-spacing:2px;color:#c77dff;
+    text-shadow:0 0 8px rgba(199,125,255,0.5);text-transform:uppercase;
+  }
+  .header-line{
+    flex:1;height:1px;background:linear-gradient(90deg,rgba(199,125,255,0.3),transparent);
+  }
+  .header-btn{
+    font-size:12px;color:rgba(199,125,255,0.45);cursor:pointer;padding:2px 6px;
+    border:1px solid rgba(199,125,255,0.2);border-radius:4px;line-height:1;
+    transition:color 0.15s,border-color 0.15s,transform 0.4s;user-select:none;
+  }
+  .header-btn:hover{color:#c77dff;border-color:rgba(199,125,255,0.5)}
+  .header-btn:active{transform:rotate(180deg)}
+  .header-btn.gen{font-size:8px;letter-spacing:1px;text-transform:uppercase;padding:3px 7px}
+  .header-btn.gen.busy{color:#ffaa00;border-color:rgba(255,170,0,0.4)}
+
+  /* ── tabs ── */
+  .tabs{
+    display:flex;gap:0;padding:12px 16px 0;flex-shrink:0;
+  }
+  .tab{
+    padding:6px 14px;font-size:9px;font-weight:600;letter-spacing:1.5px;
+    color:rgba(199,125,255,0.35);cursor:pointer;border-bottom:2px solid transparent;
+    transition:color 0.2s,border-color 0.2s;text-transform:uppercase;
+  }
+  .tab:hover{color:rgba(199,125,255,0.7)}
+  .tab.active{color:#c77dff;border-bottom-color:#c77dff;text-shadow:0 0 6px rgba(199,125,255,0.4)}
+
+  /* ── body ── */
+  .body{
+    flex:1;padding:14px 16px;overflow-y:auto;min-height:0;
+    font-size:12px;line-height:1.7;color:rgba(230,210,255,0.88);
+  }
+  .body .empty{
+    color:rgba(199,125,255,0.25);font-style:italic;text-align:center;
+    padding-top:40px;font-size:11px;
+  }
+  .body .summary-text p{margin-bottom:10px}
+  .body .summary-text .highlight{color:#ffaa00;text-shadow:0 0 4px rgba(255,170,0,0.3)}
+  .body .summary-text strong{display:block;color:#c77dff;font-size:11px;letter-spacing:1px;
+    text-transform:uppercase;margin:12px 0 4px;text-shadow:0 0 6px rgba(199,125,255,0.4)}
+  .body .summary-text h3,.body .summary-text h4{color:#c77dff;font-size:11px;letter-spacing:1px;
+    text-transform:uppercase;margin:12px 0 4px;text-shadow:0 0 6px rgba(199,125,255,0.4);font-weight:600}
+  .body .summary-text h4{font-size:10px;opacity:0.85}
+  .body .summary-text ul{margin:4px 0 10px;padding-left:18px;list-style:none}
+  .body .summary-text li{position:relative;margin-bottom:4px;padding-left:2px}
+  .body .summary-text li::before{content:'▸';position:absolute;left:-12px;color:#c77dff;opacity:0.7}
+  .body .summary-text em{color:#e0b3ff;font-style:italic}
+  .body .summary-text code{font-family:'Courier New',monospace;font-size:10px;
+    background:rgba(199,125,255,0.08);padding:1px 4px;border-radius:3px;color:#f0e0ff}
+  .body .summary-text hr{border:0;border-top:1px solid rgba(199,125,255,0.12);margin:10px 0}
+
+  /* ── footer ── */
+  .footer{
+    padding:8px 16px 12px;flex-shrink:0;display:flex;justify-content:space-between;
+    font-size:8px;color:rgba(199,125,255,0.2);letter-spacing:0.5px;
+  }
+  .footer .ts{text-transform:uppercase}
+
+  /* scrollbar */
+  .body::-webkit-scrollbar{width:3px}
+  .body::-webkit-scrollbar-track{background:transparent}
+  .body::-webkit-scrollbar-thumb{background:rgba(199,125,255,0.15);border-radius:2px}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="br-tr"></div><div class="br-bl"></div>
+  <div class="header">
+    <div class="header-dot"></div>
+    <div class="header-title">Iris Digest</div>
+    <div class="header-line"></div>
+    <div class="header-btn gen" id="gen-btn" title="Ask Iris to compile a digest now">Generate</div>
+    <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-span="hourly">Hourly</div>
+    <div class="tab" data-span="daily">Daily</div>
+    <div class="tab" data-span="weekly">Weekly</div>
+  </div>
+  <div class="body"><div class="empty">No digest yet — Iris compiles these automatically.</div></div>
+  <div class="footer"><span></span><span class="ts"></span></div>
+</div>
+<script>
+(function(){
+  // ── iframe postMessage bridge shim (see agents.html for full note) ──
+  if(!window.pywebview && window.parent && window.parent !== window){
+    var _pending={};
+    window.addEventListener('message', function(ev){
+      var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+      var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+      if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+    });
+    window.pywebview={api:new Proxy({},{
+      get:function(_,method){
+        return function(){
+          var args=Array.prototype.slice.call(arguments);
+          return new Promise(function(resolve,reject){
+            var id='pm-'+Math.random().toString(36).slice(2);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+          });
+        };
+      }
+    })};
+  }
+
+  var body=document.querySelector('.body'),footerTs=document.querySelector('.footer .ts'),
+      tabs=document.querySelectorAll('.tab'),config=null,activeSpan='hourly',interval=null;
+
+  async function loadConfig(){
+    // The pywebview bridge (window.pywebview.api) is injected into the host
+    // window after the iframe loads, so the first fetchDigest would no-op
+    // and leave the panel empty until the 20s poll or a click/focus. Retry
+    // quickly until the bridge is ready, then start the slow poll.
+    var tries=0;
+    function whenReady(){
+      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ fetchDigest(); }
+      else if(tries++ < 60){ setTimeout(whenReady, 250); }
+    }
+    whenReady();
+    // Hourly digests land on the cron, so poll often enough that a freshly
+    // generated summary shows up without a manual refresh.
+    interval=setInterval(fetchDigest,20000);
+  }
+
+  async function fetchDigest(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api){showEmpty();return}
+      var raw=await window.pywebview.api.warden_api('/api/summaries?span='+activeSpan);
+      if(!raw){showEmpty();return}
+      var d=JSON.parse(raw);
+      if(!d||!d.summaries||!d.summaries.length){showEmpty();return}
+      var s=d.summaries[0];
+      body.innerHTML='<div class="summary-text">'+renderMd(s.text)+'</div>';
+      footerTs.textContent=s.generated_at||'';
+    }catch(e){showEmpty()}
+  }
+
+  function showEmpty(){
+    body.innerHTML='<div class="empty">No digest yet — Iris compiles these automatically.</div>';
+    footerTs.textContent='';
+  }
+
+  tabs.forEach(function(t){
+    t.addEventListener('click',function(){
+      tabs.forEach(function(x){x.classList.remove('active')});
+      t.classList.add('active');
+      activeSpan=t.dataset.span;
+      fetchDigest();
+    });
+  });
+
+  // Manual refresh.
+  var refreshBtn=document.getElementById('refresh-btn');
+  if(refreshBtn)refreshBtn.addEventListener('click',fetchDigest);
+
+  // Generate now: asks the orchestrator to have Iris compile a digest for the
+  // active span and POST it to /api/summaries. chat_send runs a full Warden
+  // turn (may take 30-60s); show busy state, then auto-refresh.
+  var genBtn=document.getElementById('gen-btn');
+  if(genBtn)genBtn.addEventListener('click',async function(){
+    if(genBtn.classList.contains('busy'))return;
+    genBtn.classList.add('busy');
+    genBtn.textContent='Working…';
+    try{
+      var span=activeSpan;
+      var prompt='Iris: write a '+span+' digest as formatted markdown — use **bold** '
+        +'for section headers and "- " bullet lists, covering recent email, calendar, '
+        +'and task activity. POST it to /api/summaries?span='+span+' with body '
+        +'{"text":"<your markdown digest>"} — keep ?span='+span+' exactly.';
+      if(window.pywebview&&window.pywebview.api&&window.pywebview.api.chat_send){
+        await window.pywebview.api.chat_send(prompt);
+      }
+      // Give Iris a beat to POST, then pull the latest summary.
+      setTimeout(fetchDigest, 1500);
+    }catch(e){}
+    finally{
+      genBtn.classList.remove('busy');
+      genBtn.textContent='Generate';
+    }
+  });
+
+  function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+  // Small markdown renderer for Iris digests: **bold** (block header style),
+  // *italic*, `code`, #/##/### headers, - or * bullet lists, blank-line
+  // paragraphs, and _italic_. HTML is escaped first, then inline spans are
+  // applied, then block structure (headers/lists/paragraphs).
+  function renderMd(text){
+    var h=esc(text||'');
+    // inline spans (order matters: code, then bold, then italic)
+    h=h.replace(/`([^`]+)`/g,'<code>$1</code>');
+    h=h.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    h=h.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+    h=h.replace(/(^|[^_])_([^_\n]+)_(?!_)/g,'$1<em>$2</em>');
+    var lines=h.split(/\n/), out=[], inList=false, para=[];
+    function flush(){if(para.length){out.push('<p>'+para.join(' ')+'</p>');para=[];}}
+    function closeList(){if(inList){out.push('</ul>');inList=false;}}
+    for(var i=0;i<lines.length;i++){
+      var line=lines[i];
+      if(/^\s*###\s+/.test(line)){closeList();flush();out.push('<h4>'+line.replace(/^\s*###\s+/,'')+'</h4>');}
+      else if(/^\s*##\s+/.test(line)){closeList();flush();out.push('<h3>'+line.replace(/^\s*##\s+/,'')+'</h3>');}
+      else if(/^\s*#\s+/.test(line)){closeList();flush();out.push('<h3>'+line.replace(/^\s*#\s+/,'')+'</h3>');}
+      else if(/^\s*[-*]\s+/.test(line)){flush();if(!inList){out.push('<ul>');inList=true;}out.push('<li>'+line.replace(/^\s*[-*]\s+/,'')+'</li>');}
+      else if(/^\s*---+\s*$/.test(line)){closeList();flush();out.push('<hr>');}
+      else if(line.trim()===''){closeList();flush();}
+      else{closeList();para.push(line);}
+    }
+    closeList();flush();
+    return out.join('');
+  }
+  // Refresh when the panel becomes visible again (user switches back to the
+  // dashboard tab / window), so a digest that landed while hidden shows up.
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) fetchDigest(); });
+  window.addEventListener('focus', fetchDigest);
+  if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);
+})();
+</script>
+</body>
+</html>
