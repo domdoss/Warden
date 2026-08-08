@@ -91,7 +91,22 @@ registry.register({
             type: 'api_request', key_type: args.key_type,
             method: (args.method || 'GET').toUpperCase(), path: args.path,
             headers: args.headers ? (typeof args.headers === 'string' ? JSON.parse(args.headers) : args.headers) : undefined,
-            body: args.body ? (typeof args.body === 'string' ? (() => { try { return JSON.parse(args.body); } catch { return args.body; } })() : args.body) : undefined,
+            body: args.body ? (typeof args.body === 'string' ? (() => {
+                try { return JSON.parse(args.body); }
+                catch {
+                    // Models sometimes emit raw newlines/tabs inside JSON string
+                    // values, which makes JSON.parse throw ("Bad control character
+                    // in string literal") and the downstream POST get rejected.
+                    // Escape any control chars as \uXXXX and retry before falling
+                    // back to the raw string, so the forwarded body stays valid.
+                    try {
+                        return JSON.parse(args.body.replace(
+                            /[\x00-\x1F\x7F]/g,
+                            (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'),
+                        ));
+                    } catch { return args.body; }
+                }
+            })() : args.body) : undefined,
             description: args.description || '', userId: context.userId || '',
             groupFolder: context.groupFolder || '', timestamp: new Date().toISOString(),
         });
@@ -101,6 +116,43 @@ registry.register({
             return `HTTP ${data.status} ${data.statusText}\n\n${bodyStr}`;
         }
         return 'API request timed out.';
+    },
+    toolset: 'admin',
+    tier: 'public',
+});
+
+// Dedicated keyless tool for publishing a compiled digest to the dashboard.
+// This is the internal-loopback case (POST to this Warden's own /api/summaries),
+// split out from api_request so Iris never has to get key_type right to post a
+// digest — api_request is for EXTERNAL services (OpenAI/GitHub/Slack) where a
+// stored key + base_url must be resolved; a digest post needs neither and was
+// failing with "no API key configured for key_type \"\"" when Iris forgot
+// key_type. The host handler does the loopback fetch (no auth, no key).
+registry.register({
+    name: 'post_summary',
+    description: 'Publish a compiled digest/summary so it shows in the dashboard digest panel. Keyless internal call — do NOT use api_request for this. Args: span (hourly|daily|weekly — which tab) and text (the markdown digest). Call once after compiling the digest.',
+    schema: {
+        type: 'object',
+        properties: {
+            span: { type: 'string', enum: ['hourly', 'daily', 'weekly'], description: 'Which digest tab this lands under.' },
+            text: { type: 'string', description: 'The compiled digest as markdown.' },
+        },
+        required: ['span', 'text'],
+    },
+    handler: async (args, _context) => {
+        try {
+            const data = await writeCallbackAsync('ipc', {
+                type: 'post_summary',
+                span: String(args.span || ''),
+                text: String(args.text || ''),
+            }, 30000);
+            if (data && data.error) return `Error: ${data.error}`;
+            return data && data.ok
+                ? `Posted ${args.span} digest (HTTP ${data.status}).`
+                : `Failed to post digest (HTTP ${data?.status ?? 'no response'}).`;
+        } catch (err: any) {
+            return `Error: ${err?.message ?? String(err)}`;
+        }
     },
     toolset: 'admin',
     tier: 'public',

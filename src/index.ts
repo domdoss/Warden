@@ -79,7 +79,7 @@ import {
 import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
-import { computeNextRun, startSchedulerLoop } from './task-scheduler.js';
+import { computeNextRun, runDigestNow, startSchedulerLoop } from './task-scheduler.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
 import { projectAllDeliverables, startKontactWatcher } from './kontact-projection.js';
 import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
@@ -1668,6 +1668,34 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           }
         }
 
+        // post_summary — keyless internal loopback so Iris can publish a digest
+        // without going through api_request (which requires a key_type and was
+        // failing with "no API key configured" when Iris forgot it). POSTs to
+        // this Warden's own /api/summaries?span=X; the dashboard digest panel
+        // reads from there. No auth, no stored key, no base_url to resolve.
+        if (type === 'post_summary') {
+          const span = String(args.span || '');
+          if (!['hourly', 'daily', 'weekly'].includes(span)) {
+            return { ok: false, error: `invalid span: ${span}` };
+          }
+          const port = process.env.STATUS_PORT || '3200';
+          const url = `http://127.0.0.1:${port}/api/summaries?span=${encodeURIComponent(span)}`;
+          try {
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: String(args.text || '') }),
+              signal: AbortSignal.timeout(30000),
+            });
+            const respText = await res.text().catch(() => '');
+            logger.info({ span, status: res.status }, 'ipc post_summary: dispatched');
+            return { ok: res.ok, status: res.status, statusText: res.statusText, body: respText };
+          } catch (err: any) {
+            logger.warn({ span, err }, 'ipc post_summary: failed');
+            return { ok: false, error: String(err?.message ?? err) };
+          }
+        }
+
         return { ok: false, error: `unknown ipc type: ${type}` };
       } catch (err: any) {
         logger.warn({ err, type: args?.type }, 'ipc callback: error');
@@ -2022,19 +2050,19 @@ const IRIS_DIGEST_TASKS = [
     id: 'iris-digest-hourly',
     cron: '7 * * * *',
     prompt:
-      'Iris hourly digest.\n\nINPUT (above): current time, user bio/habits, calendar events, active work tasks, weather. Use ONLY this — never invent items not listed.\n\nCOVER: present + next ~2h.\nMAY add one short nudge if the context fits (late night + early wake habit → "go to bed"; heat coming → "close windows now").\nNo filler. Nothing scheduled/active → say so.\n\nOUTPUT: markdown, bold headers + bullets.\nPOST /api/summaries?span=hourly  body {"text":"<digest>"}  (keep ?span=hourly exactly).',
+      'You are Iris, the digest compiler. Your job: compile the Iris hourly digest and publish it with the post_summary tool.\n\nINPUT (above) already has current time, user bio/habits, calendar events, active work tasks, and weather — pulled from the local DB. Use INPUT as your source for calendar, tasks, weather, and bio. If a section is empty, say so. You may call read_emails to add recent inbox activity.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails.\n2. Compose the digest as markdown with bold **headers** and - bullets. Cover the present and next ~2h. Add one short nudge if it fits (late night + early wake → "go to bed"; heat coming → "close windows now").\n3. Call the post_summary tool with span="hourly" and text=<your markdown digest>.\n\nYour final action is the post_summary tool call — that is what publishes the digest. End your turn with that call.',
   },
   {
     id: 'iris-digest-daily',
     cron: '17 21 * * *',
     prompt:
-      'Iris end-of-day digest.\n\nINPUT (above): current time, user bio/habits, calendar events, active work tasks, weather. Use ONLY this — never invent items not listed.\n\nCOVER: past (today) / present (still active) / future (tomorrow).\nMAY add one short time/weather/habit nudge if relevant.\nNo fabricated items; empty section → say so.\n\nOUTPUT: markdown, bold headers + bullets.\nPOST /api/summaries?span=daily  body {"text":"<digest>"}  (keep ?span=daily exactly).',
+      'You are Iris, the digest compiler. Your job: compile the Iris end-of-day digest and publish it with the post_summary tool.\n\nINPUT (above) already has current time, user bio/habits, calendar events, active work tasks, and weather — pulled from the local DB. Use INPUT as your source for calendar, tasks, weather, and bio. If a section is empty, say so. You may call read_emails to add recent inbox activity.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails.\n2. Compose the digest as markdown with bold **headers** and - bullets. Cover the past (today), present (still active), and future (tomorrow). Add one short time/weather/habit nudge if relevant.\n3. Call the post_summary tool with span="daily" and text=<your markdown digest>.\n\nYour final action is the post_summary tool call — that is what publishes the digest. End your turn with that call.',
   },
   {
     id: 'iris-digest-weekly',
     cron: '30 20 * * 0',
     prompt:
-      'Iris weekly roundup.\n\nINPUT (above): current time, user bio/habits, calendar events, active work tasks, weather. Use ONLY this — never invent items not listed.\n\nCOVER: past (last week) / future (this week).\nMAY add one short time/weather/habit note if relevant.\nNo fabricated items; empty section → say so.\n\nOUTPUT: markdown, bold headers + bullets.\nPOST /api/summaries?span=weekly  body {"text":"<roundup>"}  (keep ?span=weekly exactly).',
+      'You are Iris, the digest compiler. Your job: compile the Iris weekly roundup and publish it with the post_summary tool.\n\nINPUT (above) already has current time, user bio/habits, calendar events, active work tasks, and weather — pulled from the local DB. Use INPUT as your source for calendar, tasks, weather, and bio. If a section is empty, say so. You may call read_emails to add recent inbox activity.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails.\n2. Compose the roundup as markdown with bold **headers** and - bullets. Cover the past (last week) and future (this week). Add one short time/weather/habit note if relevant.\n3. Call the post_summary tool with span="weekly" and text=<your markdown roundup>.\n\nYour final action is the post_summary tool call — that is what publishes the digest. End your turn with that call.',
   },
 ];
 
@@ -2345,6 +2373,13 @@ async function main(): Promise<void> {
 
   // Start status server. Task 11 will slim its deps down; for now we pass
   // stubs for the group/queue fields it still expects.
+  // schedulerDeps is shared with startSchedulerLoop below; the manual digest
+  // trigger (POST /api/digest/generate) reuses the same grounded runTask path
+  // as the cron, so Generate and the scheduled digest are one Iris behavior.
+  const schedulerDeps = {
+    registeredGroups: () => ({ [OWNER_JID]: { name: 'Owner', folder: 'owner', trigger: '', added_at: '', isMain: true, requiresTrigger: false } }) as any,
+    queue: { enqueueMessageCheck: () => {} },
+  };
   startStatusServer({
     queue: { enqueueMessageCheck() {}, enqueueTask() {}, setActiveMode() {}, getStatus: () => {
       const processing = getRouterState('agent:processing') === 'true';
@@ -2409,6 +2444,7 @@ async function main(): Promise<void> {
         return false;
       }
     },
+    triggerDigest: (span: string) => runDigestNow(span, schedulerDeps),
   });
 
   // Start the scheduled-task loop. The scheduler no longer runs agents — it
@@ -2417,10 +2453,7 @@ async function main(): Promise<void> {
   // The message loop polls the owner chat every POLL_INTERVAL, so the injected
   // prompt is picked up without an explicit poke; enqueueMessageCheck is a
   // no-op here (it exists for the GroupQueue architecture).
-  startSchedulerLoop({
-    registeredGroups: () => ({ [OWNER_JID]: { name: 'Owner', folder: 'owner', trigger: '', added_at: '', isMain: true, requiresTrigger: false } }) as any,
-    queue: { enqueueMessageCheck: () => {} },
-  });
+  startSchedulerLoop(schedulerDeps);
 
   // ── Iris digest tasks (hourly / daily / weekly) ───────────────────────
   // Three recurring tasks whose prompts the scheduler injects into the

@@ -35,7 +35,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     alarms:    { name: 'alarms',    tools: ['create_alarm','list_alarms','update_alarm','delete_alarm'], tier: 'private' },
     sms:       { name: 'sms',       tools: ['send_sms','read_sms'], tier: 'private' },
     chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_sentry'], tier: 'both' },
-    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request'], tier: 'public' },
+    // admin tools must be listed explicitly — resolveToolset() only walks the
+    // `tools` array + `includes`, NOT the `toolset` property tools are
+    // registered with. add_digest_note + post_summary were registered with
+    // toolset:'admin' but never listed here, so they were unreachable.
+    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request','add_digest_note','post_summary'], tier: 'public' },
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
@@ -63,7 +67,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // active skill tools at spawn, so the data/skills/ library is inherited.
     'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
-    'iris-core':     { name: 'iris-core',     includes: ['email','contacts','calendar','todos'] },
+    // Iris (digest compiler) — email (IMAP read_emails, works) + admin
+    // (add_digest_note, post_summary, list_api_keys, api_request). The
+    // contacts/calendar/todos toolsets were dropped: those tools hit Radicale
+    // (127.0.0.1:5232) which isn't provisioned, so every list_calendar_events /
+    // list_todos / list_contacts call failed with ECONNREFUSED and tempted Iris
+    // to fabricate. Calendar + tasks now come from buildDigestContext (DB) in
+    // INPUT (above), not from Radicale tools.
+    'iris-core':     { name: 'iris-core',     includes: ['email','admin'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };
 

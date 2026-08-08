@@ -1020,7 +1020,248 @@ window.UserDash = (() => {
     if (['zip','tar','gz','rar','7z','bz2'].includes(ext)) return { cls: 'zip', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>' };
     if (['mp3','wav','flac','aac','ogg','m4a'].includes(ext)) return { cls: 'audio', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>' };
     if (['mp4','mov','avi','mkv','webm'].includes(ext)) return { cls: 'video', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>' };
-    return { cls: 'file', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' };
+    // ---- User Bio page ----
+  // Quick-add word bubbles for common personal fields. Clicking a bubble
+  // drops a labeled line into the textarea at the cursor (or appends one),
+  // then the user types the value. The full markdown is also editable
+  // directly. Saves to /api/bio → USER_BIO.md in the workspace root, which
+  // Iris digests read (buildDigestContext) to ground summaries in real
+  // context (sleep, weather, habits).
+  const BIO_FIELDS = [
+    { label: 'Name', line: 'Name: ' },
+    { label: 'What to call me', line: 'Call me: ' },
+    { label: 'Location', line: 'Location: ' },
+    { label: 'Age', line: '- Age: ' },
+    { label: 'Pronouns', line: '- Pronouns: ' },
+    { label: 'Role / job', line: '- Role: ' },
+    { label: 'Wake time', line: '- Wake up around: ' },
+    { label: 'Bed time', line: '- Should be asleep by: ' },
+    { label: 'Sleep target', line: '- Sleep target: ' },
+    { label: 'Morning person', line: '- Morning person: ' },
+    { label: 'Favorite food', line: '- Favorite food: ' },
+    { label: 'Favorite book', line: '- Favorite book: ' },
+    { label: 'Favorite movie', line: '- Favorite movie: ' },
+    { label: 'Favorite song', line: '- Favorite song: ' },
+    { label: 'Favorite band/artist', line: '- Favorite band/artist: ' },
+    { label: 'Music taste', line: '- Music taste: ' },
+    { label: 'Hobbies', line: '- Hobbies: ' },
+    { label: 'Exercise', line: '- Exercise: ' },
+    { label: 'Beach or forest', line: '- Beach or forest: ' },
+    { label: 'Coffee or tea', line: '- Coffee or tea: ' },
+    { label: 'Dog or cat person', line: '- Dog or cat person: ' },
+    { label: 'Introvert or extrovert', line: '- Introvert/extrovert: ' },
+    { label: 'Favorite season', line: '- Favorite season: ' },
+    { label: 'Ideal weekend', line: '- Ideal weekend: ' },
+    { label: 'Spirit animal', line: '- Spirit animal: ' },
+    { label: 'Pet peeves', line: '- Pet peeves: ' },
+    { label: 'A weird talent', line: '- Weird talent: ' },
+    // --- day-to-day context an AI assistant needs ---
+    { label: 'Timezone', line: '- Timezone: ' },
+    { label: 'Languages spoken', line: '- Languages: ' },
+    { label: 'Communication style', line: '- Communication style: ' },
+    { label: 'Answer length', line: '- Answer length: ' },
+    { label: 'Answer tone', line: '- Answer tone: ' },
+    { label: 'Formality', line: '- Formality: ' },
+    { label: 'How to interrupt me', line: '- Interrupt me: ' },
+    { label: 'Decision style', line: '- Decisions: ' },
+    { label: 'Work hours', line: '- Work hours: ' },
+    { label: 'Focus / deep-work hours', line: '- Focus hours: ' },
+    { label: 'Energy peak (sharpest)', line: '- Sharpest around: ' },
+    { label: 'Company / job', line: '- Company: ' },
+    { label: 'Tech stack / tools', line: '- Tech stack: ' },
+    { label: 'Skills / expertise', line: '- Skills: ' },
+    { label: 'Learning goals', line: '- Learning: ' },
+    { label: 'Current priorities', line: '- Priorities: ' },
+    { label: 'Daily routine', line: '- Daily routine: ' },
+    { label: 'Diet / restrictions', line: '- Diet: ' },
+    { label: 'Allergies', line: '- Allergies: ' },
+    { label: 'Medications', line: '- Medications: ' },
+    { label: 'Health / fitness goals', line: '- Fitness goals: ' },
+    { label: 'Household', line: '- Household: ' },
+    { label: 'Pets', line: '- Pets: ' },
+    { label: 'Commute', line: '- Commute: ' },
+    { label: 'Frequent locations', line: '- Frequent locations: ' },
+    { label: 'Financial priorities', line: '- Money priorities: ' },
+    { label: 'Payday (money in)', line: '- Payday: ' },
+    { label: 'Money out day', line: '- Bills due: ' },
+    { label: 'Car payment day', line: '- Car payment: ' },
+    { label: 'Rent / mortgage day', line: '- Rent/mortgage: ' },
+    { label: 'Pay amount', line: '- Pay amount: ' },
+    { label: 'Rent amount', line: '- Rent amount: ' },
+    { label: 'Preferred units', line: '- Units (metric/imperial): ' },
+    { label: 'Currency', line: '- Currency: ' },
+    { label: 'News / topics I follow', line: '- Follows: ' },
+    { label: 'Avoid (topics/words)', line: '- Avoid: ' },
+    { label: 'Birthday', line: '- Birthday: ' },
+    { label: 'Important people', line: '- Important people: ' },
+    { label: 'Recurring commitments', line: '- Recurring: ' },
+    { label: 'Driving vs transit', line: '- Getting around: ' },
+    // --- sleep & morning (drives alarms + digests) ---
+    { label: 'Sleep style', line: '- Sleep style: ' },
+    { label: 'Snoozer?', line: '- Snooze habit: ' },
+    { label: 'Caffeine cutoff', line: '- No caffeine after: ' },
+    { label: 'Screen wind-down', line: '- Wind-down time: ' },
+    { label: 'Shower time', line: '- Showers: ' },
+    // --- home / environment (weather & comfort nudges) ---
+    { label: 'Runs hot / cold', line: '- Temperature: ' },
+    { label: 'Thermostat pref', line: '- Thermostat: ' },
+    { label: 'Windows open/closed', line: '- Windows: ' },
+    { label: 'AC / heating pref', line: '- AC/heating: ' },
+    { label: 'Light sensitivity', line: '- Light sensitivity: ' },
+    // --- chore days (recurring reminders) ---
+    { label: 'Grocery day', line: '- Grocery day: ' },
+    { label: 'Trash / recycling day', line: '- Trash day: ' },
+    { label: 'Laundry day', line: '- Laundry day: ' },
+    { label: 'Cleaning day', line: '- Cleaning day: ' },
+    { label: 'Cooking vs takeout', line: '- Cooking: ' },
+    { label: 'Water intake goal', line: '- Water goal: ' },
+    // --- work & productivity ---
+    { label: 'Meeting preference', line: '- Meetings: ' },
+    { label: 'Email style', line: '- Email: ' },
+    { label: 'Calendar style', line: '- Calendar: ' },
+    { label: 'Note-taking tool', line: '- Notes tool: ' },
+    { label: 'Productivity system', line: '- Productivity: ' },
+    { label: 'Procrastination triggers', line: '- Procrastinate on: ' },
+    { label: 'Distractions', line: '- Distractions: ' },
+    { label: 'How I decompress', line: '- Decompress by: ' },
+    { label: 'Stress signals', line: '- Stressed when: ' },
+    // --- dev / tech setup ---
+    { label: 'Primary device', line: '- Primary device: ' },
+    { label: 'Phone OS', line: '- Phone OS: ' },
+    { label: 'Browser', line: '- Browser: ' },
+    { label: 'Code editor', line: '- Editor: ' },
+    { label: 'Terminal', line: '- Shell: ' },
+    { label: 'Git workflow', line: '- Git: ' },
+    { label: 'AI tools used', line: '- AI tools: ' },
+    { label: 'Smart home devices', line: '- Smart home: ' },
+    { label: 'Car', line: '- Car: ' },
+    // --- relationships & people ---
+    { label: 'Partner / spouse', line: '- Partner: ' },
+    { label: 'Kids', line: '- Kids: ' },
+    { label: 'Family', line: '- Family: ' },
+    { label: 'Best friend', line: '- Best friend: ' },
+    { label: 'Emergency contact', line: '- Emergency contact: ' },
+    { label: 'People to avoid', line: '- Avoid people: ' },
+    { label: 'Anniversary', line: '- Anniversary: ' },
+    // --- health ---
+    { label: 'Chronic conditions', line: '- Conditions: ' },
+    { label: 'Blood type', line: '- Blood type: ' },
+    { label: 'Glasses / contacts', line: '- Vision: ' },
+    { label: 'Accessibility needs', line: '- Accessibility: ' },
+    { label: 'Doctor next due', line: '- Doctor: ' },
+    { label: 'Dentist next due', line: '- Dentist: ' },
+    // --- preferences & boundaries ---
+    { label: 'Humor style', line: '- Humor: ' },
+    { label: 'Swearing ok?', line: '- Swearing: ' },
+    { label: 'Emoji ok?', line: '- Emoji: ' },
+    { label: 'Dark mode', line: '- Dark mode: ' },
+    { label: 'Religion / practice', line: '- Religion: ' },
+    { label: 'Meditation', line: '- Meditation: ' },
+    // --- media & interests ---
+    { label: 'Podcasts', line: '- Podcasts: ' },
+    { label: 'YouTube follows', line: '- YouTube: ' },
+    { label: 'Sports teams', line: '- Sports: ' },
+    { label: 'Gaming', line: '- Gaming: ' },
+    { label: 'Streaming services', line: '- Streaming: ' },
+    { label: 'Subscriptions to cancel', line: '- Subscriptions: ' },
+    // --- security ---
+    { label: 'Password manager', line: '- Passwords: ' },
+    { label: '2FA preference', line: '- 2FA: ' },
+    // --- goals & future ---
+    { label: 'Bucket list', line: '- Bucket list: ' },
+    { label: 'Long-term goals', line: '- Long-term goals: ' },
+    { label: 'This year', line: '- This year: ' },
+    { label: 'Side projects', line: '- Side projects: ' },
+    { label: 'Travel plans', line: '- Travel: ' },
+    { label: 'Charity / causes', line: '- Causes: ' },
+    { label: '+ Custom', line: '- ' },
+  ];
+  let bioBound = false;
+
+  function bindBio() {
+    if (bioBound) return;
+    bioBound = true;
+    const bubbleEl = document.getElementById('bioBubbles');
+    if (bubbleEl) {
+      bubbleEl.innerHTML = BIO_FIELDS.map((f, i) =>
+        `<button type="button" class="chip" data-bio="${i}" style="cursor:pointer;padding:6px 12px;border:1px solid var(--border,#333);border-radius:999px;background:transparent;color:inherit">${esc(f.label)}</button>`
+      ).join('');
+      bubbleEl.querySelectorAll('[data-bio]').forEach(b => {
+        b.addEventListener('click', () => insertBioLine(BIO_FIELDS[parseInt(b.dataset.bio, 10)].line));
+      });
+    }
+    document.getElementById('btnBioSave')?.addEventListener('click', saveBio);
+    document.getElementById('btnBioReload')?.addEventListener('click', loadBio);
+    document.getElementById('btnBioAddIncome')?.addEventListener('click', () => {
+      const n = document.getElementById('bioIncName');
+      const d = document.getElementById('bioIncDay');
+      const a = document.getElementById('bioIncAmt');
+      if (!n || !n.value.trim()) return;
+      insertBioLine(`- Income: ${n.value.trim()} | day ${d.value.trim() || '?'} | ${a.value.trim() || '?'}`);
+      n.value = ''; d.value = ''; a.value = '';
+    });
+    document.getElementById('btnBioAddExpense')?.addEventListener('click', () => {
+      const n = document.getElementById('bioExpName');
+      const d = document.getElementById('bioExpDay');
+      const a = document.getElementById('bioExpAmt');
+      if (!n || !n.value.trim()) return;
+      insertBioLine(`- Expense: ${n.value.trim()} | day ${d.value.trim() || '?'} | ${a.value.trim() || '?'}`);
+      n.value = ''; d.value = ''; a.value = '';
+    });
+  }
+
+  function insertBioLine(label) {
+    const ta = document.getElementById('bioText');
+    if (!ta) return;
+    // If a line already starts with this label, jump to it instead of duplicating.
+    const existing = ta.value.indexOf(label);
+    if (existing >= 0) {
+      ta.focus();
+      ta.setSelectionRange(existing + label.length, existing + label.length);
+      return;
+    }
+    const atEnd = ta.value.length;
+    const needsNL = ta.value && !ta.value.endsWith('\n');
+    const ins = (needsNL ? '\n' : '') + label;
+    const pos = ta.selectionStart ?? atEnd;
+    ta.value = ta.value.slice(0, pos) + ins + ta.value.slice(pos);
+    ta.focus();
+    const caret = pos + ins.length;
+    ta.setSelectionRange(caret, caret);
+  }
+
+  async function loadBio() {
+    bindBio();
+    const ta = document.getElementById('bioText');
+    const status = document.getElementById('bioStatus');
+    try {
+      const r = await fetch(fileUrl('/api/bio'));
+      const d = await r.json();
+      if (ta) ta.value = d.text || '';
+      if (status) status.textContent = d.text ? 'Loaded.' : 'No bio yet — click a bubble to start.';
+    } catch (e) {
+      if (status) status.textContent = 'Failed to load bio.';
+    }
+  }
+
+  async function saveBio() {
+    const ta = document.getElementById('bioText');
+    const status = document.getElementById('bioStatus');
+    if (status) status.textContent = 'Saving…';
+    try {
+      const r = await fetch(fileUrl('/api/bio'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: ta ? ta.value : '' }),
+      });
+      const d = await r.json();
+      if (status) status.textContent = d.ok ? 'Saved.' : ('Error: ' + (d.error || 'unknown'));
+    } catch (e) {
+      if (status) status.textContent = 'Failed to save bio.';
+    }
+  }
+
+  return { cls: 'file', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' };
   }
 
   function renderFileList(entries) {
@@ -3779,246 +4020,6 @@ window.UserDash = (() => {
     setupWizardNext,
     togglePane,
     switchPaneTab,
-  // ---- User Bio page ----
-  // Quick-add word bubbles for common personal fields. Clicking a bubble
-  // drops a labeled line into the textarea at the cursor (or appends one),
-  // then the user types the value. The full markdown is also editable
-  // directly. Saves to /api/bio → USER_BIO.md in the workspace root, which
-  // Iris digests read (buildDigestContext) to ground summaries in real
-  // context (sleep, weather, habits).
-  const BIO_FIELDS = [
-    { label: 'Name', line: 'Name: ' },
-    { label: 'What to call me', line: 'Call me: ' },
-    { label: 'Location', line: 'Location: ' },
-    { label: 'Age', line: '- Age: ' },
-    { label: 'Pronouns', line: '- Pronouns: ' },
-    { label: 'Role / job', line: '- Role: ' },
-    { label: 'Wake time', line: '- Wake up around: ' },
-    { label: 'Bed time', line: '- Should be asleep by: ' },
-    { label: 'Sleep target', line: '- Sleep target: ' },
-    { label: 'Morning person', line: '- Morning person: ' },
-    { label: 'Favorite food', line: '- Favorite food: ' },
-    { label: 'Favorite book', line: '- Favorite book: ' },
-    { label: 'Favorite movie', line: '- Favorite movie: ' },
-    { label: 'Favorite song', line: '- Favorite song: ' },
-    { label: 'Favorite band/artist', line: '- Favorite band/artist: ' },
-    { label: 'Music taste', line: '- Music taste: ' },
-    { label: 'Hobbies', line: '- Hobbies: ' },
-    { label: 'Exercise', line: '- Exercise: ' },
-    { label: 'Beach or forest', line: '- Beach or forest: ' },
-    { label: 'Coffee or tea', line: '- Coffee or tea: ' },
-    { label: 'Dog or cat person', line: '- Dog or cat person: ' },
-    { label: 'Introvert or extrovert', line: '- Introvert/extrovert: ' },
-    { label: 'Favorite season', line: '- Favorite season: ' },
-    { label: 'Ideal weekend', line: '- Ideal weekend: ' },
-    { label: 'Spirit animal', line: '- Spirit animal: ' },
-    { label: 'Pet peeves', line: '- Pet peeves: ' },
-    { label: 'A weird talent', line: '- Weird talent: ' },
-    // --- day-to-day context an AI assistant needs ---
-    { label: 'Timezone', line: '- Timezone: ' },
-    { label: 'Languages spoken', line: '- Languages: ' },
-    { label: 'Communication style', line: '- Communication style: ' },
-    { label: 'Answer length', line: '- Answer length: ' },
-    { label: 'Answer tone', line: '- Answer tone: ' },
-    { label: 'Formality', line: '- Formality: ' },
-    { label: 'How to interrupt me', line: '- Interrupt me: ' },
-    { label: 'Decision style', line: '- Decisions: ' },
-    { label: 'Work hours', line: '- Work hours: ' },
-    { label: 'Focus / deep-work hours', line: '- Focus hours: ' },
-    { label: 'Energy peak (sharpest)', line: '- Sharpest around: ' },
-    { label: 'Company / job', line: '- Company: ' },
-    { label: 'Tech stack / tools', line: '- Tech stack: ' },
-    { label: 'Skills / expertise', line: '- Skills: ' },
-    { label: 'Learning goals', line: '- Learning: ' },
-    { label: 'Current priorities', line: '- Priorities: ' },
-    { label: 'Daily routine', line: '- Daily routine: ' },
-    { label: 'Diet / restrictions', line: '- Diet: ' },
-    { label: 'Allergies', line: '- Allergies: ' },
-    { label: 'Medications', line: '- Medications: ' },
-    { label: 'Health / fitness goals', line: '- Fitness goals: ' },
-    { label: 'Household', line: '- Household: ' },
-    { label: 'Pets', line: '- Pets: ' },
-    { label: 'Commute', line: '- Commute: ' },
-    { label: 'Frequent locations', line: '- Frequent locations: ' },
-    { label: 'Financial priorities', line: '- Money priorities: ' },
-    { label: 'Payday (money in)', line: '- Payday: ' },
-    { label: 'Money out day', line: '- Bills due: ' },
-    { label: 'Car payment day', line: '- Car payment: ' },
-    { label: 'Rent / mortgage day', line: '- Rent/mortgage: ' },
-    { label: 'Pay amount', line: '- Pay amount: ' },
-    { label: 'Rent amount', line: '- Rent amount: ' },
-    { label: 'Preferred units', line: '- Units (metric/imperial): ' },
-    { label: 'Currency', line: '- Currency: ' },
-    { label: 'News / topics I follow', line: '- Follows: ' },
-    { label: 'Avoid (topics/words)', line: '- Avoid: ' },
-    { label: 'Birthday', line: '- Birthday: ' },
-    { label: 'Important people', line: '- Important people: ' },
-    { label: 'Recurring commitments', line: '- Recurring: ' },
-    { label: 'Driving vs transit', line: '- Getting around: ' },
-    // --- sleep & morning (drives alarms + digests) ---
-    { label: 'Sleep style', line: '- Sleep style: ' },
-    { label: 'Snoozer?', line: '- Snooze habit: ' },
-    { label: 'Caffeine cutoff', line: '- No caffeine after: ' },
-    { label: 'Screen wind-down', line: '- Wind-down time: ' },
-    { label: 'Shower time', line: '- Showers: ' },
-    // --- home / environment (weather & comfort nudges) ---
-    { label: 'Runs hot / cold', line: '- Temperature: ' },
-    { label: 'Thermostat pref', line: '- Thermostat: ' },
-    { label: 'Windows open/closed', line: '- Windows: ' },
-    { label: 'AC / heating pref', line: '- AC/heating: ' },
-    { label: 'Light sensitivity', line: '- Light sensitivity: ' },
-    // --- chore days (recurring reminders) ---
-    { label: 'Grocery day', line: '- Grocery day: ' },
-    { label: 'Trash / recycling day', line: '- Trash day: ' },
-    { label: 'Laundry day', line: '- Laundry day: ' },
-    { label: 'Cleaning day', line: '- Cleaning day: ' },
-    { label: 'Cooking vs takeout', line: '- Cooking: ' },
-    { label: 'Water intake goal', line: '- Water goal: ' },
-    // --- work & productivity ---
-    { label: 'Meeting preference', line: '- Meetings: ' },
-    { label: 'Email style', line: '- Email: ' },
-    { label: 'Calendar style', line: '- Calendar: ' },
-    { label: 'Note-taking tool', line: '- Notes tool: ' },
-    { label: 'Productivity system', line: '- Productivity: ' },
-    { label: 'Procrastination triggers', line: '- Procrastinate on: ' },
-    { label: 'Distractions', line: '- Distractions: ' },
-    { label: 'How I decompress', line: '- Decompress by: ' },
-    { label: 'Stress signals', line: '- Stressed when: ' },
-    // --- dev / tech setup ---
-    { label: 'Primary device', line: '- Primary device: ' },
-    { label: 'Phone OS', line: '- Phone OS: ' },
-    { label: 'Browser', line: '- Browser: ' },
-    { label: 'Code editor', line: '- Editor: ' },
-    { label: 'Terminal', line: '- Shell: ' },
-    { label: 'Git workflow', line: '- Git: ' },
-    { label: 'AI tools used', line: '- AI tools: ' },
-    { label: 'Smart home devices', line: '- Smart home: ' },
-    { label: 'Car', line: '- Car: ' },
-    // --- relationships & people ---
-    { label: 'Partner / spouse', line: '- Partner: ' },
-    { label: 'Kids', line: '- Kids: ' },
-    { label: 'Family', line: '- Family: ' },
-    { label: 'Best friend', line: '- Best friend: ' },
-    { label: 'Emergency contact', line: '- Emergency contact: ' },
-    { label: 'People to avoid', line: '- Avoid people: ' },
-    { label: 'Anniversary', line: '- Anniversary: ' },
-    // --- health ---
-    { label: 'Chronic conditions', line: '- Conditions: ' },
-    { label: 'Blood type', line: '- Blood type: ' },
-    { label: 'Glasses / contacts', line: '- Vision: ' },
-    { label: 'Accessibility needs', line: '- Accessibility: ' },
-    { label: 'Doctor next due', line: '- Doctor: ' },
-    { label: 'Dentist next due', line: '- Dentist: ' },
-    // --- preferences & boundaries ---
-    { label: 'Humor style', line: '- Humor: ' },
-    { label: 'Swearing ok?', line: '- Swearing: ' },
-    { label: 'Emoji ok?', line: '- Emoji: ' },
-    { label: 'Dark mode', line: '- Dark mode: ' },
-    { label: 'Religion / practice', line: '- Religion: ' },
-    { label: 'Meditation', line: '- Meditation: ' },
-    // --- media & interests ---
-    { label: 'Podcasts', line: '- Podcasts: ' },
-    { label: 'YouTube follows', line: '- YouTube: ' },
-    { label: 'Sports teams', line: '- Sports: ' },
-    { label: 'Gaming', line: '- Gaming: ' },
-    { label: 'Streaming services', line: '- Streaming: ' },
-    { label: 'Subscriptions to cancel', line: '- Subscriptions: ' },
-    // --- security ---
-    { label: 'Password manager', line: '- Passwords: ' },
-    { label: '2FA preference', line: '- 2FA: ' },
-    // --- goals & future ---
-    { label: 'Bucket list', line: '- Bucket list: ' },
-    { label: 'Long-term goals', line: '- Long-term goals: ' },
-    { label: 'This year', line: '- This year: ' },
-    { label: 'Side projects', line: '- Side projects: ' },
-    { label: 'Travel plans', line: '- Travel: ' },
-    { label: 'Charity / causes', line: '- Causes: ' },
-    { label: '+ Custom', line: '- ' },
-  ];
-  let bioBound = false;
-
-  function bindBio() {
-    if (bioBound) return;
-    bioBound = true;
-    const bubbleEl = document.getElementById('bioBubbles');
-    if (bubbleEl) {
-      bubbleEl.innerHTML = BIO_FIELDS.map((f, i) =>
-        `<button type="button" class="chip" data-bio="${i}" style="cursor:pointer;padding:6px 12px;border:1px solid var(--border,#333);border-radius:999px;background:transparent;color:inherit">${esc(f.label)}</button>`
-      ).join('');
-      bubbleEl.querySelectorAll('[data-bio]').forEach(b => {
-        b.addEventListener('click', () => insertBioLine(BIO_FIELDS[parseInt(b.dataset.bio, 10)].line));
-      });
-    }
-    document.getElementById('btnBioSave')?.addEventListener('click', saveBio);
-    document.getElementById('btnBioReload')?.addEventListener('click', loadBio);
-    document.getElementById('btnBioAddIncome')?.addEventListener('click', () => {
-      const n = document.getElementById('bioIncName');
-      const d = document.getElementById('bioIncDay');
-      const a = document.getElementById('bioIncAmt');
-      if (!n || !n.value.trim()) return;
-      insertBioLine(`- Income: ${n.value.trim()} | day ${d.value.trim() || '?'} | ${a.value.trim() || '?'}`);
-      n.value = ''; d.value = ''; a.value = '';
-    });
-    document.getElementById('btnBioAddExpense')?.addEventListener('click', () => {
-      const n = document.getElementById('bioExpName');
-      const d = document.getElementById('bioExpDay');
-      const a = document.getElementById('bioExpAmt');
-      if (!n || !n.value.trim()) return;
-      insertBioLine(`- Expense: ${n.value.trim()} | day ${d.value.trim() || '?'} | ${a.value.trim() || '?'}`);
-      n.value = ''; d.value = ''; a.value = '';
-    });
-  }
-
-  function insertBioLine(label) {
-    const ta = document.getElementById('bioText');
-    if (!ta) return;
-    // If a line already starts with this label, jump to it instead of duplicating.
-    const existing = ta.value.indexOf(label);
-    if (existing >= 0) {
-      ta.focus();
-      ta.setSelectionRange(existing + label.length, existing + label.length);
-      return;
-    }
-    const atEnd = ta.value.length;
-    const needsNL = ta.value && !ta.value.endsWith('\n');
-    const ins = (needsNL ? '\n' : '') + label;
-    const pos = ta.selectionStart ?? atEnd;
-    ta.value = ta.value.slice(0, pos) + ins + ta.value.slice(pos);
-    ta.focus();
-    const caret = pos + ins.length;
-    ta.setSelectionRange(caret, caret);
-  }
-
-  async function loadBio() {
-    bindBio();
-    const ta = document.getElementById('bioText');
-    const status = document.getElementById('bioStatus');
-    try {
-      const r = await fetch(fileUrl('/api/bio'));
-      const d = await r.json();
-      if (ta) ta.value = d.text || '';
-      if (status) status.textContent = d.text ? 'Loaded.' : 'No bio yet — click a bubble to start.';
-    } catch (e) {
-      if (status) status.textContent = 'Failed to load bio.';
-    }
-  }
-
-  async function saveBio() {
-    const ta = document.getElementById('bioText');
-    const status = document.getElementById('bioStatus');
-    if (status) status.textContent = 'Saving…';
-    try {
-      const r = await fetch(fileUrl('/api/bio'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: ta ? ta.value : '' }),
-      });
-      const d = await r.json();
-      if (status) status.textContent = d.ok ? 'Saved.' : ('Error: ' + (d.error || 'unknown'));
-    } catch (e) {
-      if (status) status.textContent = 'Failed to save bio.';
-    }
-  }
 
     loadProjects,
     loadAutomations,

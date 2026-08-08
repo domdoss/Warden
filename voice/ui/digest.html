@@ -197,30 +197,35 @@
   var refreshBtn=document.getElementById('refresh-btn');
   if(refreshBtn)refreshBtn.addEventListener('click',fetchDigest);
 
-  // Generate now: asks the orchestrator to have Iris compile a digest for the
-  // active span and POST it to /api/summaries. chat_send runs a full Warden
-  // turn (may take 30-60s); show busy state, then auto-refresh.
+  // Generate now: POST /api/digest/generate?span=X — triggers the SAME grounded
+  // path as the cron (buildDigestContext: real calendar/tasks/bio/weather/notes),
+  // not a free-form chat that lets Iris fabricate items (the "10 AM sync" was
+  // invented because the chat path skipped grounding). Iris compiles async and
+  // POSTs to /api/summaries, so poll until the fresh digest lands (timestamp
+  // changes), up to ~90s.
   var genBtn=document.getElementById('gen-btn');
   if(genBtn)genBtn.addEventListener('click',async function(){
     if(genBtn.classList.contains('busy'))return;
     genBtn.classList.add('busy');
     genBtn.textContent='Working…';
+    var span=activeSpan;
+    var beforeTs=footerTs.textContent||'';
     try{
-      var span=activeSpan;
-      var prompt='Iris: write a '+span+' digest as formatted markdown — use **bold** '
-        +'for section headers and "- " bullet lists, covering recent email, calendar, '
-        +'and task activity. POST it to /api/summaries?span='+span+' with body '
-        +'{"text":"<your markdown digest>"} — keep ?span='+span+' exactly.';
-      if(window.pywebview&&window.pywebview.api&&window.pywebview.api.chat_send){
-        await window.pywebview.api.chat_send(prompt);
+      if(window.pywebview&&window.pywebview.api&&window.pywebview.api.warden_api){
+        await window.pywebview.api.warden_api('/api/digest/generate?span='+span,'POST','{}');
       }
-      // Give Iris a beat to POST, then pull the latest summary.
-      setTimeout(fetchDigest, 1500);
     }catch(e){}
-    finally{
-      genBtn.classList.remove('busy');
-      genBtn.textContent='Generate';
+    var polls=0;
+    function wait(){
+      setTimeout(async function(){
+        await fetchDigest();
+        var nowTs=footerTs.textContent||'';
+        if(nowTs && nowTs!==beforeTs){ genBtn.classList.remove('busy'); genBtn.textContent='Generate'; return; }
+        if(polls++<22){ wait(); }
+        else{ genBtn.classList.remove('busy'); genBtn.textContent='Generate'; }
+      },4000);
     }
+    wait();
   });
 
   function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
