@@ -1,13 +1,38 @@
-Warden patch — chat history via /api/messages, clap detection on satellite mic,
-Iron Man dashboard (panels/today/digest/agents/chat/tasks/upload/system), Iris
-routing + summaries, disk endpoint, Orpheus TTS, layout/colour tweaks.
+Warden — today's changes (uncommitted working tree vs HEAD 3a4d73f1)
+Generated 2026-08-08. Baseline: local commit 3a4d73f1.
 
-Extract over the Warden repo root (paths are repo-relative). No dockbox->warden
-rename is included (deferred). chat_history.json is NOT used — Direct Line now
-fetches /api/messages?limit=100 from Warden.
+To apply on a tree at 3a4d73f1:
+  git apply warden-today.patch
+  cp voice/ui/tasks.html voice/ui/tasks.html   (new file)
 
-Files:
-  src/index.ts, src/status-server.ts, src/providers/google.ts
+Tracked files in the patch (diff vs HEAD):
   container/agent-runner/src/index.ts
-  voice/main.py, voice/voice/clap.py, voice/voice/tts.py, voice/run.sh
-  voice/ui/{agents,chat,digest,jarvis,jarvis_window,system,panels,tasks,today,upload}.html
+    - Granite-tuned prompts for Byte / Dexter / Iris (positive framing, structured,
+      temp 0). Dexter gained temperature:0 (was default 1). Byte fixed to always pass
+      the required project_id (default "personal") + priority enum + one example.
+    - Orchestrator: task-vs-schedule routing disambiguation, byte-defaults-to-Personal.
+  src/status-server.ts
+    - Heartbeat backend: real /api/heartbeat GET/PUT (was a no-op stub). Persists
+      groups/owner/heartbeat.json, mirrors content to HEARTBEAT.md, upserts a
+      heartbeat-owner scheduled task (active/paused), seeded paused on boot.
+    - NOTE: this file also carries other pre-existing uncommitted edits mixed in.
+  src/db.ts
+    - migrateToDesktopSchema detection guard: removed user_work_tasks from the
+      IN-list (it's a desktop table that survives migration; listing it re-ran
+      migration on already-migrated DBs and crashed on missing registered_groups).
+  public/js/userdash-extras.js
+    - Dashboard heartbeat Save button wiring (saveHeartbeat).
+
+New untracked file:
+  voice/ui/tasks.html
+    - Ops panel: new Work tab (work tasks via /api/work-tasks, default tab);
+      Scheduled tab now shows all crons (heartbeat + iris-digest hourly/daily/weekly)
+      with clean labels; system crons guarded from delete, pause/resume works.
+
+Notes:
+  - Local commit 3a4d73f1 ("Iron Man dashboard panels + summaries endpoint +
+    agent monitor + Iris integration") is AHEAD of origin/main (3f8b0d25) and
+    unpushed. Push it separately; this patch sits on top of it.
+  - CLAUDE.md excluded (embeds the Pi password). Other pre-existing dirty files
+    not touched today (public/css/style.css, src/config.ts, src/providers/google.ts,
+    src/index.ts, voice/*) are NOT included.

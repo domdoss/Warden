@@ -2657,6 +2657,72 @@ async function handleVoice(
   }
 }
 
+// ── Heartbeat ───────────────────────────────────────────────────────────
+// A periodic task the user configures from the dashboard: instructions
+// (stored in heartbeat.json + mirrored to HEARTBEAT.md, which runTask
+// injects into the prompt for `heartbeat-*` tasks), an enabled flag, a
+// model, and an hourly cron. Enabling creates/updates a `heartbeat-owner`
+// scheduled task so it fires and shows in the Ops Scheduled tab; disabling
+// pauses the row (kept for history and visibility). Seeded paused on boot
+// so the row always exists — the user sees it and can Resume it.
+const HEARTBEAT_TASK_ID = 'heartbeat-owner';
+const DEFAULT_HEARTBEAT_CRON = '45 * * * *'; // hourly, offset from the iris-digest crons (:07/:17/:30)
+const HEARTBEAT_PROMPT = 'Run the heartbeat instructions for the owner group.';
+
+function ownerGroupDir(): string {
+  return path.join(GROUPS_DIR, 'owner');
+}
+function heartbeatJsonPath(): string {
+  return path.join(ownerGroupDir(), 'heartbeat.json');
+}
+function readHeartbeatConfig(): { content: string; enabled: boolean; model: string; cron: string } {
+  try {
+    const j = JSON.parse(fs.readFileSync(heartbeatJsonPath(), 'utf8'));
+    return {
+      content: typeof j.content === 'string' ? j.content : '',
+      enabled: !!j.enabled,
+      model: typeof j.model === 'string' ? j.model : '',
+      cron: typeof j.cron === 'string' && j.cron ? j.cron : DEFAULT_HEARTBEAT_CRON,
+    };
+  } catch {
+    return { content: '', enabled: false, model: '', cron: DEFAULT_HEARTBEAT_CRON };
+  }
+}
+function writeHeartbeatConfig(cfg: { content: string; enabled: boolean; model: string; cron: string }): void {
+  fs.mkdirSync(ownerGroupDir(), { recursive: true });
+  fs.writeFileSync(
+    heartbeatJsonPath(),
+    JSON.stringify({ content: cfg.content ?? '', enabled: !!cfg.enabled, model: cfg.model ?? '', cron: cfg.cron || DEFAULT_HEARTBEAT_CRON }, null, 2),
+  );
+  // Mirror instructions to HEARTBEAT.md; runTask injects that file into the
+  // prompt for heartbeat-* tasks (see task-scheduler.ts).
+  try { fs.writeFileSync(path.join(ownerGroupDir(), 'HEARTBEAT.md'), cfg.content ?? ''); } catch {}
+}
+function syncHeartbeatTask(cfg: { enabled: boolean; cron: string }): void {
+  const cron = cfg.cron || DEFAULT_HEARTBEAT_CRON;
+  let nextRun: string | null = null;
+  try { nextRun = CronExpressionParser.parse(cron, { tz: TIMEZONE }).next().toISOString(); } catch {}
+  const status: 'active' | 'paused' = cfg.enabled ? 'active' : 'paused';
+  const existing = getTaskById(HEARTBEAT_TASK_ID);
+  if (existing) {
+    updateTask(HEARTBEAT_TASK_ID, {
+      schedule_type: 'cron', schedule_value: cron, status, prompt: HEARTBEAT_PROMPT,
+      ...(nextRun ? { next_run: nextRun } : {}),
+    });
+  } else {
+    createTask({
+      id: HEARTBEAT_TASK_ID, chat_jid: OWNER_JID, prompt: HEARTBEAT_PROMPT,
+      schedule_type: 'cron', schedule_value: cron, context_mode: 'isolated',
+      next_run: nextRun ?? new Date().toISOString(), status, created_at: new Date().toISOString(),
+    });
+  }
+}
+// Boot seed: make sure the heartbeat row exists (paused, default cron) so it
+// is visible in the Ops Scheduled tab before the user ever opens the dashboard.
+function ensureHeartbeatTask(): void {
+  if (!getTaskById(HEARTBEAT_TASK_ID)) syncHeartbeatTask(readHeartbeatConfig());
+}
+
 // --- Server ---
 
 export function startStatusServer(d: StatusDeps): void {
@@ -4046,14 +4112,29 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
       if (pathname === '/api/heartbeat' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ content: '', enabled: false, model: '', lastRun: null }));
-        return;
+        const cfg = readHeartbeatConfig();
+        const task = getTaskById(HEARTBEAT_TASK_ID);
+        // enabled reflects the live scheduled-task status, so pausing via the
+        // Ops tab (PATCH /api/tasks/:id) shows as disabled here too.
+        const enabled = task?.status === 'active';
+        const lastRun = task?.last_run ?? null;
+        const cron = task?.schedule_value || cfg.cron;
+        return json(res, { content: cfg.content, enabled, model: cfg.model, cron, lastRun });
       }
       if (pathname === '/api/heartbeat' && req.method === 'PUT') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-        return;
+        const body = parseJson(await parseBody(req)) as {
+          content?: string; enabled?: boolean; model?: string; cron?: string;
+        };
+        const prev = readHeartbeatConfig();
+        const cfg = {
+          content: typeof body.content === 'string' ? body.content : prev.content,
+          enabled: body.enabled !== undefined ? !!body.enabled : prev.enabled,
+          model: typeof body.model === 'string' ? body.model : prev.model,
+          cron: typeof body.cron === 'string' && body.cron ? body.cron : prev.cron,
+        };
+        writeHeartbeatConfig(cfg);
+        syncHeartbeatTask(cfg);
+        return json(res, { ok: true, enabled: cfg.enabled });
       }
       if (pathname === '/api/alarms' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4677,6 +4758,7 @@ export function startStatusServer(d: StatusDeps): void {
   const bindHost = process.env.BIND_HOST || '0.0.0.0';
   server.listen(STATUS_PORT, bindHost, () => {
     logger.info({ port: STATUS_PORT, host: bindHost }, 'Warden Dashboard started');
+    try { ensureHeartbeatTask(); } catch (e) { logger.warn({ err: e }, 'Heartbeat seed failed'); }
   });
 
   // Hourly cleanup of expired user sessions removed (multi-user session table gone).

@@ -83,7 +83,8 @@
     <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
   </div>
   <div class="tabs">
-    <div class="tab active" data-tab="tasks">Tasks <span class="count" id="tasks-count"></span></div>
+    <div class="tab active" data-tab="work">Work <span class="count" id="work-count"></span></div>
+    <div class="tab" data-tab="tasks">Scheduled <span class="count" id="tasks-count"></span></div>
     <div class="tab" data-tab="projects">Projects <span class="count" id="projects-count"></span></div>
   </div>
   <div class="new-row" id="new-row">
@@ -120,7 +121,7 @@
   }
 
   var body=document.getElementById('body'),footerTs=document.getElementById('footer-ts'),
-      tabs=document.querySelectorAll('.tab'),activeTab='tasks',lastTasks=[],lastProjects=[];
+      tabs=document.querySelectorAll('.tab'),activeTab='work',lastTasks=[],lastWork=[],lastProjects=[];
 
   function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 
@@ -131,6 +132,7 @@
 
   async function load(){
     if(activeTab==='tasks') return loadTasks();
+    if(activeTab==='work') return loadWork();
     return loadProjects();
   }
 
@@ -155,11 +157,12 @@
     try{
       var raw=await api('/api/tasks');
       var d=raw?JSON.parse(raw):null;
-      lastTasks=((d&&d.tasks)||[]).filter(function(t){
-        // Internal Iris digest cron jobs produce the Summary-page content;
-        // they're not user tasks, so keep them out of the Ops list.
-        return (t.id||'').indexOf('iris-digest-')!==0;
-      });
+      // Show every scheduled cron — including the internal Iris digest jobs
+      // (hourly/daily/weekly) and any heartbeat job — so this tab is the direct
+      // view of Warden's schedule cron table. System jobs get a clean label
+      // instead of their raw stored prompt, and are guarded from deletion
+      // (pause/resume still works).
+      lastTasks=(d&&d.tasks)||[];
       document.getElementById('tasks-count').textContent=lastTasks.length||'';
       if(!lastTasks.length){body.innerHTML='<div class="empty">No scheduled tasks.</div>';return;}
       body.innerHTML=lastTasks.map(function(t){
@@ -171,10 +174,14 @@
         var last=t.last_run?'last '+esc(new Date(t.last_run).toLocaleString())+
                  (t.last_result?(' · '+esc(String(t.last_result).slice(0,80))):''):'';
         var tog=t.status==='active'?['Pause','paused']:['Resume','active'];
-        var pr=esc((t.prompt||'(no prompt)').slice(0,120))+((t.prompt||'').length>120?'…':'');
+        var tid=t.id||'',titleHtml,isSystem;
+        isSystem=tid.indexOf('iris-digest-')===0||tid.indexOf('heartbeat-')===0;
+        if(tid.indexOf('iris-digest-')===0){titleHtml=esc('Iris '+tid.replace('iris-digest-','')+' digest');}
+        else if(tid.indexOf('heartbeat-')===0){titleHtml='Heartbeat';}
+        else{titleHtml=esc((t.prompt||'(no prompt)').slice(0,120))+((t.prompt||'').length>120?'…':'');}
         return '<div class="item" data-kind="task" data-id="'+esc(t.id)+'">'+
-          '<div class="del-x" data-act="del" title="Delete">✕</div>'+
-          '<div class="it-title">'+pr+'</div>'+
+          (isSystem?'':'<div class="del-x" data-act="del" title="Delete">✕</div>')+
+          '<div class="it-title">'+titleHtml+'</div>'+
           '<div class="it-sub">'+esc(sched)+(next?' · '+next:'')+'</div>'+
           (last?'<div class="it-sub">'+last+'</div>':'')+
           '<div class="it-row">'+
@@ -184,6 +191,38 @@
         '</div>';
       }).join('');
     }catch(e){body.innerHTML='<div class="empty">Unable to load tasks.</div>'}
+  }
+
+  // Work tasks — the to-dos Byte creates (user_work_tasks). Distinct from the
+  // Scheduled tab, which lists cron/interval jobs. /api/work-tasks returns raw
+  // tasks keyed by project_id, so we also pull /api/projects to show the
+  // project name. Tasks with no project live in the permanent Personal project.
+  async function loadWork(){
+    try{
+      var raw=await api('/api/work-tasks');
+      var d=raw?JSON.parse(raw):null;
+      var tasks=(d&&d.tasks)||[];
+      var projMap={};
+      try{var praw=await api('/api/projects');var pd=praw?JSON.parse(praw):null;
+        ((pd&&pd.projects)||[]).forEach(function(p){projMap[p.id]=p.name;});}catch(e){}
+      lastWork=tasks;
+      document.getElementById('work-count').textContent=tasks.length||'';
+      if(!tasks.length){body.innerHTML='<div class="empty">No work tasks. Use “+ Work Task” to add one.</div>';return;}
+      body.innerHTML=tasks.map(function(t){
+        var st=t.status||'open';
+        var badge=/complet|done|closed/i.test(st)?'badge-done':/block/i.test(st)?'badge-risk':
+                 /progress/i.test(st)?'badge-track':/pause/i.test(st)?'badge-paused':'badge-active';
+        var proj=projMap[t.project_id]||(t.project_id?esc(t.project_id):'Personal');
+        var due=t.due_date?(' · due '+esc(t.due_date.slice(0,10))):'';
+        var pri=esc(t.priority||'medium');
+        return '<div class="item" data-kind="worktask" data-id="'+esc(t.id)+'">'+
+          '<div class="del-x" data-act="del" title="Delete">✕</div>'+
+          '<div class="it-title">'+esc(t.title)+'</div>'+
+          '<div class="it-sub">'+esc(proj)+' · '+pri+' priority'+due+'</div>'+
+          '<div class="it-row"><span class="it-badge '+badge+'">'+esc(st)+'</span></div>'+
+        '</div>';
+      }).join('');
+    }catch(e){body.innerHTML='<div class="empty">Unable to load work tasks.</div>'}
   }
 
   async function loadProjects(){
@@ -245,6 +284,18 @@
     finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
   }
 
+  async function createWorkTask(title){
+    var addBtn=document.getElementById('add-btn');
+    addBtn.classList.add('busy');addBtn.textContent='Working…';
+    try{
+      var raw=await api('/api/work-tasks',{method:'POST',body:JSON.stringify({title:title})});
+      var d=raw?JSON.parse(raw):null;
+      if(d&&d.ok){document.getElementById('new-row').classList.remove('show');document.getElementById('new-name').value='';await loadWork();}
+      else body.innerHTML='<div class="empty">'+esc((d&&d.error)||'Create failed')+'</div>';
+    }catch(e){body.innerHTML='<div class="empty">Create failed.</div>'}
+    finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
+  }
+
   // The header "+" button is context-aware: "New Task" on the Tasks tab (opens
   // a prompt + cron row), "+ Project" on the Projects tab (name row). The
   // schedule input is shown only for tasks.
@@ -255,6 +306,9 @@
     if(tab==='tasks'){
       addBtn.textContent='New Task';addBtn.title='New task';
       name.placeholder='New task prompt…';sched.style.display='';
+    }else if(tab==='work'){
+      addBtn.textContent='+ Work Task';addBtn.title='New work task';
+      name.placeholder='New work task…';sched.style.display='none';
     }else{
       addBtn.textContent='+ Project';addBtn.title='New project';
       name.placeholder='New project name…';sched.style.display='none';
@@ -265,6 +319,7 @@
     var n=document.getElementById('new-name').value.trim();
     if(!n)return;
     if(activeTab==='tasks')createTask(n,document.getElementById('new-sched').value.trim());
+    else if(activeTab==='work')createWorkTask(n);
     else createProject(n);
   }
 
@@ -306,6 +361,10 @@
     try{await api('/api/projects/'+encodeURIComponent(id),{method:'DELETE'});}catch(e){}
     await loadProjects();
   }
+  async function delWorkTask(id){
+    try{await api('/api/work-tasks/'+encodeURIComponent(id),{method:'DELETE'});}catch(e){}
+    await loadWork();
+  }
   async function toggleTask(id,status){
     try{
       await api('/api/tasks/'+encodeURIComponent(id),{method:'PATCH',
@@ -319,6 +378,7 @@
     var kind=item.getAttribute('data-kind'),id=item.getAttribute('data-id'),act=el.getAttribute('data-act');
     if(act==='del'){
       if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
+      else if(kind==='worktask'){delWorkTask(id);}
       else delTask(id);
     }else if(act==='toggle'){
       toggleTask(id,el.getAttribute('data-status'));

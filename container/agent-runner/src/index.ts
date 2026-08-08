@@ -674,6 +674,10 @@ Task: "summarize my inbox every weekday at 8am"
 → schedule_task(schedule_type="cron", schedule_value="0 8 * * 1-5", prompt="Summarize the user's email inbox and send the summary to the user.")`,
         toolsets: ['dexter-core'],
         mcpServers: ['tasks', 'mcp-server-time'],
+        // IBM Granite tool-calling guidance: temperature 0 for reliable,
+        // deterministic structured output — schedule_value timestamps and
+        // cron expressions must come out the same way every time.
+        temperature: 0,
     },
     {
         delegate: 'atlas',
