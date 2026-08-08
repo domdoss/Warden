@@ -298,6 +298,34 @@ async function runTask(
   }
 }
 
+/**
+ * Run an Iris digest task immediately (manual "Generate" from the digest
+ * panel). Reuses runTask, which prepends buildDigestContext — so a manual
+ * digest gets the SAME grounding as a scheduled one: real calendar + work
+ * tasks + bio + weather + notes pulled from the DB (not Iris's own tools,
+ * which hit Radicale and fail when Kontact isn't provisioned). The prompt is
+ * injected into the owner chat and the orchestrator routes it to Iris.
+ *
+ * runTask reschedules a cron task to computeNextRun (the next cron time
+ * after now) — which is exactly where it was headed anyway, so a manual run
+ * neither skips nor duplicates the next scheduled one.
+ */
+export async function runDigestNow(
+  span: string,
+  deps: SchedulerDependencies,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!['hourly', 'daily', 'weekly'].includes(span)) {
+    return { ok: false, error: `invalid span: ${span}` };
+  }
+  const id = `iris-digest-${span}`;
+  const task = getTaskById(id);
+  if (!task || task.status !== 'active') {
+    return { ok: false, error: `no active ${id} task` };
+  }
+  await runTask(task, deps);
+  return { ok: true };
+}
+
 let schedulerRunning = false;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {

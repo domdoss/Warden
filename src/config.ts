@@ -10,7 +10,8 @@ const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OL
 // Propagate env-file values into process.env so child processes (agent-runner,
 // MCP servers, etc.) inherit them via spawn. Without this, a parent launched
 // without an explicit env export would spawn children that fall back to the
-// hard-coded Docker-host defaults (e.g. OLLAMA_URL=http://172.17.0.1:11434).
+// hard-coded Docker-host defaults (e.g. OLLAMA_URL=http://172.17.0.1:11434 — removed;
+// no container now, Ollama is on localhost:11434, see [[project-no-container]]).
 for (const [k, v] of Object.entries(envConfig)) {
   if (v !== undefined && process.env[k] === undefined) process.env[k] = v;
 }

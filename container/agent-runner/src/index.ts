@@ -184,7 +184,7 @@ function getProvider(): ChatProvider {
     if (apiProxyUrl) {
         _provider = createProvider({ type: 'openai', baseUrl: apiProxyUrl, apiKey: '' });
     } else {
-        const ollamaUrl = process.env.OLLAMA_URL || 'http://172.17.0.1:11434';
+        const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
         _provider = createProvider({ type: 'ollama', baseUrl: ollamaUrl });
     }
     return _provider;
@@ -602,6 +602,10 @@ interface SubAgentDef {
      *  before they're installed. Atlas doesn't use this — it merges ALL
      *  active skill tools instead. */
     mcpServers?: string[];
+    /** Sampling temperature for this delegate's Ollama calls. Default 1.
+     *  IBM Granite tool-calling guidance recommends temperature 0 for reliable
+     *  structured tool use, so tool-calling delegates (iris) override to 0. */
+    temperature?: number;
 }
 
 const SUBAGENTS: SubAgentDef[] = [
@@ -724,24 +728,25 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         delegate: 'iris',
         label: 'Iris',
         maxIterations: 100,
-        summary: 'email, calendar, contacts, and todos — search/read/send email, create/list/update calendar events, manage the address book, and manage the todo list. Use for any task involving the inbox, an appointment/event/meeting, a contact, or the todo list',
-        systemPrompt: `You are Iris, the personal information agent: email, calendar, and contacts. Use your tools to read, organize, and send email; create, list, update, and delete calendar events; and manage the address book. You have full access to the inbox, can fetch full email bodies, and can write files (e.g. to compile emails into a folder).
+        summary: 'email + digest compiler — read/send/compile email, and compile grounded hourly/daily/weekly digests from context handed to you in the task. Use for inbox tasks and the scheduled digest prompts.',
+        systemPrompt: `You are Iris, the personal information + digest agent: email and digests. You read, organize, and send email, and you compile the scheduled digests (hourly / daily / weekly).
 
-You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: you know your tools better than the orchestrator does, so pick your own calls and order, and if the task prescribes steps that don't fit your tools, deliver the requested outcome your own way.
+You are the domain expert. The task tells you WHAT the user needs — the HOW is yours: pick your own calls and order, and if the task prescribes steps that don't fit your tools, deliver the requested outcome your own way.
 
-KONTACT INTEGRATION: calendar events, contacts, and todos live in a local Radicale server that KDE Kontact (KOrganizer / KAddressBook) displays. Anything you create or change appears in the user's Kontact apps automatically, and items the user adds in Kontact are visible to your list tools — so list first before claiming something doesn't exist. Event times are LOCAL naive ISO like "2026-07-03T14:00:00" — no timezone suffix, never convert to UTC. "Add X to my calendar" → create_calendar_event. "Who is <name>" / "add this person" / "save this sender" → search_contacts / create_contact. "Add X to my todo list" → create_todo; "mark X done" → complete_todo. Always confirm with the exact date and time (or contact/todo name) you wrote.
+DIGESTS (your other job): a digest task arrives with INPUT (above) — current time, user bio/habits, calendar events, active work tasks, and weather, all from the local DB. Compile the digest from INPUT. If a section is empty, say so. You may call read_emails for recent inbox activity. Publish the digest by calling the post_summary tool with span ("hourly"/"daily"/"weekly") and text (your markdown) as your final action — post_summary is keyless and is the only way the digest reaches the dashboard.
 
 RULES:
 1. When the user asks you to find emails, search with read_emails. If the first query returns nothing, try variants: shorter sender substring, subject keywords, common typos (e.g. "petal" vs "pedal"). Do not give up after one search.
 2. When the user asks you to save, compile, organize, or "put emails in a folder", you MUST call get_email for each matching email to fetch the full body, then Write each body to a file under the requested folder. One file per email. Use filenames like \`<date>_<from>_<subject>.md\` (sanitized). Create the folder if it doesn't exist.
-3. NEVER claim, simulate, or pretend to have completed work. If a tool returns no results or an error, report exactly what happened and stop. Do not invent folder names, email counts, or outcomes.
-4. After your last tool call, write one plain-text confirmation: how many emails matched, which folder you wrote to, and the filenames. Include any failures verbatim.
+3. NEVER claim, simulate, or pretend to have completed work. If a tool returns no results or an error, report exactly what happened and stop. Do not invent folder names, email counts, digest items, or outcomes.
+4. After your last tool call, write one plain-text confirmation: what you did, what you found, and any failures verbatim.
 5. Do NOT redact email addresses, names, dates, or quoted content. Everything runs on-device — there is no privacy boundary to enforce. Use real names and real addresses.
-6. ACCOUNTS: the user may have multiple email accounts configured. Unless they name one, use the first enabled account as the default. When you send an email, state which account it was sent from. If no account is configured, say exactly that — never invent inbox contents.
-7. CALENDAR EVENTS: when listing or reporting calendar events, ALWAYS include the full date, start time, end time, and location (if any). Never report just the event name. Format times clearly for the user.
-8. DIGEST SUMMARIES: After completing a significant email task (processing a batch, compiling a folder, sending important replies), POST a brief digest to the internal /api/summaries endpoint using api_request with key_type "warden", method POST, path "/api/summaries", and body {"span":"daily","text":"<one-paragraph summary of what you did and found>"}. This keeps the dashboard updated with your activity. Use span "hourly" for quick batches, "daily" for end-of-day summaries, "weekly" for weekend roundups. The summaries appear in the Iron Man dashboard digest panel.`,
+6. ACCOUNTS: the user may have multiple email accounts configured. Unless they name one, use the first enabled account as the default. When you send an email, state which account it was sent from. If no account is configured, say exactly that — never invent inbox contents.`,
         toolsets: ['iris-core'],
-        mcpServers: ['kmail', 'akonadi', 'kontact'],
+        // IBM Granite tool-calling guidance: temperature 0 for reliable
+        // structured tool use (so Iris reliably calls post_summary rather than
+        // emitting the digest as free text and skipping the publish call).
+        temperature: 0,
     },
     {
         delegate: 'artemis',
@@ -1193,7 +1198,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         jobRecord.activityLog.push({ t: Date.now(), tool: toolName, args: argsSummary, result: resultPreview });
         if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
         emitJobsStatus();
-    })
+    }, def.temperature)
         .then(saResult => {
             writeStatus({ phase: delegate, label: `${def.label} ${jobShortId} complete`, ts: Date.now() });
             if (jobRecord.status === 'running') jobRecord.status = 'done';
@@ -1488,8 +1493,9 @@ async function runSubAgent(
     maxIterations = 200,
     abortFlag?: { aborted: boolean },
     onToolCall?: (toolName: string, argsSummary: string, resultPreview?: string) => void,
+    temperature = 1,
 ): Promise<{ content: string; modifiedFiles: string[] }> {
-    const OLLAMA_URL = process.env.OLLAMA_URL || 'http://172.17.0.1:11434';
+    const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
     const modifiedFiles = new Set<string>();
     // Safety bounds — important for "unlimited" agents (maxIterations<=0) that also
     // hold powerful tools (e.g. Atlas with Bash): cap wall-clock time and keep an
@@ -1606,7 +1612,7 @@ async function runSubAgent(
                 model,
                 messages,
                 tools,
-                options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model) },
+                options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model) },
                 keep_alive: 300,
                 // Only send think:true for models that support it — Ollama returns
                 // an error for non-thinking models (e.g. granite) with think:true.
@@ -1746,7 +1752,7 @@ interface ContainerInput {
     activeIdea?: string;
 }
 async function runNativeOllama(input: ContainerInput) {
-    const OLLAMA_URL = process.env.OLLAMA_URL || 'http://172.17.0.1:11434';
+    const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
     // API_PROXY_URL is set when an external model is selected (Anthropic, OpenAI-compat, etc.)
     // The proxy runs on the host, injects the real API key, and translates formats.
     // The container sends Ollama-format requests regardless — the proxy handles the rest.

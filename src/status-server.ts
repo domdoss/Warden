@@ -241,6 +241,10 @@ interface StatusDeps {
   clearSessions?: (folder: string) => void;
   reconnectChannel?: (type: string) => Promise<boolean>;
   createUserWhatsApp?: (userId: string, authDir: string) => Promise<Channel>;
+  // Manual digest trigger: runs the iris-digest-<span> task through the same
+  // grounded runTask path as the cron (buildDigestContext: real calendar,
+  // tasks, bio, weather, notes). Wired in src/index.ts.
+  triggerDigest?: (span: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 let deps: StatusDeps;
@@ -3728,6 +3732,24 @@ export function startStatusServer(d: StatusDeps): void {
         const span = params.get('span') || 'daily';
         const latest = getLatestSummary(span);
         return json(res, latest ? { summaries: [latest] } : { summaries: [] });
+      }
+      // POST /api/digest/generate?span=hourly|daily|weekly — run the iris-digest-<span>
+      // task NOW through the same grounded path as the cron (buildDigestContext:
+      // real calendar/tasks/bio/weather/notes, not Iris's Radicale-dependent tools).
+      // Returns immediately; Iris compiles async and POSTs to /api/summaries, so the
+      // client polls /api/summaries for the fresh digest to land.
+      if (req.method === 'POST' && pathname === '/api/digest/generate') {
+        const span = (params.get('span') || 'hourly').toLowerCase();
+        if (!['hourly', 'daily', 'weekly'].includes(span)) {
+          return json(res, { error: 'invalid span (use hourly, daily, or weekly)' }, 400);
+        }
+        if (!deps.triggerDigest) return json(res, { error: 'digest trigger unavailable' }, 503);
+        try {
+          const r = await deps.triggerDigest(span);
+          return json(res, r, r.ok ? 200 : 404);
+        } catch (err: any) {
+          return json(res, { error: String(err?.message ?? err) }, 500);
+        }
       }
       if (pathname === '/api/process-logs' && req.method === 'GET') {
         try {
