@@ -505,6 +505,12 @@ The pipeline looks like this:
 └──────────┘                 └──────────────┘
 ```
 
+Here's how a spoken question travels through the pipeline. You press the push-to-talk button on the Pi. The Pi's `satellite_server.py` opens a PipeWire capture stream and starts serving raw 16 kHz PCM over HTTP. Back on the laptop, the voice client pulls that stream, feeds it through Whisper, and gets back text. The text goes to the Warden server — which might be on the same laptop, or a GPU box downstairs, or a cloud VM. Warden's orchestrator reads it, delegates to whatever specialists are needed, and sends back a reply. That reply hits the laptop's TTS engine (Kokoro or Orpheus, running on the local GPU), which synthesizes a WAV file. If the speaker is local, PipeWire plays it on the desk speakers. If the speaker is the Pi, the WAV gets POSTed to the Pi's `:8766/play` endpoint and comes out of whatever speaker is plugged into the Pi's headphone jack.
+
+Every joint in that chain is a flag. `--mic local` means "read the laptop's built-in mic." `--mic 192.168.0.171` means "stream it from the Pi." `--speaker local` means "play through the laptop speakers." `--speaker 192.168.0.180` means "send the WAV to a different Pi in another room." The laptop always runs STT, TTS, and the hologram UI — those need the GPU. The satellite only ever runs `pw-record` and `pw-play`. It has no Python dependencies. It doesn't even need a virtual environment. You could run it on a Pi Zero and it wouldn't break a sweat.
+
+This means you can put mics and speakers wherever you actually spend time — kitchen, workshop, bedside table — without moving the GPU. Each satellite is just a Pi with a USB mic and a powered speaker, running one script. The laptop stays on your desk. The brain stays wherever it has the most RAM. And `run.sh` ties it all together: one command, a few flags, and the whole distributed system comes up.
+
 **STT, TTS, and the hologram UI always run on the laptop.** Only raw audio I/O — the microphone stream and speaker playback — can be offloaded to a satellite. The satellite is a dumb pipe: it runs `satellite_server.py`, a ~200-line Python script with zero dependencies beyond PipeWire's `pw-record` and `pw-play`. No venv, no GPU, no models. A Pi Zero is overkill.
 
 #### Independent per-side routing
