@@ -15,7 +15,10 @@
 **[🧠 Prompt Engineering](#-prompt-engineering)** ·
 **[☁️ Hybrid Models](#-hybrid-model-architecture)** ·
 **[📊 Dashboard](#-dashboard)** ·
+**[📱 Thin Client](#-thin-client)** ·
 **[🧩 MCP](#-mcp-ecosystem)** ·
+**[📡 Channels](#-channels)** ·
+**[🔊 Audio Pipeline](#modular-audio-pipeline-runsh)** ·
 **[🗣️ Voice](#%EF%B8%8F-voice-assistant)** ·
 **[🛰️ Satellite](#-satellite-pi-audio-relay)** ·
 **[🛡️ Security Mode](#-security-mode)** ·
@@ -183,9 +186,13 @@ The tool loop has multiple circuit breakers to prevent common failure modes:
 
 The orchestrator writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` — no delegation needed. These files are loaded into context every turn.
 
+After every conversation, a **memory writeback** pass runs automatically: a local model reads the last ~30 messages of the chat, distills durable facts (preferences, decisions, context the agent should carry forward), and appends them to `MEMORY.md` with a dated entry in `JOURNAL.md`. The distilled facts are visible to the agent on the very next turn — no manual note-taking, no "remember this" prompts. The writeback is fire-and-forget (never blocks the message loop), throttled to once per chat per 15 minutes, and auto-compacts `MEMORY.md` when it grows too large. Both files live at `WORKSPACE_ROOT` — the same place the orchestrator loads from every turn, and the same place Mercury writes `MERCURY_MEMORY.md`.
+
 ### 💓 Heartbeat
 
 `HEARTBEAT.md` holds standing instructions the agent executes on schedule via the task scheduler — no prompt from you required. Edit it from the dashboard's Heartbeat panel (or let the agent edit it itself) and the instructions run automatically, giving the agent persistent autonomous behavior between conversations.
+
+Under the hood, the heartbeat is a real scheduled task (`heartbeat-owner`) persisted to `heartbeat.json` and synced to the task scheduler. The dashboard's Save button writes your instructions, creates or updates the cron row, and mirrors the content to `HEARTBEAT.md` so `runTask` injects it into the prompt. The task is seeded paused on boot — it's always visible in the Ops Scheduled tab, and you enable it with one click. Pausing via the Ops tab reflects immediately in the dashboard toggle; resuming re-activates the cron. The cron defaults to hourly at :45 (offset from the iris-digest crons so they don't pile up on the same minute).
 
 ![Heartbeat panel: scheduled instructions the AI executes automatically](docs/screenshots/heartbeat.png)
 
@@ -257,7 +264,9 @@ Warden controls your actual desktop — mouse movement, keystrokes, window manag
 
 ## 📊 Dashboard
 
-A full PWA at `http://localhost:3200`. It includes:
+A full PWA at `http://localhost:3200`. First launch lands on a **login page** (`public/login.html`) — a user grid with avatars, password auth per user, and a "remember me" session. Once in, you get the full dashboard. There's also a **thin client** at `/thin-client/` for phones and tablets — same API, same session, just the chat.
+
+The dashboard includes:
 
 | | | |
 |---|---|---|
@@ -270,7 +279,8 @@ A full PWA at `http://localhost:3200`. It includes:
 | 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
 | 📜 **Process Logs** | Live log tail | 📰 **Digest** | Daily briefing + news summaries |
-| 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI |
+| 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
+| 🏗️ **Ops Panel** | Work tasks (default tab) + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
 ### ⚡ Quick Actions
 
@@ -303,6 +313,10 @@ An Obsidian-inspired markdown vault backed by the real filesystem — no databas
 
 Files are plain markdown on disk; the dashboard is just a viewer/editor over them.
 
+### 👤 Bio
+
+A markdown file at `USER_BIO.md` in the workspace root that tells the agent who you are — name, location, sleep schedule, preferences, habits, whatever you want it to know. The dashboard's Bio page reads and writes it directly. Iris digests read the same file to ground hourly/daily/weekly summaries in real context: weather for your city, sleep nudges based on your schedule, habit-aware suggestions. It's the difference between a generic "good morning" and one that knows you're in Vancouver, you went to bed at 2am, and you've got a standup in 20 minutes.
+
 ### 📰 Digest
 
 A daily briefing panel that pulls news headlines, weather, and your day's agenda into one scrollable view. The digest is also available as a tab in the hologram UI (`voice/ui/digest.html`).
@@ -311,6 +325,8 @@ A daily briefing panel that pulls news headlines, weather, and your day's agenda
 - **Weather** — current conditions and forecast for your location.
 - **Agenda** — today's calendar events and scheduled tasks.
 - **Auto-refresh** — configurable refresh interval; fetches fresh data on each cycle.
+- **Grounded compilation** — digests aren't just scraped headlines. Iris compiles them from real local context: your bio and habits (`USER_BIO.md`), today's calendar events, active work tasks, weather for your location, and recent inbox activity. The result is a briefing that actually knows what you're doing today.
+- **Manual trigger** — POST `/api/digest/generate?span=hourly` to run a digest now instead of waiting for the cron. The dashboard's Digest panel has a "Generate now" button that does exactly this.
 
 ---
 
@@ -341,11 +357,24 @@ One conversation, many doors. All channels merge into a single chat:
 | Channel | How |
 |---------|-----|
 | 🌐 **Web Dashboard** | PWA at `http://localhost:3200` |
+| 📱 **Thin Client** | Standalone chat at `/thin-client/` — login, pick a user, start talking. No dashboard chrome, just the conversation. |
 | ✈️ **Telegram** | Bot via grammy |
 | 💚 **WhatsApp** | Baileys (no third-party API) |
 | 💜 **Slack** | Bot integration |
 
 Message from WhatsApp, continue on Telegram, check the dashboard — same context, same memory.
+
+### 📱 Thin Client
+
+`public/thin-client/` is a standalone single-page chat app — no dashboard, no settings panels, no file browser. Just a login screen, a user picker, and the conversation. It's the lightest way to talk to Warden from a phone or tablet on the same network.
+
+- **User grid** — tap your avatar to log in (password-protected per user).
+- **Model + idea selector** — pick which model and which driving force the orchestrator uses, right from the chat header.
+- **Typing indicator** — shows when the agent is working.
+- **Dark mode** — follows your OS preference.
+- **Full PWA** — add to home screen, runs like a native app.
+
+The thin client talks to the same Warden server on `:3200` — same API, same session, same memory. Open it on your phone while the dashboard is open on your desktop and they share the conversation.
 
 ---
 
@@ -658,6 +687,14 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing
 - 🖥️ Built-in dashboard panels — today, digest, agents, chat, tasks, upload, and system tabs in the hologram window.
 - 🔗 Talks to your existing Warden session — no new login.
 - 🔀 Independent mic/speaker routing — each side can be local or a remote satellite. See [Modular audio pipeline](#modular-audio-pipeline-runsh).
+
+#### Hologram window
+
+The voice UI runs in its own GPU-accelerated window via `pywebview` + Qt WebEngine. It's a real Chromium instance with hardware rendering — D3D11 ANGLE on capable GPUs, automatic SwiftShader fallback on VMs or machines without a GPU. The window hosts `jarvis.html` (the animated hologram face with idle/listening/thinking/speaking states) and `panels.html` (the dashboard panels laid out as iframes in a single transparent window).
+
+Collapsing what used to be 5 separate windows into 1 cut Qt WebEngine's renderer-process startup from ~3 minutes cold to well under a minute. The panels layout stacks three rows: a top strip for the hologram, a middle row with digest, chat, ops, and upload side-by-side, and a bottom ambient strip. Each panel is an iframe loading its own HTML file from `voice/ui/` — they share the pywebview JS bridge so they can talk to the Python host.
+
+The window wrapper (`jarvis_window.py`) exposes the same interface as the old button-window code, so `main.py` can swap between them with almost no changes. GPU flags are tuned per-platform: `--enable-unsafe-swiftshader` lets Chromium fall back to software rendering when no GPU is present, and `--ignore-gpu-blocklist` stops it from refusing integrated graphics it considers too old.
 
 ### Install the voice client
 
