@@ -278,7 +278,7 @@ The dashboard includes:
 | 🎤 **Talk** | Voice transcription | ✉️ **Email** | IMAP inbox + send |
 | 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
-| 📜 **Process Logs** | Live log tail | 📰 **Digest** | Daily briefing + news summaries |
+| 📜 **Process Logs** | Live log tail | 📰 **Digest** | Hourly/daily/weekly grounded briefings |
 | 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
 | 🏗️ **Ops Panel** | Work tasks (default tab) + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
@@ -319,14 +319,38 @@ A markdown file at `USER_BIO.md` in the workspace root that tells the agent who 
 
 ### 📰 Digest
 
-A daily briefing panel that pulls news headlines, weather, and your day's agenda into one scrollable view. The digest is also available as a tab in the hologram UI (`voice/ui/digest.html`).
+Iris compiles short briefings from your real local data and publishes them to the dashboard digest panel and the hologram UI (`voice/ui/digest.html`). There's no scraped news feed — every line comes from a grounded source.
 
-- **News** — top headlines fetched via the configured news provider.
-- **Weather** — current conditions and forecast for your location.
-- **Agenda** — today's calendar events and scheduled tasks.
-- **Auto-refresh** — configurable refresh interval; fetches fresh data on each cycle.
-- **Grounded compilation** — digests aren't just scraped headlines. Iris compiles them from real local context: your bio and habits (`USER_BIO.md`), today's calendar events, active work tasks, weather for your location, and recent inbox activity. The result is a briefing that actually knows what you're doing today.
-- **Manual trigger** — POST `/api/digest/generate?span=hourly` to run a digest now instead of waiting for the cron. The dashboard's Digest panel has a "Generate now" button that does exactly this.
+**Three cadences**, each a scheduled task that Iris owns:
+
+| Span | Cron | Scope |
+|---|---|---|
+| **Hourly** | `7 * * * *` | The present and the next ~2h |
+| **Daily** | `17 21 * * *` | End-of-day — today in review, what's still active, tomorrow |
+| **Weekly** | `30 20 * * 0` | A seven-day roundup with theme-grouped email activity |
+
+**Grounding** — each run is preceded by `buildDigestContext` (`src/task-scheduler.ts`), which assembles a real-world context block from the local DB and prepends it to the prompt:
+
+- **Current local time** and timezone
+- **User bio & habits** from `USER_BIO.md` (the same file the Bio page edits)
+- **Calendar events** — last 6h through next 48h via `listCalendarEvents`
+- **Active work tasks** — non-done tasks via `getWorkTasks`
+- **Weather** — keyless `wttr.in` for the location named in your bio
+- **Recent emails** — Iris may call `read_emails` once for inbox activity
+
+Iris then compiles the markdown digest and publishes it by calling `post_summary` (a keyless internal loopback to `POST /api/summaries?span=X`), which is the only way the digest reaches the panel.
+
+**Anti-fabrication** — every digest prompt leads with a `CRITICAL RULE — NO FABRICATION` block: every fact must appear verbatim in INPUT or `read_emails` output; empty sections say "none"; a blank digest is better than a fabricated one. The `Nudge` line is restricted to time-of-day and weather only, never invented tasks. This was added after Iris kept inventing a plausible-but-fake "client proposal" in the hourly digest — the EXAMPLE sections that gave it a template to pattern-match against were removed at the same time.
+
+**Rendering** — the panel renders the markdown itself (`renderMd` in `digest.html`), not a generic parser:
+
+- **Bold** section headers as glowing uppercase labels
+- **Bullet lists** with `▸` markers
+- **Pipe tables** with styled header rows and hover-highlighted rows
+- **Task status badges** — `[todo]` / `[in-progress]` / `[blocked]` / `[done]` / `[review]` become colored pills
+- **Review blockquotes** — the Day/Week in Review prose gets a left-border blockquote treatment
+
+**Manual trigger** — POST `/api/digest/generate?span=hourly|daily|weekly` runs a digest now through the same grounded path as the cron. The panel's **Generate** button does exactly this and polls until the fresh digest lands (timestamp changes, up to ~90s).
 
 ---
 
@@ -693,6 +717,8 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing
 The voice UI runs in its own GPU-accelerated window via `pywebview` + Qt WebEngine. It's a real Chromium instance with hardware rendering — D3D11 ANGLE on capable GPUs, automatic SwiftShader fallback on VMs or machines without a GPU. The window hosts `jarvis.html` (the animated hologram face with idle/listening/thinking/speaking states) and `panels.html` (the dashboard panels laid out as iframes in a single transparent window).
 
 Collapsing what used to be 5 separate windows into 1 cut Qt WebEngine's renderer-process startup from ~3 minutes cold to well under a minute. The panels layout stacks three rows: a top strip for the hologram, a middle row with digest, chat, ops, and upload side-by-side, and a bottom ambient strip. Each panel is an iframe loading its own HTML file from `voice/ui/` — they share the pywebview JS bridge so they can talk to the Python host.
+
+Because those iframes load from `file://`, Qt WebEngine's same-origin policy blocks them from `fetch()`-ing the Warden API directly. `jarvis_window.py` bridges this with a `warden_api(path, method, body)` proxy: the iframe calls it through the pywebview bridge, and Python makes the real HTTP request to the Warden URL and returns the raw body. It's the only path the digest, chat, and ops panels have to `/api/*` — which is why a bug that passed an `Event` object where a `span` string belonged surfaced as a `warden_api proxy failed` traceback rather than a silent network error.
 
 The window wrapper (`jarvis_window.py`) exposes the same interface as the old button-window code, so `main.py` can swap between them with almost no changes. GPU flags are tuned per-platform: `--enable-unsafe-swiftshader` lets Chromium fall back to software rendering when no GPU is present, and `--ignore-gpu-blocklist` stops it from refusing integrated graphics it considers too old.
 
