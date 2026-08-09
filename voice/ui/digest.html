@@ -70,26 +70,34 @@
   /* ── body ── */
   .body{
     flex:1;padding:14px 16px;overflow-y:auto;min-height:0;
-    font-size:12px;line-height:1.7;color:rgba(230,210,255,0.88);
+    font-size:14px;line-height:1.8;color:rgba(240,225,255,0.92);
   }
   .body .empty{
     color:rgba(199,125,255,0.25);font-style:italic;text-align:center;
-    padding-top:40px;font-size:11px;
+    padding-top:40px;font-size:12px;
   }
-  .body .summary-text p{margin-bottom:10px}
+  .body .summary-text p{margin-bottom:12px}
   .body .summary-text .highlight{color:#ffaa00;text-shadow:0 0 4px rgba(255,170,0,0.3)}
-  .body .summary-text strong{display:block;color:#c77dff;font-size:11px;letter-spacing:1px;
-    text-transform:uppercase;margin:12px 0 4px;text-shadow:0 0 6px rgba(199,125,255,0.4)}
-  .body .summary-text h3,.body .summary-text h4{color:#c77dff;font-size:11px;letter-spacing:1px;
-    text-transform:uppercase;margin:12px 0 4px;text-shadow:0 0 6px rgba(199,125,255,0.4);font-weight:600}
-  .body .summary-text h4{font-size:10px;opacity:0.85}
-  .body .summary-text ul{margin:4px 0 10px;padding-left:18px;list-style:none}
-  .body .summary-text li{position:relative;margin-bottom:4px;padding-left:2px}
-  .body .summary-text li::before{content:'▸';position:absolute;left:-12px;color:#c77dff;opacity:0.7}
-  .body .summary-text em{color:#e0b3ff;font-style:italic}
-  .body .summary-text code{font-family:'Courier New',monospace;font-size:10px;
-    background:rgba(199,125,255,0.08);padding:1px 4px;border-radius:3px;color:#f0e0ff}
-  .body .summary-text hr{border:0;border-top:1px solid rgba(199,125,255,0.12);margin:10px 0}
+  .body .summary-text strong{display:block;color:#e8d0ff;font-size:13px;letter-spacing:1px;
+    text-transform:uppercase;margin:14px 0 6px;text-shadow:0 0 8px rgba(199,125,255,0.5)}
+  .body .summary-text h3,.body .summary-text h4{color:#f0e0ff;font-size:14px;letter-spacing:1.5px;
+    text-transform:uppercase;margin:16px 0 8px;text-shadow:0 0 10px rgba(199,125,255,0.6);font-weight:700}
+  .body .summary-text h4{font-size:12px;opacity:0.9}
+  .body .summary-text ul{margin:6px 0 14px;padding-left:20px;list-style:none}
+  .body .summary-text li{position:relative;margin-bottom:6px;padding-left:4px;font-size:13px}
+  .body .summary-text li::before{content:'▸';position:absolute;left:-14px;color:#c77dff;opacity:0.9}
+  .body .summary-text em{color:#f0d0ff;font-style:italic}
+  .body .summary-text code{font-family:'Courier New',monospace;font-size:11px;
+    background:rgba(199,125,255,0.1);padding:2px 5px;border-radius:3px;color:#f8f0ff}
+  .body .summary-text hr{border:0;border-top:1px solid rgba(199,125,255,0.18);margin:14px 0}
+  /* ── tables ── */
+  .body .summary-text table{width:100%;border-collapse:collapse;margin:10px 0 16px;font-size:12px}
+  .body .summary-text th{text-align:left;padding:6px 10px;color:#f0e0ff;font-weight:700;
+    font-size:11px;letter-spacing:1px;text-transform:uppercase;
+    border-bottom:2px solid rgba(199,125,255,0.35);text-shadow:0 0 6px rgba(199,125,255,0.4)}
+  .body .summary-text td{padding:5px 10px;border-bottom:1px solid rgba(199,125,255,0.1);
+    color:rgba(230,210,255,0.85)}
+  .body .summary-text tr:hover td{background:rgba(199,125,255,0.04)}
 
   /* ── footer ── */
   .footer{
@@ -249,8 +257,8 @@
   function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
   // Small markdown renderer for Iris digests: **bold** (block header style),
   // *italic*, `code`, #/##/### headers, - or * bullet lists, blank-line
-  // paragraphs, and _italic_. HTML is escaped first, then inline spans are
-  // applied, then block structure (headers/lists/paragraphs).
+  // paragraphs, _italic_, and | pipe tables. HTML is escaped first, then
+  // inline spans are applied, then block structure.
   function renderMd(text){
     var h=esc(text||'');
     // inline spans (order matters: code, then bold, then italic)
@@ -258,11 +266,29 @@
     h=h.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
     h=h.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
     h=h.replace(/(^|[^_])_([^_\n]+)_(?!_)/g,'$1<em>$2</em>');
-    var lines=h.split(/\n/), out=[], inList=false, para=[];
+    var lines=h.split(/\n/), out=[], inList=false, para=[], tblRows=[];
     function flush(){if(para.length){out.push('<p>'+para.join(' ')+'</p>');para=[];}}
     function closeList(){if(inList){out.push('</ul>');inList=false;}}
+    function flushTable(){
+      if(!tblRows.length)return;
+      var html='<table>', headerDone=false;
+      for(var r=0;r<tblRows.length;r++){
+        var cells=tblRows[r].replace(/^\s*\|\s*|\s*\|\s*$/g,'').split(/\s*\|\s*/);
+        var isSep=cells.every(function(c){return /^:?-{3,}:?$/.test(c.trim());});
+        if(isSep&&r===1&&!headerDone){headerDone=true;continue;}
+        if(isSep)continue;
+        var tag=(!headerDone&&r===0)?'th':'td';
+        html+='<tr>'+cells.map(function(c){return '<'+tag+'>'+c.trim()+'</'+tag+'>';}).join('')+'</tr>';
+        if(r===0&&!headerDone)headerDone=true;
+      }
+      html+='</table>';out.push(html);tblRows=[];
+    }
+    function isTableRow(l){return /^\s*\|.*\|\s*$/.test(l);}
     for(var i=0;i<lines.length;i++){
       var line=lines[i];
+      if(isTableRow(line)){closeList();flush();tblRows.push(line);}
+      else if(tblRows.length){flushTable();}
+      if(isTableRow(line))continue;
       if(/^\s*###\s+/.test(line)){closeList();flush();out.push('<h4>'+line.replace(/^\s*###\s+/,'')+'</h4>');}
       else if(/^\s*##\s+/.test(line)){closeList();flush();out.push('<h3>'+line.replace(/^\s*##\s+/,'')+'</h3>');}
       else if(/^\s*#\s+/.test(line)){closeList();flush();out.push('<h3>'+line.replace(/^\s*#\s+/,'')+'</h3>');}
@@ -271,7 +297,7 @@
       else if(line.trim()===''){closeList();flush();}
       else{closeList();para.push(line);}
     }
-    closeList();flush();
+    flushTable();closeList();flush();
     return out.join('');
   }
   // Refresh when the panel becomes visible again (user switches back to the
