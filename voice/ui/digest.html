@@ -204,7 +204,7 @@
 
   // Manual refresh.
   var refreshBtn=document.getElementById('refresh-btn');
-  if(refreshBtn)refreshBtn.addEventListener('click',fetchDigest);
+  if(refreshBtn)refreshBtn.addEventListener('click',function(){fetchDigest();});
 
   // Generate now: POST /api/digest/generate?span=X — triggers the SAME grounded
   // path as the cron (buildDigestContext: real calendar/tasks/bio/weather/notes),
@@ -277,7 +277,7 @@
   // Refresh when the panel becomes visible again (user switches back to the
   // dashboard tab / window), so a digest that landed while hidden shows up.
   document.addEventListener('visibilitychange', function(){ if(!document.hidden) fetchDigest(); });
-  window.addEventListener('focus', fetchDigest);
+  window.addEventListener('focus', function(){ fetchDigest(); });
   if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);
 })();
 </script>
