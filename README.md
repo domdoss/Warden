@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](#-tech-stack)
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20local%20%2B%20cloud-black)](#-hybrid-model-architecture)
 [![SQLite](https://img.shields.io/badge/data-SQLite-003B57?logo=sqlite&logoColor=white)](#-tech-stack)
-[![License](https://img.shields.io/badge/license-MIT-green)](#-license)
+[![License](https://img.shields.io/badge/license-Personal--Use%20(Non--Commercial)-blue)](#-license)
 
 **[🛡️ Warning](#%EF%B8%8F-warning--read-this-before-you-run-anything-%EF%B8%8F)** ·
 **[⚙️ Architecture](#%EF%B8%8F-architecture)** ·
@@ -984,4 +984,4 @@ Warden stole fire from the gods. This one runs on your laptop.
 
 ## 📜 License
 
-MIT — see [`LICENSE`](LICENSE) for the full text.
+Free for personal, non-commercial use. You can run it, modify it, and fork it for yourself — but you can't make money off this code, a fork of it, or anything built on it. No selling it, no SaaS, no paid services on top of it, no commercial use. Forks inherit the same restriction. See [`LICENSE`](LICENSE) for the full terms.

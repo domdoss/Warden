@@ -1,0 +1,46 @@
+Warden Personal-Use License
+
+Copyright (c) 2026 Warden contributors
+
+Permission is hereby granted to any individual person to download, run,
+modify, and use the Warden software and its source code (the "Software")
+for personal, non-commercial purposes, subject to the conditions below.
+
+1. Personal, non-commercial use only.
+
+   You may use, study, modify, and run the Software for your own personal
+   purposes. "Personal use" means use by you, for yourself, with no
+   expectation or receipt of payment, revenue, or other commercial gain.
+
+2. No commercial use.
+
+   You may NOT use the Software — in whole or in part, in original or
+   modified form — for any commercial purpose. This includes, without
+   limitation, selling, licensing, leasing, or renting the Software;
+   offering it as a paid or ad-supported product or service; using it to
+   provide a paid service to others; embedding it in a product you sell;
+   or using it internally in a business to generate revenue. If you make
+   money — directly or indirectly — from the Software or anything built
+   on it, that use is not permitted.
+
+3. Forks and derivatives inherit this license.
+
+   You may fork, modify, and redistribute the Software, and you may
+   distribute your modifications, provided that:
+     (a) every copy and derivative is licensed under these same terms;
+     (b) this copyright notice and license are preserved; and
+     (c) no fee, charge, or other commercial consideration is required to
+         obtain the Software or any derivative of it.
+   You may not relicense the Software or any derivative under more
+   permissive terms, and you may not commercialize a fork. A fork of this
+   code is bound by the same non-commercial restriction as the original.
+
+4. No warranty.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+   OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR
+   THE USE OR OTHER DEALINGS IN THE SOFTWARE.
