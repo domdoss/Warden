@@ -128,3 +128,15 @@ class Config:
     @property
     def conversation(self) -> Dict[str, Any]:
         return self._data.get("conversation", {})
+
+    @property
+    def widgets(self) -> Dict[str, Any]:
+        return self._data.get("widgets", {})
+
+    @property
+    def notes(self) -> Dict[str, Any]:
+        return self._data.get("notes", {})
+
+    @property
+    def satellite(self) -> Dict[str, Any]:
+        return self._data.get("satellite", {})
