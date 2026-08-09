@@ -11,8 +11,6 @@ import './project-tools.js';
 import './task-tools.js';
 import './email-tools.js';
 import './calendar-tools.js';
-import './contact-tools.js';
-import './todo-tools.js';
 import './alarm-tools.js';
 import './sms-tools.js';
 import './tracking-tools.js';

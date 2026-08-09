@@ -126,7 +126,7 @@ class DockboxBridge:
 
     async def stop(self) -> None:
         try:
-            await self.client.stop_chat()
+            await self.client.stop_chat(self.active_jid)
         except Exception as e:
             print(f"[bridge] stop_chat failed: {e}")
 
@@ -193,6 +193,10 @@ class DockboxBridge:
                 self._spoke_message = True
                 self._turn_text = []
                 full = await self._full_message(preview)
+                # Echo the full reply to stdout so it's visible in the run.sh
+                # terminal, not just spoken over TTS. The SSE event print above only
+                # carries a truncated preview.
+                print(f"[Jarvis] {full}")
                 if self._on_chunk is not None:
                     try:
                         self._on_chunk(full)

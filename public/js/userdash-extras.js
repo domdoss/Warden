@@ -2010,6 +2010,30 @@ window.UserDash = (() => {
     }
   }
 
+  async function saveHeartbeat() {
+    const editor = document.getElementById('heartbeatEditor');
+    const toggle = document.getElementById('heartbeatToggle');
+    const modelSel = document.getElementById('heartbeatModelSelect');
+    const payload = {
+      content: editor ? editor.value : '',
+      enabled: toggle ? !!toggle.checked : false,
+      model: modelSel ? modelSel.value : '',
+    };
+    try {
+      const r = await fetch('/api/heartbeat', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      toast(d.enabled ? 'Heartbeat enabled' : 'Heartbeat saved (disabled)', 'success');
+      loadHeartbeat();
+    } catch (e) {
+      console.error('Failed to save heartbeat:', e);
+      toast('Heartbeat save failed', 'error');
+    }
+  }
+
   async function loadVault() {
     try {
       const r = await fetch(fileUrl('/api/vault'));
@@ -3584,6 +3608,7 @@ window.UserDash = (() => {
   }
 
   document.getElementById('gwBtnAddApiKey')?.addEventListener('click', addApiKey);
+  document.getElementById('btnSaveHeartbeat')?.addEventListener('click', saveHeartbeat);
 
   async function deleteFile(p) {
     if (!confirm('Delete ' + p.split('/').pop() + '?')) return;

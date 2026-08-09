@@ -403,7 +403,7 @@ export function _initTestDatabase(): void {
  */
 export function migrateToDesktopSchema(database: Database.Database): void {
   const tables = database.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('registered_groups','dashboard_users','user_sessions','session_links','user_work_tasks')",
+    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('registered_groups','dashboard_users','user_sessions','session_links')",
   ).all() as { name: string }[];
 
   if (tables.length === 0) return; // already migrated or fresh install

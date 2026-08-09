@@ -67,6 +67,25 @@ class _JsApi:
         except Exception:
             logger.exception("on_button_press callback raised")
 
+    def hologram_click(self) -> None:
+        """Called by the hologram window on a click / Space / Enter. A clean
+        toggle: start a VAD turn when idle, stop everything when active — NOT
+        the push-to-talk hold path used by the physical Pi button."""
+        try:
+            if self._owner.on_hologram_click is not None:
+                self._owner.on_hologram_click()
+        except Exception:
+            logger.exception("on_hologram_click callback raised")
+
+    def toggle_panels_fullscreen(self) -> bool:
+        """Toggle the dashboard window fullscreen. Returns the new state so
+        the page can apply/remove its fit-scale transform."""
+        try:
+            return bool(self._owner.toggle_panels_fullscreen())
+        except Exception:
+            logger.exception("toggle_panels_fullscreen raised")
+            return False
+
     def toggle_fullscreen(self) -> None:
         self._owner.toggle_fullscreen()
 
@@ -173,18 +192,19 @@ class _JsApi:
             logger.exception("warden_upload failed")
             return json.dumps({"ok": False, "error": str(e)})
 
-    def set_hologram_visible(self, visible: bool) -> str:
-        """Show or hide the hologram window from the dashboard settings.
-
-        With the Pi deployed, the hologram is optional — the dashboard can
-        toggle it off. Returns JSON {ok:true} so the caller can await it.
-        """
+    def minimize_window(self) -> None:
+        """Minimize the dashboard window (frameless window has no title bar)."""
         try:
-            self._owner.set_hologram_visible(bool(visible))
-            return json.dumps({"ok": True})
-        except Exception as e:
-            logger.exception("set_hologram_visible failed")
-            return json.dumps({"ok": False, "error": str(e)})
+            self._owner.minimize()
+        except Exception:
+            logger.exception("minimize_window raised")
+
+    def close_window(self) -> None:
+        """Close the app — destroys the single window, ending the event loop."""
+        try:
+            self._owner.close()
+        except Exception:
+            logger.exception("close_window raised")
 
     def http_get(self, url: str) -> str:
         """GET an external https URL and return the body string.
@@ -285,6 +305,7 @@ class JarvisWindow:
     def __init__(
         self,
         on_button_press: Callable[[], None],
+        on_hologram_click: Optional[Callable[[], None]] = None,
         width: int = 480,
         height: int = 480,
         feed_height: int = 280,
@@ -296,6 +317,7 @@ class JarvisWindow:
         on_chat_send: Optional[Callable[[str], str]] = None,
     ):
         self.on_button_press = on_button_press
+        self.on_hologram_click = on_hologram_click
         self.on_get_warden_url = on_get_warden_url
         self.on_save_warden_url = on_save_warden_url
         self.on_get_satellite_host = on_get_satellite_host
@@ -309,14 +331,17 @@ class JarvisWindow:
         self.feed_height = feed_height
         self._widget_config = widget_config or {}
 
-        # Resolve the HTML file path next to this module.
-        html_path = Path(__file__).resolve().parent / "jarvis.html"
-        if not html_path.exists():
-            raise RuntimeError(
-                f"jarvis.html not found at expected path: {html_path}"
-            )
-        self._html_path = html_path
-        self._html_url = html_path.as_uri()
+        # Resolve the HTML file path next to this module. The single window
+        # hosts panels.html; the hologram (jarvis.html) is an iframe inside it,
+        # so both files must exist.
+        ui_dir = Path(__file__).resolve().parent
+        for _name in ("panels.html", "jarvis.html"):
+            if not (ui_dir / _name).exists():
+                raise RuntimeError(
+                    f"{_name} not found at expected path: {ui_dir / _name}"
+                )
+        self._html_path = ui_dir / "panels.html"
+        self._html_url = self._html_path.as_uri()
 
         # Track the most-recently-requested state. When multiple state
         # setters are called with True, the latest wins.
@@ -344,17 +369,27 @@ class JarvisWindow:
         with self._lock:
             if self._closed:
                 return
+            # One combined window: panels.html hosts every panel (digest,
+            # chat, the hologram, ops, upload) plus the agents + ambient
+            # strips — all as iframes. The hologram is no longer a separate
+            # always-on-top window; it sits in the row where Agents used to.
+            # One window instead of two cuts the Qt WebEngine renderer-process
+            # cold-start that dominated the ~3min load.
+            stage_w = 420 + 14 + 400 + 14 + 340 + 14 + 320 + 14 + 300 + 28  # row + gaps + side padding
+            stage_h = 220 + (540 + 28) + 260  # agents strip + row (frame + side padding) + ambient strip
+            self.width = stage_w
+            self.height = stage_h
             self._window = webview.create_window(
-                title="Jarvis",
+                title="Warden",
                 url=self._html_url,
                 js_api=self._js_api,
-                width=self.width,
-                height=self.height + self.feed_height,
+                width=stage_w,
+                height=stage_h,
                 fullscreen=False,
                 resizable=True,
                 frameless=True,
                 transparent=True,
-                on_top=True,
+                on_top=False,
                 background_color="#000000",
             )
             # Subscribe to the ready event so we know when evaluate_js is safe.
@@ -367,39 +402,6 @@ class JarvisWindow:
                     "pywebview window.events.loaded not available; "
                     "evaluate_js calls may race the page load."
                 )
-
-        # Tell the page how tall the feed band is so the hologram keeps the top
-        # region and the tiles fill the bottom. Buffered until the page loads.
-        if self.feed_height > 0:
-            self._eval_js(
-                f"document.documentElement.style.setProperty("
-                f"'--feed-height','{int(self.feed_height)}px');"
-            )
-
-        # ── Iron Man companion panels (one combined window) ────────────
-        # The panels (Digest, Direct Line, Agents, Ops, Upload) live as
-        # iframes inside a single panels.html window. Collapsing what were
-        # four separate Qt WebEngine windows into one cuts the cold-start
-        # renderer-process cost that dominated the ~3min load time.
-        widget_dir = Path(__file__).resolve().parent
-        self._widget_windows = []
-
-        panels_path = widget_dir / "panels.html"
-        if panels_path.exists():
-            w = webview.create_window(
-                title="Warden Dashboard",
-                url=panels_path.as_uri(),
-                js_api=self._js_api,
-                width=420 + 14 + 400 + 14 + 340 + 14 + 320 + 14 + 300 + 28,  # 5 frames + 4 gaps + side padding (Systems moved into the ambient strip)
-                height=540 + 28 + 224,  # row (frame + side padding) + ambient OLED strip
-                fullscreen=False, resizable=True, frameless=True,
-                transparent=True, on_top=False, background_color="#000000",
-            )
-            try:
-                w.move(self.width + 20, 80)
-            except Exception:
-                logger.debug("window.move() not available", exc_info=True)
-            self._widget_windows.append(w)
 
         # webview.start() blocks until the window is closed. It MUST run on
         # the main thread since it drives platform GUI APIs.
@@ -422,21 +424,6 @@ class JarvisWindow:
         except Exception:
             # pywebview can raise if the window is already gone.
             logger.debug("JarvisWindow.close: window.destroy() raised", exc_info=True)
-
-    def set_hologram_visible(self, visible: bool) -> None:
-        """Show or hide the hologram window. The Pi setup makes the
-        hologram optional, so the dashboard settings can toggle it off."""
-        with self._lock:
-            window = self._window
-        if window is None:
-            return
-        try:
-            if visible:
-                window.show()
-            else:
-                window.hide()
-        except Exception:
-            logger.debug("set_hologram_visible failed", exc_info=True)
 
     def after(self, ms: int, callback: Callable[[], None]) -> None:
         """Schedule ``callback`` after ``ms`` milliseconds. Threadsafe.
@@ -471,10 +458,8 @@ class JarvisWindow:
             window = self._window
         if window is None:
             return
-        # Center the hologram on the primary screen and keep it raised above
-        # the companion panels. on_top=True (set at creation) holds it above
-        # other windows; centering here uses the Qt app, which is alive by the
-        # time the page has loaded.
+        # Center the single dashboard window on the primary screen. Centering
+        # here uses the Qt app, which is alive by the time the page has loaded.
         self._center_on_screen(window)
         for snippet in pending:
             try:
@@ -497,7 +482,7 @@ class JarvisWindow:
                 return
             geo = screen.availableGeometry()
             w = self.width
-            h = self.height + self.feed_height
+            h = self.height
             x = geo.x() + max(0, (geo.width() - w) // 2)
             y = geo.y() + max(0, (geo.height() - h) // 2)
             window.move(x, y)
@@ -506,7 +491,7 @@ class JarvisWindow:
             except Exception:
                 pass
         except Exception:
-            logger.debug("hologram centering failed", exc_info=True)
+            logger.debug("window centering failed", exc_info=True)
 
     def _eval_js(self, snippet: str) -> None:
         """Evaluate ``snippet`` on the page, buffering if not yet ready.
@@ -530,8 +515,8 @@ class JarvisWindow:
             if not getattr(self, "_eval_js_warned", False):
                 logger.warning(
                     "evaluate_js failed (%s). Further failures suppressed. "
-                    "Likely cause: WebGL context failed to initialise, so the "
-                    "page-side `jarvis` object was never defined.",
+                    "Likely cause: the hologram iframe never signalled ready, "
+                    "so panels.html's holoBroadcast has no target.",
                     e,
                 )
                 self._eval_js_warned = True
@@ -547,7 +532,9 @@ class JarvisWindow:
             # Only revert to idle if this state is the one currently showing.
             if self._current_state == state:
                 self._current_state = "idle"
-        self._eval_js(f"jarvis.setState({json.dumps(self._current_state)});")
+        # The hologram now lives in an iframe; holoBroadcast() (defined in
+        # panels.html) postMessages the command into the hologram iframe.
+        self._eval_js(f"holoBroadcast({{cmd:'state', state:{json.dumps(self._current_state)}}});")
 
     def set_listening_state(self, listening: bool) -> None:
         self._apply_state("listening", listening)
@@ -571,7 +558,7 @@ class JarvisWindow:
             lvl = 0.0
         elif lvl > 2.0:
             lvl = 2.0
-        self._eval_js(f"jarvis.setAudioLevel({lvl});")
+        self._eval_js(f"holoBroadcast({{cmd:'audio', level:{lvl}}});")
 
     # ------------------------------------------------------------------
     # Timer widget
@@ -584,21 +571,21 @@ class JarvisWindow:
                 "seconds_remaining": int(seconds_remaining),
             }
         )
-        self._eval_js(f"jarvis.setTimer({payload});")
+        self._eval_js(f"holoBroadcast({{cmd:'timer', payload:{payload}}});")
 
     def clear_timer(self, timer_id: str) -> None:
-        self._eval_js(f"jarvis.clearTimer({json.dumps(str(timer_id))});")
+        self._eval_js(f"holoBroadcast({{cmd:'cleartimer', id:{json.dumps(str(timer_id))}}});")
 
     # ------------------------------------------------------------------
     # Mini-holograms (Phase 4 stubs)
     # ------------------------------------------------------------------
     def add_mini_hologram(self, task_id: str, label: str) -> None:
         payload = json.dumps({"id": str(task_id), "label": str(label)})
-        self._eval_js(f"jarvis.addMiniHologram({payload});")
+        self._eval_js(f"holoBroadcast({{cmd:'mini', payload:{payload}}});")
 
     def remove_mini_hologram(self, task_id: str, status: str = "success") -> None:
         self._eval_js(
-            f"jarvis.removeMiniHologram({json.dumps(str(task_id))}, {json.dumps(str(status))});"
+            f"holoBroadcast({{cmd:'removemini', id:{json.dumps(str(task_id))}, status:{json.dumps(str(status))}}});"
         )
 
     # ------------------------------------------------------------------
@@ -641,6 +628,24 @@ class JarvisWindow:
         except Exception:
             logger.exception("toggle_fullscreen failed")
 
+    def toggle_panels_fullscreen(self) -> bool:
+        """Toggle the single dashboard window fullscreen. Returns the new
+        fullscreen state so the page knows whether to apply the fit-scale
+        transform or remove it. The dashboard content is a fixed 1864x858 design;
+        the page scales it to fill the screen via a CSS transform so the layout
+        fits any display size instead of spilling off-screen on 1080p."""
+        with self._lock:
+            window = self._window
+        if window is None:
+            return False
+        try:
+            window.toggle_fullscreen()
+            self._panels_fullscreen = not getattr(self, "_panels_fullscreen", False)
+        except Exception:
+            logger.exception("toggle_panels_fullscreen failed")
+            self._panels_fullscreen = not getattr(self, "_panels_fullscreen", False)
+        return self._panels_fullscreen
+
     # ------------------------------------------------------------------
     # Window management
     # ------------------------------------------------------------------
@@ -657,7 +662,7 @@ class JarvisWindow:
                 # Fallback: use xdotool or qdbus for KDE
                 import subprocess
                 subprocess.run(
-                    ["xdotool", "search", "--name", "Jarvis", "windowminimize"],
+                    ["xdotool", "search", "--name", "Warden", "windowminimize"],
                     capture_output=True, timeout=5
                 )
         except Exception:
@@ -677,7 +682,7 @@ class JarvisWindow:
             else:
                 import subprocess
                 subprocess.run(
-                    ["xdotool", "search", "--name", "Jarvis", "windowactivate"],
+                    ["xdotool", "search", "--name", "Warden", "windowactivate"],
                     capture_output=True, timeout=5
                 )
         except Exception:

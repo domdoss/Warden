@@ -9,21 +9,23 @@
     width:100%;height:100%;overflow:hidden;background:transparent!important;
     font-family:'Segoe UI',system-ui,sans-serif;
   }
-  /* The dashboard is one transparent window holding the 4 Iron Man panels
-     side by side as iframes. Collapsing 4 windows into 1 cuts Qt WebEngine
-     renderer-process startup (the main cause of the ~3min cold load). */
-  /* The dashboard is one transparent window holding the Iron Man panels
-     side by side as iframes, with a full-width OLED summary strip across
-     the bottom. Collapsing the windows into 1 cuts Qt WebEngine
-     renderer-process startup (the main cause of the ~3min cold load). */
+  /* One transparent window holding the Iron Man panels as iframes.
+     Layout (top→bottom): Agents horizontal chip strip, the panel row
+     (digest | chat | HOLOGRAM | ops | upload), and a tightened Ambient
+     strip. The hologram now lives in the row where Agents used to sit —
+     one physical window instead of two. Collapsing the windows into 1
+     cuts Qt WebEngine renderer-process startup (the ~3min cold load). */
   .stage{
     display:flex;flex-direction:column;width:100%;height:100%;
+  }
+  .top-strip{
+    flex:0 0 220px;height:220px;padding:8px 14px;width:100%;
   }
   .row{
     display:flex;gap:14px;padding:14px;width:100%;flex:1;min-height:0;
   }
   .strip{
-    flex:0 0 224px;height:224px;padding:0 14px 14px;width:100%;
+    flex:0 0 260px;height:260px;padding:0 14px 14px;width:100%;
   }
   .frame-host{
     position:relative;flex:0 0 auto;border-radius:6px;overflow:hidden;
@@ -34,15 +36,31 @@
     width:100%;height:100%;border:0;display:block;background:transparent;
   }
 
-  /* ── Settings gear + overlay (moved here from the hologram window) ── */
-  .settings-gear{
-    position:fixed;top:10px;right:12px;z-index:100;
-    width:26px;height:26px;display:flex;align-items:center;justify-content:center;
-    font-size:16px;color:rgba(0,255,255,0.4);cursor:pointer;user-select:none;
-    transition:color .15s,transform .5s;text-shadow:0 0 6px rgba(0,255,255,0.3);
+  /* ── Top-right window controls + settings ── */
+  /* Close/minimize/fullscreen/settings pinned top-right. Close sits in the
+     corner and goes red on hover so it's obvious; the frameless window has
+     no native title bar, so these are the only window controls. */
+  .win-ctrl{
+    position:fixed;top:10px;z-index:100;
+    width:26px;height:26px;display:flex;justify-content:center;align-items:center;
+    font-size:15px;color:rgba(0,255,255,0.45);cursor:pointer;user-select:none;
+    transition:color .15s,transform .15s,text-shadow .15s;
+    text-shadow:0 0 6px rgba(0,255,255,0.3);
   }
-  .settings-gear:hover{color:#00ffff}
-  .settings-gear:active{transform:rotate(60deg)}
+  .win-ctrl:hover{color:#00ffff}
+  .win-ctrl:active{transform:scale(.9)}
+  #close-btn{right:12px;color:rgba(255,120,120,0.7);font-size:16px}
+  #close-btn:hover{color:#ff6666;text-shadow:0 0 8px rgba(255,80,80,0.5)}
+  #min-btn{right:40px;font-size:18px}
+  #fs-btn{right:68px}
+  #settings-gear{
+    right:96px;width:26px;height:26px;display:flex;align-items:center;
+    justify-content:center;font-size:16px;color:rgba(0,255,255,0.4);
+    cursor:pointer;user-select:none;transition:color .15s,transform .5s;
+    text-shadow:0 0 6px rgba(0,255,255,0.3);position:fixed;top:10px;z-index:100;
+  }
+  #settings-gear:hover{color:#00ffff}
+  #settings-gear:active{transform:rotate(60deg)}
   .settings-overlay{
     display:none;position:fixed;top:42px;right:12px;z-index:101;
     background:rgba(0,10,20,0.94);border:1px solid rgba(0,255,255,0.4);
@@ -92,23 +110,31 @@
 </head>
 <body>
 <div class="stage">
-<div class="row" id="row">
-  <div class="frame-host" style="width:420px;height:540px">
-    <iframe id="digest" data-src="digest.html"></iframe>
-  </div>
-  <div class="frame-host" style="width:400px;height:540px">
-    <iframe id="chat" data-src="chat.html"></iframe>
-  </div>
-  <div class="frame-host" style="width:340px;height:540px">
+<!-- Top: Agents horizontal chip strip -->
+<div class="top-strip" id="agents-host">
+  <div class="frame-host" style="width:100%;height:100%">
     <iframe id="agents" data-src="agents.html"></iframe>
   </div>
-  <div class="frame-host" style="width:320px;height:540px">
+</div>
+<!-- Middle: panel row (hologram takes Agents' old center slot) -->
+<div class="row" id="row">
+  <div class="frame-host" style="width:340px;height:540px">
+    <iframe id="digest" data-src="digest.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:380px;height:540px">
+    <iframe id="chat" data-src="chat.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:340px;height:540px;background:rgba(0,0,0,0.9)">
+    <iframe id="hologram" data-src="jarvis.html"></iframe>
+  </div>
+  <div class="frame-host" style="width:380px;height:540px">
     <iframe id="tasks" data-src="tasks.html"></iframe>
   </div>
-  <div class="frame-host" style="width:300px;height:540px">
+  <div class="frame-host" style="width:340px;height:540px">
     <iframe id="upload" data-src="upload.html"></iframe>
   </div>
 </div>
+<!-- Bottom: tightened Ambient strip -->
 <div class="strip" id="today-host">
   <div class="frame-host" style="width:100%;height:100%">
     <iframe id="today" data-src="today.html"></iframe>
@@ -116,18 +142,21 @@
 </div>
 </div>
 
-<!-- Settings gear + overlay -->
-<div class="settings-gear" id="settings-gear" title="Settings">⚙</div>
+<!-- Window controls + settings -->
+<div class="win-ctrl" id="close-btn" title="Close">✕</div>
+<div class="win-ctrl" id="min-btn" title="Minimize">—</div>
+<div class="win-ctrl" id="fs-btn" title="Fullscreen — fit to display">⛶</div>
+<div id="settings-gear" title="Settings">⚙</div>
 <div class="settings-overlay" id="settings-overlay">
   <div class="section">
     <h4>Widgets</h4>
+    <div class="widget-toggle on" data-widget="agents"><span class="wname">Agents</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="digest"><span class="wname">Digest</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="chat"><span class="wname">Direct Line</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="agents"><span class="wname">Agents</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="hologram"><span class="wname">Hologram</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="tasks"><span class="wname">Ops</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="upload"><span class="wname">Upload</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="today"><span class="wname">Ambient Strip</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="hologram"><span class="wname">Hologram</span><span class="switch"></span></div>
   </div>
   <div class="section">
     <h4>Warden URL</h4>
@@ -166,16 +195,16 @@
   // act as a postMessage bridge: each iframe forwards api calls here, we
   // dispatch them on the real window.pywebview.api, and post the result back.
   // The panels include a shim that builds the proxy when window.pywebview is
-  // absent (i.e. when running inside this iframe).
+  // absent (i.e. when running inside this iframe). The hologram iframe now
+  // uses the same shim, so its callApi('hologram_click') etc. route here too.
 
   // pywebview injects window.pywebview.api AFTER the iframes load, but each
   // iframe's shim is a Proxy that returns a function for ANY method — so
   // window.pywebview.api.warden_api is truthy before the real bridge exists,
   // and every panel fires its first API call too early. Rejecting those
-  // early calls (the old behaviour) made weather spin for 10 min and the
-  // digest/panels sit empty until a click or their slow retry. Instead we
-  // QUEUE calls made before the bridge is ready and flush them once
-  // pywebview truly exists — that's what makes every panel auto-load.
+  // early calls made weather spin and panels sit empty. Instead we QUEUE
+  // calls made before the bridge is ready and flush them once pywebview
+  // truly exists — that's what makes every panel auto-load.
   var _bridgeReady = false, _queued = [];
   function dispatch(method, args){
     if(_bridgeReady && window.pywebview && window.pywebview.api && typeof window.pywebview.api[method] === 'function'){
@@ -201,6 +230,28 @@
     });
   }
 
+  // ── Host → hologram-iframe state channel ──────────────────────────────
+  // The host (Python) used to eval `jarvis.setState(...)` on the hologram's
+  // own top-level window. Now the hologram is an iframe, so `window.jarvis`
+  // doesn't live on THIS document. We expose a `holoBroadcast(msg)` global
+  // that the host evals instead; it postMessages the command into the
+  // hologram iframe. Two-stage buffering: Python's _pending_js holds calls
+  // until this page loads; _holoQ holds them until the hologram iframe
+  // announces it has bound `window.jarvis` (hologram_ready).
+  var _holoReady = false, _holoQ = [];
+  function holoBroadcast(msg){
+    if(!_holoReady){ _holoQ.push(msg); return; }
+    var f = document.getElementById('hologram');
+    if(!f || !f.contentWindow) return;
+    try { f.contentWindow.postMessage(Object.assign({__pm:true}, msg), '*'); } catch(e){}
+  }
+  // Expose holoBroadcast on window so the Python host can call it via
+  // window.evaluate_js("holoBroadcast(...)"). This whole <script> is wrapped
+  // in an IIFE, so without this export the eval throws ReferenceError and no
+  // state/audio/timer command ever reaches the hologram iframe (it stayed
+  // cyan/idle instead of turning red on listening, amber on processing, etc.).
+  window.holoBroadcast = holoBroadcast;
+
   window.addEventListener('message', function(ev){
     var d = ev.data;
     if(!d || !d.__pm) return;
@@ -208,6 +259,13 @@
     // localStorage across file:// origins).
     if(d.type === 'weather_loc_request'){
       try { ev.source.postMessage({__pm:true, type:'weather_loc', loc:localStorage.getItem(WX_KEY)||''}, '*'); } catch(e){}
+      return;
+    }
+    // Hologram iframe signals its window.jarvis is bound and ready.
+    if(d.type === 'hologram_ready'){
+      _holoReady = true;
+      var q = _holoQ; _holoQ = [];
+      q.forEach(holoBroadcast);
       return;
     }
     if(!d.id || !d.method) return;
@@ -239,20 +297,16 @@
       // Flush any api calls the iframes fired before the real bridge existed
       // (weather, digest, every panel's boot fetch) — now they can run.
       flushQueued();
-      // The hologram pref is applied on load but the bridge wasn't ready
-      // when restore() ran, so re-apply it now that pywebview.api exists.
-      applyHologram(holoOn());
       clearInterval(t);
     }
   }, 200);
   setInterval(announceReady, 3000);
 
-  // ── Settings overlay ──────────────────────────────────────────────
+  // ── Settings overlay ──────────────────────────────────────────────────
   // Widget show/hide is persisted to localStorage so the layout survives a
-  // restart. Warden URL + satellite host are stored host-side via the
-  // pywebview api bridge (get_/save_warden_url, get_/save_satellite_host).
+  // restart. The hologram is now a normal frame-host, so it uses the same
+  // hidden-set path as the other panels (no separate window to show/hide).
   var HIDDEN_KEY = 'warden.widgets.hidden';
-  var HOLO_KEY = 'warden.hologram.visible';
   var gear = document.getElementById('settings-gear');
   var overlay = document.getElementById('settings-overlay');
   var toggles = document.querySelectorAll('.widget-toggle');
@@ -267,23 +321,13 @@
   function applyWidget(widgetId, visible){
     var el = document.getElementById(widgetId);
     if(!el) return;
-    // Hide the panel's frame-host (or the whole ambient strip) rather than
-    // the iframe itself, so the slot collapses out of the row/strip.
-    var host = (widgetId === 'today')
-      ? (document.getElementById('today-host') || el)
-      : (el.closest('.frame-host') || el);
+    // Hide the panel's frame-host (or the whole strip for agents/today)
+    // rather than the iframe itself, so the slot collapses out of the row/strip.
+    var host;
+    if(widgetId === 'today') host = document.getElementById('today-host') || el;
+    else if(widgetId === 'agents') host = document.getElementById('agents-host') || el;
+    else host = el.closest('.frame-host') || el;
     host.classList.toggle('hidden', !visible);
-  }
-
-  // The hologram is a separate pywebview window, not a panel iframe, so it
-  // has its own persistence key and is toggled via set_hologram_visible
-  // rather than the hidden-set. Default visible (true) unless stored false.
-  function holoOn(){
-    try { return localStorage.getItem(HOLO_KEY) !== '0'; }
-    catch(e){ return true; }
-  }
-  function applyHologram(visible){
-    dispatch('set_hologram_visible', [!!visible]).catch(function(){});
   }
 
   // Restore saved visibility on load.
@@ -291,13 +335,6 @@
     var hidden = hiddenSet();
     toggles.forEach(function(tg){
       var wid = tg.getAttribute('data-widget');
-      if(wid === 'hologram'){
-        var on = holoOn();
-        tg.classList.toggle('on', on);
-        tg.classList.toggle('off', !on);
-        applyHologram(on);
-        return;
-      }
       var isHidden = hidden.has(wid);
       tg.classList.toggle('on', !isHidden);
       tg.classList.toggle('off', isHidden);
@@ -311,11 +348,6 @@
       var turningOn = tg.classList.contains('off');
       tg.classList.toggle('on', turningOn);
       tg.classList.toggle('off', !turningOn);
-      if(wid === 'hologram'){
-        localStorage.setItem(HOLO_KEY, turningOn ? '1' : '0');
-        applyHologram(turningOn);
-        return;
-      }
       var hidden = hiddenSet();
       if(turningOn) hidden.delete(wid); else hidden.add(wid);
       saveHidden(hidden);
@@ -364,6 +396,54 @@
     if(e.target === gear || overlay.contains(e.target)) return;
     closeOverlay();
   });
+
+  // ── Window controls ──────────────────────────────────────────────────
+  document.getElementById('close-btn').addEventListener('click', function(){
+    dispatch('close_window', []);
+  });
+  document.getElementById('min-btn').addEventListener('click', function(){
+    dispatch('minimize_window', []);
+  });
+
+  // ── Fullscreen: fill the screen at any display size ───────────────────
+  // The dashboard content is a fixed 1864x858 design (matches the window
+  // size in jarvis_window.py). On fullscreen we fix the stage to that size
+  // and scale it to fit the screen (centered), so every panel stays laid out
+  // correctly on 1080p, 1440p, 4K — anything — instead of spilling off-screen.
+  var fsBtn = document.getElementById('fs-btn');
+  var fsOn = false;
+  var STAGE_W = 1864, STAGE_H = 1048;
+  function fitStage(){
+    var stage = document.querySelector('.stage');
+    if(!stage) return;
+    if(!fsOn){
+      stage.style.transform=''; stage.style.transformOrigin='';
+      stage.style.position=''; stage.style.left=''; stage.style.top='';
+      stage.style.width=''; stage.style.height='';
+      return;
+    }
+    var w = window.innerWidth, h = window.innerHeight;
+    var s = Math.min(w/STAGE_W, h/STAGE_H);
+    stage.style.width = STAGE_W+'px';
+    stage.style.height = STAGE_H+'px';
+    stage.style.position = 'absolute';
+    stage.style.left = '50%';
+    stage.style.top = '50%';
+    stage.style.transformOrigin = 'center center';
+    stage.style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+  }
+  fsBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    dispatch('toggle_panels_fullscreen', []).then(function(on){
+      fsOn = !!on;
+      fsBtn.textContent = fsOn ? '❐' : '⛶';
+      fsBtn.title = fsOn ? 'Exit fullscreen' : 'Fullscreen — fit to display';
+      // The window resizes asynchronously after toggle_fullscreen(); re-fit
+      // once it has settled, and again on every resize (covers the transition).
+      setTimeout(fitStage, 300);
+    }, function(){ /* bridge not ready yet — ignore */ });
+  });
+  window.addEventListener('resize', fitStage);
 
   urlSave.addEventListener('click', function(){
     urlStat.classList.remove('err');

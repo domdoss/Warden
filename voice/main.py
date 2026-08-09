@@ -132,7 +132,13 @@ class ControlServer:
                 if self.path == "/status":
                     app = server.app
                     busy = bool(app._conversation_active or app._is_speaking)
-                    self._send_json(200, {"ok": True, "remote": app._is_satellite, "busy": busy})
+                    self._send_json(200, {
+                        "ok": True,
+                        "remote": app._is_satellite,
+                        "mic": "remote" if app._mic_host else "local",
+                        "speaker": "remote" if app._speaker_host else "local",
+                        "busy": busy,
+                    })
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -173,46 +179,55 @@ class ControlServer:
 
 
 class JarvisApp:
-    def __init__(self, remote: Optional[str] = None, control_port: int = 8767):
+    def __init__(self, mic_host: Optional[str] = None,
+                 speaker_host: Optional[str] = None,
+                 control_port: int = 8767):
         self.config = Config()
         self.bridge = DockboxBridge(config=self.config)
         self._control_port = control_port
 
-        # Standalone uses the local mic/speaker. Passing --remote <ip> (or saving
-        # a satellite host in the in-app settings panel) switches to a networked
-        # Pi's mic/speaker over HTTP — the Pi runs the dumb audio relay
-        # (satellite/satellite_server.py), started from its graice-tui.sh "Satellite
-        # mode" menu item. The local app keeps doing STT/TTS/UI; only the audio
-        # I/O is piped to/from the remote unit. The CLI flag overrides the
-        # persisted satellite.host for a one-off launch; the UI-saved value takes
-        # effect on the next start (clearing it returns to standalone).
-        if not remote:
-            remote = (self.config.get("satellite", {}) or {}).get("host") or None
-        self._is_satellite = bool(remote)
+        # Mic and speaker are chosen independently. Each is either local (None)
+        # or a remote Pi running the dumb audio relay
+        # (satellite/satellite_server.py, started via run.sh --satellite). The
+        # app always does STT/TTS/UI locally; only the audio I/O for that side
+        # is piped to/from the remote unit. Recorder, clap detector, and
+        # push-to-talk follow the MIC choice (they're all mic-side); the player
+        # follows the SPEAKER choice.
+        self._mic_host = mic_host
+        self._speaker_host = speaker_host
+        # Back-compat: "remote" = any side remote (used by /status), and the
+        # panel's _get_satellite_host reads _satellite_host (set below to the
+        # live remote host for display).
+        self._is_satellite = bool(mic_host or speaker_host)
+        self._satellite_host = None
+        self._satellite_port = None
 
         voice_cfg = self.config.voice
         audio_cfg = self.config.audio
+        sat_cfg = self.config.get("satellite", {}) or {}
+        sat_port = int(sat_cfg.get("port", 8766))
+
+        # ── mic side ───────────────────────────────────────────────────────
         self._input_device = None
-        if self._is_satellite:
-            sat_cfg = self.config.get("satellite", {}) or {}
-            host = remote
-            port = int(sat_cfg.get("port", 8766))
-            print(f"[jarvis] remote audio via {host}:{port}")
-            self._satellite_host = host
-            self._satellite_port = port
+        self._sat_mic_host = None
+        self._sat_mic_port = None
+        if mic_host:
+            print(f"[jarvis] remote mic via {mic_host}:{sat_port}")
+            self._sat_mic_host = mic_host
+            self._sat_mic_port = sat_port
+            self._satellite_host = mic_host
+            self._satellite_port = sat_port
             self.audio_recorder = SatelliteAudioRecorder(
-                host=host, port=port,
+                host=mic_host, port=sat_port,
                 silence_timeout=voice_cfg.get("silence_timeout", 1.0),
                 max_duration=voice_cfg.get("max_recording_seconds", 60.0),
                 aggressiveness=voice_cfg.get("vad_aggressiveness", 2),
             )
-            self.audio_player = SatelliteAudioPlayer(host=host, port=port)
-            self.beep_generator = BeepGenerator(
-                sample_rate=voice_cfg.get("sample_rate", 48000)
-            )
             # Push-to-talk on the Pi: hold the button to record the whole hold
             # (no VAD), release to send — one turn per press, no auto-listen
-            # loop. false = VAD auto-stop (for a buttonless remote mic).
+            # loop. false = VAD auto-stop (for a buttonless remote mic). Only the
+            # mic side decides this (the Pi has a button); the local mic always
+            # uses VAD + clap + the listen loop.
             self._push_to_talk = bool(sat_cfg.get("push_to_talk", True))
         else:
             # Resolve audio devices. pyaudio's "default" device can't capture/play
@@ -221,11 +236,8 @@ class JarvisApp:
             in_dev = audio_cfg.get("input_device")
             if in_dev is None:
                 in_dev = find_device("input")
-            out_dev = audio_cfg.get("playback_device")
-            if out_dev is None:
-                out_dev = find_device("output")
             self._input_device = in_dev
-            print(f"[jarvis] audio devices — input={in_dev} output={out_dev}")
+            print(f"[jarvis] local mic device={in_dev}")
             self.audio_recorder = AudioRecorder(
                 sample_rate=voice_cfg.get("sample_rate", 48000),
                 channels=voice_cfg.get("channels", 1),
@@ -234,15 +246,36 @@ class JarvisApp:
                 aggressiveness=voice_cfg.get("vad_aggressiveness", 2),
                 input_device_index=in_dev,
             )
+            self._push_to_talk = False
+
+        # ── speaker side ───────────────────────────────────────────────────
+        self._sat_speaker_host = None
+        self._sat_speaker_port = None
+        if speaker_host:
+            print(f"[jarvis] remote speaker via {speaker_host}:{sat_port}")
+            self._sat_speaker_host = speaker_host
+            self._sat_speaker_port = sat_port
+            # If the mic is local, expose the speaker's host for the panel.
+            if self._satellite_host is None:
+                self._satellite_host = speaker_host
+                self._satellite_port = sat_port
+            self.audio_player = SatelliteAudioPlayer(host=speaker_host, port=sat_port)
+        else:
+            out_dev = audio_cfg.get("playback_device")
+            if out_dev is None:
+                out_dev = find_device("output")
+            print(f"[jarvis] local speaker device={out_dev}")
             self.audio_player = AudioPlayer(
                 output_device=out_dev,
                 sample_rate=voice_cfg.get("sample_rate", 48000),
             )
-            self.beep_generator = BeepGenerator(
-                sample_rate=voice_cfg.get("sample_rate", 48000)
-            )
-            # The local laptop hologram always uses VAD + clap + the listen loop.
-            self._push_to_talk = False
+
+        # Beeps follow the speaker (they're user feedback, heard where the
+        # audio plays). Routed via self.audio_player.play_bytes, so mixed modes
+        # Just Work.
+        self.beep_generator = BeepGenerator(
+            sample_rate=voice_cfg.get("sample_rate", 48000)
+        )
         # STT is CPU-bound by default. On the Radeon VII (ROCm), torch's HIP
         # backend exposes itself as torch.cuda.*, so STT._pick_device() would
         # otherwise grab the GPU — and loading Whisper on the same GPU that
@@ -789,6 +822,23 @@ class JarvisApp:
         else:
             asyncio.run_coroutine_threadsafe(self._handle_interaction(), self.loop)
 
+    def _on_hologram_click(self):
+        """Hologram click (pywebview JS bridge). A click is a clean toggle:
+        start a VAD turn when idle, hard-stop everything when a turn is active.
+
+        The on-screen hologram is a momentary click — no hold, no release — so
+        it always uses the VAD interaction model (record-until-silence), NOT the
+        push-to-talk hold path used by the physical Pi button (/press + /release,
+        which records the whole hold and re-records on a barge-in press). The
+        push-to-talk barge-in re-recording was why a second click "prompted anew"
+        instead of stopping. _clap_turn forces VAD recording even in
+        satellite/push-to-talk mode, exactly like a clap wake; the interrupt
+        branch in _handle_interaction handles the stop-on-second-click."""
+        if not (self.loop and self.loop.is_running()):
+            return
+        self._clap_turn = True  # force VAD recording in satellite/push-to-talk mode
+        asyncio.run_coroutine_threadsafe(self._hologram_interaction(), self.loop)
+
     def _on_chat_send(self, text: str) -> str:
         """Send a text message to Jarvis and return the reply. Called from the
         Direct Line chat panel via pywebview's JS bridge (sync → async bridge)."""
@@ -991,6 +1041,26 @@ class JarvisApp:
             if saved_silence_timeout is not None:
                 self.audio_recorder.silence_timeout = saved_silence_timeout
 
+    async def _hologram_interaction(self) -> None:
+        """Run a click-initiated interaction through the VAD toggle path.
+
+        _handle_interaction is the toggle: if a turn is already active its
+        interrupt branch stops playback/recording/in-flight request and
+        returns (the second click); if idle its start branch runs the
+        record-until-silence auto-listen loop (the first click). Loosen the
+        VAD silence timeout for the whole click-initiated conversation so a
+        natural pause between sentences doesn't cut the user off (satellite
+        silence_timeout is ~0.6s) — same trick _clap_wake uses. Restored when
+        the loop ends."""
+        saved_silence_timeout = getattr(self.audio_recorder, "silence_timeout", None)
+        try:
+            if saved_silence_timeout is not None:
+                self.audio_recorder.silence_timeout = 2.5
+            await self._handle_interaction()
+        finally:
+            if saved_silence_timeout is not None:
+                self.audio_recorder.silence_timeout = saved_silence_timeout
+
     # ----- async loop -----
 
     def _start_async_loop(self):
@@ -1024,7 +1094,7 @@ class JarvisApp:
         def on_press(key):
             try:
                 if key == keyboard.Key.f9:
-                    self._on_button_press()
+                    self._on_hologram_click()
             except Exception:
                 pass
         listener = keyboard.Listener(on_press=on_press)
@@ -1045,15 +1115,16 @@ class JarvisApp:
             or self._is_speaking
             or (time.monotonic() - self._last_spoke_at) < self._SPEAK_COOLDOWN
         )
-        if self._is_satellite:
-            # Satellite mode: clap into the Pi's mic over its /mic PCM stream
+        if self._mic_host:
+            # Remote mic: clap into the Pi's mic over its /mic PCM stream
             # instead of a local device. The detector holds its own /mic
             # connection and releases it on pause() so the recorder can take
             # the mic exclusively during a turn (same release pattern as the
-            # local detector's PyAudio open/close).
+            # local detector's PyAudio open/close). Clap follows the MIC: if
+            # the mic is remote, clap listens remotely regardless of speaker.
             self.clap_detector = SatelliteClapDetector(
-                host=self._satellite_host,
-                port=self._satellite_port,
+                host=self._sat_mic_host,
+                port=self._sat_mic_port,
                 on_double_clap=self._on_clap,
                 can_fire=can_fire,
                 threshold=threshold,
@@ -1061,7 +1132,7 @@ class JarvisApp:
             )
             self.clap_detector.start()
             print(f"[jarvis] clap detection on — double-clap to wake "
-                  f"(satellite {self._satellite_host}:{self._satellite_port})")
+                  f"(satellite mic {self._sat_mic_host}:{self._sat_mic_port})")
             return
         self.clap_detector = ClapDetector(
             on_double_clap=self._on_clap,
@@ -1129,6 +1200,7 @@ class JarvisApp:
         }
         self.window = JarvisWindow(
             on_button_press=self._on_button_press,
+            on_hologram_click=self._on_hologram_click,
             width=ui_cfg.get("window_width", 480),
             height=ui_cfg.get("window_height", 480),
             feed_height=feed_height,
@@ -1171,12 +1243,41 @@ class JarvisApp:
 
 def main():
     import argparse
+
+    # Default satellite (Pi) IP for bare --remote / --mic remote / --speaker
+    # remote. run.sh exports SATELLITE_IP; fall back to the usual Pi address.
+    default_ip = os.environ.get("SATELLITE_IP", "192.168.0.171")
+
+    def _parse_side(val: Optional[str]) -> Optional[str]:
+        """Resolve a --mic/--speaker value to a remote host, or None for local.
+
+        Accepts: 'local' (→ None), 'remote' (→ default_ip),
+        'remote:<host>' (→ host), or a bare host (→ remote at that host)."""
+        if val is None:
+            return None  # not specified → leave to the caller's fallback logic
+        v = val.strip()
+        if v == "local":
+            return None
+        if v == "remote":
+            return default_ip
+        if v.startswith("remote:"):
+            return v[len("remote:"):].strip() or default_ip
+        return v  # bare host/ip → remote
+
     p = argparse.ArgumentParser(description="Jarvis — Dockbox thin voice client")
-    p.add_argument("--remote", metavar="HOST", default=None,
-                   help="Use a remote Pi's mic/speaker over the network instead of "
-                        "the local ones. The Pi must be running the dumb audio relay "
-                        "(satellite/satellite_server.py, started from its graice-tui.sh "
-                        "\"Satellite mode\" menu). e.g. --remote <pi-ip>")
+    p.add_argument("--mic", metavar="local|remote|remote:HOST", default=None,
+                   help="Mic source: 'local' (this machine) or 'remote[:HOST]' "
+                        "(a Pi running the dumb audio relay, "
+                        "satellite/satellite_server.py). The recorder, clap "
+                        "detector, and push-to-talk follow the mic choice.")
+    p.add_argument("--speaker", metavar="local|remote|remote:HOST", default=None,
+                   help="Speaker sink: 'local' (this machine) or 'remote[:HOST]' "
+                        "(a Pi running the dumb audio relay). Independent of --mic.")
+    p.add_argument("--remote", metavar="HOST", nargs="?", const=default_ip,
+                   default=None,
+                   help="Shorthand for --mic remote:HOST --speaker remote:HOST. "
+                        "With no HOST, uses the default satellite IP "
+                        f"({default_ip}).")
     p.add_argument("--control-port", type=int, default=8767,
                    help="Port for the remote-button control HTTP server "
                         "(POST /press, /cancel; GET /status). Default 8767. "
@@ -1195,7 +1296,31 @@ def main():
         print(f"[jarvis] saved dockbox.base_url={args.set_warden_url} → {cfg.config_path}")
         return
 
-    JarvisApp(remote=args.remote, control_port=args.control_port).run()
+    mic_host = _parse_side(args.mic)
+    speaker_host = _parse_side(args.speaker)
+    # --remote is a shorthand that sets BOTH sides remote — but only for sides
+    # the caller didn't set explicitly, so `--remote x --mic local` keeps the
+    # mic local and only makes the speaker remote.
+    if args.remote is not None:
+        rhost = args.remote or default_ip
+        if args.mic is None:
+            mic_host = rhost
+        if args.speaker is None:
+            speaker_host = rhost
+
+    # Back-compat: when launched directly (python main.py) with NO audio flag
+    # at all, fall back to a persisted satellite.host for both sides — mirrors
+    # the old single-flag behavior and keeps the in-app settings panel working.
+    # run.sh always passes explicit --mic/--speaker, so this never triggers
+    # from run.sh.
+    if args.mic is None and args.speaker is None and args.remote is None:
+        saved = (Config().get("satellite", {}) or {}).get("host") or None
+        if saved:
+            mic_host = saved
+            speaker_host = saved
+
+    JarvisApp(mic_host=mic_host, speaker_host=speaker_host,
+              control_port=args.control_port).run()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#f0f2f5;--surface:#ffffff;--border:rgba(0,0,0,0.06);--text:#0f172a;
+  --text2:#475569;--text3:#94a3b8;--accent:#2563eb;--accent-hover:#1d4ed8;
+  --accent-glow:rgba(37,99,235,0.1);--radius:12px;
+  --shadow:0 1px 3px rgba(0,0,0,0.04);--shadow-hover:0 8px 24px rgba(0,0,0,0.08);
+  --font:'DM Sans',system-ui,-apple-system,sans-serif;
+}
+
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f172a;--surface:#1e293b;--border:rgba(255,255,255,0.06);
+    --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;
+    --shadow:0 1px 3px rgba(0,0,0,0.2);--shadow-hover:0 8px 24px rgba(0,0,0,0.3);
+    --accent-glow:rgba(37,99,235,0.2);
+  }
+}
+
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;font-size:16px;-webkit-font-smoothing:antialiased}
+
+/* ─── Login ─── */
+.login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.login-card{background:var(--surface);border-radius:var(--radius);padding:48px 36px;max-width:420px;width:100%;text-align:center;box-shadow:var(--shadow);transition:box-shadow 0.3s,transform 0.3s}
+.login-card:hover{box-shadow:var(--shadow-hover)}
+.login-card h1{font-size:1.5rem;font-weight:700;margin-bottom:4px;letter-spacing:-0.02em}
+.login-card p{color:var(--text3);font-size:0.85rem;margin-bottom:28px}
+.login-card .logo{width:52px;height:52px;border-radius:12px;margin-bottom:14px}
+
+.user-grid{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-bottom:20px}
+.user-btn{display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;background:var(--bg);border:none;border-radius:var(--radius);cursor:pointer;width:112px;transition:transform 0.2s,box-shadow 0.2s;box-shadow:var(--shadow);color:var(--text)}
+.user-btn:hover{transform:translateY(-3px);box-shadow:var(--shadow-hover)}
+.user-avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff}
+.user-name{font-size:13px;font-weight:500}
+
+.pw-form{display:none;margin-top:16px}
+.pw-form input{width:100%;padding:12px 16px;border:none;border-radius:100px;font-size:14px;margin-bottom:10px;background:var(--bg);font-family:var(--font);color:var(--text);transition:box-shadow 0.2s}
+.pw-form input:focus{outline:none;box-shadow:0 0 0 3px var(--accent-glow)}
+.pw-form button{width:100%;padding:12px;border:none;border-radius:100px;font-size:14px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;font-family:var(--font);transition:background 0.2s;box-shadow:0 2px 8px rgba(37,99,235,0.25)}
+.pw-form button:hover{background:var(--accent-hover)}
+.pw-error{color:#ef4444;font-size:13px;margin-bottom:8px;min-height:20px}
+.pw-back{background:none;border:none;color:var(--text3);font-size:13px;cursor:pointer;margin-top:8px;font-family:var(--font)}
+
+/* ─── Chat ─── */
+.chat-screen{display:none;flex-direction:column;height:100vh}
+
+.chat-header{padding:14px 20px;background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,0.04);display:flex;align-items:center;gap:12px;z-index:10;position:relative}
+.chat-header h2{font-size:1rem;font-weight:600;flex:1;letter-spacing:-0.01em}
+.header-controls{display:flex;align-items:center;gap:8px}
+
+.header-select{padding:6px 12px;border:none;border-radius:100px;font-size:12px;font-family:var(--font);background:var(--bg);color:var(--text);cursor:pointer;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2394a3b8'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:26px;transition:box-shadow 0.2s}
+.header-select:focus{outline:none;box-shadow:0 0 0 3px var(--accent-glow)}
+
+.logout-btn{background:none;border:none;border-radius:100px;padding:6px 14px;font-size:12px;cursor:pointer;color:var(--text2);font-family:var(--font);transition:background 0.2s}
+.logout-btn:hover{background:var(--bg)}
+
+.chat-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth}
+
+.msg{max-width:78%;padding:12px 16px;font-size:14px;line-height:1.6;word-wrap:break-word;animation:msgIn 0.2s ease}
+@keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+.msg-user{align-self:flex-end;background:var(--accent);color:#fff;border-radius:20px 20px 6px 20px}
+.msg-bot{align-self:flex-start;background:var(--surface);box-shadow:var(--shadow);border-radius:20px 20px 20px 6px}
+
+.msg-bot pre{background:var(--bg);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:13px;margin:6px 0;line-height:1.5}
+.msg-bot code{font-size:13px;background:var(--bg);padding:2px 5px;border-radius:4px}
+.msg-bot pre code{background:none;padding:0}
+.msg-bot h1,.msg-bot h2,.msg-bot h3{margin:8px 0 4px;font-weight:600}
+.msg-bot h1{font-size:1.2em}.msg-bot h2{font-size:1.1em}.msg-bot h3{font-size:1em}
+.msg-bot ul,.msg-bot ol{margin:4px 0 4px 20px}
+.msg-bot li{margin:2px 0}
+.msg-bot blockquote{border-left:3px solid var(--accent);padding:4px 12px;margin:6px 0;color:var(--text2);background:var(--bg);border-radius:0 8px 8px 0}
+.msg-bot a{color:var(--accent);text-decoration:none}
+.msg-bot a:hover{text-decoration:underline}
+.msg-bot img{max-width:100%;border-radius:8px;margin:6px 0}
+
+.typing-indicator{align-self:flex-start;padding:14px 18px;background:var(--surface);box-shadow:var(--shadow);border-radius:20px 20px 20px 6px;display:none;gap:5px;align-items:center}
+.typing-indicator span{display:block;width:7px;height:7px;border-radius:50%;background:var(--text3);animation:typingDot 1.4s infinite}
+.typing-indicator span:nth-child(2){animation-delay:0.2s}
+.typing-indicator span:nth-child(3){animation-delay:0.4s}
+@keyframes typingDot{0%,60%,100%{opacity:0.3;transform:scale(0.8)}30%{opacity:1;transform:scale(1)}}
+
+.file-preview{display:none;padding:6px 20px;background:var(--surface);font-size:13px;color:var(--text2);align-items:center;gap:8px}
+.file-preview .file-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-preview .file-remove{background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px;border-radius:50%;font-family:var(--font)}
+.file-preview .file-remove:hover{background:var(--bg)}
+
+.chat-input-bar{padding:12px 20px;background:var(--surface);display:flex;gap:8px;align-items:flex-end}
+.chat-input-bar textarea{flex:1;padding:12px 16px;border:none;border-radius:var(--radius);font-size:14px;resize:none;font-family:var(--font);background:var(--bg);color:var(--text);min-height:44px;max-height:120px;line-height:1.5;transition:box-shadow 0.2s}
+.chat-input-bar textarea:focus{outline:none;box-shadow:0 0 0 3px var(--accent-glow)}
+.chat-input-bar textarea::placeholder{color:var(--text3)}
+
+.input-btn{width:44px;height:44px;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background 0.2s,transform 0.1s;flex-shrink:0}
+.input-btn:active{transform:scale(0.95)}
+
+.attach-btn{background:var(--bg);color:var(--text2)}
+.attach-btn:hover{background:var(--border)}
+.attach-btn svg{width:20px;height:20px}
+
+.send-btn{background:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(37,99,235,0.25)}
+.send-btn:hover{background:var(--accent-hover)}
+.send-btn:disabled{opacity:0.4;cursor:not-allowed;box-shadow:none}
+.send-btn svg{width:18px;height:18px}
+
+@media(max-width:600px){
+  .msg{max-width:90%}
+  .login-card{padding:28px 18px}
+  .user-btn{width:90px;padding:12px}
+  .header-controls{gap:4px}
+  .header-select{font-size:11px;padding:5px 22px 5px 8px}
+  .chat-input-bar{padding:10px 12px;gap:6px}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ LOGIN SCREEN ═══ -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <div id="loginLogo"></div>
+    <div class="user-grid" id="userGrid"><p style="color:var(--text3)">Loading...</p></div>
+    <div class="pw-form" id="pwForm">
+      <input type="password" id="pwInput" placeholder="Password" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')submitLogin()">
+      <p class="pw-error" id="pwError"></p>
+      <button onclick="submitLogin()">Login</button>
+      <button class="pw-back" onclick="backToUsers()">Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CHAT SCREEN ═══ -->
+<div class="chat-screen" id="chatScreen">
+  <div class="chat-header">
+    <h2 id="chatTitle">Chat</h2>
+    <div class="header-controls">
+      <select class="header-select" id="ideaSelect" title="Idea">
+        <option value="">Root</option>
+      </select>
+      <select class="header-select" id="modelSelect" title="Model">
+        <option value="">Auto</option>
+      </select>
+      <button class="logout-btn" onclick="logout()">Logout</button>
+    </div>
+  </div>
+
+  <div class="chat-messages" id="chatMessages"></div>
+
+  <div class="typing-indicator" id="typingIndicator">
+    <span></span><span></span><span></span>
+  </div>
+
+  <div class="file-preview" id="filePreview">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+    <span class="file-name" id="fileName"></span>
+    <button class="file-remove" onclick="clearFile()" title="Remove">&times;</button>
+  </div>
+
+  <div class="chat-input-bar">
+    <textarea id="chatInput" placeholder="Type a message..." rows="1"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+    <input type="file" id="fileInput" style="display:none" onchange="onFileSelected(this)">
+    <button class="input-btn attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach file">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+      </svg>
+    </button>
+    <button class="input-btn send-btn" onclick="sendMessage()" id="sendBtn" title="Send">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// CONFIGURATION — Edit these for each whitelabel client
+// ═══════════════════════════════════════════════════════════════════
+const CONFIG = {
+  API_BASE: 'http://10.155.129.107:3200',   // Warden server URL
+  COMPANY_SLUG: 'COMPANY_SLUG',      // Company slug (e.g. 'sales', 'beta')
+  ASSISTANT_NAME: 'Assistant',
+  POLL_INTERVAL: 2000,
+};
+// ═══════════════════════════════════════════════════════════════════
+
+let currentUser = null;
+let session = null;
+let chatJid = null;
+let groupFolder = null;
+let pollTimer = null;
+let lastMessageId = null;
+let pendingFile = null;
+let pendingUserId = null;
+let pendingUserName = null;
+
+// ═══ HELPERS ═══
+
+function api(path, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  if (session) opts.headers['X-User-Session'] = session;
+  return fetch(CONFIG.API_BASE + path, opts);
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function initials(name) {
+  return (name || '?').split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
+// ═══ MARKDOWN RENDERER ═══
+
+function renderMarkdown(text) {
+  // Escape HTML first
+  let html = esc(text);
+
+  // Code blocks (``` ... ```)
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+    return '<pre><code>' + code.trim() + '</code></pre>';
+  });
+
+  // Inline code
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+  // Images ![alt](url)
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" loading="lazy">');
+
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // Bold
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Italic
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+  // Headers (must be at start of line)
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists: consecutive lines starting with - or *
+  html = html.replace(/(?:^|\n)((?:[\-\*] .+\n?)+)/g, function(_, block) {
+    const items = block.trim().split('\n').map(function(line) {
+      return '<li>' + line.replace(/^[\-\*] /, '') + '</li>';
+    }).join('');
+    return '<ul>' + items + '</ul>';
+  });
+
+  // Ordered lists: consecutive lines starting with 1. 2. etc
+  html = html.replace(/(?:^|\n)((?:\d+\. .+\n?)+)/g, function(_, block) {
+    const items = block.trim().split('\n').map(function(line) {
+      return '<li>' + line.replace(/^\d+\. /, '') + '</li>';
+    }).join('');
+    return '<ol>' + items + '</ol>';
+  });
+
+  // Line breaks (but not inside pre/blockquote/list)
+  html = html.replace(/\n/g, '<br>');
+
+  // Clean up extra <br> after block elements
+  html = html.replace(/<\/(pre|blockquote|ul|ol|h1|h2|h3|li)><br>/g, '</$1>');
+  html = html.replace(/<br><(pre|blockquote|ul|ol|h1|h2|h3)/g, '<$1');
+
+  return html;
+}
+
+// ═══ LOGIN ═══
+
+async function loadUsers() {
+  try {
+    const r = await fetch(CONFIG.API_BASE + '/api/companies/' + CONFIG.COMPANY_SLUG + '/login-info');
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('userGrid').innerHTML = '<p style="color:#ef4444">' + esc(d.error) + '</p>';
+      return;
+    }
+
+    // Brand
+    const logo = document.getElementById('loginLogo');
+    if (d.company) {
+      let html = '';
+      if (d.company.logo_url) html += '<img class="logo" src="' + esc(d.company.logo_url) + '" alt="">';
+      html += '<h1>' + esc(d.company.name) + '</h1><p>Select your account</p>';
+      logo.innerHTML = html;
+      if (d.company.brand_color) {
+        document.documentElement.style.setProperty('--accent', d.company.brand_color);
+        document.documentElement.style.setProperty('--accent-hover', d.company.brand_color);
+      }
+      document.title = d.company.name;
+    }
+
+    // Users
+    const grid = document.getElementById('userGrid');
+    if (!d.users || !d.users.length) {
+      grid.innerHTML = '<p style="color:var(--text3)">No accounts found.</p>';
+      return;
+    }
+    grid.innerHTML = d.users.map(function(u) {
+      return '<div class="user-btn" onclick="selectUser(\'' + esc(u.id) + '\',\'' + esc(u.name) + '\',\'' + esc(u.color || '#2563eb') + '\')">'
+        + '<div class="user-avatar" style="background:' + esc(u.color || '#2563eb') + '">' + initials(u.name) + '</div>'
+        + '<span class="user-name">' + esc(u.name) + '</span></div>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('userGrid').innerHTML = '<p style="color:#ef4444">Failed to connect</p>';
+  }
+}
+
+function selectUser(id, name, color) {
+  pendingUserId = id;
+  pendingUserName = name;
+  document.getElementById('userGrid').style.display = 'none';
+  document.getElementById('pwForm').style.display = 'block';
+  document.getElementById('pwInput').focus();
+  document.getElementById('pwError').textContent = '';
+}
+
+function backToUsers() {
+  document.getElementById('userGrid').style.display = 'flex';
+  document.getElementById('pwForm').style.display = 'none';
+  document.getElementById('pwInput').value = '';
+  pendingUserId = null;
+}
+
+async function submitLogin() {
+  const pw = document.getElementById('pwInput').value;
+  const errorEl = document.getElementById('pwError');
+  if (!pw) { errorEl.textContent = 'Password is required'; return; }
+
+  try {
+    const r = await fetch(CONFIG.API_BASE + '/api/users/' + encodeURIComponent(pendingUserId) + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
+    });
+    const d = await r.json();
+    if (d.error) { errorEl.textContent = d.error; return; }
+
+    if (d.needs_password_setup) {
+      errorEl.textContent = 'Please set up your password at the main dashboard first.';
+      return;
+    }
+
+    session = d.session;
+    currentUser = { id: pendingUserId, name: pendingUserName };
+    localStorage.setItem('tc_session', session);
+    localStorage.setItem('tc_user', JSON.stringify(currentUser));
+    enterChat();
+  } catch(e) {
+    errorEl.textContent = 'Login failed';
+  }
+}
+
+// ═══ CHAT ═══
+
+async function enterChat() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('chatScreen').style.display = 'flex';
+  document.getElementById('chatTitle').textContent = CONFIG.ASSISTANT_NAME;
+
+  // Find user's home group JID
+  const userSlug = currentUser.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  chatJid = 'web:' + userSlug;
+
+  // Load settings for models + group folder
+  loadSettings();
+  loadIdeas();
+  loadMessages();
+  pollTimer = setInterval(loadMessages, CONFIG.POLL_INTERVAL);
+}
+
+async function loadSettings() {
+  try {
+    const r = await api('/api/settings');
+    const d = await r.json();
+
+    // Populate model dropdown
+    const modelSel = document.getElementById('modelSelect');
+    if (d.ollama_models && d.ollama_models.length) {
+      d.ollama_models.forEach(function(m) {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        modelSel.appendChild(opt);
+      });
+    }
+
+    // Get group folder for file uploads
+    if (d.groups) {
+      const group = d.groups.find(function(g) { return g.jid === chatJid; });
+      if (group) groupFolder = group.folder;
+    }
+  } catch(e) {}
+}
+
+async function loadIdeas() {
+  if (!groupFolder) {
+    // Retry after settings load
+    setTimeout(function() {
+      if (groupFolder) loadIdeas();
+    }, 1500);
+    if (!groupFolder) return;
+  }
+  try {
+    const r = await api('/api/groups/' + encodeURIComponent(groupFolder) + '/ideas');
+    const d = await r.json();
+    const ideaSel = document.getElementById('ideaSelect');
+    if (d && Array.isArray(d)) {
+      d.forEach(function(idea) {
+        const name = idea.name || idea;
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        ideaSel.appendChild(opt);
+      });
+    }
+  } catch(e) {}
+}
+
+async function loadMessages() {
+  try {
+    let url = '/api/messages?jid=' + encodeURIComponent(chatJid) + '&limit=50';
+    const idea = document.getElementById('ideaSelect').value;
+    if (idea) url += '&idea=' + encodeURIComponent(idea);
+
+    const r = await api(url);
+    const d = await r.json();
+    if (d.error) return;
+
+    const container = document.getElementById('chatMessages');
+    const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+    const messages = d.messages || [];
+
+    // Check if new messages arrived
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
+    if (lastId === lastMessageId) {
+      // Still check typing status
+      checkTypingStatus();
+      return;
+    }
+    lastMessageId = lastId;
+
+    container.innerHTML = messages.map(function(m) {
+      const isBot = m.is_bot_message;
+      const content = isBot ? renderMarkdown(m.content || '') : esc(m.content || '').replace(/\n/g, '<br>');
+      return '<div class="msg ' + (isBot ? 'msg-bot' : 'msg-user') + '">' + content + '</div>';
+    }).join('');
+
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+
+    checkTypingStatus();
+  } catch(e) {}
+}
+
+async function checkTypingStatus() {
+  try {
+    const sr = await api('/api/status');
+    const sd = await sr.json();
+    const indicator = document.getElementById('typingIndicator');
+    const groupActivity = (sd.groups || []).find(function(g) { return g.jid === chatJid; });
+    if (groupActivity && groupActivity.active && !groupActivity.idle) {
+      indicator.style.display = 'flex';
+      // Scroll to keep indicator visible
+      const container = document.getElementById('chatMessages');
+      const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+      if (atBottom) container.scrollTop = container.scrollHeight;
+    } else {
+      indicator.style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+// ═══ FILE ATTACHMENTS ═══
+
+function onFileSelected(input) {
+  if (input.files && input.files[0]) {
+    pendingFile = input.files[0];
+    document.getElementById('fileName').textContent = pendingFile.name;
+    document.getElementById('filePreview').style.display = 'flex';
+  }
+}
+
+function clearFile() {
+  pendingFile = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('filePreview').style.display = 'none';
+}
+
+async function uploadFile(file) {
+  const folder = groupFolder || chatJid;
+  const buf = await file.arrayBuffer();
+  const r = await api('/api/files/upload?path=' + encodeURIComponent(folder + '/attachments'), {
+    method: 'POST',
+    headers: { 'x-filename': encodeURIComponent(file.name) },
+    body: buf
+  });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error);
+  return 'attachments/' + file.name;
+}
+
+// ═══ SEND MESSAGE ═══
+
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  let text = input.value.trim();
+  const hasFile = !!pendingFile;
+
+  if (!text && !hasFile) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  document.getElementById('sendBtn').disabled = true;
+
+  // Handle file upload
+  if (hasFile) {
+    const file = pendingFile;
+    clearFile();
+    try {
+      const path = await uploadFile(file);
+      const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name);
+      const tag = isImage ? 'Image' : 'File';
+      const fileRef = '[' + tag + ': ' + path + ']';
+      text = text ? text + '\n' + fileRef : fileRef;
+    } catch(e) {
+      const container = document.getElementById('chatMessages');
+      container.innerHTML += '<div class="msg msg-bot" style="color:#ef4444">File upload failed: ' + esc(e.message) + '</div>';
+      document.getElementById('sendBtn').disabled = false;
+      return;
+    }
+  }
+
+  // Show optimistically
+  const container = document.getElementById('chatMessages');
+  container.innerHTML += '<div class="msg msg-user">' + esc(text).replace(/\n/g, '<br>') + '</div>';
+  container.scrollTop = container.scrollHeight;
+
+  // Show typing indicator
+  document.getElementById('typingIndicator').style.display = 'flex';
+
+  try {
+    const payload = {
+      text: text,
+      jid: chatJid,
+      sender_name: currentUser.name
+    };
+
+    const model = document.getElementById('modelSelect').value;
+    if (model) payload.model = model;
+
+    const idea = document.getElementById('ideaSelect').value;
+    if (idea) payload.idea = idea;
+
+    await api('/api/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    setTimeout(loadMessages, 500);
+  } catch(e) {
+    container.innerHTML += '<div class="msg msg-bot" style="color:#ef4444">Failed to send message</div>';
+    document.getElementById('typingIndicator').style.display = 'none';
+  }
+
+  document.getElementById('sendBtn').disabled = false;
+}
+
+// ═══ LOGOUT ═══
+
+function logout() {
+  clearInterval(pollTimer);
+  session = null;
+  currentUser = null;
+  groupFolder = null;
+  lastMessageId = null;
+  pendingFile = null;
+  localStorage.removeItem('tc_session');
+  localStorage.removeItem('tc_user');
+  document.getElementById('chatScreen').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('userGrid').style.display = 'flex';
+  document.getElementById('pwForm').style.display = 'none';
+  document.getElementById('pwInput').value = '';
+  document.getElementById('chatMessages').innerHTML = '';
+  document.getElementById('typingIndicator').style.display = 'none';
+  document.getElementById('filePreview').style.display = 'none';
+
+  // Reset dropdowns
+  const modelSel = document.getElementById('modelSelect');
+  modelSel.innerHTML = '<option value="">Auto</option>';
+  const ideaSel = document.getElementById('ideaSelect');
+  ideaSel.innerHTML = '<option value="">Root</option>';
+
+  loadUsers();
+}
+
+// ═══ AUTO-RESIZE TEXTAREA ═══
+
+document.getElementById('chatInput').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// ═══ IDEA SWITCH: RELOAD MESSAGES ═══
+
+document.getElementById('ideaSelect').addEventListener('change', function() {
+  lastMessageId = null;
+  document.getElementById('chatMessages').innerHTML = '';
+  loadMessages();
+});
+
+// ═══ INIT ═══
+
+const savedSession = localStorage.getItem('tc_session');
+const savedUser = localStorage.getItem('tc_user');
+if (savedSession && savedUser) {
+  session = savedSession;
+  currentUser = JSON.parse(savedUser);
+  api('/api/users/' + encodeURIComponent(currentUser.id) + '/verify-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session: session })
+  }).then(r => r.json()).then(d => {
+    if (d.valid) enterChat();
+    else logout();
+  }).catch(() => logout());
+} else {
+  loadUsers();
+}
+</script>
+</body>
+</html>

@@ -5,7 +5,7 @@ import { readEnvFile } from './env.js';
 
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OLLAMA_URL', 'OLLAMA_CHAT_MODEL', 'LOCAL_ASSISTANT_NAME', 'DEFAULT_MODEL_MODE', 'IDLE_TIMEOUT', 'CONTAINER_TIMEOUT', 'ADMIN_DOMAIN', 'OAUTH_REDIRECT_BASE', 'WORKSPACE_ROOT', 'RADICALE_URL', 'RADICALE_USER', 'RADICALE_PASS', 'RADICALE_CAL_COLLECTION', 'RADICALE_CARD_COLLECTION', 'RADICALE_STORAGE_DIR']);
+const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OLLAMA_URL', 'OLLAMA_CHAT_MODEL', 'LOCAL_ASSISTANT_NAME', 'DEFAULT_MODEL_MODE', 'IDLE_TIMEOUT', 'CONTAINER_TIMEOUT', 'ADMIN_DOMAIN', 'OAUTH_REDIRECT_BASE', 'WORKSPACE_ROOT']);
 
 // Propagate env-file values into process.env so child processes (agent-runner,
 // MCP servers, etc.) inherit them via spawn. Without this, a parent launched
@@ -42,10 +42,7 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'sender-allowlist.json',
 );
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
-export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
-// Backup directory — one level above the project root so agent containers can never access it
-export const BACKUP_DIR = path.resolve(PROJECT_ROOT, '..', 'backups');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'dockbox-agent:latest';
@@ -66,8 +63,16 @@ export const BACKGROUND_PROMOTE_MS = parseInt(process.env.BACKGROUND_PROMOTE_MS 
 export const WORKSPACE_ROOT: string = (() => {
   const fromEnv = process.env.WORKSPACE_ROOT || envConfig.WORKSPACE_ROOT;
   if (fromEnv) return path.resolve(fromEnv.replace(/^~(?=\/|$)/, HOME_DIR));
-  return path.join(HOME_DIR, 'dockbox');
+  return path.join(HOME_DIR, 'warden');
 })();
+
+// Groups live under the workspace root (notes/memory/uploads all flow into the
+// same data dir). Was PROJECT_ROOT-relative, which split groups/owner away from
+// WORKSPACE_ROOT/groups/owner/attachments on the Pi — unifying here keeps all
+// owner data (heartbeat, uploads, attachments) in one place. WORKSPACE_ROOT is
+// always absolute (expanded above), so path.join is safe.
+export const GROUPS_DIR = path.join(WORKSPACE_ROOT, 'groups');
+export const BACKUP_DIR = path.join(WORKSPACE_ROOT, 'backups');
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

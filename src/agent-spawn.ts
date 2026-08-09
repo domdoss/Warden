@@ -12,7 +12,12 @@ const IPC_INPUT_DIR = path.join(
 );
 
 const DEFAULT_EXECUTABLE = 'node';
-const DEFAULT_EXECUTABLE_ARGS = ['dist/agent-runner/index.js'];
+// Absolute so the agent-runner child can be spawned with cwd = WORKSPACE_ROOT
+// (the data dir). A relative path would resolve against the CHILD's cwd (~/warden)
+// and miss the agent-runner, which lives in the repo's dist/agent-runner/. Uses
+// process.cwd() (the host's WorkingDirectory = repo root, same convention as
+// PROJECT_ROOT in config.ts) — not __dirname, which is undefined under ESM.
+const DEFAULT_EXECUTABLE_ARGS = [path.resolve(process.cwd(), 'dist', 'agent-runner', 'index.js')];
 
 export type CallbackHandler = (args: any) => Promise<any>;
 export type CallbackMap = Record<string, CallbackHandler>;
@@ -49,7 +54,14 @@ export function runSubAgentBackground(input: AgentRunInput): void {
   const exe = input.executable ?? DEFAULT_EXECUTABLE;
   const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
   const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
-  const child = spawn(exe, exeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
+  // (the code/repo dir). The agent's file tools resolve relative paths against
+  // process.cwd(); without this the child inherits the repo cwd and writes
+  // MEMORY.md / notes / uploads into the code tree where the orchestrator never
+  // reads them — so conversational remembrances (Atlas appending to MEMORY.md)
+  // silently vanished. Cwd-ing to WORKSPACE_ROOT keeps all agent data writes in
+  // ~/warden, matching what the orchestrator loads each turn.
+  const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
   const callbacks = input.callbacks ?? {};
   const agentName = input.agent || 'sentry';
 
@@ -148,7 +160,14 @@ export function runSubAgentSync(input: AgentRunInput): Promise<{ content: string
     const exe = input.executable ?? DEFAULT_EXECUTABLE;
     const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
     const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
-    const child = spawn(exe, exeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
+  // (the code/repo dir). The agent's file tools resolve relative paths against
+  // process.cwd(); without this the child inherits the repo cwd and writes
+  // MEMORY.md / notes / uploads into the code tree where the orchestrator never
+  // reads them — so conversational remembrances (Atlas appending to MEMORY.md)
+  // silently vanished. Cwd-ing to WORKSPACE_ROOT keeps all agent data writes in
+  // ~/warden, matching what the orchestrator loads each turn.
+  const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
     const callbacks = input.callbacks ?? {};
     const agentName = input.agent || 'sentry';
 
@@ -514,6 +533,23 @@ export function pushSupervisorNote(text: string): void {
   });
 }
 
+/** Publish a one-off agent status line to the progress ring buffer, for
+ *  background processes that aren't spawned via runAgent (e.g. Mercury memory
+ *  distillation). Lets them appear on the dashboard's Agents panel — the
+ *  most-recent event for a phase becomes that card's activity line, and
+ *  jobs>0 lights the card green while the process runs. */
+export function pushAgentStatus(phase: string, label: string, jobs = 0): void {
+  const trimmed = (label || '').trim();
+  if (!trimmed) return;
+  pushProgress({
+    ts: Date.now(),
+    kind: 'status',
+    phase,
+    label: trimmed.slice(0, 240),
+    jobs,
+  });
+}
+
 export function getLiveStatus() {
   return { ...liveStatus };
 }
@@ -820,7 +856,14 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
     const exe = input.executable ?? DEFAULT_EXECUTABLE;
     const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
     const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
-    const child = spawn(exe, exeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
+  // (the code/repo dir). The agent's file tools resolve relative paths against
+  // process.cwd(); without this the child inherits the repo cwd and writes
+  // MEMORY.md / notes / uploads into the code tree where the orchestrator never
+  // reads them — so conversational remembrances (Atlas appending to MEMORY.md)
+  // silently vanished. Cwd-ing to WORKSPACE_ROOT keeps all agent data writes in
+  // ~/warden, matching what the orchestrator loads each turn.
+  const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
 
     (resolve as any).chatJid = input.chatJid || 'owner@local';
     resetTurnState(callbacks, resolve, input.timeoutMs);

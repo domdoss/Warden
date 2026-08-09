@@ -148,12 +148,9 @@ registry.register({
 registry.register({
     name: 'list_work_tasks',
     description: 'List work tasks from the dashboard.',
-    schema: {
-        type: 'object',
-        properties: { assigned_to: { type: 'string' } },
-    },
-    handler: async (args, _context) => {
-        const resp = await callHost('list_work_tasks', { assignedTo: args.assigned_to || undefined });
+    schema: { type: 'object', properties: {} },
+    handler: async (_args, _context) => {
+        const resp = await callHost('list_work_tasks', {});
         return fmtResult(resp, 'Work tasks:', 'list_work_tasks failed');
     },
     toolset: 'worktasks',
@@ -168,14 +165,14 @@ registry.register({
         properties: {
             title: { type: 'string' }, description: { type: 'string' }, notes: { type: 'string' },
             priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-            assigned_to: { type: 'string' }, due_date: { type: 'string' }, project_id: { type: 'string' },
+            due_date: { type: 'string' }, project_id: { type: 'string' },
         },
         required: ['title', 'project_id'],
     },
     handler: async (args, context) => {
         const resp = await callHost('create_work_task', {
             title: args.title, description: args.description || '', notes: args.notes || '',
-            priority: args.priority || 'medium', assignedTo: args.assigned_to || undefined,
+            priority: args.priority || 'medium',
             createdBy: args.created_by || context.groupFolder, dueDate: args.due_date || undefined,
             projectId: args.project_id || undefined,
         });
@@ -194,14 +191,14 @@ registry.register({
             task_id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, notes: { type: 'string' },
             status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
             priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-            assigned_to: { type: 'string' }, due_date: { type: 'string' }, project_id: { type: 'string' },
+            due_date: { type: 'string' }, project_id: { type: 'string' },
         },
         required: ['task_id'],
     },
     handler: async (args, _context) => {
         const resp = await callHost('update_work_task', {
             taskId: args.task_id, title: args.title, description: args.description, notes: args.notes,
-            status: args.status, priority: args.priority, assignedTo: args.assigned_to,
+            status: args.status, priority: args.priority,
             dueDate: args.due_date, projectId: args.project_id,
         });
         return fmtResult(resp, `Work task ${args.task_id} updated.`, `update_work_task failed`);

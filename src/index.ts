@@ -1,4 +1,3 @@
-import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 import http from 'node:http';
 import path from 'path';
@@ -21,12 +20,6 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import { runAgent, killCurrentAgent, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher } from './agent-spawn.js';
-import {
-  getBackupConfig,
-  createFullBackup,
-  createIncrementalBackup,
-  listBackups,
-} from './backup.js';
 import {
   createTask,
   getAllTasks,
@@ -68,22 +61,20 @@ import {
   getUserApiKeys,
   getActiveUserApiKeyByType,
   getAllUserApiKeys,
+  createCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+  getCalendarEvent,
+  listCalendarEvents,
 } from './db.js';
 import { decryptApiKey } from './encryption.js';
 import { fetchEmails, sendEmail } from './email.js';
-import {
-  listEvents, getEvent, upsertEvent, deleteEvent,
-  listTodos, upsertTodo, deleteTodo,
-} from './providers/caldav.js';
-import {
-  listContacts, searchContacts, getContact, upsertContact, deleteContact,
-} from './providers/carddav.js';
 import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
 import { computeNextRun, runDigestNow, startSchedulerLoop } from './task-scheduler.js';
+import { runMemoryWriteback } from './memory-writeback.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
-import { projectAllDeliverables, startKontactWatcher } from './kontact-projection.js';
 import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
@@ -656,59 +647,24 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
-    // ─── Calendar (stateless CalDAV against local Radicale) ──────────────
+    // ─── Calendar (local DB calendar_events table; OAuth-synced + agent-created) ──
     list_calendar_events: async (args: any) => {
       try {
-        const { listCalendarEvents } = await import('./db.js');
         const dbEvents = listCalendarEvents({ start: args?.start, end: args?.end });
-        let caldavEvents: any[] = [];
-        try {
-          caldavEvents = await listEvents(args?.start, args?.end);
-        } catch (err: any) {
-          // Radicale/CalDAV often isn't running — fall back to DB events only
-          // instead of failing the whole list.
-          logger.warn({ err: String(err?.message ?? err) }, 'calendar: CalDAV unavailable, returning DB events only');
-        }
-        // Merge: DB events first, then CalDAV (dedup by title+start)
-        const seen = new Set<string>();
-        const merged: any[] = [];
-        for (const e of dbEvents) {
-          const key = `${e.title}|${e.start_time || ''}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          merged.push({
-            title: e.title,
-            start: e.start_time,
-            start_time: e.start_time,
-            end: e.end_time,
-            end_time: e.end_time,
-            all_day: e.all_day === 1,
-            location: e.location || '',
-            description: e.description || '',
-            calendar_source: e.calendar_source || 'google',
-            uid: e.ical_uid || e.id,
-            event_id: e.ical_uid || e.id,
-          });
-        }
-        for (const e of caldavEvents) {
-          const key = `${e.title}|${e.start || ''}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          merged.push({
-            title: e.title,
-            start: e.start,
-            start_time: e.start,
-            end: e.end || null,
-            end_time: e.end || null,
-            all_day: e.allDay === true,
-            location: e.location || '',
-            description: e.description || '',
-            calendar_source: 'caldav',
-            uid: e.uid,
-            event_id: e.uid,
-          });
-        }
-        return { ok: true, events: merged };
+        const events = dbEvents.map((e) => ({
+          title: e.title,
+          start: e.start_time,
+          start_time: e.start_time,
+          end: e.end_time,
+          end_time: e.end_time,
+          all_day: e.all_day === 1,
+          location: e.location || '',
+          description: e.description || '',
+          calendar_source: e.calendar_source || 'google',
+          uid: e.ical_uid || e.id,
+          event_id: e.ical_uid || e.id,
+        }));
+        return { ok: true, events };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
     create_calendar_event: async (args: any) => {
@@ -716,169 +672,44 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const title = typeof args?.title === 'string' ? args.title : '';
         const start = typeof args?.start_time === 'string' ? args.start_time : '';
         if (!title || !start) return { ok: false, error: 'missing title/start_time' };
-        const uid = args?.event_id || `jarvis-evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const ev = {
-          uid,
+        const icalUid = args?.event_id || `jarvis-evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const ev = createCalendarEvent({
           title,
           description: args?.description,
-          start,
-          end: args?.end_time,
-          allDay: args?.all_day === true,
+          start_time: start,
+          end_time: args?.end_time,
+          all_day: args?.all_day === true,
           location: args?.location,
-        };
-        const r = await upsertEvent(ev);
-        if (!r.ok) return r;
-        return { ok: true, eventId: uid, etag: r.etag };
+          calendar_source: 'local',
+          ical_uid: icalUid,
+        });
+        return { ok: true, eventId: ev.id, uid: icalUid };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
     update_calendar_event: async (args: any) => {
       try {
-        const uid = typeof args?.event_id === 'string' ? args.event_id : '';
-        if (!uid) return { ok: false, error: 'missing event_id' };
-        const existing = await getEvent(uid);
+        const id = typeof args?.event_id === 'string' ? args.event_id : '';
+        if (!id) return { ok: false, error: 'missing event_id' };
+        const existing = getCalendarEvent(id) ?? (args?.uid ? getCalendarEvent(args.uid) : undefined);
         if (!existing) return { ok: false, error: 'event not found' };
-        const ev = {
-          uid,
-          title: args?.title ?? existing.title,
-          description: args?.description ?? existing.description,
-          start: args?.start_time ?? existing.start,
-          end: args?.end_time ?? existing.end,
-          allDay: args?.start_time ? (args?.all_day === true) : existing.allDay,
-          location: args?.location ?? existing.location,
-        };
-        const r = await upsertEvent(ev, existing.etag);
-        if (!r.ok) return r;
-        return { ok: true, eventId: uid, etag: r.etag };
+        const updates: Partial<typeof existing> = {};
+        if (typeof args?.title === 'string') updates.title = args.title;
+        if (typeof args?.description === 'string') updates.description = args.description;
+        if (typeof args?.start_time === 'string') updates.start_time = args.start_time;
+        if (args?.end_time !== undefined) updates.end_time = args.end_time;
+        if (typeof args?.all_day === 'boolean') updates.all_day = args.all_day ? 1 : 0;
+        if (typeof args?.location === 'string') updates.location = args.location;
+        const ev = updateCalendarEvent(existing.id, updates);
+        if (!ev) return { ok: false, error: 'event not found' };
+        return { ok: true, eventId: ev.id, uid: ev.ical_uid || ev.id };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
     delete_calendar_event: async (args: any) => {
       try {
-        const uid = typeof args?.event_id === 'string' ? args.event_id : '';
-        if (!uid) return { ok: false, error: 'missing event_id' };
-        return await deleteEvent(uid);
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-
-    // ─── Contacts (stateless CardDAV against local Radicale) ────────────
-    list_contacts: async (args: any) => {
-      try {
-        if (args?.query) {
-          const contacts = await searchContacts(String(args.query));
-          return { ok: true, contacts };
-        }
-        const contacts = await listContacts();
-        return { ok: true, contacts };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    search_contacts: async (args: any) => {
-      try {
-        const q = typeof args?.query === 'string' ? args.query : '';
-        const contacts = await searchContacts(q);
-        return { ok: true, contacts };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    get_contact: async (args: any) => {
-      try {
-        const c = await getContact(String(args?.uid || ''));
-        if (!c) return { ok: false, error: 'contact not found' };
-        return { ok: true, contact: c };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    create_contact: async (args: any) => {
-      try {
-        const uid = args?.uid || `jarvis-contact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const c = {
-          uid,
-          fullName: args?.full_name,
-          givenName: args?.given_name,
-          familyName: args?.family_name,
-          email: args?.email ? (Array.isArray(args.email) ? args.email : [args.email]) : [],
-          phone: args?.phone ? (Array.isArray(args.phone) ? args.phone : [args.phone]) : [],
-          org: args?.org,
-          title: args?.title,
-          note: args?.note,
-        };
-        const r = await upsertContact(c);
-        if (!r.ok) return r;
-        return { ok: true, contactId: uid, etag: r.etag };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    update_contact: async (args: any) => {
-      try {
-        const uid = typeof args?.uid === 'string' ? args.uid : '';
-        if (!uid) return { ok: false, error: 'missing uid' };
-        const existing = await getContact(uid);
-        if (!existing) return { ok: false, error: 'contact not found' };
-        const c = {
-          uid,
-          fullName: args?.full_name ?? existing.fullName,
-          givenName: args?.given_name ?? existing.givenName,
-          familyName: args?.family_name ?? existing.familyName,
-          email: args?.email ? (Array.isArray(args.email) ? args.email : [args.email]) : existing.email,
-          phone: args?.phone ? (Array.isArray(args.phone) ? args.phone : [args.phone]) : existing.phone,
-          org: args?.org ?? existing.org,
-          title: args?.title ?? existing.title,
-          note: args?.note ?? existing.note,
-          extra: existing.extra,
-        };
-        const r = await upsertContact(c, existing.etag);
-        if (!r.ok) return r;
-        return { ok: true, contactId: uid, etag: r.etag };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    delete_contact: async (args: any) => {
-      try {
-        return await deleteContact(String(args?.uid || ''));
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-
-    // ─── Todos (VTODO in the same /cal/ collection) ──────────────────────
-    list_todos: async (_args: any) => {
-      try {
-        const todos = await listTodos();
-        return { ok: true, todos };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    create_todo: async (args: any) => {
-      try {
-        const summary = typeof args?.summary === 'string' ? args.summary : '';
-        if (!summary) return { ok: false, error: 'missing summary' };
-        const uid = args?.uid || `jarvis-todo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const todo = {
-          uid,
-          summary,
-          description: args?.description,
-          status: 'NEEDS-ACTION' as const,
-          priority: typeof args?.priority === 'number' ? args.priority : undefined,
-          due: args?.due,
-          dtstart: args?.start,
-          relatedTo: args?.related_to,
-        };
-        const r = await upsertTodo(todo);
-        if (!r.ok) return r;
-        return { ok: true, todoId: uid, etag: r.etag };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    complete_todo: async (args: any) => {
-      try {
-        const uid = typeof args?.uid === 'string' ? args.uid : '';
-        if (!uid) return { ok: false, error: 'missing uid' };
-        const todos = await listTodos();
-        const existing = todos.find((t) => t.uid === uid);
-        if (!existing) return { ok: false, error: 'todo not found' };
-        const todo = {
-          ...existing,
-          status: 'COMPLETED' as const,
-          completed: new Date().toISOString().slice(0, 19).replace('T', 'T'),
-        };
-        const r = await upsertTodo(todo, existing.etag);
-        if (!r.ok) return r;
-        return { ok: true, todoId: uid };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    delete_todo: async (args: any) => {
-      try {
-        return await deleteTodo(String(args?.uid || ''));
+        const id = typeof args?.event_id === 'string' ? args.event_id : '';
+        if (!id) return { ok: false, error: 'missing event_id' };
+        const ok = deleteCalendarEvent(id);
+        return ok ? { ok: true } : { ok: false, error: 'event not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
@@ -961,7 +792,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         if (!name) return { ok: false, error: 'missing name' };
         const resolved = resolveProjectId(id) || id;
         const d = addProjectDeliverable(resolved, name, typeof args?.dueDate === 'string' ? args.dueDate : undefined);
-        void projectAllDeliverables().catch(() => { /* best-effort: Radicale may be down */ });
         return { ok: true, data: d };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
@@ -970,7 +800,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const id = typeof args?.deliverableId === 'string' ? args.deliverableId : '';
         const d = toggleDeliverable(id);
         if (!d) return { ok: false, error: 'deliverable not found' };
-        void projectAllDeliverables().catch(() => { /* best-effort */ });
         return { ok: true, data: d };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
@@ -978,7 +807,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const id = typeof args?.deliverableId === 'string' ? args.deliverableId : '';
         const ok = deleteDeliverable(id);
-        if (ok) void projectAllDeliverables().catch(() => { /* best-effort */ });
         return ok ? { ok: true } : { ok: false, error: 'deliverable not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
@@ -1038,7 +866,12 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
     // callbacks had "no registered handler" and Byte could never add a task.
     list_work_tasks: async (args: any) => {
       try {
-        const tasks = getWorkTasks(typeof args?.assignedTo === 'string' && args.assignedTo ? args.assignedTo : undefined);
+        // Single-user schema: every work task is the owner's, so list all of
+        // them. Tasks are routinely created with assigned_to NULL; filtering
+        // by a passed assignedTo would hide those and make "my work tasks"
+        // look empty even when tasks exist.
+        void args;
+        const tasks = getWorkTasks();
         return { ok: true, data: tasks };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
@@ -1061,12 +894,10 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           description: typeof args?.description === 'string' ? args.description : '',
           notes: typeof args?.notes === 'string' ? args.notes : '',
           priority: typeof args?.priority === 'string' ? args.priority : 'medium',
-          assigned_to: typeof args?.assignedTo === 'string' && args.assignedTo ? args.assignedTo : undefined,
           created_by: typeof args?.createdBy === 'string' && args.createdBy ? args.createdBy : OWNER_JID,
           due_date: typeof args?.dueDate === 'string' && args.dueDate ? args.dueDate : undefined,
           project_id: resolved,
         });
-        void projectAllDeliverables().catch(() => { /* best-effort: Radicale may be down */ });
         return { ok: true, data: task };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
@@ -1080,7 +911,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         if (typeof args?.notes === 'string') updates.notes = args.notes;
         if (typeof args?.status === 'string') updates.status = args.status;
         if (typeof args?.priority === 'string') updates.priority = args.priority;
-        if (typeof args?.assignedTo === 'string') updates.assigned_to = args.assignedTo;
         if (typeof args?.dueDate === 'string') updates.due_date = args.dueDate;
         if (typeof args?.projectId === 'string') {
           const resolved = resolveProjectId(args.projectId) || args.projectId;
@@ -2013,6 +1843,13 @@ async function processOwnerMessages(): Promise<void> {
   // context window keeps flowing without manual resets.
   void maybeUpdateMercurySummary();
 
+  // Memory writeback (Mercury's durable-memory half): distill durable facts
+  // + a journal entry from this turn's conversation and append them to
+  // MEMORY.md / JOURNAL.md at WORKSPACE_ROOT — which the orchestrator loads
+  // next turn. Fire-and-forget; self-throttled (15-min cooldown, ≥4 new
+  // messages) and non-fatal so it can never break the message loop.
+  void runMemoryWriteback(OWNER_JID);
+
   // Push a notification so the dashboard SSE can react even if it polls slowly.
   pushNotification('owner', {
     type: 'chat_complete',
@@ -2457,47 +2294,6 @@ async function main(): Promise<void> {
   seedPersonalProject(OWNER_JID);
 
   startCalendarSyncPoller();
-  // Kontact projection: mirror project deliverables to/from the shared
-  // Radicale /cal/ collection. No-ops cleanly if Radicale isn't provisioned.
-  startKontactWatcher();
-  void projectAllDeliverables().catch(() => { /* best-effort at boot */ });
-
-  // ── Backup scheduler ─────────────────────────────────────────────────────
-  // Check every minute whether a scheduled backup is due.
-  // Seed from existing backups so a restart doesn't immediately trigger a new one.
-  const existingBackups = (() => { try { return listBackups(); } catch { return []; } })();
-  const lastFull = existingBackups.find((b) => b.type === 'full');
-  const lastIncr = existingBackups.find((b) => b.type === 'incremental');
-  let lastFullBackup: Date | null = lastFull ? new Date(lastFull.createdAt) : null;
-  let lastIncrBackup: Date | null = lastIncr ? new Date(lastIncr.createdAt) : null;
-  setInterval(async () => {
-    try {
-      const cfg = getBackupConfig();
-      const now = new Date();
-
-      if (cfg.fullEnabled && cfg.fullSchedule) {
-        const interval = CronExpressionParser.parse(cfg.fullSchedule, { currentDate: now });
-        const prev = interval.prev().toDate();
-        if (!lastFullBackup || prev > lastFullBackup) {
-          lastFullBackup = now;
-          try { await createFullBackup(); }
-          catch (err) { logger.error({ err }, 'Scheduled full backup failed'); }
-        }
-      }
-
-      if (cfg.incrEnabled && cfg.incrSchedule) {
-        const interval = CronExpressionParser.parse(cfg.incrSchedule, { currentDate: now });
-        const prev = interval.prev().toDate();
-        if (!lastIncrBackup || prev > lastIncrBackup) {
-          lastIncrBackup = now;
-          try { await createIncrementalBackup(); }
-          catch (err) { logger.error({ err }, 'Scheduled incremental backup failed'); }
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Backup scheduler error');
-    }
-  }, 60_000);
 
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

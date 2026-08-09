@@ -29,9 +29,6 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
                                              'get_cached_emails'], tier: 'private' },
     calendar:  { name: 'calendar',  tools: ['create_calendar_event','list_calendar_events',
                                              'update_calendar_event','delete_calendar_event'], tier: 'private' },
-    contacts:  { name: 'contacts',  tools: ['list_contacts','search_contacts','get_contact',
-                                             'create_contact','update_contact','delete_contact'], tier: 'private' },
-    todos:     { name: 'todos',     tools: ['list_todos','create_todo','complete_todo','delete_todo'], tier: 'private' },
     alarms:    { name: 'alarms',    tools: ['create_alarm','list_alarms','update_alarm','delete_alarm'], tier: 'private' },
     sms:       { name: 'sms',       tools: ['send_sms','read_sms'], tier: 'private' },
     chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_sentry'], tier: 'both' },
@@ -73,12 +70,9 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris (digest compiler) — email (IMAP read_emails, works) + admin
-    // (post_summary, list_api_keys, api_request). The
-    // contacts/calendar/todos toolsets were dropped: those tools hit Radicale
-    // (127.0.0.1:5232) which isn't provisioned, so every list_calendar_events /
-    // list_todos / list_contacts call failed with ECONNREFUSED and tempted Iris
-    // to fabricate. Calendar + tasks now come from buildDigestContext (DB) in
-    // INPUT (above), not from Radicale tools.
+    // (post_summary, list_api_keys, api_request). Contacts/todos toolsets were
+    // removed entirely (no DB backend, were Radicale-only). Calendar + tasks
+    // come from buildDigestContext (DB) in INPUT (above), not from tools.
     'iris-core':     { name: 'iris-core',     includes: ['email','admin'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };

@@ -11,7 +11,7 @@ async function callHost(tool: string, args: any, timeoutMs = 30000): Promise<any
 
 registry.register({
     name: 'create_calendar_event',
-    description: 'Create a calendar event. Visible in KOrganizer via the shared CalDAV calendar.',
+    description: 'Create a calendar event in the local calendar (DB).',
     schema: {
         type: 'object',
         properties: {
@@ -30,7 +30,7 @@ registry.register({
             start_time: args.start_time, end_time: args.end_time,
             all_day: args.all_day, location: args.location,
         });
-        if (resp?.ok) return `Calendar event "${args.title}" created (id ${resp.eventId}). Visible in KOrganizer.`;
+        if (resp?.ok) return `Calendar event "${args.title}" created (id ${resp.eventId}). Stored in the local calendar.`;
         return `Calendar event create failed: ${resp?.error || 'unknown error'}`;
     },
     toolset: 'calendar',
@@ -39,7 +39,7 @@ registry.register({
 
 registry.register({
     name: 'list_calendar_events',
-    description: 'List calendar events in a date range (local ISO start/end). Source of truth is the shared CalDAV calendar.',
+    description: 'List calendar events in a date range (local ISO start/end) from the local calendar (DB).',
     schema: {
         type: 'object',
         properties: {

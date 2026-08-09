@@ -219,6 +219,34 @@
 
     <script src="vendor/three.min.js"></script>
     <script>
+        // ── iframe postMessage bridge shim ──
+        // When the hologram runs inside panels.html (a cross-origin file://
+        // iframe), window.pywebview is absent. Build a proxy that forwards
+        // api calls to the parent via postMessage and awaits the result —
+        // same shim the other panels use. No-op when run as a top-level
+        // window (pywebview injects the bridge).
+        if(!window.pywebview && window.parent && window.parent !== window){
+            var _pending={};
+            window.addEventListener('message', function(ev){
+                var d=ev.data; if(!d||!d.__pm||!d.id||!_pending[d.id])return;
+                var p=_pending[d.id]; delete _pending[d.id]; clearTimeout(p.timer);
+                if(d.error)p.reject(new Error(d.error)); else p.resolve(d.result);
+            });
+            window.pywebview={api:new Proxy({},{
+                get:function(_,method){
+                    return function(){
+                        var args=Array.prototype.slice.call(arguments);
+                        return new Promise(function(resolve,reject){
+                            var id='pm-'+Math.random().toString(36).slice(2);
+                            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+                            _pending[id]={resolve:resolve,reject:reject,timer:timer};
+                            window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
+                        });
+                    };
+                }
+            })};
+        }
+
         // ======================================================================
         // Hologram (adapted from jarvis-hologram.html, mic-free)
         // The hologram itself IS the state indicator. setState(name) changes
@@ -311,7 +339,9 @@
                 this.renderer.setClearColor(0x000000, 0);
                 this.camera.aspect = window.innerWidth / window.innerHeight;
                 this.camera.updateProjectionMatrix();
-                this.camera.position.z = 8;
+                // Pulled back a touch so the orb reads a little smaller and
+                // sits clearly centered in the window.
+                this.camera.position.z = 11;
 
                 this.createCore();
                 this.createParticleCloud();
@@ -330,15 +360,17 @@
                     ...this.orbitalRings.map(r => r.material)
                 ];
 
-                // Base opacities — flash effect modulates around these.
+                // Base opacities — flash effect modulates around these. Bumped
+                // for contrast so the hologram stays visible against bright
+                // backgrounds (it was too faint to see at times).
                 this.baseOpacities = {
-                    core: 0.3,
-                    innerGlow: 0.6,
-                    wireframeSphere: 0.4,
-                    energyField: 0.1,
-                    particles: 0.7,
-                    rings: this.rings.map((_, i) => 0.25 - i * 0.03),
-                    orbitalRings: this.orbitalRings.map(() => 0.5)
+                    core: 0.55,
+                    innerGlow: 0.82,
+                    wireframeSphere: 0.62,
+                    energyField: 0.22,
+                    particles: 0.85,
+                    rings: this.rings.map((_, i) => 0.42 - i * 0.04),
+                    orbitalRings: this.orbitalRings.map(() => 0.68)
                 };
 
                 this.animate();
@@ -786,6 +818,25 @@
         };
         window.jarvis = jarvis;
 
+        // ── Host → iframe state channel ──
+        // panels.html evals holoBroadcast({cmd,...}) which postMessages here.
+        window.addEventListener('message', function(ev){
+            var d = ev.data;
+            if(!d || !d.__pm || !d.cmd) return;
+            try {
+                if(d.cmd === 'state') jarvis.setState(d.state);
+                else if(d.cmd === 'audio') jarvis.setAudioLevel(d.level);
+                else if(d.cmd === 'timer') jarvis.setTimer(d.payload);
+                else if(d.cmd === 'cleartimer') jarvis.clearTimer(d.id);
+                else if(d.cmd === 'mini') jarvis.addMiniHologram(d.payload);
+                else if(d.cmd === 'removemini') jarvis.removeMiniHologram(d.id, d.status);
+            } catch(e) { console.log('[jarvis] holo cmd failed', d.cmd, e); }
+        });
+        // Tell the parent the hologram API is bound and ready for state.
+        if(window.parent && window.parent !== window){
+            try { window.parent.postMessage({__pm:true, type:'hologram_ready'}, '*'); } catch(e){}
+        }
+
         // ======================================================================
         // Input: click/touch anywhere = button press
         // ======================================================================
@@ -806,12 +857,15 @@
             }
         }
 
-        document.addEventListener('mousedown', () => {
-            callApi('button_press');
-        }, { passive: true });
-
-        document.addEventListener('touchstart', () => {
-            callApi('button_press');
+        // A single pointerdown replaces the old separate mousedown + touchstart
+        // listeners. On a touchscreen those two fire for the SAME tap
+        // (touchstart, then an emulated mousedown), which used to dispatch
+        // hologram_click TWICE — the first call started a turn and the second
+        // hit _handle_interaction's interrupt branch and cancelled it, so a
+        // tap "just cancelled" instead of listening. pointerdown fires exactly
+        // once per physical press for mouse, touch, and pen.
+        document.addEventListener('pointerdown', () => {
+            callApi('hologram_click');
         }, { passive: true });
 
         // Dev keyboard shortcuts
@@ -824,7 +878,7 @@
                 callApi('exit_fullscreen');
             } else if (ev.key === ' ' || ev.key === 'Enter') {
                 ev.preventDefault();
-                callApi('button_press');
+                callApi('hologram_click');
             }
         });
 

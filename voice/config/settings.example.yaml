@@ -17,12 +17,14 @@ voice:
   max_recording_seconds: 30
   silence_threshold: 500
   whisper_model: base
-  # TTS engine: "kokoro" (default, fast, low-VRAM) or "orpheus"
-  # (LLM-based, high quality, requires a CUDA GPU with ~6+ GB VRAM).
+  # TTS engine: "kokoro" (default, fast, low-VRAM), "orpheus"
+  # (LLM-based via vLLM, high quality, requires a CUDA GPU with ~6+ GB VRAM),
+  # or "orpheus_cpp" (same Orpheus model via llama.cpp/GGUF — runs on AMD ROCm
+  # where vLLM doesn't; set ORPHEUS_N_GPU_LAYERS=-1 to offload to the GPU).
   tts_engine: kokoro
   # Kokoro voices (examples): am_michael, af_heart, bm_george, af_bella.
-  # Orpheus voices (this package): zoe, zac, jess, leo, mia, julia, leah.
-  tts_voice: am_michael
+  # Orpheus voices (both engines): tara, leah, jess, leo, dan, mia, zac, zoe.
+  tts_voice: bm_george
   tts_speed: 1.0
   # Double-clap wake: clap twice to activate. clap_threshold is the
   # AC-coupled int16 peak (DC offset removed) that counts as a clap onset.
@@ -77,3 +79,21 @@ satellite:
   # that should record until speech pauses). Only affects satellite mode; the
   # local laptop hologram always uses VAD + clap + the listen loop.
   push_to_talk: true
+# Widget companion feed — the band of auto-refreshing tiles shown below the
+# hologram. The hologram stays as the voice button on top; the feed polls the
+# Warden server directly on the heartbeat cadence. Tiles whose endpoints don't
+# exist yet show a clean "waiting for backend" state.
+widgets:
+  enabled: [weather, email, task, notes]
+  # Heartbeat cadence (minutes). Selectable: 10/20/30/60/90/120.
+  refresh_minutes: 60
+  # Height of the feed band in px. 0 disables the feed (hologram fills the window).
+  feed_height: 280
+weather:
+  # Location for the weather tile. null = IP-geolocate on first fetch; if that
+  # also fails the tile shows "set location in settings".
+  lat: null
+  lon: null
+notes:
+  # Folder under ~/Documents/Notes where quick-captured notes are filed.
+  default_folder: Inbox

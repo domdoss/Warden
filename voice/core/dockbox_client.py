@@ -262,8 +262,16 @@ class DockboxClient:
         resp.raise_for_status()
         return self._json(resp)
 
-    async def stop_chat(self) -> None:
-        await self._request("POST", "/api/chat/stop")
+    async def stop_chat(self, jid: str) -> None:
+        # The host's /api/chat/stop handler requires a JSON body ({ jid, ... });
+        # posting no body makes parseJson throw "Unexpected end of JSON input" →
+        # 500, so the stop is silently ignored and a barge-in/interrupt never
+        # actually cancels the in-flight turn (the cancelled turn keeps running
+        # and answers anyway → duplicate responses). advance_cursor skips the
+        # cancelled user message so the message loop doesn't reprocess it.
+        await self._request(
+            "POST", "/api/chat/stop", json={"jid": jid, "advance_cursor": True}
+        )
 
     # ---------- SSE notifications ----------
 

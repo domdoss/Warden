@@ -36,16 +36,6 @@ import {
 } from './types.js';
 import type { RegisteredGroup } from './group-folder.js';
 import {
-  getBackupConfig,
-  saveBackupConfig,
-  listBackups,
-  createFullBackup,
-  createIncrementalBackup,
-  restoreBackup,
-  deleteBackup,
-  getBackupArchivePath,
-} from './backup.js';
-import {
   scrubFile,
   loadVaultIndex,
   getVaultEntry,
@@ -215,7 +205,6 @@ function probeLocalPort(port: number, path: string): Promise<boolean> {
     req.end();
   });
 }
-import { generateICS, parseICS } from './ical.js';
 import { fetchEmails, sendEmail, testConnection } from './email.js';
 import { sendSMS, fetchMessages as fetchSmsMessages, testConnection as testSmsConnection, testCredentials as testSmsCredentials } from './sms.js';
 
@@ -2657,6 +2646,8 @@ async function handleVoice(
   }
 }
 
+// --- Server ---
+
 // ── Heartbeat ───────────────────────────────────────────────────────────
 // A periodic task the user configures from the dashboard: instructions
 // (stored in heartbeat.json + mirrored to HEARTBEAT.md, which runTask
@@ -2722,8 +2713,6 @@ function syncHeartbeatTask(cfg: { enabled: boolean; cron: string }): void {
 function ensureHeartbeatTask(): void {
   if (!getTaskById(HEARTBEAT_TASK_ID)) syncHeartbeatTask(readHeartbeatConfig());
 }
-
-// --- Server ---
 
 export function startStatusServer(d: StatusDeps): void {
   deps = d;
@@ -4613,8 +4602,6 @@ export function startStatusServer(d: StatusDeps): void {
       // /api/admin/* and /api/users/:id/* return 410 Gone via the early check above.
       if (pathname === '/api/voice' && req.method === 'POST')
         return await handleVoice(req, res);
-      if (pathname.startsWith('/api/backup'))
-        return await handleBackup(req, res, pathname);
       if (pathname.startsWith('/api/agent/sessions'))
         return await handleAgentSessions(req, res, pathname);
       if (pathname === '/api/chat/interrupt' && req.method === 'POST')
@@ -4822,97 +4809,6 @@ export function startStatusServer(d: StatusDeps): void {
       logger.info({ alarmId: alarm.id, userId: alarm.user_id, label: alarm.label }, 'Alarm fired');
     }
   }, 30000);
-}
-
-// ─── Backup handler ───────────────────────────────────────────────────────────
-
-async function handleBackup(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  pathname: string,
-): Promise<void> {
-  const seg = pathname.replace(/^\/api\/backup\/?/, '');
-
-  // GET /api/backup — list backups + config
-  if (!seg && req.method === 'GET') {
-    return json(res, { backups: listBackups(), config: getBackupConfig() });
-  }
-
-  // GET /api/backup/config
-  if (seg === 'config' && req.method === 'GET') {
-    return json(res, getBackupConfig());
-  }
-
-  // POST /api/backup/config
-  if (seg === 'config' && req.method === 'POST') {
-    const buf = await parseBody(req);
-    const cfg = saveBackupConfig(JSON.parse(buf.toString()));
-    return json(res, cfg);
-  }
-
-  // POST /api/backup/full
-  if (seg === 'full' && req.method === 'POST') {
-    try {
-      const meta = await createFullBackup();
-      return json(res, meta);
-    } catch (err: any) {
-      return error(res, err.message, 500);
-    }
-  }
-
-  // POST /api/backup/incremental
-  if (seg === 'incremental' && req.method === 'POST') {
-    try {
-      const meta = await createIncrementalBackup();
-      if (!meta) return json(res, { skipped: true, message: 'No files changed' });
-      return json(res, meta);
-    } catch (err: any) {
-      return error(res, err.message, 500);
-    }
-  }
-
-  // POST /api/backup/restore/:id
-  const restoreMatch = seg.match(/^restore\/(.+)$/);
-  if (restoreMatch && req.method === 'POST') {
-    const id = restoreMatch[1];
-    try {
-      await restoreBackup(id);
-      return json(res, { ok: true, id });
-    } catch (err: any) {
-      return error(res, err.message, 500);
-    }
-  }
-
-  // GET /api/backup/download/:id
-  const dlMatch = seg.match(/^download\/(.+)$/);
-  if (dlMatch && req.method === 'GET') {
-    const id = dlMatch[1];
-    const archivePath = getBackupArchivePath(id);
-    if (!archivePath) return error(res, 'Backup not found', 404);
-    const stat = fs.statSync(archivePath);
-    const filename = path.basename(archivePath);
-    res.writeHead(200, {
-      'Content-Type': 'application/gzip',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': stat.size,
-    });
-    fs.createReadStream(archivePath).pipe(res);
-    return;
-  }
-
-  // DELETE /api/backup/:id
-  const deleteMatch = seg.match(/^([^/]+)$/);
-  if (deleteMatch && req.method === 'DELETE') {
-    const id = deleteMatch[1];
-    try {
-      deleteBackup(id);
-      return json(res, { ok: true });
-    } catch (err: any) {
-      return error(res, err.message, 500);
-    }
-  }
-
-  return error(res, 'Not found', 404);
 }
 
 // Lazy-initialized agent session store
