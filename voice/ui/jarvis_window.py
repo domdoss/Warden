@@ -178,8 +178,9 @@ class _JsApi:
             base = (self._owner._widget_config.get("warden_url", "") or "").rstrip("/")
             if not base.startswith("http"):
                 return '{"ok":false,"error":"warden_url not set"}'
-            # Scope uploads under the owner group's uploads/ folder by default.
-            rel = (dir_path or "owner/uploads").lstrip("/")
+            # Single-user Warden: scope uploads under the shared uploads/ folder
+            # (GROUPS_DIR/uploads/ on disk) by default.
+            rel = (dir_path or "uploads").lstrip("/")
             url = base + "/api/files/upload?path=" + urllib.request.quote(rel, safe="")
             data = base64.b64decode(data_b64) if data_b64 else b""
             req = urllib.request.Request(url, data=data, method="POST")
@@ -190,6 +191,32 @@ class _JsApi:
             return json.dumps({"ok": True, "path": rel + "/" + (filename or "upload")})
         except Exception as e:
             logger.exception("warden_upload failed")
+            return json.dumps({"ok": False, "error": str(e)})
+
+    def warden_download(self, path: str) -> str:
+        """Download a file from the Warden shared workspace.
+
+        The mirror of warden_upload: panels can't fetch() binary from a file://
+        iframe to the Pi, so the download half of the Upload panel asks us to
+        GET /api/files/download?path=<path> and hand the bytes back as base64.
+        Returns the file contents as a base64 string, or a JSON error string
+        '{"ok":false,"error":...}' on failure (the JS side detects errors by
+        checking whether the returned string starts with '{').
+        """
+        import base64, urllib.request
+        try:
+            base = (self._owner._widget_config.get("warden_url", "") or "").rstrip("/")
+            if not base.startswith("http"):
+                return '{"ok":false,"error":"warden_url not set"}'
+            rel = (path or "").lstrip("/")
+            url = base + "/api/files/download?path=" + urllib.request.quote(rel, safe="")
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("Accept", "application/octet-stream")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+            return base64.b64encode(data).decode()
+        except Exception as e:
+            logger.exception("warden_download failed")
             return json.dumps({"ok": False, "error": str(e)})
 
     def minimize_window(self) -> None:

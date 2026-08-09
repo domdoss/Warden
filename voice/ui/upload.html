@@ -25,27 +25,40 @@
   .header-title{font-size:11px;font-weight:600;letter-spacing:2px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.4);text-transform:uppercase}
   .header-line{flex:1;height:1px;background:linear-gradient(90deg,rgba(0,255,136,0.3),transparent)}
 
-  .body{flex:1;padding:14px 16px;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:10px}
-  .body::-webkit-scrollbar{width:3px}
-  .body::-webkit-scrollbar-thumb{background:rgba(0,255,136,0.15);border-radius:2px}
+  .body{flex:1;padding:14px 16px;min-height:0;display:flex;flex-direction:column;gap:0}
+
+  /* each half is an independent scroll region */
+  .half{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+  .half::-webkit-scrollbar{width:3px}
+  .half::-webkit-scrollbar-thumb{background:rgba(0,255,136,0.15);border-radius:2px}
+  .divider{flex:0 0 auto;height:1px;background:rgba(0,255,136,0.18);margin:2px 0}
+
+  /* section sub-header */
+  .shead{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .shead .stitle{font-size:8px;letter-spacing:1.5px;color:rgba(0,255,136,0.45);text-transform:uppercase}
+  .shead .sline{flex:1;height:1px;background:linear-gradient(90deg,rgba(0,255,136,0.2),transparent)}
+  .shead .sbtn{font-size:10px;color:rgba(0,255,136,0.5);cursor:pointer;padding:1px 6px;
+    border:1px solid rgba(0,255,136,0.2);border-radius:4px;line-height:1;transition:color .15s,border-color .15s,transform .4s}
+  .shead .sbtn:hover{color:#00ff88;border-color:rgba(0,255,136,0.5)}
+  .shead .sbtn:active{transform:rotate(180deg)}
 
   /* drop zone */
   .drop{
     flex:0 0 auto;border:1.5px dashed rgba(0,255,136,0.3);border-radius:8px;
-    padding:24px 12px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;
+    padding:18px 12px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;
     background:rgba(0,255,136,0.02);
   }
   .drop:hover{border-color:rgba(0,255,136,0.55);background:rgba(0,255,136,0.05)}
   .drop.over{border-color:#00ff88;background:rgba(0,255,136,0.1);box-shadow:0 0 16px rgba(0,255,136,0.2) inset}
   .drop.busy{opacity:0.5;pointer-events:none}
-  .drop .ico{font-size:22px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.5);margin-bottom:6px}
+  .drop .ico{font-size:20px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.5);margin-bottom:4px}
   .drop .lbl{font-size:10px;color:#cfefe8;letter-spacing:1px;text-transform:uppercase}
   .drop .hint{font-size:8px;color:rgba(0,255,136,0.35);margin-top:4px;font-family:'Courier New',monospace}
 
   .status{font-size:9px;color:#7fff7f;min-height:12px;font-family:'Courier New',monospace}
   .status.err{color:#ff8888}
 
-  .list-title{font-size:8px;letter-spacing:1.5px;color:rgba(0,255,136,0.4);text-transform:uppercase;margin-top:4px}
+  .list-title{font-size:8px;letter-spacing:1.5px;color:rgba(0,255,136,0.4);text-transform:uppercase;margin-top:2px}
   .item{position:relative;padding:7px 10px;border-radius:4px;background:rgba(0,255,136,0.04);border:1px solid rgba(0,255,136,0.1);margin-top:6px}
   .item .name{font-size:10px;font-weight:600;color:#00ff88;text-shadow:0 0 4px rgba(0,255,136,0.3);word-break:break-all;padding-right:18px}
   .item .path{font-size:8px;font-family:'Courier New',monospace;color:rgba(0,255,136,0.45);word-break:break-all;margin-top:3px;cursor:pointer}
@@ -53,7 +66,21 @@
   .item .copy{position:absolute;top:5px;right:5px;font-size:8px;color:rgba(0,255,136,0.5);cursor:pointer;
     border:1px solid rgba(0,255,136,0.2);border-radius:3px;padding:2px 5px;letter-spacing:0.5px;text-transform:uppercase}
   .item .copy:hover{color:#00ff88;border-color:rgba(0,255,136,0.5)}
-  .empty{font-size:9px;color:rgba(0,255,136,0.25);font-style:italic;text-align:center;padding:14px 0}
+  .empty{font-size:9px;color:rgba(0,255,136,0.25);font-style:italic;text-align:center;padding:10px 0}
+
+  /* download rows */
+  .drow{position:relative;padding:7px 28px 7px 10px;border-radius:4px;background:rgba(0,255,136,0.04);
+    border:1px solid rgba(0,255,136,0.1);margin-top:6px}
+  .drow:hover{border-color:rgba(0,255,136,0.3)}
+  .drow .dname{font-size:10px;font-weight:600;color:#00ff88;text-shadow:0 0 4px rgba(0,255,136,0.3);word-break:break-all}
+  .drow .dmeta{font-size:8px;font-family:'Courier New',monospace;color:rgba(0,255,136,0.45);margin-top:3px}
+  .drow .dbtn{position:absolute;top:50%;right:6px;transform:translateY(-50%);font-size:12px;
+    color:rgba(0,255,136,0.6);cursor:pointer;padding:2px 6px;border:1px solid rgba(0,255,136,0.2);
+    border-radius:4px;line-height:1;transition:color .15s,border-color .15s}
+  .drow .dbtn:hover{color:#00ff88;border-color:rgba(0,255,136,0.5)}
+  .drow .dbtn.busy{opacity:0.5;pointer-events:none}
+  .drow.dim{opacity:0.55}
+  .drow.dim .dbtn{display:none}
 </style>
 </head>
 <body>
@@ -65,15 +92,30 @@
     <div class="header-line"></div>
   </div>
   <div class="body">
-    <div class="drop" id="drop" title="Drop files here or click to browse">
-      <div class="ico">⤓</div>
-      <div class="lbl">Drop files here</div>
-      <div class="hint">or click to browse · stored on the Pi</div>
+    <!-- top half: upload -->
+    <div class="half" id="up-half">
+      <div class="drop" id="drop" title="Drop files here or click to browse">
+        <div class="ico">⤓</div>
+        <div class="lbl">Drop files here</div>
+        <div class="hint">or click to browse · stored on the Pi</div>
+      </div>
+      <input type="file" id="file-input" multiple style="display:none">
+      <div class="status" id="status"></div>
+      <div class="list-title">Recent uploads</div>
+      <div id="list"></div>
     </div>
-    <input type="file" id="file-input" multiple style="display:none">
-    <div class="status" id="status"></div>
-    <div class="list-title">Recent uploads</div>
-    <div id="list"></div>
+
+    <div class="divider"></div>
+
+    <!-- bottom half: downloads -->
+    <div class="half" id="down-half">
+      <div class="shead">
+        <div class="stitle">Downloads</div>
+        <div class="sline"></div>
+        <div class="sbtn" id="d-refresh" title="Refresh">↻</div>
+      </div>
+      <div id="dlist"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -105,7 +147,10 @@
   var fileInput=document.getElementById('file-input');
   var statusEl=document.getElementById('status');
   var listEl=document.getElementById('list');
+  var dlistEl=document.getElementById('dlist');
+  var dRefresh=document.getElementById('d-refresh');
   var STORE='warden.uploads.recent';
+  var DOWN_DIR='uploads';
 
   function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 
@@ -134,7 +179,12 @@
     });
   }
 
-  function fmtSize(n){ if(n<1024)return n+'B'; if(n<1048576)return (n/1024).toFixed(1)+'K'; return (n/1048576).toFixed(1)+'M'; }
+  function fmtSize(n){ if(!n||n<0)return ''; if(n<1024)return n+'B'; if(n<1048576)return (n/1024).toFixed(1)+'K'; return (n/1048576).toFixed(1)+'M'; }
+
+  function fmtMtime(s){
+    if(!s) return '';
+    try{ return new Date(s).toISOString().slice(0,16).replace('T',' '); }catch(e){ return ''; }
+  }
 
   async function uploadFile(file){
     if(!file) return;
@@ -143,7 +193,7 @@
     try{
       var b64=await readB64(file);
       statusEl.textContent='Uploading '+esc(file.name)+' ('+fmtSize(file.size)+')…';
-      var raw=await window.pywebview.api.warden_upload('owner/uploads', file.name, b64);
+      var raw=await window.pywebview.api.warden_upload('uploads', file.name, b64);
       var d=raw?JSON.parse(raw):null;
       if(d&&d.ok){
         var a=recent();
@@ -151,6 +201,7 @@
         saveRecent(a);
         renderList();
         statusEl.textContent='Uploaded → '+d.path;
+        fetchDownloads();   // show it in the download half right away
       }else{
         statusEl.classList.add('err');
         statusEl.textContent='Failed: '+((d&&d.error)||'unknown');
@@ -192,7 +243,92 @@
     statusEl.classList.remove('err'); statusEl.textContent='Copied: '+path;
   });
 
+  // ── bottom half: downloads ──
+  function bridgeReady(){ return window.pywebview&&window.pywebview.api&&window.pywebview.api.warden_api; }
+
+  async function fetchDownloads(){
+    if(!bridgeReady()) return;
+    try{
+      var raw=await window.pywebview.api.warden_api('/api/files?path='+encodeURIComponent(DOWN_DIR));
+      var d=raw?JSON.parse(raw):null;
+      var entries=(d&&d.entries)||[];
+      var files=entries.filter(function(e){ return e && e.type==='file' && !e.scrubbed; });
+      if(!files.length){
+        dlistEl.innerHTML='<div class="empty">No files in '+esc(DOWN_DIR)+'.</div>';
+        return;
+      }
+      // newest first by mtime (entries have no guaranteed order from the API)
+      files.sort(function(a,b){ return (b.mtime||'').localeCompare(a.mtime||''); });
+      dlistEl.innerHTML=files.map(function(f){
+        var p=DOWN_DIR+'/'+f.name;
+        var meta=[fmtSize(f.size), fmtMtime(f.mtime)].filter(Boolean).join(' · ');
+        return '<div class="drow" data-path="'+esc(p)+'" data-name="'+esc(f.name)+'">'+
+          '<div class="dname">'+esc(f.name)+'</div>'+
+          '<div class="dmeta">'+esc(meta)+'</div>'+
+          '<div class="dbtn" title="Download">⤓</div>'+
+        '</div>';
+      }).join('');
+    }catch(e){}
+  }
+
+  // base64 → Blob download. The bridge returns base64 on success, or a JSON
+  // error string starting with '{' on failure.
+  function b64ToBlob(b64, contentType){
+    var bin=atob(b64);
+    var len=bin.length;
+    var bytes=new Uint8Array(len);
+    for(var i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
+    return new Blob([bytes], {type:contentType||'application/octet-stream'});
+  }
+
+  function triggerDownload(blob, filename){
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+
+  dlistEl.addEventListener('click', async function(e){
+    var btn=e.target.closest('.dbtn');
+    if(!btn) return;
+    var row=btn.closest('.drow');
+    if(!row||row.classList.contains('dim')) return;
+    var path=row.getAttribute('data-path');
+    var name=row.getAttribute('data-name');
+    if(btn.classList.contains('busy')) return;
+    btn.classList.add('busy'); btn.textContent='…';
+    try{
+      var raw=await window.pywebview.api.warden_download(path);
+      if(!raw){ throw new Error('empty response'); }
+      if(raw.charAt(0)==='{'){
+        var d=JSON.parse(raw);
+        throw new Error((d&&d.error)||'download failed');
+      }
+      triggerDownload(b64ToBlob(raw), name);
+    }catch(err){
+      statusEl.classList.add('err');
+      statusEl.textContent='Download failed: '+(err&&err.message||err);
+    }finally{
+      btn.classList.remove('busy'); btn.textContent='⤓';
+    }
+  });
+
+  if(dRefresh) dRefresh.addEventListener('click', fetchDownloads);
+
+  // Poll for new files (agents may drop deliverables async) + refresh on focus.
+  function startDownloads(){
+    fetchDownloads();
+    setInterval(fetchDownloads, 15000);
+  }
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) fetchDownloads(); });
+  window.addEventListener('focus', fetchDownloads);
+
   renderList();
+  // wait for the bridge before the first fetch (same pattern as digest panel)
+  var dt=0;
+  function whenReady(){ if(bridgeReady()) startDownloads(); else if(dt++<60) setTimeout(whenReady,250); }
+  whenReady();
 })();
 </script>
 </body>
