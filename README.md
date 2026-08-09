@@ -485,19 +485,109 @@ journalctl --user -u warden -f
 tail -f logs/warden.log
 ```
 
-### Running without systemd
+### Modular audio pipeline (`run.sh`)
 
-For development or one-off tests, use `run.sh` from the project root:
+Warden's audio system is a **composable pipeline** where every piece — mic, speaker, STT, TTS, the Warden brain — can run on a different machine, and you pick which pieces go where with a handful of flags. There is no hardwired topology. The same `run.sh` entrypoint covers everything from "all-local on a laptop" to "brain on a GPU box, mic on a Pi in the kitchen, speaker on a Pi in the living room."
 
-```bash
-./run.sh              # server + voice client + security camera
-./run.sh --no-voice   # server + security camera only
-./run.sh --no-security # server + voice client only
-./run.sh --no-server  # voice client + security camera only
-./run.sh --remote <satellite-host>  # use a Pi satellite for mic/speaker
+The pipeline looks like this:
+
+```
+┌──────────┐    raw PCM     ┌──────────────┐   transcribed text   ┌───────────────┐
+│  MIC     │ ──────────────> │  STT (local) │ ───────────────────> │  WARDEN       │
+│  local   │   HTTP stream   │  Whisper     │                      │  (any host)   │
+│  or Pi   │                 └──────────────┘                      │  orchestrator │
+└──────────┘                                                      │  + delegates  │
+                                                                   └───────┬───────┘
+┌──────────┐    WAV audio     ┌──────────────┐   spoken reply      │
+│  SPEAKER │ <────────────── │  TTS (local) │ <───────────────────┘
+│  local   │   HTTP POST     │  Kokoro or   │
+│  or Pi   │                 │  Orpheus     │
+└──────────┘                 └──────────────┘
 ```
 
-`run.sh` is useful on a workstation where you want the full stack in one terminal. For a permanent install, prefer the systemd service.
+**STT, TTS, and the hologram UI always run on the laptop.** Only raw audio I/O — the microphone stream and speaker playback — can be offloaded to a satellite. The satellite is a dumb pipe: it runs `satellite_server.py`, a ~200-line Python script with zero dependencies beyond PipeWire's `pw-record` and `pw-play`. No venv, no GPU, no models. A Pi Zero is overkill.
+
+#### Independent per-side routing
+
+Mic and speaker are chosen **independently**. You can have the Pi mic in one room and your desk speakers in another, or vice versa:
+
+```bash
+# Everything local (the default)
+./run.sh
+
+# Both mic and speaker on the default Pi satellite (192.168.0.171)
+./run.sh --remote
+
+# Both on a specific Pi
+./run.sh --remote 192.168.0.180
+
+# Pi mic, local desk speaker
+./run.sh --mic 192.168.0.171 --speaker local
+
+# Local laptop mic, Pi speaker in another room
+./run.sh --mic local --speaker 192.168.0.171
+
+# Different Pis for mic and speaker
+./run.sh --mic 192.168.0.171 --speaker 192.168.0.180
+```
+
+The `--mic` and `--speaker` flags accept `local`, `remote` (resolves to the default satellite IP), `remote:<ip>`, or a bare IP. The root `run.sh` normalizes all of these into `main.py`'s `--mic`/`--speaker` format before launching.
+
+#### Audio and video, together or apart
+
+Audio (voice assistant) and video (security camera) are independent subprocesses launched by the same parent. They can run together, separately, or on different machines:
+
+```bash
+./run.sh --audio-only              # just the voice assistant, no camera
+./run.sh --video-only              # just the security camera, no voice
+./run.sh --audio-only --remote ... # voice on a satellite, camera off
+```
+
+This means you can run the camera on a box with a webcam and the voice client on a different box with a good mic — each pointed at the same Warden brain via `--warden <ip>`.
+
+#### Interactive launcher
+
+With no flags and a TTY, `run.sh` drops into an interactive launcher that walks through every choice:
+
+```
+=== Warden audio + video server launcher ===
+Warden IP (leave empty to keep current):
+Satellite IP (default for remote mic/speaker) [192.168.0.171]:
+Mic source:
+  (1) local  (2) remote [192.168.0.171] :
+Speaker source:
+  (1) local  (2) remote [192.168.0.171] :
+Start: (1) Audio + Video  (2) Audio only  (3) Video only  (q) Quit [1]:
+```
+
+The Warden IP is **never baked in** — the brain runs on another machine, so it's always entered at launch or passed via `--warden`. Empty keeps whatever the client already has in its settings.
+
+#### `voice/run.sh` — the voice client entrypoint
+
+The voice subdirectory has its own `run.sh` that handles the voice-specific setup before handing off to `main.py`:
+
+- **Dual-mode**: `./run.sh --satellite` runs the dumb audio relay (`satellite_server.py`) on the current machine instead of the voice client — same script, opposite role. The relay is stdlib-only, so this works on a bare Pi with no venv.
+- **GPU setup**: Sets ROCm library paths for AMD GPUs, persists compiled GPU kernels so cold starts are fast, and configures Qt WebEngine flags for the hologram UI (skips slow D-Bus probes, collapses 5 renderer processes into 2).
+- **TTS persistence**: Reads `TTS_ENGINE` and `KOKORO_VOICE` from the environment and writes them to `voice/config/settings.yaml` before launch, so the in-process TTS picks them up at startup. Defaults to Kokoro with `af_bella`; swap to Orpheus with `TTS_ENGINE=orpheus_cpp ./run.sh`.
+- **Sensible defaults**: No flags = fully local (desk mic + desk speaker, Kokoro on GPU). Any `--mic`/`--speaker`/`--remote` flag and it forwards them through.
+
+```bash
+cd voice
+
+# Fully local (default)
+./run.sh
+
+# Run the satellite relay on this machine instead
+./run.sh --satellite
+
+# Orpheus TTS with a different voice
+TTS_ENGINE=orpheus_cpp KOKORO_VOICE=zoe ./run.sh
+
+# Remote mic, local speaker, custom control port
+./run.sh --mic remote:192.168.0.171 --speaker local --control-port 8768
+```
+
+For a permanent install, prefer the systemd service. `run.sh` is for development, one-off tests, and split-machine topologies.
 
 ---
 
@@ -546,9 +636,7 @@ Then start Audio pointed at the Satellite:
 ./run.sh --remote <satellite-host>
 ```
 
-On the Pi, run the Satellite relay (`satellite_server.py`) and set the audio server IP in `graice-tui.sh` to the laptop running Audio.
-
-The dashboard has a **Servers** / **Satellite IP** field that sets where Warden pulls the security frame from. After the distributed-roles refactor, all of these URLs will live in one settings store and be editable from the dashboard itself.
+See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing matrix — independent mic/speaker, audio-only/video-only, and the interactive launcher.
 
 ---
 
@@ -563,6 +651,7 @@ The dashboard has a **Servers** / **Satellite IP** field that sets where Warden 
 - 💬 Direct Line chat panel — type messages from the hologram UI instead of the dashboard.
 - 🖥️ Built-in dashboard panels — today, digest, agents, chat, tasks, upload, and system tabs in the hologram window.
 - 🔗 Talks to your existing Warden session — no new login.
+- 🔀 Independent mic/speaker routing — each side can be local or a remote satellite. See [Modular audio pipeline](#modular-audio-pipeline-runsh).
 
 ### Install the voice client
 
@@ -618,9 +707,25 @@ See `voice/README.md` for more.
 
 ## 🛰️ Satellite (Pi audio relay)
 
-`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is **either** the Warden brain **or** a dumb mic/speaker (or both at once); the hologram UI (`voice/`) runs on your laptop. When the Pi is a mic/speaker it's a **dumb pipe**: it streams raw microphone audio to the hologram and plays back the TTS the Warden returns. No STT, no TTS, no model inference happens on the Pi in that role — transcription runs on the Warden side, so a Pi Zero is plenty.
+`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is a **dumb pipe**: it streams raw microphone audio to the laptop and plays back the TTS the laptop returns. No STT, no TTS, no model inference happens on the Pi — transcription and synthesis run on the laptop, so a Pi Zero is plenty.
+
+The satellite relay is a single ~200-line Python file (`satellite_server.py`) with **zero dependencies** beyond PipeWire's `pw-record` and `pw-play`. It exposes three HTTP endpoints on `:8766`:
+
+| Endpoint | What it does |
+|----------|-------------|
+| `GET /mic` | Streams 16 kHz raw PCM from the default PipeWire mic |
+| `POST /play` | Accepts a WAV body and plays it on the default PipeWire speaker |
+| `POST /cancel` | Stops playback immediately (barge-in) |
 
 The satellite mic also supports **double-clap wake** — clap twice near the Pi and the hologram starts listening, no button press needed.
+
+Launch it from `voice/run.sh --satellite` (same script, opposite role) or directly:
+
+```bash
+python3 satellite/satellite_server.py --host 0.0.0.0 --port 8766
+```
+
+See [Modular audio pipeline](#modular-audio-pipeline-runsh) above for how mic and speaker routing works end-to-end.
 
 ### Pi files
 
