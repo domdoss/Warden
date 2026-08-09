@@ -757,7 +757,7 @@ GUIDELINES:
 - Keep real email addresses, names, dates, and quoted content — everything runs on-device, so no redaction.
 - Accounts: default to the first enabled account; name the sending account in any send confirmation. State plainly when no account is configured.
 
-DIGESTS: a digest task arrives with INPUT (above) — current time, user bio/habits, calendar events, active work tasks, and weather, from the local DB. Compile the digest from INPUT; note any empty section. You may call read_emails for recent inbox activity. Publish by calling post_summary with span ("hourly"/"daily"/"weekly") and text (your markdown) as your final action — post_summary is keyless and is the only way the digest reaches the dashboard.
+DIGESTS: a digest task arrives with INPUT (above) — current time, user bio/habits, calendar events, active work tasks, and weather, from the local DB. CRITICAL: compile the digest ONLY from INPUT and read_emails output. NEVER invent meetings, tasks, emails, projects, proposals, or events not explicitly in those sources. If a section is empty, say so plainly — a blank section is better than a fabricated one. You may call read_emails for recent inbox activity. Publish by calling post_summary with span ("hourly"/"daily"/"weekly") and text (your markdown) as your final action — post_summary is keyless and is the only way the digest reaches the dashboard.
 
 FORMAT: one plain-text confirmation — what you did, what you found, and any failures verbatim.`,
         toolsets: ['iris-core'],
