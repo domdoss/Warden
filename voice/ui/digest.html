@@ -98,6 +98,19 @@
   .body .summary-text td{padding:5px 10px;border-bottom:1px solid rgba(199,125,255,0.1);
     color:rgba(230,210,255,0.85)}
   .body .summary-text tr:hover td{background:rgba(199,125,255,0.04)}
+  /* ── task status badges (e.g. [in-progress], [todo], [done]) ── */
+  .body .summary-text .badge{display:inline-block;font-size:9px;font-weight:700;
+    letter-spacing:0.5px;text-transform:uppercase;padding:1px 6px;border-radius:3px;
+    margin-right:6px;vertical-align:1px}
+  .body .summary-text .badge.todo{background:rgba(120,180,255,0.15);color:#9cc4ff;border:1px solid rgba(120,180,255,0.3)}
+  .body .summary-text .badge.in-progress{background:rgba(255,200,80,0.15);color:#ffd070;border:1px solid rgba(255,200,80,0.3)}
+  .body .summary-text .badge.blocked{background:rgba(255,100,100,0.15);color:#ff9090;border:1px solid rgba(255,100,100,0.3)}
+  .body .summary-text .badge.done{background:rgba(120,255,160,0.15);color:#a0ffc0;border:1px solid rgba(120,255,160,0.3)}
+  .body .summary-text .badge.review{background:rgba(199,125,255,0.15);color:#d8a8ff;border:1px solid rgba(199,125,255,0.3)}
+  /* ── review prose (Day/Week in Review) ── */
+  .body .summary-text p.review{font-size:13px;color:rgba(240,225,255,0.85);
+    border-left:2px solid rgba(199,125,255,0.4);padding:2px 0 2px 10px;
+    margin:8px 0 14px;background:rgba(199,125,255,0.03);border-radius:0 4px 4px 0}
 
   /* ── footer ── */
   .footer{
@@ -267,8 +280,23 @@
     h=h.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
     h=h.replace(/(^|[^_])_([^_\n]+)_(?!_)/g,'$1<em>$2</em>');
     var lines=h.split(/\n/), out=[], inList=false, para=[], tblRows=[];
-    function flush(){if(para.length){out.push('<p>'+para.join(' ')+'</p>');para=[];}}
+    function flush(){
+      if(para.length){
+        var joined=para.join(' ');
+        // A paragraph whose section heading (a <strong>) names a Review gets
+        // the .review blockquote treatment.
+        var cls=/<strong>[^<]*Review/i.test(joined)?' class="review"':'';
+        out.push('<p'+cls+'>'+joined+'</p>');para=[];
+      }
+    }
     function closeList(){if(inList){out.push('</ul>');inList=false;}}
+    // Turn a leading [status] on a list item into a colored badge.
+    function badge(s){
+      return s.replace(/^\[([a-zA-Z -]+)\]\s*/,function(m,stat){
+        var c=stat.toLowerCase().replace(/\s/g,'-');
+        return '<span class="badge '+c+'">'+stat+'</span> ';
+      });
+    }
     function flushTable(){
       if(!tblRows.length)return;
       var html='<table>', headerDone=false;
@@ -292,7 +320,7 @@
       if(/^\s*###\s+/.test(line)){closeList();flush();out.push('<h4>'+line.replace(/^\s*###\s+/,'')+'</h4>');}
       else if(/^\s*##\s+/.test(line)){closeList();flush();out.push('<h3>'+line.replace(/^\s*##\s+/,'')+'</h3>');}
       else if(/^\s*#\s+/.test(line)){closeList();flush();out.push('<h3>'+line.replace(/^\s*#\s+/,'')+'</h3>');}
-      else if(/^\s*[-*]\s+/.test(line)){flush();if(!inList){out.push('<ul>');inList=true;}out.push('<li>'+line.replace(/^\s*[-*]\s+/,'')+'</li>');}
+      else if(/^\s*[-*]\s+/.test(line)){flush();if(!inList){out.push('<ul>');inList=true;}out.push('<li>'+badge(line.replace(/^\s*[-*]\s+/,''))+'</li>');}
       else if(/^\s*---+\s*$/.test(line)){closeList();flush();out.push('<hr>');}
       else if(line.trim()===''){closeList();flush();}
       else{closeList();para.push(line);}
