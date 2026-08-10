@@ -354,6 +354,35 @@ Iris then compiles the markdown digest and publishes it by calling `post_summary
 
 ---
 
+## 🔌 HTTP API
+
+Everything talks to Warden through one HTTP server — the dashboard, the thin client, the hologram panels, the Pi satellite, and Iris's internal loopback. It's a single plain-JSON server on `STATUS_PORT` (default `:3200`), the same one that serves the dashboard UI. There is **no auth gate** — Warden is single-user, so every `/api/*` route is open on the loopback host. (The old multi-user/admin/user route trees return `410 Gone`.)
+
+### Surface
+
+| Group | Endpoints |
+| --- | --- |
+| **System & control** | `GET /api/status` · `GET /api/health` · `GET /api/heartbeat` · `GET /api/activity` · `GET/POST /api/process-logs` · `POST /api/server/restart` · `POST /api/open-terminal` · `POST /api/terminal` |
+| **Chat & agents** | `GET/POST /api/messages` · `POST /api/chat/stop` · `POST /api/chat/interrupt` · `POST /api/chat/clear-context` · `POST /api/agents/kill` · `POST /api/voice` |
+| **Files (shared workspace)** | `POST /api/files/upload` · `GET /api/files/download` · `GET /api/files/serve` · `GET /api/files/list` · `GET /api/files/read` · `GET /api/files/stat` · `POST /api/files/mkdir` · `POST /api/files/copy` · `POST /api/files/rename` · `POST /api/files/revert` · `GET /api/files/history` · `GET /api/files/version` |
+| **Digests** | `GET/POST /api/summaries?span=` · `POST /api/digest/generate?span=hourly\|daily\|weekly` |
+| **Tasks & scheduling** | `GET/POST /api/tasks` · `POST /api/tasks/bulk` · `GET/POST /api/work-tasks` · `GET/POST /api/timers` · `GET/POST /api/automations` · `GET/POST /api/automation/model` · `GET/POST /api/alarms` |
+| **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
+| **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
+| **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
+| **Security & vault** | `POST /api/awareness` · `GET /api/security/awareness-log` · `GET/POST /api/security/sentry-md` · `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
+| **Settings & UI plumbing** | `GET/POST /api/settings` · `GET/POST /api/dashboard-pages` (live/beta file editing) · `GET/POST /api/mcp-servers` · `GET /api/notifications` · `GET /api/notifications/poll` · `GET/POST /api/notification-list` · `POST /api/notification-list/read-all` · `GET/POST /api/api-keys` |
+
+### Things worth knowing
+
+- **Files are workspace-scoped.** Every `/api/files/*` route resolves its `?path=` under `GROUPS_DIR` (`~/warden/groups`) and rejects anything that escapes it (`..`, absolute paths). The shared uploads/downloads folder the hologram panel uses is `groups/uploads/`. Uploads take the file body as `application/octet-stream` with the filename in an `x-filename` header (up to 1 GB); downloads stream a single file as octet-stream or a directory as `tar.gz`.
+- **Digests are a loopback.** Iris compiles a digest and publishes it by `POST /api/summaries?span=X` — a keyless internal call back to this same server. The panel then reads `GET /api/summaries?span=X`. That loopback is the *only* way a digest reaches the UI.
+- **AWARENESS bypasses chat.** The laptop camera stack `POST /api/awareness` with a structured `AWARENESS…` payload; the server routes it straight to the Sentry sub-agent — it never becomes a chat message.
+- **The hologram can't `fetch()` directly.** Its panels load from `file://`, so Qt WebEngine's same-origin policy blocks them from reaching `:3200`. `voice/ui/jarvis_window.py` bridges this with `warden_api(path, method, body)` (JSON proxy), `warden_upload(dir, name, b64)`, and `warden_download(path)` (base64 in/out) — Python makes the real HTTP request and hands the result back to the iframe.
+- **Quick checks.** `curl -fsS http://localhost:3200/api/status` for a live snapshot; `curl -fsS http://localhost:3200/api/health` for a liveness ping.
+
+---
+
 ## 🧩 MCP Ecosystem
 
 Model Context Protocol servers give agents real capabilities without touching core code:
