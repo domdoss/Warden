@@ -1485,6 +1485,11 @@ function handleSettings(res: http.ServerResponse): void {
     orchestratorModel: getRouterState('orchestrator:model') || '',
     atlasModel: getRouterState('atlas:model') || '',
     hephaestusModel: getRouterState('hephaestus:model') || '',
+    // Per-agent models — each agent has its own concrete model (no blank/inherit).
+    byteModel: getRouterState('byte:model') || '',
+    dexterModel: getRouterState('dexter:model') || '',
+    irisModel: getRouterState('iris:model') || '',
+    artemisModel: getRouterState('artemis:model') || '',
     drivingForce: getRouterState('orchestrator:driving_force') || '',
     drivingForces,
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
@@ -1521,6 +1526,13 @@ function handleSettings(res: http.ServerResponse): void {
     subagentCtx: getRouterState('local:subagent_ctx') || '',
     atlasCtx: getRouterState('local:atlas_ctx') || '',
     toolsCtx: getRouterState('local:tools_ctx') || '',
+    // Per-agent num_ctx overrides — blank means the model's native window.
+    byteCtx: getRouterState('local:byte_ctx') || '',
+    dexterCtx: getRouterState('local:dexter_ctx') || '',
+    irisCtx: getRouterState('local:iris_ctx') || '',
+    artemisCtx: getRouterState('local:artemis_ctx') || '',
+    hephaestusCtx: getRouterState('local:hephaestus_ctx') || '',
+    sentryCtx: getRouterState('local:sentry_ctx') || '',
     mercuryMode: getRouterState('mercury:mode') || 'full',
     mercuryModel: getRouterState('mercury:model') || '',
     mercuryCtx: getRouterState('local:mercury_ctx') || '',
@@ -1572,6 +1584,19 @@ async function handleSettingsSave(
   }
   if (body.hephaestusModel !== undefined) {
     setRouterState('hephaestus:model', String(body.hephaestusModel || ''));
+  }
+  // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
+  if (body.byteModel !== undefined) {
+    setRouterState('byte:model', String(body.byteModel || ''));
+  }
+  if (body.dexterModel !== undefined) {
+    setRouterState('dexter:model', String(body.dexterModel || ''));
+  }
+  if (body.irisModel !== undefined) {
+    setRouterState('iris:model', String(body.irisModel || ''));
+  }
+  if (body.artemisModel !== undefined) {
+    setRouterState('artemis:model', String(body.artemisModel || ''));
   }
   if (body.drivingForce !== undefined) {
     const newForce = String(body.drivingForce || '');
@@ -1681,6 +1706,25 @@ async function handleSettingsSave(
   if (body.toolsCtx !== undefined) {
     setRouterState('local:tools_ctx', String(body.toolsCtx || ''));
   }
+  // Per-agent num_ctx overrides — blank clears to the model's native window.
+  if (body.byteCtx !== undefined) {
+    setRouterState('local:byte_ctx', String(body.byteCtx || ''));
+  }
+  if (body.dexterCtx !== undefined) {
+    setRouterState('local:dexter_ctx', String(body.dexterCtx || ''));
+  }
+  if (body.irisCtx !== undefined) {
+    setRouterState('local:iris_ctx', String(body.irisCtx || ''));
+  }
+  if (body.artemisCtx !== undefined) {
+    setRouterState('local:artemis_ctx', String(body.artemisCtx || ''));
+  }
+  if (body.hephaestusCtx !== undefined) {
+    setRouterState('local:hephaestus_ctx', String(body.hephaestusCtx || ''));
+  }
+  if (body.sentryCtx !== undefined) {
+    setRouterState('local:sentry_ctx', String(body.sentryCtx || ''));
+  }
   if (body.mercuryMode !== undefined) {
     setRouterState('mercury:mode', String(body.mercuryMode || 'full'));
   }
@@ -1703,6 +1747,11 @@ async function handleSettingsSave(
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
     body.atlasModel !== undefined || body.hephaestusModel !== undefined || body.drivingForce !== undefined ||
+    body.byteModel !== undefined || body.dexterModel !== undefined ||
+    body.irisModel !== undefined || body.artemisModel !== undefined ||
+    body.byteCtx !== undefined || body.dexterCtx !== undefined ||
+    body.irisCtx !== undefined || body.artemisCtx !== undefined ||
+    body.hephaestusCtx !== undefined || body.sentryCtx !== undefined ||
     body.councilSkepticModel !== undefined ||
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
     body.sentryModel !== undefined ||

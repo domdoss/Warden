@@ -343,11 +343,12 @@ async function deliverReply(text: string): Promise<void> {
 
 /**
  * Sentry (situational-awareness agent) model resolution. Uses the dedicated
- * sentry:model router setting (dashboard Models card). Falls back to the
- * orchestrator model only if unset. A `local:` prefix is stripped.
+ * sentry:model router setting (dashboard Models card) — no fallback. A `local:`
+ * prefix is stripped. seedPerAgentModelSettings() materializes sentry:model from
+ * the orchestrator model on first boot, so this is never empty in normal use.
  */
 function resolveAwarenessModel(): string {
-  return (getRouterState('sentry:model') || getRouterState('orchestrator:model') || '').trim().replace(/^local:/, '');
+  return (getRouterState('sentry:model') || '').trim().replace(/^local:/, '');
 }
 
 /** Satellite IP where the security detector runs. Read from router state first,
@@ -1570,7 +1571,7 @@ async function updateMercurySummary(): Promise<void> {
       `Do NOT include the most recent ${MERCURY_RECENT_MESSAGES} turns; they are kept verbatim. ` +
       `Write in short bullet/paragraph form so the main agent can scan it quickly.\n\n${olderLines}\n\nMercury summary:`;
 
-    const model = (getRouterState('mercury:model') || getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined;
+    const model = (getRouterState('mercury:model') || '').replace(/^local:/, '') || undefined;
     const mercuryInput: AgentInput = {
       prompt: summaryPrompt,
       sessionId: 'mercury',
@@ -1751,16 +1752,7 @@ async function processOwnerMessages(): Promise<void> {
   // Always assign (even when empty) so clearing the field in the dashboard
   // actually clears the override — otherwise the previous value sticks across
   // turns and ollama never sees the smaller ctx.
-  const orchCtx = getRouterState('local:orchestrator_ctx');
-  process.env.ORCHESTRATOR_NUM_CTX = orchCtx || '';
-  const subCtx = getRouterState('local:subagent_ctx');
-  process.env.SUBAGENT_NUM_CTX = subCtx || '';
-  const atlasCtx = getRouterState('local:atlas_ctx');
-  process.env.ATLAS_NUM_CTX = atlasCtx || '';
-  const toolsCtx = getRouterState('local:tools_ctx');
-  process.env.TOOLS_NUM_CTX = toolsCtx || '';
-  const mercuryCtx = getRouterState('local:mercury_ctx');
-  process.env.MERCURY_NUM_CTX = mercuryCtx || '';
+  syncAgentCtxEnv();
 
   // Load workspace memory files and inject into agent context every turn.
   const memoryContext = (() => {
@@ -1781,6 +1773,10 @@ async function processOwnerMessages(): Promise<void> {
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
     hephaestusModel: (getRouterState('hephaestus:model') || '').replace(/^local:/, '') || undefined,
+    byteModel: (getRouterState('byte:model') || '').replace(/^local:/, '') || undefined,
+    dexterModel: (getRouterState('dexter:model') || '').replace(/^local:/, '') || undefined,
+    irisModel: (getRouterState('iris:model') || '').replace(/^local:/, '') || undefined,
+    artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
     drivingForce: getRouterState('orchestrator:driving_force') || '',
     contextClearAt: getRouterState('orchestrator:context_clear_at') || '',
     councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
@@ -2141,11 +2137,80 @@ function startChromeWatchdog(): void {
 }
 
 
+/**
+ * One-time migration: materialize a concrete per-agent model + ctx for every
+ * agent from the legacy shared values, so every Agents-panel dropdown is
+ * populated (no blank) and the agent-runner never sees an empty key. This is a
+ * MIGRATION, not a runtime fallback — it writes a real value once (only when the
+ * key is empty), then runtime uses the key directly with no `||`. After this the
+ * popover can't produce an empty model (the dropdown has no blank option), so a
+ * per-agent key is never empty in normal use; a manually-cleared key errors
+ * loudly instead of falling back.
+ */
+function seedPerAgentModelSettings(): void {
+  const orch = getRouterState('orchestrator:model') || '';
+  const subagent = getRouterState('local:subagent_model') || orch;
+  const atlas = getRouterState('atlas:model') || orch;
+  const toolsCtx = getRouterState('local:tools_ctx') || getRouterState('local:subagent_ctx') || '';
+  const atlasCtx = getRouterState('local:atlas_ctx') || '';
+  const seed = (key: string, value: string) => {
+    if (!getRouterState(key) && value) setRouterState(key, value);
+  };
+  // New per-agent model keys inherit the legacy shared value.
+  seed('byte:model', subagent);
+  seed('dexter:model', subagent);
+  seed('iris:model', subagent);
+  seed('artemis:model', atlas);
+  // Existing keys that previously fell back to orchestrator at runtime — seed
+  // them too so that runtime fallback can be removed without breaking agents.
+  seed('atlas:model', orch);
+  seed('hephaestus:model', orch);
+  seed('mercury:model', orch);
+  seed('sentry:model', orch);
+  // ctx — preserve each agent's current effective value.
+  seed('local:byte_ctx', toolsCtx);
+  seed('local:dexter_ctx', toolsCtx);
+  seed('local:iris_ctx', toolsCtx);
+  seed('local:artemis_ctx', atlasCtx);
+  // Sentry bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
+  // materialize that as its ctx setting so the hardcoded bake can be removed.
+  seed('local:sentry_ctx', '8192');
+  // Hephaestus had no ctx override (native window) — leave it blank (native).
+}
+
+/**
+ * Sync every per-agent num_ctx override from router_state into process.env so
+ * the agent-runner child (and background spawns like Sentry, which inherit
+ * ...process.env) always sees the current value. Called at boot (after the
+ * migration seed, so background spawns before the first chat turn are covered)
+ * and again per turn (so dashboard changes take effect immediately).
+ */
+function syncAgentCtxEnv(): void {
+  process.env.ORCHESTRATOR_NUM_CTX = getRouterState('local:orchestrator_ctx') || '';
+  process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
+  process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
+  process.env.MERCURY_NUM_CTX = getRouterState('local:mercury_ctx') || '';
+  process.env.BYTE_NUM_CTX = getRouterState('local:byte_ctx') || '';
+  process.env.DEXTER_NUM_CTX = getRouterState('local:dexter_ctx') || '';
+  process.env.IRIS_NUM_CTX = getRouterState('local:iris_ctx') || '';
+  process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
+  process.env.HEPHAESTUS_NUM_CTX = getRouterState('local:hephaestus_ctx') || '';
+  process.env.SENTRY_NUM_CTX = getRouterState('local:sentry_ctx') || '';
+}
+
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   startChromeWatchdog();
   loadState();
+  // Materialize a concrete per-agent model + ctx for every agent from the
+  // legacy shared values BEFORE any agent runs, so every Agents-panel dropdown
+  // is populated (no blank) and the agent-runner never sees an empty key. This
+  // is a migration, not a runtime fallback: it writes a real value once (only
+  // when the key is empty), then runtime uses the key directly with no `||`.
+  seedPerAgentModelSettings();
+  syncAgentCtxEnv();
 
   // Wire the activity publisher so agent-runner stderr thinking tokens reach
   // the dashboard's live thinking bar via SSE.

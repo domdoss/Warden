@@ -302,6 +302,30 @@
   }, 200);
   setInterval(announceReady, 3000);
 
+  // ── Host-driven digest refresh ────────────────────────────────────────
+  // Automated digests land on the Pi's cron and POST to /api/summaries, but
+  // the digest iframe's own setInterval poll stalled in the live pywebview
+  // iframe — the panel sat 8h behind while automated runs kept landing. The
+  // host's timers run reliably (weather, hologram, announceReady all work),
+  // so the host polls the summary itself via the real warden_api and pushes
+  // the fresh JSON into the digest iframe, which just renders it. Manual
+  // Generate is unaffected (it still drives its own fetch on click).
+  var DIGEST_SPANS = ['hourly','daily','weekly'];
+  function pushDigests(){
+    if(!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.warden_api !== 'function') return;
+    DIGEST_SPANS.forEach(function(span){
+      dispatch('warden_api', ['/api/summaries?span='+span]).then(function(raw){
+        if(!raw) return;
+        var f = document.getElementById('digest');
+        if(f && f.contentWindow){ try { f.contentWindow.postMessage({__pm:true, type:'digest_push', span:span, raw:raw}, '*'); } catch(e){} }
+      });
+    });
+  }
+  setInterval(pushDigests, 20000);
+  var _digestKick = setInterval(function(){
+    if(window.pywebview && window.pywebview.api){ pushDigests(); clearInterval(_digestKick); }
+  }, 300);
+
   // ── Settings overlay ──────────────────────────────────────────────────
   // Widget show/hide is persisted to localStorage so the layout survives a
   // restart. The hologram is now a normal frame-host, so it uses the same

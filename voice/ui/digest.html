@@ -328,6 +328,23 @@
     flushTable();closeList();flush();
     return out.join('');
   }
+  // Host-driven refresh: panels.html polls /api/summaries itself (its timers
+  // are reliable where this iframe's setInterval stalled) and pushes the
+  // fresh JSON here. Render only the active span so a background tab's data
+  // doesn't yank the current view.
+  window.addEventListener('message', function(ev){
+    var d = ev.data;
+    if(!d || !d.__pm || d.type !== 'digest_push') return;
+    try {
+      var parsed = JSON.parse(d.raw);
+      if(!parsed || !parsed.summaries || !parsed.summaries.length) return;
+      var s = parsed.summaries[0];
+      if(s.span !== activeSpan) return;
+      body.innerHTML = '<div class="summary-text">' + renderMd(s.text) + '</div>';
+      footerTs.textContent = s.generated_at || '';
+    } catch(e){}
+  });
+
   // Refresh when the panel becomes visible again (user switches back to the
   // dashboard tab / window), so a digest that landed while hidden shows up.
   document.addEventListener('visibilitychange', function(){ if(!document.hidden) fetchDigest(); });

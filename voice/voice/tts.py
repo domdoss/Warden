@@ -64,33 +64,32 @@ class KokoroTTS(BaseTTS):
 
     @staticmethod
     def _pick_device():
-        """Kokoro-82M is tiny — GPU kernel-launch overhead makes it slower
-        than CPU on AMD ROCm. Always use CPU."""
+        """Best available device for Kokoro inference. CUDA (NVIDIA) when
+        available, else Intel XPU / DirectML, else CPU. Kokoro-82M is small,
+        but on a CUDA GPU it still beats CPU and frees the CPU for the
+        orchestrator — so prefer the GPU. (The old "always CPU" was a
+        workaround for AMD ROCm, where Kokoro's kernel-launch overhead made
+        the GPU slower and loading it alongside Whisper could segfault;
+        neither applies to NVIDIA CUDA.)"""
+        try:
+            import torch
+        except ImportError:
+            return "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        try:
+            import intel_extension_for_pytorch  # noqa: F401
+        except ImportError:
+            pass
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "xpu"
+        try:
+            import torch_directml  # type: ignore
+            if torch_directml.is_available():
+                return torch_directml.device()
+        except Exception:
+            pass
         return "cpu"
-
-        # -- original device selection (kept for reference) --
-        # try:
-        #     import torch
-        # except ImportError:
-        #     return "cpu"
-        # try:
-        #     import intel_extension_for_pytorch  # noqa: F401
-        # except ImportError:
-        #     pass
-        # if hasattr(torch, "xpu") and torch.xpu.is_available():
-        #     return "xpu"
-        # try:
-        #     import torch_directml  # type: ignore
-        #     if torch_directml.is_available():
-        #         return torch_directml.device()
-        # except Exception:
-        #     pass
-        # if torch.cuda.is_available():
-        #     os.environ.setdefault("ROCBLAS_TENSILE_LIBPATH", "/opt/rocm/lib/rocblas/library")
-        #     os.environ.setdefault("MIOPEN_CACHE_DIR", os.path.expanduser("~/.cache/miopen"))
-        #     os.environ.setdefault("MIOPEN_FIND_MODE", "1")
-        #     return "cuda"
-        # return "cpu"
 
     def _get_pipeline(self):
         """Lazy load Kokoro pipeline."""

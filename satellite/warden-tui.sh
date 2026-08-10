@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# graice-tui.sh — dead-simple interactive settings for Graice.
+# warden-tui.sh — dead-simple interactive settings for Warden.
 # Uses bash `select` (no whiptail, no curl, no JSON). Runs system commands
 # directly: nmcli, bluetoothctl, amixer/wpctl. Functional first, fancy later.
 set +u
@@ -8,7 +8,7 @@ main() {
     while true; do
         clear
         echo "══════════════════════════════════════"
-        echo "  Graice Settings"
+        echo "  Warden Settings"
         echo "══════════════════════════════════════"
         echo ""
         PS3="Choose (1-7): "
@@ -290,7 +290,7 @@ select_device() {
 }
 
 # ── Mode (standalone / satellite) ─────────────────────────────────────
-MODE_FILE="$HOME/.graice-mode"
+MODE_FILE="$HOME/.warden-mode"
 
 mode_read() {
     # Populate globals MODE, WARDEN_URL, AUDIO_SERVER_URL, SATELLITE_URL
@@ -308,7 +308,7 @@ mode_read() {
 }
 
 mode_write() {
-    # Rewrite ~/.graice-mode from current globals.
+    # Rewrite ~/.warden-mode from current globals.
     # The Pi is EITHER the Warden (standalone) OR a dumb mic/speaker (satellite):
     #   - WARDEN_URL       = the Warden. Standalone → localhost:3200 (this Pi
     #                        runs it). Satellite → unused by the button, kept as
@@ -327,11 +327,44 @@ mode_write() {
 }
 
 prompt_audio_server() {
-    # Ask for the laptop/audio-server IP; build the full :8767 URL into AUDIO_SERVER_URL.
+    # AUDIO_SERVER_URL is the only remote address the Pi ever needs — the
+    # machine running the voice client (hologram control server, :8767). Show
+    # the currently-saved IP (or none) and let the user replace it. No baked-in
+    # default IP — that address moves, and a stale one silently breaks the
+    # button.
+    mode_read
+    local cur=""
+    if [ -n "$AUDIO_SERVER_URL" ]; then
+        cur="${AUDIO_SERVER_URL#http://}"; cur="${cur#https://}"
+        cur="${cur%%:*}"
+    fi
+    echo "Audio server = the machine running the voice client (hologram :8767)."
+    [ -n "$cur" ] && echo "Currently saved: $cur" || echo "Currently saved: (none)"
     local ip
-    read -rp "Audio server IP (laptop running the voice client) [192.168.0.159]: " ip
-    ip="${ip:-192.168.0.159}"
-    AUDIO_SERVER_URL="http://${ip}:8767"
+    read -rp "Audio server IP (Enter to keep current, or type a new IP): " ip
+    if [ -n "$ip" ]; then
+        AUDIO_SERVER_URL="http://${ip}:8767"
+    elif [ -n "$cur" ]; then
+        AUDIO_SERVER_URL="http://${cur}:8767"
+    else
+        AUDIO_SERVER_URL=""
+    fi
+}
+
+maybe_restart_button() {
+    # voice-button.py reads ~/.warden-mode ONCE at startup, so a button that's
+    # already running keeps using the old mode/IP until it's restarted. Offer
+    # to restart it so a mode or audio-server change actually takes effect.
+    if pgrep -f "voice-button.py" >/dev/null 2>&1; then
+        echo "The button is running and won't see the new setting until restarted."
+        read -rp "Restart the button now? [y/N] " yn
+        if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
+            pkill -f "voice-button.py" 2>/dev/null
+            sleep 1
+            nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
+            echo "Button restarted, PID $!"
+        fi
+    fi
 }
 
 mode_menu() {
@@ -359,14 +392,14 @@ mode_menu() {
             "Standalone — this Pi IS the Warden (button records here, hits localhost:3200)" \
             "Satellite  — this Pi is a dumb mic/speaker (button triggers the audio server)" \
             "Both       — Pi runs the Warden AND is the mic/speaker (button → laptop)" \
-            "Edit audio server IP (satellite/both — the laptop running the voice client, :8767)" \
+            "Edit audio server IP (the machine running the voice client, :8767)" \
             "Start roles on this Pi (Warden / Satellite relay / Button)" \
             "Back"; do
             case $REPLY in
-                1) MODE="standalone"; WARDEN_URL="http://localhost:3200"; SATELLITE_URL="http://localhost:8766"; mode_write; read -rp "Press Enter to continue…"; break ;;
-                2) MODE="satellite"; SATELLITE_URL="http://localhost:8766"; prompt_audio_server; mode_write; read -rp "Press Enter to continue…"; break ;;
-                3) MODE="both"; WARDEN_URL="http://localhost:3200"; SATELLITE_URL="http://localhost:8766"; prompt_audio_server; mode_write; read -rp "Press Enter to continue…"; break ;;
-                4) prompt_audio_server; mode_write; read -rp "Press Enter to continue…"; break ;;
+                1) MODE="standalone"; WARDEN_URL="http://localhost:3200"; SATELLITE_URL="http://localhost:8766"; mode_write; maybe_restart_button; read -rp "Press Enter to continue…"; break ;;
+                2) MODE="satellite"; SATELLITE_URL="http://localhost:8766"; prompt_audio_server; mode_write; maybe_restart_button; read -rp "Press Enter to continue…"; break ;;
+                3) MODE="both"; WARDEN_URL="http://localhost:3200"; SATELLITE_URL="http://localhost:8766"; prompt_audio_server; mode_write; maybe_restart_button; read -rp "Press Enter to continue…"; break ;;
+                4) prompt_audio_server; if [ "$MODE" = "standalone" ] || [ -z "$MODE" ]; then echo "The audio server IP is only used in satellite or both mode — you're in standalone, so the button ignores it."; read -rp "Switch to satellite mode (use the laptop as the voice server)? [y/N] " yn; if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then MODE="satellite"; fi; fi; mode_write; maybe_restart_button; read -rp "Press Enter to continue…"; break ;;
                 5) mode_start; break ;;
                 6) return ;;
             esac
@@ -387,17 +420,17 @@ mode_start() {
     echo ""
     read -rp "Start Warden (node dist/index.js)? [y/N] " yn
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-        nohup node dist/index.js > "$HOME/.graice-warden.log" 2>&1 &
+        nohup node dist/index.js > "$HOME/.warden-warden.log" 2>&1 &
         echo "Warden started, PID $!"
     fi
     read -rp "Start Satellite mic/speaker (python3 voice/satellite_server.py)? [y/N] " yn
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-        nohup python3 voice/satellite_server.py > "$HOME/.graice-satellite.log" 2>&1 &
+        nohup python3 voice/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
         echo "Satellite started, PID $!"
     fi
     read -rp "Start button (python3 hardware/voice-button.py)? [y/N] " yn
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-        nohup python3 hardware/voice-button.py > "$HOME/.graice-button.log" 2>&1 &
+        nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
         echo "Button started, PID $!"
     fi
     echo ""
@@ -405,11 +438,39 @@ mode_start() {
 }
 
 # ── Save as boot defaults ─────────────────────────────────────────────
+# Print the display name of the current default sink/source from `wpctl status`
+# (the `*` line). kind = sink | source. For source, scan Sources: AND Filters:
+# (BT HFP mics live under Filters:). Prints "" if none / wpctl absent. The name
+# is saved verbatim so boot-defaults.sh can grep it back out of `wpctl status`.
+default_device_name() {
+    local kind="$1"
+    command -v wpctl >/dev/null 2>&1 || return
+    local status; status=$(wpctl status 2>/dev/null | sed 's/[│├└─]/ /g')
+    local block
+    if [ "$kind" = "sink" ]; then
+        block=$(printf '%s\n' "$status" | sed -n '/Sinks:/,/Sources:/p')
+    else
+        # Sources: through Streams: (Filters: sits in between and holds BT mics).
+        block=$(printf '%s\n' "$status" | sed -n '/Sources:/,/Streams:/p')
+    fi
+    local line; line=$(printf '%s\n' "$block" | grep -P '^\s*\*' | head -1)
+    [ -z "$line" ] && return
+    # line shape: "  * 42. Device Name [vol: 0.50]" → peel to the name.
+    local rest="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    rest="${rest#\*}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"         # ltrim
+    rest="${rest#*.}"                                # drop "id."
+    rest="${rest#"${rest%%[![:space:]]*}"}"         # ltrim name
+    local name="${rest%% \[*}"                       # drop " [vol: ...]"
+    name="${name%"${name##*[![:space:]]}"}"          # rtrim
+    echo "$name"
+}
+
 save_defaults() {
     clear
     echo "── Save as Boot Defaults ──"
     echo ""
-    local file="$HOME/.graice-boot-defaults"
+    local file="$HOME/.warden-boot-defaults"
     # WiFi
     local ssid; ssid=$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | grep -v ':lo$' | head -1 | cut -d: -f1)
     if [ -n "$ssid" ]; then
@@ -431,12 +492,15 @@ save_defaults() {
         echo "BT_DEVICE=$bt" >> "$file"
         [ -n "$bt_name" ] && echo "BT_NAME=$bt_name" >> "$file"
     fi
-    # Audio
+    # Audio — save the default sink/source by NAME. wpctl node ids shift across
+    # reboots (and BT reconnects), so boot-defaults.sh re-resolves the name to a
+    # current id at boot. Names are the display strings from `wpctl status`.
     if command -v wpctl >/dev/null 2>&1; then
-        local sink; sink=$(wpctl status 2>/dev/null | sed 's/[│├└─]/ /g' | grep -A20 "Sinks:" | grep '^\s*\*' | grep -oP '\d+\.' | head -1 | tr -d '.')
-        local src; src=$(wpctl status 2>/dev/null | sed 's/[│├└─]/ /g' | grep -A20 "Sources:" | grep '^\s*\*' | grep -oP '\d+\.' | head -1 | tr -d '.')
-        [ -n "$sink" ] && echo "AUDIO_SINK=$sink" >> "$file"
-        [ -n "$src" ] && echo "AUDIO_SOURCE=$src" >> "$file"
+        local sink_name src_name
+        sink_name=$(default_device_name sink)
+        src_name=$(default_device_name source)
+        [ -n "$sink_name" ] && echo "AUDIO_SINK_NAME=$sink_name" >> "$file"
+        [ -n "$src_name" ] && echo "AUDIO_SOURCE_NAME=$src_name" >> "$file"
     fi
     echo ""
     echo "Saved to $file:"

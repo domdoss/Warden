@@ -142,6 +142,59 @@
     font-size:7px;color:rgba(0,255,255,0.15);
     font-family:'Courier New',monospace;letter-spacing:0.5px;
   }
+
+  /* ── per-agent model popover ── */
+  .popover-overlay{
+    position:absolute;inset:0;background:rgba(0,5,12,0.78);
+    display:none;align-items:center;justify-content:center;z-index:50;
+    backdrop-filter:blur(2px);
+  }
+  .popover-overlay.open{display:flex}
+  .popover{
+    width:300px;max-width:92%;background:rgba(0,18,32,0.98);
+    border:1px solid rgba(0,255,136,0.35);border-radius:6px;
+    box-shadow:0 0 24px rgba(0,255,136,0.18);padding:16px 16px 14px;
+    position:relative;
+  }
+  .popover::before,.popover::after{
+    content:'';position:absolute;width:12px;height:12px;pointer-events:none;
+  }
+  .popover::before{top:-1px;left:-1px;border-top:1.5px solid #00ff88;border-left:1.5px solid #00ff88}
+  .popover::after{bottom:-1px;right:-1px;border-bottom:1.5px solid #00ff88;border-right:1.5px solid #00ff88}
+  .pop-head{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+  .pop-head .pop-icon{font-size:18px;text-shadow:0 0 6px currentColor}
+  .pop-head .pop-name{font-size:13px;font-weight:600;letter-spacing:1.5px;
+    color:#00ff88;text-shadow:0 0 6px rgba(0,255,136,0.4);text-transform:uppercase;flex:1}
+  .pop-close{font-size:14px;color:rgba(0,255,136,0.45);cursor:pointer;
+    border:1px solid rgba(0,255,136,0.2);border-radius:4px;width:20px;height:20px;
+    display:flex;align-items:center;justify-content:center;line-height:1;transition:color 0.15s,border-color 0.15s}
+  .pop-close:hover{color:#00ff88;border-color:rgba(0,255,136,0.5)}
+  .pop-field{margin-bottom:11px}
+  .pop-field label{display:block;font-size:8px;letter-spacing:1.5px;text-transform:uppercase;
+    color:rgba(0,255,136,0.5);margin-bottom:4px}
+  .pop-field select{
+    width:100%;background:rgba(0,30,50,0.7);border:1px solid rgba(0,255,255,0.22);
+    border-radius:4px;color:#cfefff;font-size:11px;padding:6px 8px;outline:none;
+    font-family:inherit;cursor:pointer;
+  }
+  .pop-field select:focus{border-color:rgba(0,255,136,0.5);box-shadow:0 0 8px rgba(0,255,136,0.12)}
+  .pop-field select option{background:#001828;color:#cfefff}
+  .pop-status{font-size:9px;min-height:12px;margin-bottom:8px;letter-spacing:0.5px;
+    font-family:'Courier New',monospace}
+  .pop-status.ok{color:rgba(0,255,136,0.7)}
+  .pop-status.err{color:#ff6b6b}
+  .pop-status.busy{color:#ffaa00}
+  .pop-actions{display:flex;gap:8px;justify-content:flex-end}
+  .pop-btn{
+    font-size:9px;letter-spacing:1px;text-transform:uppercase;font-weight:600;
+    padding:7px 14px;border-radius:4px;cursor:pointer;font-family:inherit;
+    border:1px solid rgba(0,255,136,0.3);background:rgba(0,255,136,0.08);color:#00ff88;
+    transition:background 0.15s,opacity 0.15s;
+  }
+  .pop-btn:hover{background:rgba(0,255,136,0.18)}
+  .pop-btn:disabled{opacity:0.35;cursor:default}
+  .pop-btn.ghost{background:transparent;border-color:rgba(0,255,255,0.2);color:rgba(0,255,255,0.5)}
+  .pop-btn.ghost:hover{background:rgba(0,255,255,0.08)}
 </style>
 </head>
 <body>
@@ -157,6 +210,29 @@
     <div class="empty">No agents registered.</div>
   </div>
   <div class="footer" id="footer-ts">--</div>
+  <!-- per-agent model + ctx popover (click a card to open) -->
+  <div class="popover-overlay" id="pop-overlay">
+    <div class="popover" id="popover">
+      <div class="pop-head">
+        <div class="pop-icon" id="pop-icon">●</div>
+        <div class="pop-name" id="pop-name">Agent</div>
+        <div class="pop-close" id="pop-close" title="Close">×</div>
+      </div>
+      <div class="pop-field">
+        <label>Model</label>
+        <select id="pop-model"></select>
+      </div>
+      <div class="pop-field">
+        <label>Context (num_ctx)</label>
+        <select id="pop-ctx"></select>
+      </div>
+      <div class="pop-status" id="pop-status"></div>
+      <div class="pop-actions">
+        <button class="pop-btn ghost" id="pop-cancel">Close</button>
+        <button class="pop-btn" id="pop-save">Save</button>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
 (function(){
@@ -393,7 +469,7 @@
                 (activity?' · '+esc(activity):'') +
                 (c.pendingTasks?' · '+c.pendingTasks+' tasks':'') +
                 (c.pendingMessages?' · unread':'');
-      html+='<div class="agent-card '+statusClass+'" title="'+tip+'">'+
+      html+='<div class="agent-card '+statusClass+'" data-agent="'+esc(c.key)+'" title="'+tip+'">'+
         '<div class="agent-top">'+
           '<div class="agent-icon" style="color:'+color+'">'+icon+'</div>'+
           '<div class="status-dot '+dotClass+'"></div>'+
@@ -428,6 +504,155 @@
 
   fetchAgents();
   setInterval(fetchAgents,5000);
+
+  // ── Per-agent model + ctx popover ──────────────────────────────────────
+  // Click an agent card → open a popover with that agent's Model + Ctx
+  // dropdowns (populated from Warden's /api/ollama/test + /api/settings).
+  // Save writes the per-agent keys back via POST /api/settings. The model
+  // dropdown has no blank option — every agent always has a concrete model.
+  var AGENT_SETTINGS_KEYS = {
+    orchestrator:{name:'Orchestrator',model:'globalDefaultModel',ctx:'orchestratorCtx'},
+    atlas:{name:'Atlas',model:'atlasModel',ctx:'atlasCtx'},
+    artemis:{name:'Artemis',model:'artemisModel',ctx:'artemisCtx'},
+    byte:{name:'Byte',model:'byteModel',ctx:'byteCtx'},
+    dexter:{name:'Dexter',model:'dexterModel',ctx:'dexterCtx'},
+    iris:{name:'Iris',model:'irisModel',ctx:'irisCtx'},
+    hephaestus:{name:'Hephaestus',model:'hephaestusModel',ctx:'hephaestusCtx'},
+    sentry:{name:'Sentry',model:'sentryModel',ctx:'sentryCtx'},
+    mercury:{name:'Mercury',model:'mercuryModel',ctx:'mercuryCtx'}
+  };
+  var CTX_OPTIONS=['',2048,4096,8192,16384,32768,65536,128000];
+  var modelCache=null, settingsCache=null, currentAgent=null;
+
+  function apiReady(){ return window.pywebview&&window.pywebview.api&&typeof window.pywebview.api.warden_api==='function'; }
+
+  async function loadModelList(){
+    if(!apiReady())return;
+    try{
+      var raw=await window.pywebview.api.warden_api('/api/ollama/test');
+      if(!raw)return;
+      var d=JSON.parse(raw);
+      if(!d||!d.ok)return;
+      modelCache={models:d.models||[],sizes:d.modelSizes||{},friendly:d.friendlyNames||{},cloud:d.cloudModels||[]};
+    }catch(e){}
+  }
+  async function loadSettings(){
+    if(!apiReady())return;
+    try{
+      var raw=await window.pywebview.api.warden_api('/api/settings');
+      if(!raw)return;
+      settingsCache=JSON.parse(raw);
+    }catch(e){}
+  }
+
+  function buildModelOptions(selected){
+    if(!modelCache)return '';
+    var out='';
+    // Cloud models first (frontier), then local — both concrete, no blank.
+    var seen={};
+    (modelCache.cloud||[]).forEach(function(m){ if(!seen[m]){seen[m]=true; out+='<option value="'+esc(m)+'"'+(m===selected?' selected':'')+'>'+esc(m)+'</option>';} });
+    (modelCache.models||[]).forEach(function(m){
+      if(!m||seen[m])return; seen[m]=true;
+      var label=modelCache.friendly[m]||m;
+      var sz=modelCache.sizes[m];
+      if(sz) label+='  ('+(sz/(1024*1024*1024)).toFixed(1)+' GB)';
+      out+='<option value="'+esc(m)+'"'+(m===selected?' selected':'')+'>'+esc(label)+'</option>';
+    });
+    // If the current value isn't in the list (e.g. a model since removed), keep
+    // it as an explicit option so the dropdown never collapses to blank.
+    if(selected && !seen[selected]){
+      out+='<option value="'+esc(selected)+'" selected>'+esc(selected)+' (not listed)</option>';
+    }
+    return out;
+  }
+  function buildCtxOptions(selected){
+    var out='';
+    CTX_OPTIONS.forEach(function(v){
+      var val=v===''?'':String(v);
+      var label=v===''?'default (native window)':v.toLocaleString();
+      out+='<option value="'+esc(val)+'"'+(val===String(selected||'')?' selected':'')+'>'+esc(label)+'</option>';
+    });
+    if(selected && CTX_OPTIONS.indexOf(parseInt(selected,10))===-1 && selected!==''){
+      out+='<option value="'+esc(String(selected))+'" selected>'+esc(String(selected))+'</option>';
+    }
+    return out;
+  }
+
+  var overlay=document.getElementById('pop-overlay');
+  var popName=document.getElementById('pop-name');
+  var popIcon=document.getElementById('pop-icon');
+  var popModel=document.getElementById('pop-model');
+  var popCtx=document.getElementById('pop-ctx');
+  var popStatus=document.getElementById('pop-status');
+  var popSave=document.getElementById('pop-save');
+
+  function openPopover(key){
+    var cfg=AGENT_SETTINGS_KEYS[key];
+    if(!cfg)return;
+    currentAgent=key;
+    popName.textContent=cfg.name;
+    popIcon.textContent=AGENT_ICONS[key]||'●';
+    popIcon.style.color=AGENT_COLORS[key]||'#00ff88';
+    popStatus.textContent=''; popStatus.className='pop-status';
+    if(!modelCache) loadModelList();
+    if(!settingsCache) loadSettings();
+    // Defer populate until caches land (they may be loading async).
+    function populate(){
+      if(!modelCache||!settingsCache){ setTimeout(populate,150); return; }
+      var curModel=settingsCache[cfg.model]||'';
+      var curCtx=settingsCache[cfg.ctx]||'';
+      popModel.innerHTML=buildModelOptions(curModel);
+      popCtx.innerHTML=buildCtxOptions(curCtx);
+    }
+    populate();
+    overlay.classList.add('open');
+  }
+  function closePopover(){ overlay.classList.remove('open'); currentAgent=null; }
+
+  // Delegated click on agent cards (innerHTML is rebuilt every poll, so bind
+  // once on the list container and walk up to the .agent-card).
+  document.getElementById('agent-list').addEventListener('click',function(ev){
+    var card=ev.target.closest('.agent-card');
+    if(!card)return;
+    openPopover(card.getAttribute('data-agent')||'');
+  });
+  document.getElementById('pop-close').addEventListener('click',closePopover);
+  document.getElementById('pop-cancel').addEventListener('click',closePopover);
+  overlay.addEventListener('click',function(ev){ if(ev.target===overlay) closePopover(); });
+
+  popSave.addEventListener('click',async function(){
+    if(!currentAgent||!apiReady())return;
+    var cfg=AGENT_SETTINGS_KEYS[currentAgent];
+    var model=popModel.value;
+    var ctx=popCtx.value; // '' = default/native
+    if(!model){
+      popStatus.textContent='No model selected — pick a model first.'; popStatus.className='pop-status err';
+      return;
+    }
+    popSave.disabled=true;
+    popStatus.textContent='Saving…'; popStatus.className='pop-status busy';
+    try{
+      var body={}; body[cfg.model]=model; body[cfg.ctx]=ctx;
+      await window.pywebview.api.warden_api('/api/settings','POST',JSON.stringify(body));
+      // Re-fetch to confirm the save round-tripped.
+      await loadSettings();
+      var okModel=(settingsCache||{})[cfg.model]===model;
+      if(okModel){
+        popStatus.textContent='Saved.'; popStatus.className='pop-status ok';
+      }else{
+        popStatus.textContent='Saved, but the value did not persist as expected.'; popStatus.className='pop-status err';
+      }
+    }catch(e){
+      popStatus.textContent='Save failed: '+(e&&e.message?e.message:e); popStatus.className='pop-status err';
+    }
+    popSave.disabled=false;
+  });
+
+  // Warm the caches once the bridge is ready.
+  (function warm(){
+    if(apiReady()){ loadModelList(); loadSettings(); }
+    else setTimeout(warm,300);
+  })();
 })();
 </script>
 </body>

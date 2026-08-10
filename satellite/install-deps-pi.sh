@@ -60,19 +60,18 @@ sudo usermod -aG bluetooth,input,audio,netdev "$USER" 2>/dev/null || true
 # so wpctl/bluetoothctl spawned by Warden can talk to it.
 systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null || true
 
-# Graice boot-defaults oneshot: restores the saved WiFi/Bluetooth/audio at
+# Warden boot-defaults oneshot: restores the saved WiFi/Bluetooth/audio at
 # boot. Runs as a user service (needs linger, enabled below). Ordered after
 # pipewire/wireplumber so the audio nodes exist when it sets wpctl defaults.
 # WiFi itself sticks via the nmcli autoconnect flag the TUI sets on the
 # profile; this service is the belt-and-suspenders reconnect + BT/audio restore.
-if [ -f "$PWD/tui/graice-boot-defaults.service" ] && [ -f "$PWD/tui/boot-defaults.sh" ]; then
-  mkdir -p "$HOME/.config/systemd/user"
-  cp "$PWD/tui/graice-boot-defaults.service" "$HOME/.config/systemd/user/" 2>/dev/null || true
-  cp "$PWD/tui/boot-defaults.sh" "$HOME/Graice/tui/boot-defaults.sh" 2>/dev/null || \
-    { mkdir -p "$HOME/Graice/tui" && cp "$PWD/tui/boot-defaults.sh" "$HOME/Graice/tui/boot-defaults.sh" 2>/dev/null || true; }
-  chmod +x "$HOME/Graice/tui/boot-defaults.sh" 2>/dev/null || true
+if [ -f "$PWD/satellite/warden-boot-defaults.service" ] && [ -f "$PWD/satellite/boot-defaults.sh" ]; then
+  mkdir -p "$HOME/.config/systemd/user" /opt/warden/satellite 2>/dev/null || true
+  cp "$PWD/satellite/warden-boot-defaults.service" "$HOME/.config/systemd/user/" 2>/dev/null || true
+  cp "$PWD/satellite/boot-defaults.sh" /opt/warden/satellite/boot-defaults.sh 2>/dev/null || true
+  chmod +x /opt/warden/satellite/boot-defaults.sh 2>/dev/null || true
   systemctl --user daemon-reload 2>/dev/null || true
-  systemctl --user enable graice-boot-defaults.service 2>/dev/null || true
+  systemctl --user enable warden-boot-defaults.service 2>/dev/null || true
 fi
 
 # Ollama — the orchestrator's LLM. Runs `ollama serve` on 127.0.0.1:11434; the

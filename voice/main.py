@@ -290,6 +290,7 @@ class JarvisApp:
             engine=voice_cfg.get("tts_engine", "kokoro"),
             voice=voice_cfg.get("tts_voice", None),
             speed=float(voice_cfg.get("tts_speed", 1.0)),
+            device=voice_cfg.get("tts_device", None),
         )
         # Warm the TTS model now so the first user turn doesn't pay load cost.
         if hasattr(self.tts._impl, "warmup"):

@@ -689,7 +689,7 @@ Warden is split into roles that can run on different machines on the same LAN. B
 | **Video** (security detector) | Warden URL it POSTs awareness to | `security/config/settings.yaml` under `warden.base_url` |
 | **Audio** (hologram) | Warden URL + Satellite URL | `voice/config/settings.yaml` under `dockbox.base_url`; `--remote <satellite-ip>` on launch |
 | **Ollama** | `OLLAMA_URL` | `data/env/env` |
-| **Satellite** (Pi audio relay) | Audio server IP | Pi TUI (`graice-tui.sh`) |
+| **Satellite** (Pi audio relay) | Audio server IP | Pi TUI (`warden-tui.sh`) |
 
 ### Example: split across three machines
 
@@ -831,8 +831,8 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) above for how mic an
 |------|------------|
 | `satellite_server.py` | HTTP audio relay (`:8766`). `GET /mic` streams 16 kHz PCM from the default mic; `POST /play` accepts a WAV body and plays it on the default speaker; `POST /cancel` stops playback (barge-in). |
 | `voice-button.py` | GPIO hold-to-talk button (gpiozero, BCM pin 17 to GND). |
-| `graice-tui.sh` | On-device settings menu: WiFi, Bluetooth, speaker/mic volume, mode selection, and start/stop. |
-| `boot-defaults.sh` + `graice-boot-defaults.service` | Restores saved WiFi, Bluetooth, and default audio sink/source at boot. |
+| `warden-tui.sh` | On-device settings menu: WiFi, Bluetooth, speaker/mic volume, mode selection, and start/stop. |
+| `boot-defaults.sh` + `warden-boot-defaults.service` | Restores saved WiFi, Bluetooth, and default audio sink/source at boot. |
 | `install-deps-pi.sh` | apt-based installer for Raspberry Pi OS. |
 
 ### Install on the Pi
@@ -854,7 +854,7 @@ bash install.sh
 5. Configure the Pi from the TUI:
 
 ```bash
-bash satellite/graice-tui.sh
+bash satellite/warden-tui.sh
 ```
 
 Pick a **mode** and, if using the Pi as a satellite, set the **audio server IP** to the laptop running the voice client.

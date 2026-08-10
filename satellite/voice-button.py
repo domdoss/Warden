@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Graice GPIO voice button — hold-to-talk, with barge-in.
+"""Warden GPIO voice button — hold-to-talk, with barge-in.
 
 Hold the button (BCM 17, physical pin 11, to GND pin 9) to record from the default mic; release to send.
-Graice transcribes via Groq Whisper, the orchestrator answers, and the reply is
+Warden transcribes via Groq Whisper, the orchestrator answers, and the reply is
 spoken out loud via Groq TTS (Celeste-PlayAI, female American) to the default speaker.
 
-BARGE-IN (set in stone): pressing the button while Graice is talking IMMEDIATELY
+BARGE-IN (set in stone): pressing the button while Warden is talking IMMEDIATELY
 stops the playback and starts listening to the user. Every time. This works because
 on_press kills the aplay process and bumps a generation counter; any speak still in
 flight sees a stale generation and aborts before it can play.
@@ -32,7 +32,7 @@ JID = "owner@local"
 SENDER = "User"
 
 # ── Mode / endpoint selection ────────────────────────────────────────────────
-# Reads ~/.graice-mode (KEY=VALUE, written by the Pi TUI) so the same button
+# Reads ~/.warden-mode (KEY=VALUE, written by the Pi TUI) so the same button
 # script works in three roles:
 #   MODE=standalone  → record on the Pi, POST WAV to Warden, Groq TTS on the Pi,
 #                      play on the Pi. BASE = WARDEN_URL (localhost:3200).
@@ -47,13 +47,15 @@ SENDER = "User"
 #                      Warden at localhost:3200. The laptop's audio server does
 #                      STT/TTS and talks back to the Pi's Warden.
 #
-# Press scheme in satellite mode: press-only toggle. Each press POSTs /press to
-# AUDIO_SERVER_URL; the audio server's /press handler triggers a turn with
-# barge-in semantics (a press while it's speaking/processing interrupts and
-# starts a new turn, exactly like clicking its on-screen button). Release is a
-# no-op — the audio server's VAD (record_until_silence) stops each turn's
-# recording naturally. /cancel is also exposed on the audio server for an
-# explicit external barge-in if ever needed.
+# Press scheme in satellite mode: hold-to-talk. A press POSTs /press to
+# AUDIO_SERVER_URL (the audio server starts a held recording with barge-in
+# semantics — a press while it's speaking/processing interrupts and starts a
+# new turn, exactly like clicking its on-screen button). The matching release
+# POSTs /release, which stops the held recording so the turn transcribes and
+# replies. With push_to_talk enabled (settings.yaml) the audio server records
+# the whole hold on /press with NO VAD, so /release is what ends the turn —
+# omit it and the recorder runs forever (UI stuck "listening"). /cancel is also
+# exposed on the audio server for an explicit external barge-in if ever needed.
 _MODE_DEFAULTS = {
     "MODE": "standalone",
     "WARDEN_URL": "http://localhost:3200",
@@ -63,9 +65,9 @@ _MODE_DEFAULTS = {
 
 
 def load_mode():
-    """Read ~/.graice-mode (KEY=VALUE); fall back to standalone defaults."""
+    """Read ~/.warden-mode (KEY=VALUE); fall back to standalone defaults."""
     cfg = dict(_MODE_DEFAULTS)
-    path = os.path.expanduser("~/.graice-mode")
+    path = os.path.expanduser("~/.warden-mode")
     try:
         with open(path) as f:
             for line in f:
@@ -478,6 +480,20 @@ class VoiceLoop:
         except Exception as e:
             log("satellite press failed: %s" % e)
 
+    def _satellite_release(self):
+        """POST /release to the audio server so it stops the held recording and
+        sends the turn. With push_to_talk the audio server records the whole hold
+        on /press (no VAD) and only finishes on /release — so this is mandatory,
+        not optional: without it the recorder runs forever (the UI stays "stuck
+        red" listening). Runs in a thread so GPIO callbacks stay fast."""
+        url = self.audio_server_url.rstrip("/") + "/release"
+        try:
+            req = urllib.request.Request(url, data=b"", method="POST")
+            urllib.request.urlopen(req, timeout=5).read()
+            log("satellite release → %s ok" % url)
+        except Exception as e:
+            log("satellite release failed: %s" % e)
+
     # ── callbacks (must return fast; slow work goes to a thread) ─────────
     def on_press(self):
         if self.mode in ("satellite", "both"):
@@ -496,8 +512,10 @@ class VoiceLoop:
 
     def on_release(self):
         if self.mode in ("satellite", "both"):
-            # Toggle scheme: release is a no-op. The audio server's VAD
-            # (record_until_silence) stops each turn's recording naturally.
+            # Push-to-talk: /press started a held recording (no VAD) on the
+            # audio server; /release stops it so the turn transcribes + replies.
+            # Without this the recorder runs forever (UI stuck "listening").
+            threading.Thread(target=self._satellite_release, daemon=True).start()
             return
         with self.lock:
             g = self.gen
@@ -536,9 +554,9 @@ def main():
     boop_path = make_tone(BOOP_FREQ, BOOP_MS)
     loop = VoiceLoop(buttons[0], beep_path, boop_path, mode=MODE, audio_server_url=AUDIO_SERVER_URL)
     if MODE in ("satellite", "both"):
-        log("Graice voice button ready (BCM %s) — %s mode, audio server=%s. Press triggers a turn." % (", ".join(str(p) for p in BUTTON_PINS), MODE.upper(), AUDIO_SERVER_URL or "(unset)"))
+        log("Warden voice button ready (BCM %s) — %s mode, audio server=%s. Press triggers a turn." % (", ".join(str(p) for p in BUTTON_PINS), MODE.upper(), AUDIO_SERVER_URL or "(unset)"))
     else:
-        log("Graice voice button ready (BCM %s) — STANDALONE mode, warden=%s. Hold to talk; press again to interrupt." % (", ".join(str(p) for p in BUTTON_PINS), WARDEN_URL))
+        log("Warden voice button ready (BCM %s) — STANDALONE mode, warden=%s. Hold to talk; press again to interrupt." % (", ".join(str(p) for p in BUTTON_PINS), WARDEN_URL))
     # Level-based push-to-talk: read the pin level directly and record while it
     # is pressed, stop when released. Immune to edge bounce — a transient glitch
     # is ignored unless the level is stable for two consecutive reads (~50ms).

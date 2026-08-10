@@ -1,11 +1,11 @@
 [Unit]
-Description=Graice boot defaults (WiFi / Bluetooth / audio restore)
+Description=Warden boot defaults (WiFi / Bluetooth / audio restore)
 After=pipewire.service wireplumber.service
 Wants=pipewire.service wireplumber.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/graice/Graice/tui/boot-defaults.sh
+ExecStart=/opt/warden/satellite/boot-defaults.sh
 RemainAfterExit=yes
 
 [Install]

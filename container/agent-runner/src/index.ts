@@ -451,11 +451,16 @@ function applySettingsSync(data: any) {
         if (m) ORCHESTRATOR_MODEL = m;
     }
     if (data.model !== undefined) {
-        ATLAS_MODEL = (data.model || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
+        ATLAS_MODEL = (data.model || '').replace(/^local:/, '');
     }
     if (data.hephaestusModel !== undefined) {
-        HEPHAESTUS_MODEL = (data.hephaestusModel || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
+        HEPHAESTUS_MODEL = (data.hephaestusModel || '').replace(/^local:/, '');
     }
+    // Per-agent tool-caller + artemis models — concrete values, no fallback.
+    if (data.byteModel !== undefined) BYTE_MODEL = (data.byteModel || '').replace(/^local:/, '');
+    if (data.dexterModel !== undefined) DEXTER_MODEL = (data.dexterModel || '').replace(/^local:/, '');
+    if (data.irisModel !== undefined) IRIS_MODEL = (data.irisModel || '').replace(/^local:/, '');
+    if (data.artemisModel !== undefined) ARTEMIS_MODEL = (data.artemisModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
         DRIVING_FORCE_ID = data.drivingForce || '';
     }
@@ -477,8 +482,13 @@ function applySettingsSync(data: any) {
     if (data.atlasCtx !== undefined) process.env.ATLAS_NUM_CTX = data.atlasCtx ? String(data.atlasCtx) : '';
     if (data.toolsCtx !== undefined) process.env.TOOLS_NUM_CTX = data.toolsCtx ? String(data.toolsCtx) : '';
     if (data.mercuryCtx !== undefined) process.env.MERCURY_NUM_CTX = data.mercuryCtx ? String(data.mercuryCtx) : '';
-    // Tool model follows SUBAGENT_MODEL (dashboard) → OLLAMA_CHAT_MODEL → orchestrator.
-    TOOL_MODEL = process.env.SUBAGENT_MODEL || process.env.OLLAMA_CHAT_MODEL || ORCHESTRATOR_MODEL || '';
+    // Per-agent num_ctx overrides — blank means the model's native window.
+    if (data.byteCtx !== undefined) process.env.BYTE_NUM_CTX = data.byteCtx ? String(data.byteCtx) : '';
+    if (data.dexterCtx !== undefined) process.env.DEXTER_NUM_CTX = data.dexterCtx ? String(data.dexterCtx) : '';
+    if (data.irisCtx !== undefined) process.env.IRIS_NUM_CTX = data.irisCtx ? String(data.irisCtx) : '';
+    if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
+    if (data.hephaestusCtx !== undefined) process.env.HEPHAESTUS_NUM_CTX = data.hephaestusCtx ? String(data.hephaestusCtx) : '';
+    if (data.sentryCtx !== undefined) process.env.SENTRY_NUM_CTX = data.sentryCtx ? String(data.sentryCtx) : '';
 }
 
 const IPC_RESULTS_DIR = '/workspace/ipc/results';
@@ -1105,14 +1115,20 @@ function delegateToolDef(s: SubAgentDef) {
 // share it (e.g. orchestrator=gemma4:latest, byte=granite); unloading a
 // shared model mid-turn crashes the orchestrator's next call (Ollama 500).
 let ORCHESTRATOR_MODEL = '';
-// Atlas/Artemis model — from dashboard Chat Model dropdown (input.model).
-// No baked-in default: when unset, Atlas falls back to the orchestrator model
-// (the dashboard global default), never to a hardcoded model string.
+// Atlas model — from its own dashboard dropdown (input.model). No hardcoded
+// fallback: when unset the agent errors (the host seeds it on first boot).
 let ATLAS_MODEL = '';
 // Hephaestus (coding specialist) model — from its own dashboard dropdown
-// (input.hephaestusModel). Falls back to the orchestrator model when unset,
-// never to a hardcoded string. Intended to be a frontier cloud model.
+// (input.hephaestusModel). No hardcoded fallback: when unset the agent errors
+// (seedPerAgentModelSettings on the host materializes a value on first boot).
 let HEPHAESTUS_MODEL = '';
+// Per-agent models for the tool callers + artemis. Each is a concrete value
+// selected from the Agents-panel dropdown (no blank, no `||` fallback). Empty →
+// the agent errors out rather than silently running on the wrong model.
+let BYTE_MODEL = '';
+let DEXTER_MODEL = '';
+let IRIS_MODEL = '';
+let ARTEMIS_MODEL = '';
 // Driving force — the orchestrator's selected preamble preset id
 // (data/driving-forces/<id>.md). Empty = built-in default preamble.
 // CONTEXT_CLEAR_AT is a timestamp from the host; when it changes, the
@@ -1241,10 +1257,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     emitJobsStatus();
     return jobId;
 }
-// Tool-calling sub-agent model (byte, dexter, iris) — from dashboard local:subagent_model.
-// No hardcoded fallback: SUBAGENT_MODEL (dashboard) → OLLAMA_CHAT_MODEL → orchestrator
-// model (settings). `let` so applySettingsSync() can re-sync it every turn from the host.
-let TOOL_MODEL = process.env.SUBAGENT_MODEL || process.env.OLLAMA_CHAT_MODEL || ORCHESTRATOR_MODEL || '';
 
 // Models that ALWAYS reason internally and cannot reliably honor think:false.
 // kimi-k2.6:cloud is the known offender: when a request is sent with think:false
@@ -1301,61 +1313,60 @@ async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number |
     } catch { return undefined; }
 }
 
-// Per-role num_ctx. The dashboard dropdown sets an override per agent role
-// (orchestrator/atlas/tools/mercury); the matching env var is the source of
-// truth. The override is CAPPED at the model's individual cap (fetched from
-// Ollama), so a dropdown value above the model's real window is clamped down
-// rather than being sent to a backend that would reject it. When a role has
-// NO override set we send NO num_ctx — the backend uses the model's own
-// native window (the one that actually works for that model, including image
-// requests). We never shove a hardcoded ctx at the model: the old
-// 262144/32768/30720/51200/16384 fallbacks fought the model's real window
-// (cloud backends 500'd on 262144 + image). Call fetchModelCtx once before the
-// loop so the cap cache is warm; getNumCtx reads it synchronously.
-function getNumCtx(model: string): number | undefined {
+// Per-agent num_ctx. Each agent has its own ctx override in settings (an env
+// var per agent); the caller passes it in explicitly — no model-identity
+// matching, no shared "toolcall" ctx, no `||` fallback chains. The override is
+// CAPPED at the model's individual native window (fetched from Ollama), so a
+// value above the model's real window is clamped down rather than sent to a
+// backend that would reject it. When an agent has NO override (blank in the
+// dropdown = "default") we send NO num_ctx — the backend uses the model's own
+// native window. We never shove a hardcoded ctx at the model. Call
+// fetchModelCtx once before the loop so the cap cache is warm; getNumCtx reads
+// it synchronously.
+function getNumCtx(model: string, ctxOverride?: string | number): number | undefined {
     const nativeMax = MODEL_CTX_CACHE.get(model); // undefined until fetchModelCtx populates it
     const cap = (v: number): number => (nativeMax && v > nativeMax) ? nativeMax : v;
-    if (model === ORCHESTRATOR_MODEL) {
-        const override = process.env.ORCHESTRATOR_NUM_CTX ? parseInt(process.env.ORCHESTRATOR_NUM_CTX, 10) : 0;
+    if (ctxOverride !== undefined && ctxOverride !== null && ctxOverride !== '') {
+        const n = typeof ctxOverride === 'number' ? ctxOverride : parseInt(String(ctxOverride), 10);
         // An explicit dashboard override wins over the native cap only when it
         // is SMALLER — so a small model (e.g. granite4.1:8b) can be pinned to
         // 16k to keep its KV cache in VRAM. An override above the cap is clamped.
-        if (override > 0) return cap(override);
+        if (n > 0) return cap(n);
     }
-    if (model === ATLAS_MODEL) {
-        const override = process.env.ATLAS_NUM_CTX ? parseInt(process.env.ATLAS_NUM_CTX, 10) : 0;
-        if (override > 0) return cap(override);
-    }
-    if (model === TOOL_MODEL) {
-        const toolsOverride = process.env.TOOLS_NUM_CTX ? parseInt(process.env.TOOLS_NUM_CTX, 10) : 0;
-        const subagentOverride = process.env.SUBAGENT_NUM_CTX ? parseInt(process.env.SUBAGENT_NUM_CTX, 10) : 0;
-        const override = toolsOverride || subagentOverride;
-        if (override > 0) return cap(override);
-    }
-    // Mercury (conversation compaction) — its own ctx override from the
-    // dashboard. Gated on sessionId so it only applies to the mercury summary
-    // run, not orchestrator/atlas runs that happen to share the same model.
-    if ((globalThis as any)._sessionId === 'mercury') {
-        const mercuryOverride = process.env.MERCURY_NUM_CTX ? parseInt(process.env.MERCURY_NUM_CTX, 10) : 0;
-        if (mercuryOverride > 0) return cap(mercuryOverride);
-    }
-    // Sentry runs on granite4.1:8b. Without a baked-in ctx Ollama loads at
-    // its 2048 default, the 9 tool schemas + system prompt overflow, and
-    // granite returns an empty response. The Sentry run-mode branch sets
-    // __sentryNumCtx before invoking the model — bake it in here for Sentry
-    // ONLY, independent of (and without touching) the orchestrator's
-    // dashboard ctx setting.
-    const sentryCtx = (globalThis as any).__sentryNumCtx;
-    if (sentryCtx) return cap(Number(sentryCtx));
-
     return undefined; // no override → send no num_ctx; backend uses the model's own native window
+}
+
+// Per-agent ctx override lookup, keyed by the agentName passed to runSubAgent.
+// Blank → the model's native window. Council seats inherit the Atlas ctx
+// (preserves prior behavior; council is dashboard-managed, not in the popover).
+const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
+    byte: () => process.env.BYTE_NUM_CTX || '',
+    dexter: () => process.env.DEXTER_NUM_CTX || '',
+    iris: () => process.env.IRIS_NUM_CTX || '',
+    artemis: () => process.env.ARTEMIS_NUM_CTX || '',
+    atlas: () => process.env.ATLAS_NUM_CTX || '',
+    hephaestus: () => process.env.HEPHAESTUS_NUM_CTX || '',
+    sentry: () => process.env.SENTRY_NUM_CTX || '',
+    'council-skeptic': () => process.env.ATLAS_NUM_CTX || '',
+    'council-pragmatist': () => process.env.ATLAS_NUM_CTX || '',
+    'council-synthesist': () => process.env.ATLAS_NUM_CTX || '',
+    'council-judge': () => process.env.ATLAS_NUM_CTX || '',
+};
+
+// The orchestrator loop serves both the orchestrator and Mercury (same loop,
+// sessionId distinguishes them). Mercury has its own ctx setting distinct from
+// the orchestrator's, so pick the right override.
+function orchestratorCtxOverride(): string {
+    if ((globalThis as any)._sessionId === 'mercury') return process.env.MERCURY_NUM_CTX || '';
+    return process.env.ORCHESTRATOR_NUM_CTX || '';
 }
 
 // Tell Ollama to unload a model immediately (free VRAM for the next agent's model).
 // Best-effort: a /api/generate call with keep_alive:0 evicts the model right away.
+// Skip the orchestrator's own model — it's the hot path and must stay loaded.
 async function unloadModel(ollamaUrl: string, model: string): Promise<void> {
-    if (model === ORCHESTRATOR_MODEL || model === TOOL_MODEL) {
-        log(`[unload] skipped ${model} — shared model`);
+    if (model === ORCHESTRATOR_MODEL) {
+        log(`[unload] skipped ${model} — orchestrator model (keep warm)`);
         return;
     }
     try {
@@ -1373,8 +1384,8 @@ async function unloadModel(ollamaUrl: string, model: string): Promise<void> {
 // instead of ~1500+). Before switching to a model, evict every OTHER model
 // currently loaded on the same Ollama server so the new model gets full VRAM.
 // Best-effort: queries /api/ps and sends keep_alive:0 for each non-keep model.
-// (unloadModel above can't handle this — it skips ORCHESTRATOR_MODEL and
-// TOOL_MODEL as "shared", which is exactly why both linger and contend.)
+// (unloadModel above can't handle this — it skips ORCHESTRATOR_MODEL as the
+// hot path, which is exactly why it lingers and contends.)
 async function unloadOtherModelsOnSameGpu(ollamaUrl: string, keepModel: string): Promise<void> {
     if (!keepModel) return;
     // Cloud models don't touch the local GPU, so there's nothing to evict for
@@ -1514,6 +1525,14 @@ async function runSubAgent(
     temperature = 1,
 ): Promise<{ content: string; modifiedFiles: string[] }> {
     const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+    // No hardcoded fallback: if this agent's model is empty (a manually-cleared
+    // setting), refuse to run rather than silently swapping in another model.
+    if (!model) {
+        log(`[${agentName}] ERROR: no model configured for ${agentName} — set it in the Agents panel. Refusing to fall back.`);
+        return { content: `Error: the ${agentName} sub-agent has no model configured (set it in the Agents panel). The task did not run.`, modifiedFiles: [] };
+    }
+    // Per-agent num_ctx override for this agent (blank → native window).
+    const ctxOverride = AGENT_CTX_OVERRIDE[agentName]?.() || '';
     const modifiedFiles = new Set<string>();
     // Safety bounds — important for "unlimited" agents (maxIterations<=0) that also
     // hold powerful tools (e.g. Atlas with Bash): cap wall-clock time and keep an
@@ -1598,9 +1617,9 @@ async function runSubAgent(
     {
         const payloadChars = JSON.stringify(messages).length + JSON.stringify(tools).length;
         const estTokens = Math.round(payloadChars / 3.5);
-        const ctx = getNumCtx(model);
+        const ctx = getNumCtx(model, ctxOverride);
         if (ctx && estTokens > ctx) {
-            log(`[${agentName}] WARNING: initial prompt ~${estTokens} tokens but num_ctx=${ctx} (model=${model}) — the system prompt and tool schemas will be truncated and the agent will misbehave. Raise the sub-agent ctx in dashboard settings.`);
+            log(`[${agentName}] WARNING: initial prompt ~${estTokens} tokens but num_ctx=${ctx} (model=${model}) — the system prompt and tool schemas will be truncated and the agent will misbehave. Raise the ${agentName} ctx in the Agents panel.`);
         }
     }
 
@@ -1630,7 +1649,7 @@ async function runSubAgent(
                 model,
                 messages,
                 tools,
-                options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model) },
+                options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride) },
                 keep_alive: 300,
                 // Only send think:true for models that support it — Ollama returns
                 // an error for non-thinking models (e.g. granite) with think:true.
@@ -1718,7 +1737,7 @@ async function runSubAgent(
                     log(`[${agentName}] Degenerate output (${content.length} chars, ${alnum} alphanumeric) — reporting failure instead of relaying it`);
                     await unloadModel(OLLAMA_URL, model);
                     return {
-                        content: `Error: the ${agentName} sub-agent produced degenerate output ("${content.slice(0, 40)}") and did NOT complete the task. Likely cause: sub-agent model or context misconfigured (model=${model}, num_ctx=${getNumCtx(model)}). Tell the user the task failed — do not claim success.`,
+                        content: `Error: the ${agentName} sub-agent produced degenerate output ("${content.slice(0, 40)}") and did NOT complete the task. Likely cause: sub-agent model or context misconfigured (model=${model}, num_ctx=${getNumCtx(model, ctxOverride)}). Tell the user the task failed — do not claim success.`,
                         modifiedFiles: [...modifiedFiles],
                     };
                 }
@@ -1756,6 +1775,12 @@ interface ContainerInput {
     imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
     model?: string;
     hephaestusModel?: string;
+    // Per-agent models — every agent has its own concrete model (no blank, no
+    // runtime fallback). The host resolves each from its router_state key.
+    byteModel?: string;
+    dexterModel?: string;
+    irisModel?: string;
+    artemisModel?: string;
     drivingForce?: string;
     contextClearAt?: string;
     orchestratorModel?: string;
@@ -2132,27 +2157,30 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     };
     messages.push({ role: 'system', content: buildSystemPrompt() });
     let prompt = input.prompt;
-    // Three-model system — every model comes from dashboard settings, re-synced each
-    //   turn via applySettingsSync() (no hardcoded fallbacks; a missing setting is
-    //   surfaced as an error instead of silently swapped for a baked-in model):
-    //   orchestrator → input.orchestratorModel (dashboard Default Model = orchestrator:model)
-    //   tool callers (byte/dexter/iris) → SUBAGENT_MODEL env (dashboard local:subagent_model) → OLLAMA_CHAT_MODEL → orchestrator
-    //   atlas/artemis → input.model (dashboard Chat Model dropdown) → orchestrator model
+    // Per-agent model system — every agent has its own concrete model from
+    // dashboard settings, re-synced each turn via applySettingsSync(). No
+    // hardcoded fallbacks: a missing setting is surfaced as an error instead of
+    // silently swapped for a baked-in model. The host's seedPerAgentModelSettings
+    // materializes a value for every key on first boot, so these are never empty
+    // in normal use; a manually-cleared key errors loudly.
     let model = (input.orchestratorModel || '').replace(/^local:/, '');
     if (!model) {
         writeOutput({ status: 'error', result: null, error: 'No orchestrator model configured in dashboard settings (set orchestrator:model). Refusing to fall back to a hardcoded default.' });
         return;
     }
     ORCHESTRATOR_MODEL = model;
-    ATLAS_MODEL = (input.model || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
-    HEPHAESTUS_MODEL = (input.hephaestusModel || '').replace(/^local:/, '') || ORCHESTRATOR_MODEL;
+    ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
+    HEPHAESTUS_MODEL = (input.hephaestusModel || '').replace(/^local:/, '');
+    BYTE_MODEL = (input.byteModel || '').replace(/^local:/, '');
+    DEXTER_MODEL = (input.dexterModel || '').replace(/^local:/, '');
+    IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
+    ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
     DRIVING_FORCE_ID = input.drivingForce || '';
     CONTEXT_CLEAR_AT = input.contextClearAt || '';
     lastContextClearAt = CONTEXT_CLEAR_AT; // first sight — don't arm a clear
     COUNCIL_MODEL_SKEPTIC = (input.councilSkepticModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_PRAGMATIST = (input.councilPragmatistModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
-    TOOL_MODEL = process.env.SUBAGENT_MODEL || process.env.OLLAMA_CHAT_MODEL || ORCHESTRATOR_MODEL || '';
     const toolContext = { chatJid: input.chatJid, groupFolder: input.groupFolder, isMain: input.isMain, userId: process.env.WARDEN_USER_ID || '' };
 
     if (input.activeIdea) {
@@ -2330,7 +2358,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     log(`[breaker] Forcing a tool-free round (circlingUseless was ${circlingUselessRounds})`);
                     appendStatus({ phase: 'tool', label: 'Loop breaker: forcing a no-tools round to extract an answer' });
                 }
-                const _orchCtx = getNumCtx(model);
+                const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
                 log(`[ctx] ${model} sending num_ctx=${_orchCtx ?? '(none → backend default)'} (ORCHESTRATOR_NUM_CTX=${process.env.ORCHESTRATOR_NUM_CTX || '(unset)'}, ATLAS_NUM_CTX=${process.env.ATLAS_NUM_CTX || '(unset)'}, isOrchModel=${model === ORCHESTRATOR_MODEL})`);
                 const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: _orchCtx } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
@@ -2719,7 +2747,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 ],
                                 stream: false,
                                 keep_alive: -1,
-                                options: { num_predict: 1024, temperature: 0.2, num_ctx: getNumCtx(model) },
+                                options: { num_predict: 1024, temperature: 0.2, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
                             }),
                         });
                         if (verifierResp.ok) {
@@ -2760,7 +2788,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         try {
                             const trimmedRetry = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
                             if (trimmedRetry.length !== messages.length) messages.length = 0, messages.push(...trimmedRetry);
-                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model) } };
+                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
                             if (toolIteration <= 1 || modelRequiresThink(model)) {
                                 retryBody.think = true;
                             } else {
@@ -2880,7 +2908,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     messages: forcedMessages,
                     stream: true,
                     keep_alive: -1,
-                    options: { num_predict: 8192, temperature: 1, num_ctx: getNumCtx(model) },
+                    options: { num_predict: 8192, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
                 if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
@@ -3195,7 +3223,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 messages: ptMessages,
                                 stream: false,
                                 keep_alive: -1,
-                                options: { num_predict: 1024, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL) },
+                                options: { num_predict: 1024, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL, process.env.ATLAS_NUM_CTX || '') },
                             }),
                         });
                         if (resp.ok) {
@@ -3492,7 +3520,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // exchange, not the oldest. Older messages drop off the top if over budget.
             const transcript = history ? JSON.stringify(history, null, 2).slice(-12000) : '(conversation history unavailable)';
             const auditTask = `${focus ? `Focus your audit on: ${focus}\n\n` : ''}Audit the following conversation (most recent messages last). Each entry has a sender_name and an is_bot_message flag — is_bot_message=1 is the AI assistant, otherwise it's the user.\n\n${transcript}`;
-            const artemisResult = await runSubAgent('artemis', ATLAS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, auditTask, context, def.maxIterations, abortFlag, (tName, argsSummary, resultPreview) => {
+            const artemisResult = await runSubAgent('artemis', ARTEMIS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, auditTask, context, def.maxIterations, abortFlag, (tName, argsSummary, resultPreview) => {
                 jobRecord.toolCallCount++;
                 jobRecord.lastAction = `${tName}(${argsSummary})`;
                 jobRecord.lastActionAt = Date.now();
@@ -3730,11 +3758,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 tools = [...tools, ...mcpExtra.filter((t: any) => !existing.has(t.function?.name))];
                 log(`[${toolName}] Merged ${mcpExtra.length} MCP tool(s) from servers: ${def.mcpServers!.join(', ')}`);
             }
+            // Each tool caller runs on its OWN per-agent model (byte/dexter/iris
+            // are no longer shared). No fallback: an empty model errors inside
+            // runSubAgent rather than swapping in another model.
+            const PER_AGENT_MODEL: Record<string, string> = { byte: BYTE_MODEL, dexter: DEXTER_MODEL, iris: IRIS_MODEL };
+            const subModel = PER_AGENT_MODEL[toolName] || '';
             // Pass def.temperature (10th arg) so byte/dexter/iris honor their
             // SubAgentDef temperature override — without it the default `1`
             // applies and e.g. Iris's temperature:0 was inert. abortFlag +
             // onToolCall slots are unused on the synchronous path (undefined).
-            const saResult = await runSubAgent(toolName, TOOL_MODEL, def.systemPrompt, tools, task, context, def.maxIterations, undefined, undefined, def.temperature);
+            const saResult = await runSubAgent(toolName, subModel, def.systemPrompt, tools, task, context, def.maxIterations, undefined, undefined, def.temperature);
             result = saResult.content;
             if (saResult.modifiedFiles.length > 0) log(`[${toolName}] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
             writeStatus({ phase: toolName, label: `${def.label} complete`, ts: Date.now() });
@@ -3954,19 +3987,22 @@ async function main() {
                 isMain: containerInput.isMain ?? true,
                 userId: process.env.WARDEN_USER_ID || '',
             };
-            // The host resolves the model (sentry:model router key) and passes it
-            // in containerInput.model. The fallback here is intentionally generic
-            // because the host is the source of truth for the dashboard setting.
-            const model = containerInput.model || 'granite4:latest';
-            // Resolve orchestrator-scoped num_ctx against this model so the
-            // dashboard context override applies to Sentry too.
-            if (model) ORCHESTRATOR_MODEL = model;
-            // Sentry runs on granite4.1:8b. Without a baked-in ctx Ollama loads
-            // at its 2048 default, the 9 tool schemas + system prompt overflow,
-            // and granite returns an empty response ("Task completed (no
-            // response)"). Flag this run so getNumCtx bakes in 8k for Sentry
-            // ONLY — never touch the orchestrator's dashboard ctx setting.
-            (globalThis as any).__sentryNumCtx = 8192;
+            // The host resolves the model (sentry:model router key, seeded from
+            // the orchestrator model on first boot) and passes it in
+            // containerInput.model. No hardcoded fallback: an empty model errors
+            // out instead of silently running on a baked-in model.
+            const model = (containerInput.model || '').replace(/^local:/, '');
+            if (!model) {
+                writeOutput({ status: 'error', result: null, error: 'No sentry model configured (set sentry:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
+                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
+                process.exit(0);
+            }
+            // Track the sentry model so unloadModel keeps it consistent.
+            ORCHESTRATOR_MODEL = model;
+            // Sentry's num_ctx comes from its own setting (local:sentry_ctx, seeded
+            // to 8192 on first boot so granite4.1:8b's 9 tool schemas + system
+            // prompt don't overflow the 2048 default). getNumCtx picks it up via
+            // the AGENT_CTX_OVERRIDE['sentry'] entry — no hardcoded bake here.
             // Load the user-editable rules from security/sentry.md and inject them
             // as trusted instructions. The user writes freeform notes like "I will
             // be out all day, anyone is an alert". Treat those notes as the primary
