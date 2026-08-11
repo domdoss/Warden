@@ -119,10 +119,106 @@
   }
   .footer .ts{text-transform:uppercase}
 
+  /* ── Look Out For editor ── */
+  .lookout{
+    flex-shrink:0;padding:8px 16px 8px;border-top:1px solid rgba(199,125,255,0.12);
+    display:flex;flex-direction:column;gap:4px;background:rgba(0,0,0,0.18);
+  }
+  .lookout-head{display:flex;align-items:baseline;gap:8px}
+  .lookout-label{font-size:9px;font-weight:600;letter-spacing:1.5px;color:#c77dff;
+    text-transform:uppercase;text-shadow:0 0 6px rgba(199,125,255,0.4)}
+  .lookout-hint{font-size:8px;color:rgba(199,125,255,0.25);letter-spacing:0.5px}
+  .lookout-input{
+    width:100%;resize:vertical;min-height:34px;max-height:160px;
+    background:rgba(199,125,255,0.04);border:1px solid rgba(199,125,255,0.18);
+    border-radius:4px;padding:6px 8px;font-family:inherit;font-size:12px;line-height:1.5;
+    color:rgba(240,225,255,0.92);outline:none;user-select:text;-webkit-user-select:text;
+    transition:border-color 0.15s,background 0.15s;
+  }
+  .lookout-input:focus{border-color:rgba(199,125,255,0.5);background:rgba(199,125,255,0.07)}
+  .lookout-input::placeholder{color:rgba(199,125,255,0.22);font-style:italic}
+  .lookout-status{font-size:8px;color:rgba(199,125,255,0.3);letter-spacing:0.5px;height:10px}
+
+  /* ── structured JSON digest rendering (UI formats; model only emits JSON) ── */
+  .body .summary-text .digest-title{display:block;color:#f0e0ff;font-size:15px;
+    letter-spacing:0.3px;margin:0 0 4px;text-shadow:0 0 10px rgba(199,125,255,0.6);
+    font-weight:700;text-transform:none}
+  .body .summary-text .digest-summary{font-size:13px;color:rgba(240,225,255,0.78);
+    border-left:2px solid rgba(199,125,255,0.4);padding:2px 0 2px 10px;margin:0 0 14px;
+    background:rgba(199,125,255,0.03);border-radius:0 4px 4px 0}
+  .body .summary-text .alerts{border:1px solid rgba(255,170,0,0.4);border-radius:5px;
+    background:rgba(255,170,0,0.07);padding:8px 10px 10px;margin:0 0 14px}
+  .body .summary-text .alerts-head{font-size:11px;font-weight:700;letter-spacing:1px;
+    color:#ffaa00;text-transform:uppercase;margin-bottom:6px;text-shadow:0 0 6px rgba(255,170,0,0.4)}
+  .body .summary-text .alerts ul{margin:0;padding-left:18px}
+  .body .summary-text .alerts li{font-size:13px;color:#ffd070;margin-bottom:4px}
+  .body .summary-text .alerts li::before{content:'⚠';color:#ffaa00}
+
   /* scrollbar */
   .body::-webkit-scrollbar{width:3px}
   .body::-webkit-scrollbar-track{background:transparent}
   .body::-webkit-scrollbar-thumb{background:rgba(199,125,255,0.15);border-radius:2px}
+
+  /* ── Actionable scanner panel ── */
+  .scan-panel.body{padding:0;display:flex;flex-direction:column}
+  .scan-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+    padding:8px 12px;border-bottom:1px solid rgba(199,125,255,0.12);
+    font-size:11px;color:rgba(230,210,255,0.85)}
+  .scan-toolbar .seg{display:inline-flex;border:1px solid rgba(199,125,255,0.25);
+    border-radius:4px;overflow:hidden}
+  .scan-toolbar .seg button{background:transparent;border:none;color:rgba(230,210,255,0.7);
+    font-family:inherit;font-size:10px;letter-spacing:0.5px;padding:3px 8px;cursor:pointer;
+    text-transform:uppercase;transition:background 0.15s,color 0.15s}
+  .scan-toolbar .seg button.active{background:rgba(199,125,255,0.18);color:#e8d4ff}
+  .scan-toolbar .seg button:hover:not(.active){background:rgba(199,125,255,0.07)}
+  .scan-btn{background:rgba(199,125,255,0.12);border:1px solid rgba(199,125,255,0.35);
+    color:#e8d4ff;font-family:inherit;font-size:10px;letter-spacing:0.5px;padding:3px 10px;
+    border-radius:4px;cursor:pointer;text-transform:uppercase}
+  .scan-btn:hover{background:rgba(199,125,255,0.22)}
+  .scan-btn.busy{opacity:0.6;pointer-events:none}
+  .scan-toggle{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+  .scan-toggle .sw{width:28px;height:14px;border-radius:8px;background:rgba(199,125,255,0.15);
+    border:1px solid rgba(199,125,255,0.3);position:relative;transition:background 0.15s}
+  .scan-toggle .sw::after{content:'';position:absolute;top:1px;left:1px;width:10px;height:10px;
+    border-radius:50%;background:#c77dff;transition:left 0.15s}
+  .scan-toggle.on .sw{background:rgba(120,255,160,0.25);border-color:rgba(120,255,160,0.4)}
+  .scan-toggle.on .sw::after{left:15px;background:#a0ffc0}
+  .scan-toggle .lbl{font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:rgba(230,210,255,0.7)}
+  .scan-chats{flex:1;min-width:120px;background:rgba(199,125,255,0.04);
+    border:1px solid rgba(199,125,255,0.18);border-radius:4px;padding:3px 7px;
+    font-family:inherit;font-size:10px;color:rgba(240,225,255,0.85);outline:none}
+  .scan-chats:focus{border-color:rgba(199,125,255,0.5)}
+  .scan-chats::placeholder{color:rgba(199,125,255,0.22)}
+  .scan-meta{font-size:8px;color:rgba(199,125,255,0.3);letter-spacing:0.5px;margin-left:auto}
+  .scan-section{padding:10px 12px 4px}
+  .scan-section h3{font-size:9px;font-weight:700;letter-spacing:1.2px;color:#c77dff;
+    text-transform:uppercase;margin:0 0 8px;text-shadow:0 0 6px rgba(199,125,255,0.4)}
+  .scan-item{display:flex;flex-direction:column;gap:3px;padding:8px 10px;margin-bottom:7px;
+    border:1px solid rgba(199,125,255,0.14);border-radius:5px;
+    background:rgba(199,125,255,0.03)}
+  .scan-item .si-top{display:flex;align-items:baseline;gap:6px}
+  .scan-item .si-kind{font-size:8px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;
+    padding:1px 5px;border-radius:3px;flex-shrink:0}
+  .scan-item .si-kind.task{background:rgba(120,180,255,0.15);color:#9cc4ff;border:1px solid rgba(120,180,255,0.3)}
+  .scan-item .si-kind.event{background:rgba(120,255,160,0.15);color:#a0ffc0;border:1px solid rgba(120,255,160,0.3)}
+  .scan-item .si-title{font-size:12px;color:rgba(240,225,255,0.95);flex:1;word-break:break-word}
+  .scan-item .si-src{font-size:8px;color:rgba(199,125,255,0.35);letter-spacing:0.5px;
+    text-transform:uppercase;flex-shrink:0}
+  .scan-item .si-meta{font-size:10px;color:rgba(199,125,255,0.5);padding-left:2px}
+  .scan-item .si-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-left:2px}
+  .scan-item input,.scan-item select{background:rgba(199,125,255,0.05);
+    border:1px solid rgba(199,125,255,0.2);border-radius:3px;padding:2px 6px;
+    font-family:inherit;font-size:10px;color:rgba(240,225,255,0.9);outline:none;max-width:100%}
+  .scan-item input:focus,.scan-item select:focus{border-color:rgba(199,125,255,0.5)}
+  .scan-item .si-acts{display:flex;gap:6px;margin-left:auto}
+  .scan-item .si-btn{font-family:inherit;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;
+    padding:2px 8px;border-radius:3px;cursor:pointer;border:1px solid transparent}
+  .scan-item .si-btn.confirm{background:rgba(120,255,160,0.15);color:#a0ffc0;border-color:rgba(120,255,160,0.35)}
+  .scan-item .si-btn.confirm:hover{background:rgba(120,255,160,0.25)}
+  .scan-item .si-btn.dismiss{background:rgba(255,100,100,0.1);color:#ff9090;border-color:rgba(255,100,100,0.25)}
+  .scan-item .si-btn.dismiss:hover{background:rgba(255,100,100,0.2)}
+  .scan-empty{font-size:11px;color:rgba(199,125,255,0.3);padding:14px 12px;font-style:italic}
+  .scan-done{opacity:0.45}
 </style>
 </head>
 <body>
@@ -139,8 +235,32 @@
     <div class="tab active" data-span="hourly">Hourly</div>
     <div class="tab" data-span="daily">Daily</div>
     <div class="tab" data-span="weekly">Weekly</div>
+    <div class="tab" data-span="actionable">Actionable</div>
   </div>
-  <div class="body"><div class="empty">No digest yet — Iris compiles these automatically.</div></div>
+  <div class="body" id="digest-body"><div class="empty">No digest yet — Iris compiles these automatically.</div></div>
+  <div class="body scan-panel" id="scan-panel" style="display:none">
+    <div class="scan-toolbar">
+      <span class="seg" id="scan-span-seg">
+        <button data-span="hourly">1h</button>
+        <button data-span="daily" class="active">24h</button>
+        <button data-span="weekly">7d</button>
+      </span>
+      <button class="scan-btn" id="scan-now-btn">Scan now</button>
+      <label class="scan-toggle" id="scan-auto-toggle"><span class="sw"></span><span class="lbl">Auto-accept</span></label>
+      <input class="scan-chats" id="scan-chats" placeholder="allowed chats: telegram,slack (blank = all)" title="Which chat channels to scan — comma-separated (telegram, slack, whatsapp, web). Blank = all.">
+      <span class="scan-meta" id="scan-meta"></span>
+    </div>
+    <div class="scan-section" id="scan-pending"></div>
+    <div class="scan-section" id="scan-decided" style="display:none"></div>
+  </div>
+  <div class="lookout" id="lookout">
+    <div class="lookout-head">
+      <span class="lookout-label">👀 Look Out For</span>
+      <span class="lookout-hint">appended to the bottom of every digest</span>
+    </div>
+    <textarea class="lookout-input" id="lookout-input" placeholder="Things you're watching for — a specific event, a pending reply, a package arriving…"></textarea>
+    <div class="lookout-status" id="lookout-status"></div>
+  </div>
   <div class="footer"><span></span><span class="ts"></span></div>
 </div>
 <script>
@@ -169,7 +289,20 @@
   }
 
   var body=document.querySelector('.body'),footerTs=document.querySelector('.footer .ts'),
-      tabs=document.querySelectorAll('.tab'),config=null,activeSpan='hourly',interval=null;
+      tabs=document.querySelectorAll('.tab'),config=null,activeSpan='hourly',interval=null,
+      lookoutInput=document.getElementById('lookout-input'),
+      lookoutStatus=document.getElementById('lookout-status');
+  // ── Actionable scanner ──
+  var scanPanel=document.getElementById('scan-panel'),
+      digestBody=document.getElementById('digest-body'),
+      scanPending=document.getElementById('scan-pending'),
+      scanDecided=document.getElementById('scan-decided'),
+      scanNowBtn=document.getElementById('scan-now-btn'),
+      scanAutoToggle=document.getElementById('scan-auto-toggle'),
+      scanChatsInput=document.getElementById('scan-chats'),
+      scanMeta=document.getElementById('scan-meta'),
+      scanSpanSeg=document.getElementById('scan-span-seg'),
+      scanSpan='daily',scanState=null,scanChatsTimer=null;
 
   async function loadConfig(){
     // The pywebview bridge (window.pywebview.api) is injected into the host
@@ -178,14 +311,16 @@
     // quickly until the bridge is ready, then start the slow poll.
     var tries=0;
     function whenReady(){
-      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ fetchDigest(); }
+      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ refresh(); loadLookout(); }
       else if(tries++ < 60){ setTimeout(whenReady, 250); }
     }
     whenReady();
     // Hourly digests land on the cron, so poll often enough that a freshly
-    // generated summary shows up without a manual refresh.
-    interval=setInterval(fetchDigest,20000);
+    // generated summary shows up without a manual refresh. The unified refresh
+    // dispatches to the scan panel when the Actionable tab is active.
+    interval=setInterval(refresh,20000);
   }
+  function refresh(){ if(activeSpan==='actionable') fetchScan(); else fetchDigest(); }
 
   // Fetch a digest. span (optional) overrides the mutable activeSpan — the
   // Generate poll passes the span captured at click time so a mid-poll tab
@@ -194,6 +329,7 @@
   // defaults to true for tab clicks / interval / focus refreshes.
   async function fetchDigest(span, render){
     var useSpan=span||activeSpan, doRender=render!==false;
+    if(activeSpan==='actionable'){ return ''; }
     try{
       if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api){if(doRender)showEmpty();return ''}
       var raw=await window.pywebview.api.warden_api('/api/summaries?span='+useSpan);
@@ -202,7 +338,7 @@
       if(!d||!d.summaries||!d.summaries.length){if(doRender)showEmpty();return ''}
       var s=d.summaries[0];
       if(doRender){
-        body.innerHTML='<div class="summary-text">'+renderMd(s.text)+'</div>';
+        body.innerHTML='<div class="summary-text">'+renderDigestOrMd(s.text)+'</div>';
         footerTs.textContent=s.generated_at||'';
       }
       return s.generated_at||'';
@@ -214,12 +350,56 @@
     footerTs.textContent='';
   }
 
+  // ── Look Out For editor ── loads/saves LOOK_OUT_FOR.md via /api/lookout.
+  // The note is also baked into every published digest by the agent-runner
+  // (## 👀 Look Out For), so it appears inside the rendered digest above AND in
+  // this editor below. Loaded once at startup; we deliberately do NOT reload on
+  // focus/visibility because that would clobber unsaved edits. Autosave is
+  // debounced on input + immediate on blur.
+  async function loadLookout(){
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      var raw=await window.pywebview.api.warden_api('/api/lookout');
+      var d=raw?JSON.parse(raw):null;
+      if(d&&typeof d.text==='string'){ lookoutInput.value=d.text; }
+    }catch(e){}
+  }
+  var lookoutSaveTimer=null;
+  function scheduleLookoutSave(){
+    if(lookoutSaveTimer)clearTimeout(lookoutSaveTimer);
+    lookoutSaveTimer=setTimeout(saveLookout,800);
+  }
+  async function saveLookout(){
+    if(lookoutSaveTimer){clearTimeout(lookoutSaveTimer);lookoutSaveTimer=null;}
+    try{
+      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
+      lookoutStatus.textContent='saving…';
+      await window.pywebview.api.warden_api('/api/lookout','POST',JSON.stringify({text:lookoutInput.value}));
+      lookoutStatus.textContent='saved';
+      setTimeout(function(){if(lookoutStatus.textContent==='saved')lookoutStatus.textContent='';},1500);
+    }catch(e){ lookoutStatus.textContent='save failed'; }
+  }
+  if(lookoutInput){
+    lookoutInput.addEventListener('input',scheduleLookoutSave);
+    lookoutInput.addEventListener('blur',saveLookout);
+  }
+
   tabs.forEach(function(t){
     t.addEventListener('click',function(){
       tabs.forEach(function(x){x.classList.remove('active')});
       t.classList.add('active');
       activeSpan=t.dataset.span;
-      fetchDigest();
+      var isScan=activeSpan==='actionable';
+      // The Actionable tab swaps the digest body for the scanner panel and
+      // hides the Look-Out-For editor (it belongs to the digest). The Generate
+      // button is digest-only — hide it on the scanner tab.
+      scanPanel.style.display=isScan?'flex':'none';
+      digestBody.style.display=isScan?'none':'block';
+      var lookout=document.getElementById('lookout');
+      if(lookout) lookout.style.display=isScan?'none':'flex';
+      var genBtn=document.getElementById('gen-btn');
+      if(genBtn) genBtn.style.visibility=isScan?'hidden':'visible';
+      refresh();
     });
   });
 
@@ -230,9 +410,9 @@
   // Generate now: POST /api/digest/generate?span=X — triggers the SAME grounded
   // path as the cron (buildDigestContext: real calendar/tasks/bio/weather/notes),
   // not a free-form chat that lets Iris fabricate items (the "10 AM sync" was
-  // invented because the chat path skipped grounding). Iris compiles async and
-  // POSTs to /api/summaries, so poll until the fresh digest lands (timestamp
-  // changes), up to ~90s.
+  // invented because the chat path skipped grounding). The model compiles async
+  // and the runner POSTs to /api/summaries, so poll until the fresh digest lands
+  // (timestamp changes). No time cap — it waits until the result is in.
   var genBtn=document.getElementById('gen-btn');
   if(genBtn)genBtn.addEventListener('click',async function(){
     if(genBtn.classList.contains('busy'))return;
@@ -245,7 +425,6 @@
         await window.pywebview.api.warden_api('/api/digest/generate?span='+span,'POST','{}');
       }
     }catch(e){}
-    var polls=0;
     function wait(){
       setTimeout(async function(){
         // Fetch the span captured at click time, WITHOUT rendering — we only
@@ -260,8 +439,7 @@
           if(activeSpan===span) await fetchDigest(span,true);
           genBtn.classList.remove('busy'); genBtn.textContent='Generate'; return;
         }
-        if(polls++<22){ wait(); }
-        else{ genBtn.classList.remove('busy'); genBtn.textContent='Generate'; }
+        wait();
       },4000);
     }
     wait();
@@ -328,6 +506,127 @@
     flushTable();closeList();flush();
     return out.join('');
   }
+  // Structured JSON digest renderer. The model emits a JSON object
+  // {title, summary, alerts, blocks:[{icon,label,type,items|text}]}; the UI
+  // owns all formatting. Icon keys map to emoji here so the model never has to
+  // reproduce emoji (small models mangle them). Falls back to renderMd if the
+  // text isn't JSON (legacy digest, or a model that ignored the schema).
+  var SPAN_ICON={hourly:'🕒',daily:'📋',weekly:'🗓️'};
+  var SPAN_TITLE={hourly:'Hourly Digest',daily:'Daily Digest',weekly:'Weekly Roundup'};
+  var ICONS={inbox:'📦',calendar:'📅',tasks:'✅',weather:'🌤️',nudge:'💡',review:'📝',tomorrow:'👀'};
+  function inlineMd(h){
+    h=h.replace(/`([^`]+)`/g,'<code>$1</code>');
+    h=h.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    h=h.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+    return h;
+  }
+  function badgeFrom(s){
+    return s.replace(/^\[([a-zA-Z -]+)\]\s*/,function(m,stat){
+      var c=stat.toLowerCase().replace(/\s/g,'-');
+      return '<span class="badge '+c+'">'+stat+'</span> ';
+    });
+  }
+  // Lenient digest parser. The small model sometimes emits "blocks" as several
+  // separate top-level "blocks": {…} keys (one per block) instead of a single
+  // "blocks": [ … ] array. JSON.parse silently keeps only the last duplicate
+  // key, so the renderer would lose every block but one and then crash on the
+  // non-array. This scans the raw text for every "blocks" value (array OR
+  // object), balanced over braces/brackets and string-aware, and collects them
+  // into a single array — so both shapes render the same. title/summary/alerts
+  // come from JSON.parse when the whole blob is valid, else a regex fallback.
+  function _balanced(raw,j,open,close){
+    var depth=0,inStr=false,esc=false;
+    for(var p=j;p<raw.length;p++){
+      var c=raw.charAt(p);
+      if(inStr){ if(esc)esc=false; else if(c==='\\')esc=true; else if(c==='"')inStr=false; continue; }
+      if(c==='"'){inStr=true;continue;}
+      if(c===open)depth++;
+      else if(c===close){depth--; if(depth===0)return p;}
+    }
+    return -1;
+  }
+  function parseDigestLoose(raw){
+    var blocks=[], i=0;
+    while(true){
+      var k=raw.indexOf('"blocks"', i);
+      if(k<0) break;
+      var j=k+8;
+      while(j<raw.length && /[\s:]/.test(raw.charAt(j))) j++;
+      var ch=raw.charAt(j);
+      if(ch!=='[' && ch!=='{'){ i=k+8; continue; }
+      var end=_balanced(raw, j, ch, ch==='['?']':'}');
+      if(end<0){ i=k+8; continue; }
+      try{
+        var val=JSON.parse(raw.slice(j, end+1));
+        if(Array.isArray(val)){ for(var x=0;x<val.length;x++) blocks.push(val[x]); }
+        else blocks.push(val);
+      }catch(e){}
+      i=end+1;
+    }
+    var title='', summary='', alerts=[];
+    var full=null;
+    try{ full=JSON.parse(raw); }catch(e){}
+    if(full){
+      title=full.title||'';
+      summary=full.summary||'';
+      if(Array.isArray(full.alerts)) alerts=full.alerts;
+      else if(typeof full.alerts==='string') alerts=[full.alerts];
+    } else {
+      var tm=raw.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if(tm){ try{ title=JSON.parse('"'+tm[1]+'"'); }catch(e){ title=tm[1]; } }
+      var sm=raw.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if(sm){ try{ summary=JSON.parse('"'+sm[1]+'"'); }catch(e){ summary=sm[1]; } }
+      var am=raw.match(/"alerts"\s*:\s*\[([\s\S]*?)\]/);
+      if(am){ var ss=am[1].match(/"((?:[^"\\]|\\.)*)"/g); if(ss){ for(var y=0;y<ss.length;y++){ try{ alerts.push(JSON.parse(ss[y])); }catch(e){} } } }
+    }
+    if(!blocks.length && full){
+      if(Array.isArray(full.blocks)) blocks=full.blocks.slice();
+      else if(full.blocks && typeof full.blocks==='object') blocks=[full.blocks];
+    }
+    return {title:title, summary:summary, alerts:alerts, blocks:blocks};
+  }
+  function renderDigest(d){
+    var out='';
+    var alerts=d.alerts;
+    if(typeof alerts==='string') alerts=[alerts];
+    if(Array.isArray(alerts) && alerts.length){
+      out+='<div class="alerts"><div class="alerts-head">⚠️ Alerts</div><ul>';
+      alerts.forEach(function(a){ out+='<li>'+inlineMd(esc(a))+'</li>'; });
+      out+='</ul></div>';
+    }
+    if(d.title) out+='<div class="digest-title">'+esc((SPAN_ICON[activeSpan]||'')+' '+(SPAN_TITLE[activeSpan]||'')+' — '+d.title)+'</div>';
+    if(d.summary && String(d.summary).trim()) out+='<div class="digest-summary">'+inlineMd(esc(d.summary))+'</div>';
+    var blocks=Array.isArray(d.blocks)?d.blocks:(d.blocks?[d.blocks]:[]);
+    blocks.forEach(function(b){
+      var icon=ICONS[b.icon]||'';
+      var label=esc(b.label||'');
+      if(b.type==='list'){
+        var items=(b.items||[]).filter(function(x){return x && String(x).trim().length;});
+        if(!items.length)return;
+        out+='<div class="block"><strong>'+(icon?icon+' ':'')+label+'</strong><ul>';
+        items.forEach(function(it){ out+='<li>'+badgeFrom(inlineMd(esc(it)))+'</li>'; });
+        out+='</ul></div>';
+      } else {
+        var t=(b.text||'').trim();
+        if(!t)return;
+        var cls=/review/i.test(b.label||'')?' class="review"':'';
+        out+='<div class="block"><strong>'+(icon?icon+' ':'')+label+'</strong><p'+cls+'>'+inlineMd(esc(t))+'</p></div>';
+      }
+    });
+    return out;
+  }
+  function renderDigestOrMd(text){
+    if(text){
+      var s=String(text).trim();
+      var fenced=s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if(fenced) s=fenced[1].trim();
+      if(s.charAt(0)==='{'){
+        var d=parseDigestLoose(s);
+        if(d && (d.blocks.length || d.title || d.alerts.length || d.summary)) return renderDigest(d);
+      }
+    }
+    return renderMd(text);
+  }
   // Host-driven refresh: panels.html polls /api/summaries itself (its timers
   // are reliable where this iframe's setInterval stalled) and pushes the
   // fresh JSON here. Render only the active span so a background tab's data
@@ -340,15 +639,94 @@
       if(!parsed || !parsed.summaries || !parsed.summaries.length) return;
       var s = parsed.summaries[0];
       if(s.span !== activeSpan) return;
-      body.innerHTML = '<div class="summary-text">' + renderMd(s.text) + '</div>';
+      body.innerHTML = '<div class="summary-text">' + renderDigestOrMd(s.text) + '</div>';
       footerTs.textContent = s.generated_at || '';
     } catch(e){}
   });
 
   // Refresh when the panel becomes visible again (user switches back to the
   // dashboard tab / window), so a digest that landed while hidden shows up.
-  document.addEventListener('visibilitychange', function(){ if(!document.hidden) fetchDigest(); });
-  window.addEventListener('focus', function(){ fetchDigest(); });
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) refresh(); });
+  window.addEventListener('focus', function(){ refresh(); });
+
+  // ── Actionable scanner logic ─────────────────────────────────────────
+  async function api(path, method, body){
+    if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api) return null;
+    return await window.pywebview.api.warden_api(path, method||'GET', body||null);
+  }
+  async function fetchScan(){
+    if(activeSpan!=='actionable') return;
+    try{
+      var raw=await api('/api/scan/inbox');
+      if(!raw){ renderScan(null); return; }
+      scanState=JSON.parse(raw);
+      renderScan(scanState);
+    }catch(e){ renderScan(null); }
+  }
+  function fmtWhen(iso){
+    if(!iso) return '';
+    try{ var d=new Date(iso); return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+    catch(e){ return iso; }
+  }
+  function renderScan(st){
+    if(!st){
+      scanPending.innerHTML='<div class="scan-empty">Scanner unavailable.</div>';
+      scanMeta.textContent='';
+      return;
+    }
+    // Toolbar config state
+    scanAutoToggle.classList.toggle('on', !!st.autoConfirm);
+    scanChatsInput.value=st.allowedChats||'';
+    var last=st.lastrun?('last run '+fmtWhen(st.lastrun)):('not run yet');
+    scanMeta.textContent=(st.model?('model '+(st.model.slice(0,24))+' · '):'')+last;
+    // Scanned items now land directly in the real stores (Ops -> Inbox) as
+    // unconfirmed rows — the confirmation queue is gone. Show a status summary +
+    // a pointer to Ops -> Inbox where the user green-checks / deletes.
+    var tasks=(st.tasks||[]).length, events=(st.events||[]).length;
+    var pend=tasks+events;
+    var h='<div class="scan-empty">'
+      +'<div style="font-size:12px;color:rgba(0,255,200,0.7);margin-bottom:8px">'+pend+' item'+(pend===1?'':'s')+' awaiting review</div>'
+      +(pend?('<div style="font-size:10px;color:rgba(230,210,255,0.6);margin-bottom:6px">'+tasks+' task'+(tasks===1?'':'s')+' &middot; '+events+' event'+(events===1?'':'s')+' (unconfirmed)</div>'):'')
+      +'<div style="font-size:10px;color:rgba(199,125,255,0.5)">Confirm or delete them in <b style="color:#c77dff">Ops &rarr; Inbox</b>.</div>'
+      +'<div style="font-size:9px;color:rgba(199,125,255,0.35);margin-top:8px">Auto-confirm is '+(st.autoConfirm?'ON':'OFF')+' &mdash; '+(st.autoConfirm?'scanned items land confirmed':'scanned items land here for review')+'.</div>'
+      +'</div>';
+    scanPending.innerHTML=h;
+  }
+  if(scanNowBtn) scanNowBtn.addEventListener('click',async function(){
+    if(scanNowBtn.classList.contains('busy'))return;
+    scanNowBtn.classList.add('busy'); scanNowBtn.textContent='Scanning…';
+    try{
+      var raw=await api('/api/scan/run?span='+scanSpan,'POST','{}');
+      var r=raw?JSON.parse(raw):null;
+      if(r&&r.ok){
+        scanMeta.textContent='scan done: '+(r.created||0)+' created, '+(r.pending||0)+' pending review, '+(r.skipped||0)+' skipped';
+      }else{
+        scanMeta.textContent='scan failed: '+(r&&r.error||'unknown');
+      }
+    }catch(e){ scanMeta.textContent='scan failed: '+e; }
+    finally{ scanNowBtn.classList.remove('busy'); scanNowBtn.textContent='Scan now'; fetchScan(); }
+  });
+  // Window selector (1h / 24h / 7d) — sets which window "Scan now" uses.
+  if(scanSpanSeg) scanSpanSeg.querySelectorAll('button').forEach(function(b){
+    b.addEventListener('click',function(){
+      scanSpanSeg.querySelectorAll('button').forEach(function(x){x.classList.remove('active')});
+      b.classList.add('active'); scanSpan=b.dataset.span;
+    });
+  });
+  // Auto-accept toggle — persisted via /api/scan/config.
+  if(scanAutoToggle) scanAutoToggle.addEventListener('click',async function(){
+    var on=!scanAutoToggle.classList.contains('on');
+    scanAutoToggle.classList.toggle('on',on);
+    try{ await api('/api/scan/config','POST',JSON.stringify({autoAccept:on})); }catch(e){}
+  });
+  // Allowed-chats input — debounced save.
+  if(scanChatsInput) scanChatsInput.addEventListener('input',function(){
+    if(scanChatsTimer)clearTimeout(scanChatsTimer);
+    scanChatsTimer=setTimeout(async function(){
+      try{ await api('/api/scan/config','POST',JSON.stringify({allowedChats:scanChatsInput.value})); }catch(e){}
+    },800);
+  });
+  function cssEsc(s){ return String(s||'').replace(/"/g,'\\"'); }
   if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);
 })();
 </script>

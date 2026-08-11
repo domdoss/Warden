@@ -13,6 +13,9 @@ export interface ChatRequest {
     options?: Record<string, any>;
     keep_alive?: number;
     think?: boolean;
+    /** Ollama structured-outputs JSON schema (passed as the `format` field).
+     *  When set, the model's output is grammar-constrained to this schema. */
+    format?: Record<string, any>;
 }
 
 export interface ChatResult {

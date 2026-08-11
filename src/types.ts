@@ -40,7 +40,7 @@ export interface AgentInput {
   prompt: string;
   orchestratorModel?: string; // Warden (orchestrator) model
   model?: string;             // Atlas model
-  hephaestusModel?: string;    // Hephaestus (coding) model
+  vulkanModel?: string;    // Vulkan (coding) model
   // Per-agent models — every agent has its own concrete model selected from the
   // Agents-panel dropdown (no blank, no runtime fallback). The host resolves each
   // from its router_state key; the agent-runner uses it directly and errors if empty.
@@ -80,6 +80,8 @@ export interface NewMessage {
   is_from_me?: boolean;
   is_bot_message?: boolean;
   idea?: string;
+  /** Source channel that delivered this message: 'telegram' | 'whatsapp' | 'slack' | 'web'. */
+  channel?: string;
 }
 
 export interface ScheduledTask {

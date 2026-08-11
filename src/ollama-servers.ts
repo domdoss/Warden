@@ -2,7 +2,7 @@
 // The consolidated settings store for Ollama endpoints. Named servers (up to 3)
 // live as JSON in router_state 'ollama:servers', with 'ollama:default_server'
 // naming the default. Per-headline-agent overrides live in
-// 'orchestrator:ollama_server' / 'atlas:ollama_server' / 'hephaestus:ollama_server'
+// 'orchestrator:ollama_server' / 'atlas:ollama_server' / 'vulkan:ollama_server'
 // / 'sentry:ollama_server'. Kept in a standalone module (importing only db +
 // config) so any host-side caller can use it without pulling in status-server
 // (which would create import cycles).

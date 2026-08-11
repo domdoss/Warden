@@ -231,6 +231,7 @@ export class WhatsAppChannel implements Channel {
             timestamp,
             is_from_me: fromMe,
             is_bot_message: isBotMessage,
+            channel: 'whatsapp',
           });
         }
       }

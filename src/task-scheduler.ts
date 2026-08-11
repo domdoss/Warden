@@ -101,7 +101,7 @@ export interface SchedulerDependencies {
  * location). Injected into the prompt so the digest is grounded in real data
  * rather than invented.
  */
-async function buildDigestContext(span = 'hourly'): Promise<string> {
+export async function buildDigestContext(span = 'hourly'): Promise<string> {
   const lines: string[] = [];
   const now = new Date();
   lines.push(`Current local time: ${now.toLocaleString('en-US', { timeZone: TIMEZONE })} (timezone ${TIMEZONE})`);
@@ -177,6 +177,28 @@ async function buildDigestContext(span = 'hourly'): Promise<string> {
       }
     } catch (err) { lines.push(`\nWeather: unavailable (${String((err as any)?.message ?? err)})`); }
   }
+
+  // "Look Out For" — free-text notes the user maintains from the digest panel
+  // (LOOK_OUT_FOR.md in the workspace root): things they're watching for (a
+  // specific event, a pending reply, a package). Fed into INPUT so Iris can
+  // compare each item against the calendar/tasks/emails/weather above and flag
+  // matches at the top of the digest. The verbatim note is ALSO appended to the
+  // published digest by the agent-runner (## 👀 Look Out For) — this INPUT copy
+  // is for match-detection, the appended copy is for display.
+  try {
+    const lookoutPath = path.join(
+      WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? ''),
+      'LOOK_OUT_FOR.md',
+    );
+    const lookout = fs.existsSync(lookoutPath)
+      ? fs.readFileSync(lookoutPath, 'utf-8').trim()
+      : '';
+    lines.push(
+      lookout
+        ? `\nLook Out For (things the user is watching for — flag any match in the digest):\n${lookout}`
+        : '\nLook Out For: none',
+    );
+  } catch { /* no lookout file */ }
 
   return lines.join('\n');
 }

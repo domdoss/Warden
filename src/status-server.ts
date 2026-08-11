@@ -239,6 +239,11 @@ interface StatusDeps {
   // grounded runTask path as the cron (buildDigestContext: real calendar,
   // tasks, bio, weather, notes). Wired in src/index.ts.
   triggerDigest?: (span: string) => Promise<{ ok: boolean; error?: string }>;
+  // Actionable-items scanner (email + chat → tasks/events). Wired in src/index.ts.
+  triggerScan?: (span: string) => Promise<{ ok: boolean; error?: string; created?: number; pending?: number; skipped?: number }>;
+  getScanInbox?: () => any;
+  confirmScanItem?: (kind: 'task' | 'event', id: string) => { ok: boolean; error?: string; result_id?: string };
+  setScanConfig?: (cfg: { autoAccept?: boolean; allowedChats?: string; model?: string }) => void;
 }
 
 let deps: StatusDeps;
@@ -1003,6 +1008,7 @@ async function handleMessages(
       is_from_me: true,
       is_bot_message: false,
       idea: body.idea || '',
+      channel: 'web',
     };
     deps.storeMessage(msg);
 
@@ -1484,7 +1490,7 @@ function handleSettings(res: http.ServerResponse): void {
     defaultModelMode: DEFAULT_MODEL_MODE,
     orchestratorModel: getRouterState('orchestrator:model') || '',
     atlasModel: getRouterState('atlas:model') || '',
-    hephaestusModel: getRouterState('hephaestus:model') || '',
+    vulkanModel: getRouterState('vulkan:model') || '',
     // Per-agent models — each agent has its own concrete model (no blank/inherit).
     byteModel: getRouterState('byte:model') || '',
     dexterModel: getRouterState('dexter:model') || '',
@@ -1510,7 +1516,7 @@ function handleSettings(res: http.ServerResponse): void {
     ollamaDefaultServerId: getRouterState('ollama:default_server') || '',
     orchestratorOllamaServer: getRouterState('orchestrator:ollama_server') || '',
     atlasOllamaServer: getRouterState('atlas:ollama_server') || '',
-    hephaestusOllamaServer: getRouterState('hephaestus:ollama_server') || '',
+    vulkanOllamaServer: getRouterState('vulkan:ollama_server') || '',
     sentryOllamaServer: getRouterState('sentry:ollama_server') || '',
     sentryMd,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
@@ -1531,7 +1537,7 @@ function handleSettings(res: http.ServerResponse): void {
     dexterCtx: getRouterState('local:dexter_ctx') || '',
     irisCtx: getRouterState('local:iris_ctx') || '',
     artemisCtx: getRouterState('local:artemis_ctx') || '',
-    hephaestusCtx: getRouterState('local:hephaestus_ctx') || '',
+    vulkanCtx: getRouterState('local:vulkan_ctx') || '',
     sentryCtx: getRouterState('local:sentry_ctx') || '',
     mercuryMode: getRouterState('mercury:mode') || 'full',
     mercuryModel: getRouterState('mercury:model') || '',
@@ -1582,8 +1588,8 @@ async function handleSettingsSave(
   if (body.atlasModel !== undefined) {
     setRouterState('atlas:model', String(body.atlasModel));
   }
-  if (body.hephaestusModel !== undefined) {
-    setRouterState('hephaestus:model', String(body.hephaestusModel || ''));
+  if (body.vulkanModel !== undefined) {
+    setRouterState('vulkan:model', String(body.vulkanModel || ''));
   }
   // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
   if (body.byteModel !== undefined) {
@@ -1679,8 +1685,8 @@ async function handleSettingsSave(
   if (body.atlasOllamaServer !== undefined) {
     setRouterState('atlas:ollama_server', String(body.atlasOllamaServer || ''));
   }
-  if (body.hephaestusOllamaServer !== undefined) {
-    setRouterState('hephaestus:ollama_server', String(body.hephaestusOllamaServer || ''));
+  if (body.vulkanOllamaServer !== undefined) {
+    setRouterState('vulkan:ollama_server', String(body.vulkanOllamaServer || ''));
   }
   if (body.sentryOllamaServer !== undefined) {
     setRouterState('sentry:ollama_server', String(body.sentryOllamaServer || ''));
@@ -1719,8 +1725,8 @@ async function handleSettingsSave(
   if (body.artemisCtx !== undefined) {
     setRouterState('local:artemis_ctx', String(body.artemisCtx || ''));
   }
-  if (body.hephaestusCtx !== undefined) {
-    setRouterState('local:hephaestus_ctx', String(body.hephaestusCtx || ''));
+  if (body.vulkanCtx !== undefined) {
+    setRouterState('local:vulkan_ctx', String(body.vulkanCtx || ''));
   }
   if (body.sentryCtx !== undefined) {
     setRouterState('local:sentry_ctx', String(body.sentryCtx || ''));
@@ -1746,12 +1752,12 @@ async function handleSettingsSave(
   // Track whether any router-state settings were saved
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
-    body.atlasModel !== undefined || body.hephaestusModel !== undefined || body.drivingForce !== undefined ||
+    body.atlasModel !== undefined || body.vulkanModel !== undefined || body.drivingForce !== undefined ||
     body.byteModel !== undefined || body.dexterModel !== undefined ||
     body.irisModel !== undefined || body.artemisModel !== undefined ||
     body.byteCtx !== undefined || body.dexterCtx !== undefined ||
     body.irisCtx !== undefined || body.artemisCtx !== undefined ||
-    body.hephaestusCtx !== undefined || body.sentryCtx !== undefined ||
+    body.vulkanCtx !== undefined || body.sentryCtx !== undefined ||
     body.councilSkepticModel !== undefined ||
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
     body.sentryModel !== undefined ||
@@ -1765,7 +1771,7 @@ async function handleSettingsSave(
     body.ollamaServers !== undefined ||
     body.ollamaDefaultServerId !== undefined ||
     body.orchestratorOllamaServer !== undefined || body.atlasOllamaServer !== undefined ||
-    body.hephaestusOllamaServer !== undefined || body.sentryOllamaServer !== undefined;
+    body.vulkanOllamaServer !== undefined || body.sentryOllamaServer !== undefined;
 
   const vars: Record<string, string> = {};
   for (const [key, envKey] of Object.entries(envMap)) {
@@ -3855,6 +3861,59 @@ export function startStatusServer(d: StatusDeps): void {
           return json(res, { error: String(err?.message ?? err) }, 500);
         }
       }
+      // ── Actionable Items Scanner ──
+      // POST /api/scan/run?span=hourly|daily|weekly — run the chat-scan one-shot
+      // now (gathers emails + chat logs for the window, extracts, dedups, and
+      // creates real task/event rows). Returns counts { created, pending, skipped }.
+      if (req.method === 'POST' && pathname === '/api/scan/run') {
+        const span = (params.get('span') || 'daily').toLowerCase();
+        if (!['hourly', 'daily', 'weekly'].includes(span)) {
+          return json(res, { error: 'invalid span (use hourly, daily, or weekly)' }, 400);
+        }
+        if (!deps.triggerScan) return json(res, { error: 'scan trigger unavailable' }, 503);
+        try {
+          const r = await deps.triggerScan(span);
+          return json(res, r, r.ok ? 200 : 404);
+        } catch (err: any) {
+          return json(res, { error: String(err?.message ?? err) }, 500);
+        }
+      }
+      // GET /api/scan/inbox — unconfirmed work tasks + calendar events (the Ops
+      // Inbox), plus scanner config (autoConfirm, allowedChats, model, lastrun).
+      if (req.method === 'GET' && pathname === '/api/scan/inbox') {
+        if (!deps.getScanInbox) return json(res, { error: 'scan inbox unavailable' }, 503);
+        try { return json(res, deps.getScanInbox()); }
+        catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
+      }
+      // POST /api/scan/confirm { kind, id } — green-check an unconfirmed item:
+      // flip confirmed=1 so it graduates out of the Inbox (the row stays in the
+      // table). kind is 'task' or 'event'.
+      if (req.method === 'POST' && pathname === '/api/scan/confirm') {
+        if (!deps.confirmScanItem) return json(res, { error: 'scan confirm unavailable' }, 503);
+        try {
+          const body = parseJson(await parseBody(req)) as { kind?: string; id?: string };
+          if (!body.kind || !body.id) return json(res, { error: 'missing kind or id' }, 400);
+          if (body.kind !== 'task' && body.kind !== 'event') return json(res, { error: 'kind must be task or event' }, 400);
+          const r = deps.confirmScanItem(body.kind as 'task' | 'event', body.id);
+          return json(res, r, r.ok ? 200 : 404);
+        } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
+      }
+      // GET/POST /api/scan/config — read or update { autoAccept, allowedChats, model }.
+      if (pathname === '/api/scan/config') {
+        if (!deps.setScanConfig || !deps.getScanInbox) return json(res, { error: 'scan config unavailable' }, 503);
+        if (req.method === 'POST') {
+          try {
+            const body = parseJson(await parseBody(req)) as { autoAccept?: boolean; allowedChats?: string; model?: string };
+            deps.setScanConfig(body);
+            const s = deps.getScanInbox();
+            return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, lastrun: s.lastrun });
+          } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
+        }
+        try {
+          const s = deps.getScanInbox();
+          return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, lastrun: s.lastrun });
+        } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
+      }
       if (pathname === '/api/process-logs' && req.method === 'GET') {
         try {
           const lines = Math.min(parseInt(params.get('lines') || '200', 10) || 200, 2000);
@@ -3914,6 +3973,35 @@ export function startStatusServer(d: StatusDeps): void {
             fs.mkdirSync(path.dirname(bioPath), { recursive: true });
             fs.writeFileSync(bioPath, text, 'utf-8');
             logger.info('User bio updated via dashboard');
+            return json(res, { ok: true });
+          } catch (err: any) {
+            return json(res, { ok: false, error: String(err?.message ?? err) });
+          }
+        }
+      }
+      // "Look Out For" notes (LOOK_OUT_FOR.md in the workspace root) — free-text
+      // the user maintains from the digest panel listing things they're watching
+      // for (a specific event, a pending reply, a package, etc.). The iris-digest
+      // agent-runner branch appends this verbatim to the bottom of every
+      // published digest (## 👀 Look Out For) so it shows under each
+      // hourly/daily/weekly summary with zero model involvement.
+      if (pathname === '/api/lookout') {
+        const lookoutPath = path.join(WORKSPACE_ROOT, 'LOOK_OUT_FOR.md');
+        if (req.method === 'GET') {
+          try {
+            const text = fs.existsSync(lookoutPath) ? fs.readFileSync(lookoutPath, 'utf-8') : '';
+            return json(res, { ok: true, text });
+          } catch (err: any) {
+            return json(res, { ok: false, error: String(err?.message ?? err) });
+          }
+        }
+        if (req.method === 'POST') {
+          try {
+            const body = parseJson(await parseBody(req)) as { text?: string };
+            const text = String(body?.text ?? '');
+            fs.mkdirSync(path.dirname(lookoutPath), { recursive: true });
+            fs.writeFileSync(lookoutPath, text, 'utf-8');
+            logger.info('Look Out For notes updated via dashboard');
             return json(res, { ok: true });
           } catch (err: any) {
             return json(res, { ok: false, error: String(err?.message ?? err) });

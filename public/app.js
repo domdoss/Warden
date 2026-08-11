@@ -918,11 +918,11 @@
           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
-        <div class="setting-row"><label>Hephaestus</label>
-          <select class="select" id="sHephaestus">${anyModelHtml}</select>
+        <div class="setting-row"><label>Vulkan</label>
+          <select class="select" id="sVulkan">${anyModelHtml}</select>
         </div>
-        <div class="setting-row"><label>Hephaestus Ollama</label>
-          <select class="select" id="sHephaestusOllamaServer"></select>
+        <div class="setting-row"><label>Vulkan Ollama</label>
+          <select class="select" id="sVulkanOllamaServer"></select>
           <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
         <div class="setting-row" style="align-items:flex-start">
@@ -1045,7 +1045,7 @@
     };
     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
-    setSelect('sHephaestus', (d.hephaestusModel || '').replace(/^local:/, ''));
+    setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
     setSelect('sDrivingForce', d.drivingForce || '');
     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
@@ -1107,7 +1107,7 @@
     };
     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
     fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
-    fillAgentServerSelect('sHephaestusOllamaServer', d.hephaestusOllamaServer || '');
+    fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
     fillAgentServerSelect('sSentryOllamaServer', d.sentryOllamaServer || '');
 
     // Friendly names list
@@ -1201,7 +1201,7 @@
       const body = {
         globalDefaultModel: stripLocal($('sOrchestrator').value),
         atlasModel: stripLocal($('sAtlas').value),
-        hephaestusModel: stripLocal($('sHephaestus').value),
+        vulkanModel: stripLocal($('sVulkan').value),
         drivingForce: $('sDrivingForce').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
         councilPragmatistModel: stripLocal($('sPragmatist').value),
@@ -1218,7 +1218,7 @@
         ollamaUrl: $('sOllamaUrl').value,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
+        vulkanOllamaServer: $('sVulkanOllamaServer').value,
         sentryOllamaServer: $('sSentryOllamaServer').value,
       };
       await postJson('/api/settings', body);
@@ -1272,7 +1272,7 @@
         ollamaServers,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
+        vulkanOllamaServer: $('sVulkanOllamaServer').value,
         sentryOllamaServer: $('sSentryOllamaServer').value,
       };
       await postJson('/api/settings', body);

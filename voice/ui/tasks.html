@@ -50,6 +50,15 @@
   .act-btn:hover{color:#cc88ff;border-color:rgba(204,136,255,0.5)}
   .act-btn.del{color:rgba(255,68,68,0.6);border-color:rgba(255,68,68,0.2)}
   .act-btn.del:hover{color:#ff4444;border-color:rgba(255,68,68,0.5)}
+  .act-btn.confirm{color:rgba(0,255,136,0.7);border-color:rgba(0,255,136,0.25)}
+  .act-btn.confirm:hover{color:#00ff88;border-color:rgba(0,255,136,0.55)}
+  /* Unconfirmed scanned items stand out so the user spots what needs a ✓/✕. */
+  .item.unconfirmed{background:rgba(0,255,200,0.05);border:1px solid rgba(0,255,200,0.22);box-shadow:0 0 10px rgba(0,255,200,0.08)}
+  .item.unconfirmed .it-title{color:#9ffece}
+  .badge-unconfirmed{background:rgba(0,255,200,0.12);color:#00ffcc;border:1px solid rgba(0,255,200,0.3);animation:pulsef 2.4s ease-in-out infinite}
+  @keyframes pulsef{0%,100%{opacity:1}50%{opacity:0.55}}
+  .inbox-empty{text-align:center;padding:30px 20px;font-size:10px;color:rgba(204,136,255,0.25);font-family:'Courier New',monospace;line-height:1.6}
+  .inbox-empty b{color:rgba(0,255,200,0.4);font-weight:400}
   .del-x{position:absolute;top:4px;right:5px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;
     font-size:11px;color:rgba(255,68,68,0.35);cursor:pointer;border-radius:3px;line-height:1;transition:color .15s,background .15s;user-select:none}
   .del-x:hover{color:#ff4444;background:rgba(255,68,68,0.12)}
@@ -83,7 +92,9 @@
     <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
   </div>
   <div class="tabs">
+    <div class="tab" data-tab="inbox">Inbox <span class="count" id="inbox-count"></span></div>
     <div class="tab active" data-tab="work">Work <span class="count" id="work-count"></span></div>
+    <div class="tab" data-tab="reminders">Reminders <span class="count" id="reminders-count"></span></div>
     <div class="tab" data-tab="tasks">Scheduled <span class="count" id="tasks-count"></span></div>
     <div class="tab" data-tab="projects">Projects <span class="count" id="projects-count"></span></div>
   </div>
@@ -131,7 +142,9 @@
   }
 
   async function load(){
+    if(activeTab==='inbox') return loadInbox();
     if(activeTab==='tasks') return loadTasks();
+    if(activeTab==='reminders') return loadReminders();
     if(activeTab==='work') return loadWork();
     return loadProjects();
   }
@@ -157,12 +170,13 @@
     try{
       var raw=await api('/api/tasks');
       var d=raw?JSON.parse(raw):null;
-      // Show every scheduled cron — including the internal Iris digest jobs
-      // (hourly/daily/weekly) and any heartbeat job — so this tab is the direct
-      // view of Warden's schedule cron table. System jobs get a clean label
-      // instead of their raw stored prompt, and are guarded from deletion
+      // Show every RECURRING scheduled job (cron + interval) — including the
+      // internal Iris digest jobs (hourly/daily/weekly) and any heartbeat job —
+      // so this tab is the direct view of Warden's recurring schedule. One-shot
+      // "once" reminders live on the Reminders tab. System jobs get a clean
+      // label instead of their raw stored prompt, and are guarded from deletion
       // (pause/resume still works).
-      lastTasks=(d&&d.tasks)||[];
+      lastTasks=((d&&d.tasks)||[]).filter(function(t){return (t.schedule_type||'')!=='once';});
       document.getElementById('tasks-count').textContent=lastTasks.length||'';
       if(!lastTasks.length){body.innerHTML='<div class="empty">No scheduled tasks.</div>';return;}
       body.innerHTML=lastTasks.map(function(t){
@@ -191,6 +205,36 @@
         '</div>';
       }).join('');
     }catch(e){body.innerHTML='<div class="empty">Unable to load tasks.</div>'}
+  }
+
+  // Reminders — one-shot schedule_type:'once' jobs (the things Dexter creates
+  // when you say "remind me to … in 15 minutes"). Distinct from the Scheduled
+  // tab, which lists recurring cron/interval automations. Each shows its fire
+  // time and can be paused/resumed or deleted (handled by the existing task
+  // delegation since data-kind="task").
+  async function loadReminders(){
+    try{
+      var raw=await api('/api/tasks');
+      var d=raw?JSON.parse(raw):null;
+      var rems=((d&&d.tasks)||[]).filter(function(t){return (t.schedule_type||'')==='once';});
+      document.getElementById('reminders-count').textContent=rems.length||'';
+      if(!rems.length){body.innerHTML='<div class="empty">No reminders. Use “+ Reminder” to add one, or tell Jarvis “remind me to…”.</div>';return;}
+      body.innerHTML=rems.map(function(t){
+        var badge=t.status==='active'?'badge-active':(t.status==='paused'?'badge-paused':'badge-done');
+        var when=t.schedule_value?('fires '+esc(new Date(t.schedule_value).toLocaleString())):'';
+        var tog=t.status==='active'?['Pause','paused']:['Resume','active'];
+        var title=esc((t.prompt||'(no prompt)').slice(0,120))+((t.prompt||'').length>120?'…':'');
+        return '<div class="item" data-kind="task" data-id="'+esc(t.id)+'">'+
+          '<div class="del-x" data-act="del" title="Delete">✕</div>'+
+          '<div class="it-title">'+title+'</div>'+
+          (when?'<div class="it-sub">'+when+'</div>':'')+
+          '<div class="it-row">'+
+            '<span class="it-badge '+badge+'">'+esc(t.status||'active')+'</span>'+
+            '<span class="act-btn" data-act="toggle" data-status="'+tog[1]+'">'+tog[0]+'</span>'+
+          '</div>'+
+        '</div>';
+      }).join('');
+    }catch(e){body.innerHTML='<div class="empty">Unable to load reminders.</div>'}
   }
 
   // Work tasks — the to-dos Byte creates (user_work_tasks). Distinct from the
@@ -255,6 +299,75 @@
     }catch(e){body.innerHTML='<div class="empty">Unable to load projects.</div>'}
   }
 
+  // ── Inbox ── unconfirmed scanned items (work tasks + calendar events) that
+  // the Actionable scanner dropped into the real stores with confirmed=0. They
+  // stand out here so the user can green-check (✓ confirm → confirmed=1, stays in
+  // the table, graduates out of the Inbox) or red-X (✕ delete → row removed).
+  function fmtDT(iso){
+    if(!iso) return '';
+    try{ var d=new Date(iso); if(isNaN(d)) return esc(iso);
+      return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+    catch(e){ return esc(iso); }
+  }
+  async function loadInbox(){
+    try{
+      var raw=await api('/api/scan/inbox');
+      var st=raw?JSON.parse(raw):null;
+      var tasks=(st&&st.tasks)||[], events=(st&&st.events)||[];
+      var n=tasks.length+events.length;
+      document.getElementById('inbox-count').textContent=n||'';
+      if(!n){
+        body.innerHTML='<div class="inbox-empty">Inbox clear — no items awaiting review.<br><br>Scanned tasks &amp; events land here <b>unconfirmed</b> for a ✓ or ✕.<br>Run a scan from the digest Actionable tab.</div>';
+        return;
+      }
+      var h='';
+      tasks.forEach(function(t){
+        h+='<div class="item unconfirmed" data-kind="inbox-task" data-id="'+esc(t.id)+'">'
+          +'<div class="del-x" data-act="del" title="Delete">✕</div>'
+          +'<div class="it-title">'+esc(t.title)+'</div>'
+          +'<div class="it-sub">'+esc(t.due_date?('due '+fmtDT(t.due_date)):'to-do')+(t.description?(' · '+esc(t.description).slice(0,80)):'')+'</div>'
+          +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · task</span>'
+          +'<span class="act-btn confirm" data-act="confirm" title="Confirm">✓ Confirm</span></div>'
+          +'</div>';
+      });
+      events.forEach(function(e){
+        h+='<div class="item unconfirmed" data-kind="inbox-event" data-id="'+esc(e.id)+'">'
+          +'<div class="del-x" data-act="del" title="Delete">✕</div>'
+          +'<div class="it-title">'+esc(e.title)+'</div>'
+          +'<div class="it-sub">'+esc(fmtDT(e.start_time))+(e.end_time?(' → '+esc(fmtDT(e.end_time))):'')+(e.location?(' · '+esc(e.location)):'')+'</div>'
+          +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · event</span>'
+          +'<span class="act-btn confirm" data-act="confirm" title="Confirm">✓ Confirm</span></div>'
+          +'</div>';
+      });
+      body.innerHTML=h;
+    }catch(e){body.innerHTML='<div class="empty">Unable to load inbox.</div>'}
+  }
+  // Always refresh the Inbox count badge so the user sees pending review items
+  // even from another tab. Skipped when the Inbox tab is active (loadInbox just
+  // set it) to avoid a double fetch.
+  async function refreshInboxCount(){
+    if(activeTab==='inbox') return;
+    try{
+      var raw=await api('/api/scan/inbox');
+      var st=raw?JSON.parse(raw):null;
+      var n=((st&&st.tasks)||[]).length+((st&&st.events)||[]).length;
+      document.getElementById('inbox-count').textContent=n||'';
+    }catch(e){}
+  }
+  async function confirmInboxItem(kind,id){
+    try{
+      var raw=await api('/api/scan/confirm','POST',JSON.stringify({kind:kind,id:id}));
+      var r=raw?JSON.parse(raw):null;
+      if(!r||!r.ok) return;
+    }catch(e){}
+    await loadInbox();
+  }
+  async function delInboxItem(kind,id){
+    var ep=kind==='inbox-event'?('/api/calendar/events/'+encodeURIComponent(id)):('/api/work-tasks/'+encodeURIComponent(id));
+    try{ await api(ep,'DELETE'); }catch(e){}
+    await loadInbox();
+  }
+
   async function createProject(name){
     var addBtn=document.getElementById('add-btn');
     addBtn.classList.add('busy');addBtn.textContent='Working…';
@@ -284,6 +397,27 @@
     finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
   }
 
+  // A reminder is a one-shot 'once' task: schedule_value is an absolute LOCAL
+  // timestamp "YYYY-MM-DDTHH:MM:SS". The datetime-local input yields
+  // "YYYY-MM-DDTHH:MM" (local), so append ":00".
+  async function createReminder(prompt,when){
+    var addBtn=document.getElementById('add-btn');
+    addBtn.classList.add('busy');addBtn.textContent='Working…';
+    try{
+      var sv=when?when+':00':'';
+      var raw=await api('/api/tasks',{method:'POST',body:JSON.stringify({
+        prompt:prompt,schedule_type:'once',schedule_value:sv,
+        chat_jid:'owner@local',context_mode:'isolated'
+      })});
+      var d=raw?JSON.parse(raw):null;
+      if(d&&d.id){document.getElementById('new-row').classList.remove('show');
+        document.getElementById('new-name').value='';document.getElementById('new-sched').value='';
+        await loadReminders();}
+      else body.innerHTML='<div class="empty">'+esc((d&&d.error)||'Create failed')+'</div>';
+    }catch(e){body.innerHTML='<div class="empty">Create failed.</div>'}
+    finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
+  }
+
   async function createWorkTask(title){
     var addBtn=document.getElementById('add-btn');
     addBtn.classList.add('busy');addBtn.textContent='Working…';
@@ -303,9 +437,15 @@
     var addBtn=document.getElementById('add-btn');
     var sched=document.getElementById('new-sched');
     var name=document.getElementById('new-name');
-    if(tab==='tasks'){
+    addBtn.style.display='';
+    if(tab==='inbox'){
+      addBtn.style.display='none';
+    }else if(tab==='tasks'){
       addBtn.textContent='New Task';addBtn.title='New task';
-      name.placeholder='New task prompt…';sched.style.display='';
+      name.placeholder='New task prompt…';sched.type='text';sched.style.display='';
+    }else if(tab==='reminders'){
+      addBtn.textContent='New Reminder';addBtn.title='New reminder';
+      name.placeholder='Reminder prompt…';sched.type='datetime-local';sched.style.display='';
     }else if(tab==='work'){
       addBtn.textContent='+ Work Task';addBtn.title='New work task';
       name.placeholder='New work task…';sched.style.display='none';
@@ -319,6 +459,7 @@
     var n=document.getElementById('new-name').value.trim();
     if(!n)return;
     if(activeTab==='tasks')createTask(n,document.getElementById('new-sched').value.trim());
+    else if(activeTab==='reminders')createReminder(n,document.getElementById('new-sched').value.trim());
     else if(activeTab==='work')createWorkTask(n);
     else createProject(n);
   }
@@ -377,9 +518,15 @@
     var item=el.closest('.item'); if(!item)return;
     var kind=item.getAttribute('data-kind'),id=item.getAttribute('data-id'),act=el.getAttribute('data-act');
     if(act==='del'){
+      if(kind==='inbox-task'){delInboxItem('inbox-task',id);return;}
+      if(kind==='inbox-event'){delInboxItem('inbox-event',id);return;}
       if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
       else if(kind==='worktask'){delWorkTask(id);}
       else delTask(id);
+    }else if(act==='confirm'){
+      // Inbox ✓ — confirm a scanned task/event (flip confirmed=1).
+      var ck=kind==='inbox-event'?'event':'task';
+      confirmInboxItem(ck,id);
     }else if(act==='toggle'){
       toggleTask(id,el.getAttribute('data-status'));
     }
@@ -387,6 +534,7 @@
 
   async function tick(){
     await load();
+    refreshInboxCount();
     footerTs.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   }
   tick();

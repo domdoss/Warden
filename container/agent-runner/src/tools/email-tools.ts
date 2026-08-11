@@ -11,22 +11,33 @@ async function callHost(tool: string, args: any, timeoutMs = 30000): Promise<any
 
 registry.register({
     name: 'read_emails',
-    description: "Read emails from the user's connected email account. Account is resolved automatically from the user's identity.",
+    description: "Read emails from the user's connected email account. Account is resolved automatically from the user's identity. Use `since` (and optionally `before`) to fetch emails in a specific date range — both are ISO 8601 timestamps (e.g. \"2026-08-01T00:00:00Z\"). Use this when the user asks to look up emails from a past period (\"my emails from last week\", \"anything from August\"). Leave both empty for just the most recent emails.",
     schema: {
         type: 'object',
         properties: {
-            limit: { type: 'number', description: 'Max emails (default: 500)' },
+            limit: { type: 'number', description: 'Max emails to fetch before date filtering (default: 500)' },
             preview_only: { type: 'boolean', description: 'Return previews only (default: true)' },
             folder: { type: 'string', description: 'Mail folder (default: INBOX)' },
-            search: { type: 'string' },
+            search: { type: 'string', description: 'Optional text search (provider query, e.g. Gmail q=)' },
+            since: { type: 'string', description: 'ISO 8601 timestamp — only return emails received at/after this' },
+            before: { type: 'string', description: 'ISO 8601 timestamp — only return emails received before this' },
         },
     },
     handler: async (args, context) => {
+        const limit = Math.min(parseInt(args.limit) || 500, 500);
+        // A date-range lookup (since/before) with a large limit can take well
+        // over the default 30s — fetching hundreds of emails from Gmail/Graph
+        // is slow. Give read_emails a 90s ceiling so Iris/Byte don't get a
+        // spurious timeout on a week-long range. Plain recent-email reads still
+        // finish in a few seconds.
         const resp = await callHost('read_emails', {
             userId: context.userId, folder: args.folder || 'INBOX',
-            limit: Math.min(parseInt(args.limit) || 500, 500), search: args.search || undefined,
+            limit,
+            search: typeof args.search === 'string' ? args.search : undefined,
+            since: typeof args.since === 'string' ? args.since : undefined,
+            before: typeof args.before === 'string' ? args.before : undefined,
             preview_only: args.preview_only !== false && args.preview_only !== 'false',
-        });
+        }, 90000);
         if (resp?.ok) {
             const emails = resp.emails || [];
             if (emails.length === 0) return 'No emails found.';

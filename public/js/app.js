@@ -896,7 +896,7 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint">Every agent has its own model + ctx, selectable per-agent. Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Byte/Dexter/Iris execute fast tool calls. Hephaestus codes. The Council uses three separate seats.</div>
+        <div class="hint">Every agent has its own model + ctx, selectable per-agent. Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Byte/Dexter/Iris execute fast tool calls. Vulkan codes. The Council uses three separate seats.</div>
         <div class="setting-row"><label>Orchestrator</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
         </div>
@@ -930,15 +930,15 @@
           <select class="select small" id="sArtemisCtx">${buildCtxOptions(d.artemisCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
-        <div class="setting-row"><label>Hephaestus</label>
-          <select class="select" id="sHephaestus">${orchHtml}</select>
+        <div class="setting-row"><label>Vulkan</label>
+          <select class="select" id="sVulkan">${orchHtml}</select>
         </div>
-        <div class="setting-row"><label>Hephaestus Ollama</label>
-          <select class="select" id="sHephaestusOllamaServer"></select>
+        <div class="setting-row"><label>Vulkan Ollama</label>
+          <select class="select" id="sVulkanOllamaServer"></select>
           <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
-        <div class="setting-row"><label>Hephaestus ctx</label>
-          <select class="select small" id="sHephaestusCtx">${buildCtxOptions(d.hephaestusCtx)}</select>
+        <div class="setting-row"><label>Vulkan ctx</label>
+          <select class="select small" id="sVulkanCtx">${buildCtxOptions(d.vulkanCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
         <div class="setting-row" style="align-items:flex-start">
@@ -1091,7 +1091,7 @@
     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
-    setSelect('sHephaestus', (d.hephaestusModel || '').replace(/^local:/, ''));
+    setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
     setSelect('sByte', (d.byteModel || '').replace(/^local:/, ''));
     setSelect('sDexter', (d.dexterModel || '').replace(/^local:/, ''));
     setSelect('sIris', (d.irisModel || '').replace(/^local:/, ''));
@@ -1119,7 +1119,7 @@
     setSelect('sOrchestratorCtx', d.orchestratorCtx || '');
     setSelect('sAtlasCtx', d.atlasCtx || '');
     setSelect('sArtemisCtx', d.artemisCtx || '');
-    setSelect('sHephaestusCtx', d.hephaestusCtx || '');
+    setSelect('sVulkanCtx', d.vulkanCtx || '');
     setSelect('sByteCtx', d.byteCtx || '');
     setSelect('sDexterCtx', d.dexterCtx || '');
     setSelect('sIrisCtx', d.irisCtx || '');
@@ -1161,7 +1161,7 @@
     };
     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
     fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
-    fillAgentServerSelect('sHephaestusOllamaServer', d.hephaestusOllamaServer || '');
+    fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
     fillAgentServerSelect('sSentryOllamaServer', d.sentryOllamaServer || '');
 
     // Friendly names list
@@ -1256,7 +1256,7 @@
         globalDefaultModel: stripLocal($('sOrchestrator').value),
         atlasModel: stripLocal($('sAtlas').value),
         artemisModel: stripLocal($('sArtemis').value),
-        hephaestusModel: stripLocal($('sHephaestus').value),
+        vulkanModel: stripLocal($('sVulkan').value),
         byteModel: stripLocal($('sByte').value),
         dexterModel: stripLocal($('sDexter').value),
         irisModel: stripLocal($('sIris').value),
@@ -1273,7 +1273,7 @@
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
         artemisCtx: $('sArtemisCtx').value,
-        hephaestusCtx: $('sHephaestusCtx').value,
+        vulkanCtx: $('sVulkanCtx').value,
         byteCtx: $('sByteCtx').value,
         dexterCtx: $('sDexterCtx').value,
         irisCtx: $('sIrisCtx').value,
@@ -1281,7 +1281,7 @@
         ollamaUrl: $('sOllamaUrl').value,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
+        vulkanOllamaServer: $('sVulkanOllamaServer').value,
         sentryOllamaServer: $('sSentryOllamaServer').value,
       };
       await postJson('/api/settings', body);
@@ -1335,7 +1335,7 @@
         ollamaServers,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
+        vulkanOllamaServer: $('sVulkanOllamaServer').value,
         sentryOllamaServer: $('sSentryOllamaServer').value,
       };
       await postJson('/api/settings', body);

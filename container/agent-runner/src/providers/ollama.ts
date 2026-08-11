@@ -22,6 +22,7 @@ export class OllamaProvider implements ChatProvider {
                     options: request.options || {},
                     ...(request.keep_alive !== undefined ? { keep_alive: request.keep_alive } : {}),
                     ...(request.think !== undefined ? { think: request.think } : {}),
+                    ...(request.format !== undefined ? { format: request.format } : {}),
                 }),
                 signal: controller.signal,
             });

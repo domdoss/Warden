@@ -162,6 +162,7 @@ export class TelegramChannel implements Channel {
       content,
       timestamp: new Date().toISOString(),
       is_from_me: false,
+      channel: 'telegram',
     };
     this.startTyping(chatId); // agent is about to think — show it
     this.inbound(JID_PREFIX + chatId, msg);

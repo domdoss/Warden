@@ -248,7 +248,7 @@ class TTS(BaseTTS):
             )
         elif self.engine_name == "kokoro":
             self._impl = KokoroTTS(
-                voice=voice or "am_michael",
+                voice=voice or "af_heart",
                 speed=speed,
                 lang_code=lang_code or "a",
                 device=device,

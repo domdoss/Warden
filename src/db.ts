@@ -40,12 +40,14 @@ function createSchema(database: Database.Database): void {
       is_from_me INTEGER,
       is_bot_message INTEGER DEFAULT 0,
       idea TEXT DEFAULT '',
+      channel TEXT,
       PRIMARY KEY (id, chat_jid),
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
     CREATE INDEX IF NOT EXISTS idx_messages_chat_jid_timestamp ON messages(chat_jid, timestamp);
     CREATE INDEX IF NOT EXISTS idx_messages_chat_bot ON messages(chat_jid, is_bot_message, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp);
 
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
       id TEXT PRIMARY KEY,
@@ -341,6 +343,13 @@ export function initDatabase(): void {
   // backed up and dropped before the new canonical schema is applied.
   migrateToDesktopSchema(db);
 
+  // The messages.channel column must exist BEFORE createSchema runs, because
+  // createSchema creates idx_messages_channel ON messages(channel, timestamp)
+  // — on a DB where the messages table predates the column, that index would
+  // throw "no such column: channel" before the post-createSchema migration
+  // could add it. ALTER fails harmlessly if the column already exists.
+  try { db.exec(`ALTER TABLE messages ADD COLUMN channel TEXT`); } catch { /* already exists */ }
+
   createSchema(db);
 
   // Idempotent column migrations for DBs created before a column was added.
@@ -349,6 +358,13 @@ export function initDatabase(): void {
   for (const [table, col, def] of [
     ['email_accounts', 'oauth_account_id', 'TEXT'],
     ['oauth_accounts', 'hidden_calendars', "TEXT DEFAULT '[]'"],
+    // Actionable-scanner items land directly in the real stores now (no queue
+    // file). `confirmed` flags scanned rows that the user hasn't green-checked
+    // yet (0 = awaiting review in Ops → Inbox, 1 = confirmed). Existing rows
+    // default to confirmed=1 so a migration doesn't surface old tasks/events as
+    // "needs review".
+    ['user_work_tasks', 'confirmed', 'INTEGER DEFAULT 1'],
+    ['calendar_events', 'confirmed', 'INTEGER DEFAULT 1'],
   ] as const) {
     try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
   }
@@ -585,7 +601,7 @@ export function deleteWhatsappChats(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, idea) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, idea, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     OWNER_JID,
@@ -596,6 +612,7 @@ export function storeMessage(msg: NewMessage): void {
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
     msg.idea || '',
+    msg.channel || null,
   );
 }
 
@@ -661,6 +678,32 @@ export function getChatHistory(
         ? db.prepare(sql).all(...jids, idea, limit)
         : db.prepare(sql).all(...jids, limit));
   return (rows as any[]).reverse();
+}
+
+/**
+ * Recent inbound (non-bot) messages since `sinceISO`, optionally restricted to
+ * a set of source channels. Used by the Actionable scanner to mine chat history.
+ * Empty/null `channels` = all channels. Returns oldest-first.
+ */
+export function getRecentInboundMessages(
+  sinceISO: string,
+  channels?: string[] | null,
+  limit = 500,
+): Array<{ sender_name: string; content: string; timestamp: string; channel: string | null }> {
+  const chanFilter =
+    channels && channels.length
+      ? `AND channel IN (${channels.map(() => '?').join(',')})`
+      : '';
+  const sql = `
+    SELECT sender_name, content, timestamp, channel FROM (
+      SELECT sender_name, content, timestamp, channel FROM messages
+      WHERE chat_jid = ? AND timestamp > ? AND is_bot_message = 0
+        AND content != '' AND content IS NOT NULL ${chanFilter}
+      ORDER BY timestamp DESC LIMIT ?
+    ) ORDER BY timestamp
+  `;
+  const args: any[] = [OWNER_JID, sinceISO, ...(channels && channels.length ? channels : []), limit];
+  return db.prepare(sql).all(...args) as any[];
 }
 
 export function getLastBotMessageTimestamp(_chatJid: string): string | null {
@@ -1110,6 +1153,7 @@ export interface WorkTask {
   project_id: string | null;
   created_at: string;
   updated_at: string;
+  confirmed: number;
 }
 
 export function getWorkTasks(userId?: string): WorkTask[] {
@@ -1138,12 +1182,13 @@ export function createWorkTask(task: {
   created_by: string;
   due_date?: string;
   project_id?: string;
+  confirmed?: number;
 }): WorkTask {
   const id = `wtask-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
   db.prepare(
-    'INSERT INTO user_work_tasks (id, title, description, notes, priority, assigned_to, created_by, due_date, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, task.title, task.description || '', task.notes || '', task.priority || 'medium', task.assigned_to || null, task.created_by, task.due_date || null, task.project_id || null, now, now);
+    'INSERT INTO user_work_tasks (id, title, description, notes, priority, assigned_to, created_by, due_date, project_id, created_at, updated_at, confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, task.title, task.description || '', task.notes || '', task.priority || 'medium', task.assigned_to || null, task.created_by, task.due_date || null, task.project_id || null, now, now, task.confirmed ?? 1);
   return getWorkTask(id)!;
 }
 
@@ -1160,6 +1205,7 @@ export function updateWorkTask(taskId: string, updates: Partial<WorkTask>): Work
   if (updates.assigned_to !== undefined) { fields.push('assigned_to = ?'); values.push(updates.assigned_to); }
   if (updates.due_date !== undefined) { fields.push('due_date = ?'); values.push(updates.due_date); }
   if (updates.project_id !== undefined) { fields.push('project_id = ?'); values.push(updates.project_id); }
+  if (updates.confirmed !== undefined) { fields.push('confirmed = ?'); values.push(updates.confirmed ? 1 : 0); }
   if (fields.length === 0) return existing;
   fields.push('updated_at = ?');
   values.push(new Date().toISOString());
@@ -2178,6 +2224,7 @@ export interface CalendarEvent {
   provider_calendar_name: string;
   created_at: string;
   updated_at: string;
+  confirmed: number;
 }
 
 export function getCalendarEvent(id: string): CalendarEvent | undefined {
@@ -2225,12 +2272,13 @@ export function createCalendarEvent(event: {
   ical_uid?: string;
   provider_calendar_id?: string;
   provider_calendar_name?: string;
+  confirmed?: number;
 }): CalendarEvent {
   const id = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO calendar_events (id, title, description, start_time, end_time, all_day, location, recurrence, color, assigned_to, created_by, work_task_id, calendar_source, ical_uid, provider_calendar_id, provider_calendar_name, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO calendar_events (id, title, description, start_time, end_time, all_day, location, recurrence, color, assigned_to, created_by, work_task_id, calendar_source, ical_uid, provider_calendar_id, provider_calendar_name, created_at, updated_at, confirmed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     event.title,
@@ -2250,6 +2298,7 @@ export function createCalendarEvent(event: {
     event.provider_calendar_name || '',
     now,
     now,
+    event.confirmed ?? 1,
   );
   return getCalendarEvent(id)!;
 }
@@ -2261,7 +2310,7 @@ export function updateCalendarEvent(id: string, updates: Partial<CalendarEvent>)
   const fields: string[] = [];
   const values: unknown[] = [];
 
-  const allowedFields = ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'recurrence', 'color', 'assigned_to', 'work_task_id', 'calendar_source', 'ical_uid', 'provider_calendar_id', 'provider_calendar_name'] as const;
+  const allowedFields = ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'recurrence', 'color', 'assigned_to', 'work_task_id', 'calendar_source', 'ical_uid', 'provider_calendar_id', 'provider_calendar_name', 'confirmed'] as const;
   for (const f of allowedFields) {
     if (updates[f] !== undefined) {
       fields.push(`${f} = ?`);

@@ -42,7 +42,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
-    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','hephaestus','artemis','iris'], tier: 'public' },
+    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','vulkan','artemis','iris'], tier: 'public' },
 
     // Security tools — used by Sentry (the single background security agent) to
     // send alerts, open/dismiss detector alerts, arm/disarm, and log events.
@@ -59,21 +59,21 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // and turn actionable messages into real projects/work tasks when the
     // user asks in chat.
     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin','email'] },
-    'dexter-core':   { name: 'dexter-core',   includes: ['tasks'] },
-    // Media (speaker/mic volume + playback) — atlas/hephaestus drive the hardware.
+    'dexter-core':   { name: 'dexter-core',   includes: ['tasks','calendar'] },
+    // Media (speaker/mic volume + playback) — atlas/vulkan drive the hardware.
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
     'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin','desktop-vision','media'] },
-    // Hephaestus — the coding specialist. Like atlas-core but adds `file`
+    // Vulkan — the coding specialist. Like atlas-core but adds `file`
     // (Read/Write/Edit/Glob/Grep) so it can edit source, plus browser +
-    // desktop-vision for webapp/UI testing. Both Atlas and Hephaestus merge
+    // desktop-vision for webapp/UI testing. Both Atlas and Vulkan merge
     // active skill tools at spawn, so the data/skills/ library is inherited.
-    'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
+    'vulkan-core': { name: 'vulkan-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris (digest compiler) — email (IMAP read_emails, works) + admin
     // (post_summary, list_api_keys, api_request). Contacts/todos toolsets were
     // removed entirely (no DB backend, were Radicale-only). Calendar + tasks
     // come from buildDigestContext (DB) in INPUT (above), not from tools.
-    'iris-core':     { name: 'iris-core',     includes: ['email','admin'] },
+    'iris-core':     { name: 'iris-core',     includes: ['email','admin','calendar'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };
 

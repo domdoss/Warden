@@ -175,6 +175,7 @@ export class SlackChannel implements Channel {
           content,
           timestamp,
           is_from_me: false,
+          channel: 'slack',
         });
         logger.info(
           { sender: senderName, content: content.slice(0, 80) },
