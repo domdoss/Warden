@@ -68,6 +68,13 @@
   .badge-track{background:rgba(0,255,136,0.08);color:#00ff88;border:1px solid rgba(0,255,136,0.18)}
   .badge-risk{background:rgba(255,68,68,0.1);color:#ff4444;border:1px solid rgba(255,68,68,0.2)}
 
+  .item.past{opacity:0.4}
+  .item.past .it-title{color:rgba(204,136,255,0.5);text-shadow:none}
+  .edit-row{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+  .edit-row label{font-size:7px;letter-spacing:1px;text-transform:uppercase;color:rgba(204,136,255,0.4)}
+  .edit-row input{background:rgba(0,20,40,0.6);border:1px solid rgba(204,136,255,0.25);border-radius:4px;color:#e8d8ff;font-size:9px;padding:5px 7px;outline:none;font-family:inherit}
+  .edit-row input:focus{border-color:rgba(204,136,255,0.5)}
+  .edit-row .edit-btns{display:flex;gap:5px;margin-top:3px}
   .empty{text-align:center;padding:40px 20px;font-size:10px;color:rgba(204,136,255,0.25);font-family:'Courier New',monospace}
 
   .new-row{display:none;gap:6px;padding:0 16px 10px;flex-shrink:0;flex-wrap:wrap}
@@ -133,7 +140,7 @@
   }
 
   var body=document.getElementById('body'),footerTs=document.getElementById('footer-ts'),
-      tabs=document.querySelectorAll('.tab'),activeTab='work',lastTasks=[],lastWork=[],lastProjects=[];
+      tabs=document.querySelectorAll('.tab'),activeTab='work',lastTasks=[],lastWork=[],lastProjects=[],lastCalendar=[],editingCalId=null;
 
   function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 
@@ -153,24 +160,50 @@
 
   // Calendar events (appointments) from /api/calendar/events — the local DB
   // calendar (Google-synced + scan-created). Confirmed scan events land here
-  // after the user ✓-checks them in the Inbox (they graduate out of the Inbox
-  // into this tab). Sorted upcoming-first.
+  // after the user ✓-checks them in the Inbox. PAST events are shown too —
+  // dimmed, below upcoming — so the calendar is a history, not just an agenda.
+  // Each row has a red ✕ (delete → removes it from the calendar + this tab)
+  // and an Edit button to change its date/time via the datetime pickers.
   async function loadCalendar(){
     try{
       var raw=await api('/api/calendar/events');
       var d=raw?JSON.parse(raw):null;
       var evs=((d&&d.events)||[]).filter(function(e){var t=e.start_time?new Date(e.start_time).getTime():NaN; return !Number.isNaN(t);});
-      evs.sort(function(a,b){return (a.start_time?new Date(a.start_time).getTime():0)-(b.start_time?new Date(b.start_time).getTime():0);});
+      var now=Date.now();
+      var future=evs.filter(function(e){return new Date(e.start_time).getTime()>=now;})
+        .sort(function(a,b){return new Date(a.start_time)-new Date(b.start_time);});
+      var past=evs.filter(function(e){return new Date(e.start_time).getTime()<now;})
+        .sort(function(a,b){return new Date(b.start_time)-new Date(a.start_time);});
+      var ordered=future.concat(past);
+      lastCalendar=evs;
       document.getElementById('calendar-count').textContent=evs.length||'';
       if(!evs.length){body.innerHTML='<div class="empty">No calendar events.</div>';return;}
-      body.innerHTML=evs.map(function(e){
+      body.innerHTML=ordered.map(function(e){
+        var eid=e.id||e.uid||'';
+        var isPast=new Date(e.start_time).getTime()<now;
         var st=e.start_time?fmtDT(e.start_time):'';
         var loc=e.location?(' · '+esc(e.location)):'';
         var src=e.calendar_source?(' · '+esc(e.calendar_source)):'';
         var end=e.end_time?(' → '+fmtDT(e.end_time)):'';
-        return '<div class="item" data-kind="calendar" data-id="'+esc(e.id||e.uid||'')+'">'+
+        var editHtml='';
+        if(editingCalId===eid){
+          editHtml='<div class="edit-row">'+
+            '<label>Start</label><input type="datetime-local" id="cal-start" value="'+toLocalInput(e.start_time)+'">'+
+            '<label>End</label><input type="datetime-local" id="cal-end" value="'+(e.end_time?toLocalInput(e.end_time):'')+'">'+
+            '<label>Location</label><input type="text" id="cal-loc" value="'+esc(e.location||'').replace(/"/g,'&quot;')+'">'+
+            '<div class="edit-btns"><span class="act-btn confirm" data-act="cal-save">Save</span>'+
+            '<span class="act-btn" data-act="cal-cancel">Cancel</span></div>'+
+          '</div>';
+        }
+        return '<div class="item'+(isPast?' past':'')+'" data-kind="calendar" data-id="'+esc(eid)+'">'+
+          '<div class="del-x" data-act="del" title="Delete">✕</div>'+
           '<div class="it-title">'+esc(e.title)+'</div>'+
           '<div class="it-sub">'+esc(st)+end+loc+src+'</div>'+
+          '<div class="it-row">'+
+            (isPast?'<span class="it-badge badge-done">past</span>':'<span class="it-badge badge-active">upcoming</span>')+
+            '<span class="act-btn" data-act="edit">Edit</span>'+
+          '</div>'+
+          editHtml+
         '</div>';
       }).join('');
     }catch(e){body.innerHTML='<div class="empty">Unable to load calendar.</div>'}
@@ -335,6 +368,13 @@
     try{ var d=new Date(iso); if(isNaN(d)) return esc(iso);
       return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
     catch(e){ return esc(iso); }
+  }
+  // Convert a stored ISO/UTC timestamp to the local "YYYY-MM-DDTHH:MM" value an
+  // <input type="datetime-local"> expects (no timezone), for editing an event.
+  function toLocalInput(iso){
+    var d=new Date(iso); if(isNaN(d))return '';
+    var p=function(n){return String(n).padStart(2,'0')};
+    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());
   }
   async function loadInbox(){
     try{
@@ -533,6 +573,25 @@
     try{await api('/api/work-tasks/'+encodeURIComponent(id),{method:'DELETE'});}catch(e){}
     await loadWork();
   }
+  async function delCalendarEvent(id){
+    try{await api('/api/calendar/events/'+encodeURIComponent(id),{method:'DELETE'});}catch(e){}
+    await loadCalendar();
+  }
+  // Save an in-place edit of a calendar event's start/end/location. The
+  // datetime pickers yield local "YYYY-MM-DDTHH:MM"; convert to ISO for the PUT.
+  // An empty End clears the end time. The 15s tick is paused while editing
+  // (see tick()) so the half-filled pickers aren't wiped mid-edit.
+  async function saveCalendarEvent(id){
+    var start=document.getElementById('cal-start').value;
+    var end=document.getElementById('cal-end').value;
+    var loc=document.getElementById('cal-loc').value;
+    if(!start){editingCalId=null;await loadCalendar();return;}
+    var body={start_time:new Date(start).toISOString(),location:loc||''};
+    body.end_time=end?new Date(end).toISOString():'';
+    try{await api('/api/calendar/events/'+encodeURIComponent(id),{method:'PUT',body:JSON.stringify(body)});}catch(e){}
+    editingCalId=null;
+    await loadCalendar();
+  }
   async function toggleTask(id,status){
     try{
       await api('/api/tasks/'+encodeURIComponent(id),{method:'PATCH',
@@ -547,6 +606,7 @@
     if(act==='del'){
       if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
       else if(kind==='worktask'){delWorkTask(id);}
+      else if(kind==='calendar'){delCalendarEvent(id);}
       else delTask(id);
     }else if(act==='deny'){
       // Inbox ✕ — dismiss a scanned item (delete the row).
@@ -557,11 +617,20 @@
       confirmInboxItem(ck,id);
     }else if(act==='toggle'){
       toggleTask(id,el.getAttribute('data-status'));
+    }else if(act==='edit'&&kind==='calendar'){
+      // Expand the inline datetime pickers for this event.
+      editingCalId=id; loadCalendar();
+    }else if(act==='cal-save'){
+      saveCalendarEvent(id);
+    }else if(act==='cal-cancel'){
+      editingCalId=null; loadCalendar();
     }
   });
 
   async function tick(){
-    await load();
+    // Don't auto-refresh while a calendar event is being edited — the 15s tick
+    // would re-render and wipe the half-filled datetime pickers.
+    if(editingCalId==null) await load();
     refreshInboxCount();
     footerTs.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   }
