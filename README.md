@@ -107,6 +107,12 @@ Each sub-agent has its own system prompt, its own toolset, and its own model. Th
 
 > 🎛️ **Every agent's model is picked in the dashboard** — local Ollama or cloud, your call. Local and cloud run through the [same Ollama pipeline](#-hybrid-model-architecture), so switching an agent between them needs no code or infrastructure change. Iris, Dexter, and Byte are light, structured-task agents — run them on a local model (granite is plenty) and save cloud spend for Atlas and the Council.
 
+![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
+
+![The Council: three seats deliberate in parallel on a decision](docs/screenshots/council.png)
+
+![A Council verdict is returned to the orchestrator](docs/screenshots/council-verdict.png)
+
 ### ⏰ Scheduling — Dexter
 
 **Dexter is the scheduling and calendar agent. Its entire job is to create and manage schedule entries and calendar events — it never executes the scheduled tasks.**
@@ -235,6 +241,10 @@ All of this is configured from the dashboard's Settings panel — assistant name
 
 ![Settings panel: assistant name, model configuration per role, Ollama URL, and automation settings](docs/screenshots/settings.png)
 
+![Local model settings: pick a local Ollama model per role](docs/screenshots/local-settings.png)
+
+![Thinking-mode dropdown in the web settings panel](docs/screenshots/thinking-dropdown-web-settings.png)
+
 ### 🔄 One Pipeline, Local or Cloud
 
 There is no separate infrastructure for cloud models. Ollama serves both local models (on your machine) and cloud models (remote Ollama-compatible endpoints) through the same HTTP API — so every agent can be flipped between local and cloud from the dashboard with no code or infrastructure change. You're just picking a model id. The agent-runner talks to Ollama directly — no proxy in the path by default.
@@ -242,6 +252,10 @@ There is no separate infrastructure for cloud models. Ollama serves both local m
 ### 🧭 Model Routing
 
 The agent-runner speaks Ollama's native HTTP API and talks to Ollama directly — local models at `localhost:11434`, cloud models at their Ollama-compatible endpoint, model picked per role in the dashboard. No proxy in the path. The agent doesn't know or care whether the model is local or cloud; same format, same tools, same conversation.
+
+![Friendly model names: cloud models shown by a readable name, not a raw id](docs/screenshots/friendly-model-names.png)
+
+![Servers menu: manage local and cloud Ollama endpoints](docs/screenshots/menu-servers.png)
 
 **Optional — piping in Claude:** `src/credential-proxy.ts` (port 3001) is in the codebase but **not wired in by default**. It exists for one case: routing to Anthropic's Claude. It translates Ollama-native requests ↔ Anthropic format and injects the Claude API key so the agent-runner never sees it. If you want Claude, wire the proxy in and point the agent-runner at it; otherwise everything stays on native Ollama.
 
@@ -271,6 +285,8 @@ Warden controls your actual desktop — mouse movement, keystrokes, window manag
 
 A full PWA at `http://localhost:3200`. First launch lands on a **login page** (`public/login.html`) — a user grid with avatars, password auth per user, and a "remember me" session. Once in, you get the full dashboard. There's also a **thin client** at `/thin-client/` for phones and tablets — same API, same session, just the chat.
 
+![The Warden dashboard](docs/screenshots/desktop-ui.png)
+
 The dashboard includes:
 
 | | | |
@@ -287,6 +303,10 @@ The dashboard includes:
 | 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
 | 🏗️ **Ops Panel** | Inbox (scanned work tasks + calendar events — ✓ confirm / ✕ deny), Work tasks, Reminders, Schedules, Calendar (Google-synced appointments), + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
+![Ops Panel: scheduled crons with pause/resume](docs/screenshots/ops.png)
+
+![Ops Panel inbox: scanned work tasks and calendar events to confirm or deny](docs/screenshots/ops-inbox.png)
+
 ### ⚡ Quick Actions
 
 One-touch prompt buttons for the things you do all the time — setup, review, write, research. Press a button instead of typing the same prompt again; each action fires a pre-written prompt into the conversation.
@@ -297,13 +317,8 @@ One-touch prompt buttons for the things you do all the time — setup, review, w
 
 An agent system is only as good as the requests you give it, so Warden teaches you how to use it. On first launch the dashboard opens a **How to Use Warden** guide that leads with the one thing new users need to hear — *this is not a chatbot* — then walks the whole system: the agent roster and what each specialist actually does, how to convene the Council on a decision, how to delegate to Atlas (including parallel delegations in a single turn), the skills system, and what kinds of asks work best.
 
-![How to Use Warden modal: the agent roster and what each specialist does](docs/screenshots/help.png)
-
-![How to Use Warden modal: convening the Council, delegating to Atlas, and the skills system](docs/screenshots/help2.png)
 
 Behind the modal sits a full help site with in-depth pages. The flagship, *not-a-chatbot*, puts chatbot-style asks and agent-style asks side by side — "tell me about microservices" gets you conversation; "read `src/auth.ts` and tell me if there's a timing-safe comparison missing" gets you tools run, files read, verdicts returned — then distills the principles that make requests land: be specific about the target, parallelize independent asks, read `BLOCKED` messages instead of retrying blindly, and watch the verbose bar to see what Warden is doing right now.
-
-![Help page "This is not a chatbot": chatbot-style vs agent-style asks and the five principles](docs/screenshots/help3.png)
 
 ### 📝 Notes
 
@@ -325,6 +340,8 @@ A markdown file at `USER_BIO.md` in the workspace root that tells the agent who 
 ### 📰 Digest
 
 Iris compiles short briefings from your real local data and publishes them to the dashboard digest panel and the hologram UI (`voice/ui/digest.html`). There's no scraped news feed — every line comes from a grounded source.
+
+![Iris hourly digest: a grounded briefing of the next couple hours](docs/screenshots/iris-hourly.png)
 
 **Three cadences**, each a scheduled task that Iris owns:
 
@@ -737,6 +754,8 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing
 
 `voice/` is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro or Orpheus) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears, eyes, and a mouth.
 
+![The Warden TUI / hologram window](docs/screenshots/warden-tui.png)
+
 - 🎤 Local STT (Whisper) + TTS (Kokoro or Orpheus) — your voice never leaves the machine.
 - 👻 Hologram UI that reflects state (idle / listening / thinking / speaking).
 - 👏 Double-clap wake word — clap twice to start a conversation (works on both local mic and satellite Pi mic).
@@ -886,6 +905,8 @@ The relay binds `:8766` by default.
 ## 🛡️ Security Mode
 
 `security/` is a webcam awareness system. The camera machine runs the cheap RF-DETR detector and sends only structured JSON events to the Warden service. One background agent handles the rest.
+
+![Sentry rules: the editable `security/sentry.md` decision rules](docs/screenshots/sentry-rules.png)
 
 ### Features
 
