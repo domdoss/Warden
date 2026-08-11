@@ -96,6 +96,7 @@
     <div class="tab active" data-tab="work">Work <span class="count" id="work-count"></span></div>
     <div class="tab" data-tab="reminders">Rem <span class="count" id="reminders-count"></span></div>
     <div class="tab" data-tab="tasks">Sched <span class="count" id="tasks-count"></span></div>
+    <div class="tab" data-tab="calendar">Cal <span class="count" id="calendar-count"></span></div>
     <div class="tab" data-tab="projects">Proj <span class="count" id="projects-count"></span></div>
   </div>
   <div class="new-row" id="new-row">
@@ -143,10 +144,36 @@
 
   async function load(){
     if(activeTab==='inbox') return loadInbox();
+    if(activeTab==='calendar') return loadCalendar();
     if(activeTab==='tasks') return loadTasks();
     if(activeTab==='reminders') return loadReminders();
     if(activeTab==='work') return loadWork();
     return loadProjects();
+  }
+
+  // Calendar events (appointments) from /api/calendar/events — the local DB
+  // calendar (Google-synced + scan-created). Confirmed scan events land here
+  // after the user ✓-checks them in the Inbox (they graduate out of the Inbox
+  // into this tab). Sorted upcoming-first.
+  async function loadCalendar(){
+    try{
+      var raw=await api('/api/calendar/events');
+      var d=raw?JSON.parse(raw):null;
+      var evs=((d&&d.events)||[]).filter(function(e){var t=e.start_time?new Date(e.start_time).getTime():NaN; return !Number.isNaN(t);});
+      evs.sort(function(a,b){return (a.start_time?new Date(a.start_time).getTime():0)-(b.start_time?new Date(b.start_time).getTime():0);});
+      document.getElementById('calendar-count').textContent=evs.length||'';
+      if(!evs.length){body.innerHTML='<div class="empty">No calendar events.</div>';return;}
+      body.innerHTML=evs.map(function(e){
+        var st=e.start_time?fmtDT(e.start_time):'';
+        var loc=e.location?(' · '+esc(e.location)):'';
+        var src=e.calendar_source?(' · '+esc(e.calendar_source)):'';
+        var end=e.end_time?(' → '+fmtDT(e.end_time)):'';
+        return '<div class="item" data-kind="calendar" data-id="'+esc(e.id||e.uid||'')+'">'+
+          '<div class="it-title">'+esc(e.title)+'</div>'+
+          '<div class="it-sub">'+esc(st)+end+loc+src+'</div>'+
+        '</div>';
+      }).join('');
+    }catch(e){body.innerHTML='<div class="empty">Unable to load calendar.</div>'}
   }
 
   // Human-readable cron, matching the dockbox tasks tab (e.g. "0 9 * * *" →
@@ -326,6 +353,7 @@
           +'<div class="it-title">'+esc(t.title)+'</div>'
           +'<div class="it-sub">'+esc(t.due_date?('due '+fmtDT(t.due_date)):'to-do')+(t.description?(' · '+esc(t.description).slice(0,80)):'')+'</div>'
           +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · task</span>'
+          +'<span class="act-btn deny" data-act="deny" title="Dismiss this item">✕ Deny</span>'
           +'<span class="act-btn confirm" data-act="confirm" title="Confirm">✓ Confirm</span></div>'
           +'</div>';
       });
@@ -334,6 +362,7 @@
           +'<div class="it-title">'+esc(e.title)+'</div>'
           +'<div class="it-sub">'+esc(fmtDT(e.start_time))+(e.end_time?(' → '+esc(fmtDT(e.end_time))):'')+(e.location?(' · '+esc(e.location)):'')+'</div>'
           +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · event</span>'
+          +'<span class="act-btn deny" data-act="deny" title="Dismiss this item">✕ Deny</span>'
           +'<span class="act-btn confirm" data-act="confirm" title="Confirm">✓ Confirm</span></div>'
           +'</div>';
       });
@@ -358,6 +387,11 @@
       var r=raw?JSON.parse(raw):null;
       if(!r||!r.ok) return;
     }catch(e){}
+    await loadInbox();
+  }
+  async function delInboxItem(kind,id){
+    var ep=kind==='inbox-event'?('/api/calendar/events/'+encodeURIComponent(id)):('/api/work-tasks/'+encodeURIComponent(id));
+    try{ await api(ep,{method:'DELETE'}); }catch(e){}
     await loadInbox();
   }
 
@@ -514,6 +548,9 @@
       if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
       else if(kind==='worktask'){delWorkTask(id);}
       else delTask(id);
+    }else if(act==='deny'){
+      // Inbox ✕ — dismiss a scanned item (delete the row).
+      delInboxItem(kind,id);
     }else if(act==='confirm'){
       // Inbox ✓ — confirm a scanned task/event (flip confirmed=1).
       var ck=kind==='inbox-event'?'event':'task';

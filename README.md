@@ -56,7 +56,7 @@ A single LLM — the **orchestrator** — runs the show. It's the only thing you
 
 ```
 You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orchestrator → You
-                                   → Hephaestus (coding, background)
+                                   → Vulkan (coding, background)
                                    → Iris (email/calendar)
                                    → Dexter (scheduling)
                                    → Byte (projects)
@@ -70,7 +70,7 @@ You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orch
 
 This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. A 12B Gemma 4 nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
 
-The expensive generation lives one layer down, in the specialists. Atlas, Hephaestus, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 12B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
+The expensive generation lives one layer down, in the specialists. Atlas, Vulkan, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 12B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
 
 #### Babysitting the sub-agents
 
@@ -97,9 +97,9 @@ Each sub-agent has its own system prompt, its own toolset, and its own model. Th
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
 | **Atlas** | Local or cloud | Shell, browser (DOM control), desktop, files, web search/fetch, documents | Execution — anything that touches the internet or runs commands. |
-| **Hephaestus** | Local or cloud | Read, Edit, Grep, Glob, Bash, build & test runs | Coding, scripting, building, heavy bash — editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like Atlas. |
+| **Vulkan** | Local or cloud | Read, Edit, Grep, Glob, Bash, build & test runs | Coding, scripting, building, heavy bash — editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like Atlas. |
 | **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos | Personal information management. |
-| **Dexter** | Local or cloud (local recommended) | create / list / pause / resume / cancel / update scheduled tasks (cron, interval, once) | Scheduling — builds perfect schedule entries and never executes them. |
+| **Dexter** | Local or cloud (local recommended) | calendar events (create / list / update / delete) + scheduled tasks (create / list / pause / resume / cancel / update; cron, interval, once) | Scheduling & calendar — builds perfect schedule entries and calendar events; never executes the scheduled tasks. |
 | **Byte** | Local or cloud (local recommended) | Projects, deliverables, blockers, work tasks, time tracking | Work management. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
@@ -109,21 +109,22 @@ Each sub-agent has its own system prompt, its own toolset, and its own model. Th
 
 ### ⏰ Scheduling — Dexter
 
-**Dexter is the scheduling agent. Its entire job is to create and manage schedule entries — it never executes them.**
+**Dexter is the scheduling and calendar agent. Its entire job is to create and manage schedule entries and calendar events — it never executes the scheduled tasks.**
 
-The orchestrator owns the intent; Dexter owns the timing. When something needs to happen later, the orchestrator gives Dexter a **prompt** (what to run) and a **when** (the timing intent). Dexter's sole job is to translate that into one flawless schedule entry and hand it to the scheduler. Nothing more.
+The orchestrator owns the intent; Dexter owns the timing. When something needs to happen later, the orchestrator gives Dexter a **prompt** (what to run) and a **when** (the timing intent). Dexter's sole job is to translate that into one flawless schedule entry and hand it to the scheduler. Nothing more. When the ask is an appointment rather than a fire-later task, Dexter writes a **calendar event** (start/end time, location) the same way.
 
 **What Dexter does:**
 - Picks the right `schedule_type` — `cron` (recurring at specific times), `interval` (every N ms), or `once` (a single future timestamp) — and writes the `schedule_value` in its exact format.
 - Does the time arithmetic in your **local timezone**, walking the offset digit by digit and verifying computed-time minus now equals the requested interval before committing.
 - Stores the prompt verbatim — at fire time that prompt is injected into the running chat as a message from "Scheduler", and the **orchestrator runs it** like any other message, with full context and all its tools. Dexter set up the schedule; the orchestrator does the work.
 - Manages the lifecycle of existing entries — list, pause, resume, cancel, update.
+- Creates, lists, updates, and deletes **calendar events** (appointments with start/end time, location) — the calendar side of timing.
 
 **What Dexter does not do:**
 - It does not execute the scheduled task. Ever. It writes the entry and stops.
 - It does not gather data or do research — if a scheduled prompt needs facts (a price, a status, a number), the orchestrator delegates that to Atlas first and hands Dexter the result to bake into the prompt.
 - It does not diagnose why a task did or didn't fire — that's Artemis's job. Dexter only touches the entry if it needs fixing or recreating.
-- It does not own todos, calendar events, or contacts — those are Iris. A *todo* is a list item; a *reminder that fires at a time* is Dexter.
+- It does not own todos or contacts — those are Iris. A *todo* is a list item; a *reminder that fires at a time* or a *calendar appointment* is Dexter.
 
 **Model:** basic structured output — a small local model (granite) is plenty. The reliability lives in the prompt and the format validation, not in a big model.
 
@@ -209,6 +210,8 @@ The orchestrator keeps its running context lean by design, not by a giant ceilin
 
 The agent can modify its own source. A built-in `self-edit` skill constrains edits to `src/` and `container/agent-runner/src/`, runs `npm run build`, gates on a successful compile, tells you what's changing, then restarts the service with `systemctl --user restart warden`. It refuses to touch `dist/`, configs, or the systemd unit, and never restarts on a failed build — so the agent can ship its own fixes without you opening a terminal.
 
+A companion `update-warden` skill does the upstream equivalent: it fetches `origin/main`, shows what's new, merges, runs `npm run build`, and — with the same gate — restarts only if the build succeeded (exit 0), verifying `systemctl --user is-active warden` prints `active` afterward. It refuses to run on a dirty tree and aborts the merge on unresolvable conflicts, leaving the service on the previous `dist/` until you fix things. Ask "update warden" to trigger it.
+
 ---
 
 ## ☁️ Hybrid Model Architecture
@@ -223,7 +226,7 @@ Every model selection in the dashboard is per-role:
 |------|-------------|-----|
 | **Orchestrator** | Local (gemma, granite) | Fast, cheap, always available. Only routes and supervises. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. |
-| **Hephaestus** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. |
+| **Vulkan** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. |
 | **Iris / Dexter / Byte** | Local (recommended) | Light, structured tasks. Run them local; save cloud for Atlas and the Council. |
 | **Council seats** | Cloud (3 different models) | Diverse perspectives for deliberation. |
 | **Sub-agent tools** | Configurable | Tool-calling sub-agents can use a different model. |
@@ -282,7 +285,7 @@ The dashboard includes:
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
 | 📜 **Process Logs** | Live log tail | 📰 **Digest** | Hourly/daily/weekly grounded briefings |
 | 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
-| 🏗️ **Ops Panel** | Work tasks (default tab) + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
+| 🏗️ **Ops Panel** | Inbox (scanned work tasks + calendar events — ✓ confirm / ✕ deny), Work tasks, Reminders, Schedules, Calendar (Google-synced appointments), + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
 ### ⚡ Quick Actions
 
@@ -413,11 +416,11 @@ One conversation, many doors. All channels merge into a single chat:
 |---------|-----|
 | 🌐 **Web Dashboard** | PWA at `http://localhost:3200` |
 | 📱 **Thin Client** | Standalone chat at `/thin-client/` — login, pick a user, start talking. No dashboard chrome, just the conversation. |
-| ✈️ **Telegram** | Bot via grammy |
-| 💚 **WhatsApp** | Baileys (no third-party API) |
-| 💜 **Slack** | Bot integration |
+| ✈️ **Telegram** | Bot via grammy *(module present, disabled by default)* |
+| 💚 **WhatsApp** | Baileys (no third-party API) *(module present, disabled by default)* |
+| 💜 **Slack** | Bot integration *(module present, disabled by default)* |
 
-Message from WhatsApp, continue on Telegram, check the dashboard — same context, same memory.
+Only the **Web Dashboard** and **Thin Client** are enabled in the default build — `src/channels/index.ts` imports just `./web.js`. The Telegram, WhatsApp, and Slack modules still ship but are commented out; uncomment the relevant `import './<channel>.js';` line there to turn a messaging channel back on. When enabled, message from WhatsApp, continue on Telegram, check the dashboard — same context, same memory.
 
 ### 📱 Thin Client
 
@@ -984,7 +987,7 @@ systemctl --user restart warden
 
 Most runtime behavior is controlled from the dashboard at `http://localhost:3200`:
 
-- **Models** — per-agent model selection: orchestrator, Atlas, Hephaestus, Sentry, council seats, etc.
+- **Models** — per-agent model selection: orchestrator, Atlas, Vulkan, Sentry, council seats, etc.
 - **Servers** — Ollama URL, Whisper URL, video server / Satellite IP, and (after the distributed-roles refactor) Audio/Warden/Video role URLs.
 - **Heartbeat** — scheduled standing instructions.
 - **Skills & MCP** — toggle capabilities and external tools.
