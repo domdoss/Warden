@@ -94,9 +94,9 @@
   <div class="tabs">
     <div class="tab" data-tab="inbox">Inbox <span class="count" id="inbox-count"></span></div>
     <div class="tab active" data-tab="work">Work <span class="count" id="work-count"></span></div>
-    <div class="tab" data-tab="reminders">Reminders <span class="count" id="reminders-count"></span></div>
-    <div class="tab" data-tab="tasks">Scheduled <span class="count" id="tasks-count"></span></div>
-    <div class="tab" data-tab="projects">Projects <span class="count" id="projects-count"></span></div>
+    <div class="tab" data-tab="reminders">Rem <span class="count" id="reminders-count"></span></div>
+    <div class="tab" data-tab="tasks">Sched <span class="count" id="tasks-count"></span></div>
+    <div class="tab" data-tab="projects">Proj <span class="count" id="projects-count"></span></div>
   </div>
   <div class="new-row" id="new-row">
     <input type="text" id="new-name" placeholder="New project name…" maxlength="200">
@@ -302,7 +302,7 @@
   // ── Inbox ── unconfirmed scanned items (work tasks + calendar events) that
   // the Actionable scanner dropped into the real stores with confirmed=0. They
   // stand out here so the user can green-check (✓ confirm → confirmed=1, stays in
-  // the table, graduates out of the Inbox) or red-X (✕ delete → row removed).
+  // the table, graduates out of the Inbox).
   function fmtDT(iso){
     if(!iso) return '';
     try{ var d=new Date(iso); if(isNaN(d)) return esc(iso);
@@ -317,13 +317,12 @@
       var n=tasks.length+events.length;
       document.getElementById('inbox-count').textContent=n||'';
       if(!n){
-        body.innerHTML='<div class="inbox-empty">Inbox clear — no items awaiting review.<br><br>Scanned tasks &amp; events land here <b>unconfirmed</b> for a ✓ or ✕.<br>Run a scan from the digest Actionable tab.</div>';
+        body.innerHTML='<div class="inbox-empty">Inbox clear — no items awaiting review.<br><br>Scanned tasks &amp; events land here <b>unconfirmed</b> for a ✓.<br>Run a scan from the digest Actionable tab.</div>';
         return;
       }
       var h='';
       tasks.forEach(function(t){
         h+='<div class="item unconfirmed" data-kind="inbox-task" data-id="'+esc(t.id)+'">'
-          +'<div class="del-x" data-act="del" title="Delete">✕</div>'
           +'<div class="it-title">'+esc(t.title)+'</div>'
           +'<div class="it-sub">'+esc(t.due_date?('due '+fmtDT(t.due_date)):'to-do')+(t.description?(' · '+esc(t.description).slice(0,80)):'')+'</div>'
           +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · task</span>'
@@ -332,7 +331,6 @@
       });
       events.forEach(function(e){
         h+='<div class="item unconfirmed" data-kind="inbox-event" data-id="'+esc(e.id)+'">'
-          +'<div class="del-x" data-act="del" title="Delete">✕</div>'
           +'<div class="it-title">'+esc(e.title)+'</div>'
           +'<div class="it-sub">'+esc(fmtDT(e.start_time))+(e.end_time?(' → '+esc(fmtDT(e.end_time))):'')+(e.location?(' · '+esc(e.location)):'')+'</div>'
           +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · event</span>'
@@ -356,15 +354,10 @@
   }
   async function confirmInboxItem(kind,id){
     try{
-      var raw=await api('/api/scan/confirm','POST',JSON.stringify({kind:kind,id:id}));
+      var raw=await api('/api/scan/confirm',{method:'POST',body:JSON.stringify({kind:kind,id:id})});
       var r=raw?JSON.parse(raw):null;
       if(!r||!r.ok) return;
     }catch(e){}
-    await loadInbox();
-  }
-  async function delInboxItem(kind,id){
-    var ep=kind==='inbox-event'?('/api/calendar/events/'+encodeURIComponent(id)):('/api/work-tasks/'+encodeURIComponent(id));
-    try{ await api(ep,'DELETE'); }catch(e){}
     await loadInbox();
   }
 
@@ -518,8 +511,6 @@
     var item=el.closest('.item'); if(!item)return;
     var kind=item.getAttribute('data-kind'),id=item.getAttribute('data-id'),act=el.getAttribute('data-act');
     if(act==='del'){
-      if(kind==='inbox-task'){delInboxItem('inbox-task',id);return;}
-      if(kind==='inbox-event'){delInboxItem('inbox-event',id);return;}
       if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
       else if(kind==='worktask'){delWorkTask(id);}
       else delTask(id);

@@ -36,18 +36,28 @@ Use AskUserQuestion: offer "Update now (merge origin/main, build, restart)" vs "
    - For each: open it, resolve only conflict markers, preserve intentional local customizations, `git add`, then `git commit --no-edit`.
    - If a conflict can't be resolved cleanly: `git merge --abort`, tell the user to resolve manually, stop.
 
-## Phase 5: Validate + restart
+## Phase 5: Build, gate, restart
 
-- `npm run build`
-- If build fails: show the error; only fix issues clearly caused by the merge (missing imports, type mismatches). Do not refactor unrelated code. If unclear, ask.
-- Restart the service: `systemctl --user restart warden`
+1. `npm run build` — capture the exit code.
+2. **Gate — never restart unless the build succeeded (exit 0).**
+   - If the build **failed** (nonzero exit): **do NOT restart.** Show the full
+     compiler error output to the user. Only attempt a fix for issues clearly
+     caused by the merge (missing imports, type mismatches); rerun
+     `npm run build` and re-apply this gate. Do not refactor unrelated code. If
+     the cause is unclear, stop and ask — leave the merged tree in place; the
+     service keeps running the previous `dist/` until a build succeeds.
+   - If the build **succeeded (exit 0)**: continue to step 3.
+3. Restart the service: `systemctl --user restart warden`
+4. Verify: `systemctl --user is-active warden` must print `active`. If it does
+   not, show `journalctl --user -u warden -n 40 --no-pager` and stop.
 
 ## Phase 6: Summary
 
 - New HEAD: `git rev-parse --short HEAD`
 - Commits merged (count)
 - Any conflicts resolved (files)
-- Confirm the service restarted.
+- Build result (succeeded / failed-and-stopped)
+- `systemctl --user is-active warden` result.
 
 ---
 

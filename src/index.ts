@@ -2148,23 +2148,15 @@ async function buildScanInput(span: ScanSpan): Promise<string> {
   }
   lines.push(emailBlocks.length ? `\nEMAILS:\n${emailBlocks.join('\n\n')}` : '\nEMAILS: none');
 
-  // ── Chat logs: allowed channels, within the window ──
-  let chats = '';
-  try {
-    const rows = getRecentInboundMessages(sinceISO, scanAllowedChannels(), SCAN_MSG_LIMIT);
-    if (rows.length) {
-      const rendered = rows.map((r) => {
-        const chan = r.channel ? `[${r.channel}]` : '[chat]';
-        return `${r.timestamp} ${chan} ${r.sender_name}: ${r.content}`;
-      });
-      chats = rendered.join('\n');
-    }
-  } catch (err: any) {
-    chats = `chat logs unavailable (${String(err?.message ?? err)})`;
-  }
-  lines.push(chats ? `\nCHAT LOGS:\n${chats}` : '\nCHAT LOGS: none');
+  // ── Chat logs: DISABLED (email-only scan) ──
+  // Chat/message scanning was removed because the extractor kept re-surfacing
+  // items from message text (appointments, pharmacy visits) that Warden had
+  // already handled in conversation, and could not reliably distinguish its own
+  // outbound messages from genuine new actionable inbound. The Actionable scan
+  // is now EMAIL-ONLY. Do not re-add getRecentInboundMessages here without
+  // solving the self-message / re-extraction problem.
 
-  lines.push('\n=== INSTRUCTIONS ===\nExtract the actionable tasks and events from the messages above. Output only the JSON object (keys: tasks, events).');
+  lines.push('\n=== INSTRUCTIONS ===\nExtract the actionable tasks and events from the emails above. Output only the JSON object (keys: tasks, events).');
   return lines.join('\n');
 }
 
