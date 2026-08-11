@@ -60,7 +60,7 @@
 
   <div class="help-section-label"><span>02</span> Context overrides</div>
   <div class="setting-grid">
-    <div class="setting-tile"><h3>num_ctx — per agent</h3><div class="where">Settings → Model Configuration</div><p>Every agent has its own num_ctx override. Choose a common value from the dropdown, or leave blank for the model's native window. Independent per agent.</p></div>
+    <div class="setting-tile"><h3>num_ctx — per role</h3><div class="where">Settings → Model Configuration</div><p>Orchestrator, Atlas, Vulkan, Artemis, and each Council seat have their own num_ctx override. The five toolcall agents (Byte, Dexter, Iris, Mercury, Sentry) share one <b>Toolcall ctx</b> override. Leave blank for the model's native window.</p></div>
     <div class="setting-tile info"><h3>Keep alive</h3><div class="where">Settings → Model Configuration</div><p>Per-agent checkbox on the Orchestrator, Atlas, and Toolcall model rows. On = hold the model in VRAM between turns (<code>keep_alive: -1</code>, no reload); off = unload after 5 min. With Ollama <code>max_loaded_models=2</code>, the orchestrator + one sub-agent stay resident and Ollama evicts the least-recently-used if a third is needed.</p></div>
     <div class="setting-tile danger"><h3>Thinking mode</h3><div class="where">Settings → Model Configuration</div><p>Global default: On (first turn + always-think models), Max (every iteration), or Off. No per-chat override.</p></div>
   </div>
@@ -82,7 +82,6 @@
 
   <div class="help-section-label"><span>05</span> Other</div>
   <div class="setting-grid">
-    <div class="setting-tile"><h3>Automation model</h3><div class="where">Settings → Automation</div><p>Model used for scheduled task runs (Dexter's cron jobs).</p></div>
     <div class="setting-tile info"><h3>Friendly names</h3><div class="where">Settings → General</div><p>Display name shown in the header. Defaults to "Warden".</p></div>
     <div class="setting-tile warn"><h3>Restart server</h3><div class="where">Settings → bottom</div><p>Restart the Warden parent process. Use after config changes that need a fresh process.</p></div>
   </div>

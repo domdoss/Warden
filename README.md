@@ -57,9 +57,11 @@ A single LLM — the **orchestrator** — runs the show. It's the only thing you
 ```
 You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orchestrator → You
                                    → Vulkan (coding, background)
-                                   → Iris (email/calendar)
+                                   → Iris (email/calendar/digest)
                                    → Dexter (scheduling)
                                    → Byte (projects)
+                                   → Mercury (memory)
+                                   → Sentry (security)
                                    → Artemis (audit)
                                    → The Council (deliberation)
 ```
@@ -92,20 +94,21 @@ Your raw message never reaches a specialist. *"hey can you set the volume to lik
 
 ### Sub-Agents
 
-Each sub-agent has its own system prompt, its own toolset, and its own model. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
+Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercury, and Sentry share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
 
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
 | **Atlas** | Local or cloud | Shell, browser (DOM control), desktop, files, web search/fetch, documents | Execution — anything that touches the internet or runs commands. |
 | **Vulkan** | Local or cloud | Read, Edit, Grep, Glob, Bash, build & test runs | Coding, scripting, building, heavy bash — editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like Atlas. |
 | **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos | Personal information management. |
-| **Dexter** | Local or cloud (local recommended) | calendar events (create / list / update / delete) + scheduled tasks (create / list / pause / resume / cancel / update; cron, interval, once) | Scheduling & calendar — builds perfect schedule entries and calendar events; never executes the scheduled tasks. |
+| **Dexter** | Local or cloud (local recommended) | Calendar events (create / list / update / delete) + scheduled tasks (create / list / pause / resume / cancel / update; cron, interval, once) | Scheduling & calendar — builds perfect schedule entries and calendar events; never executes the scheduled tasks. |
 | **Byte** | Local or cloud (local recommended) | Projects, deliverables, blockers, work tasks, time tracking | Work management. |
+| **Mercury** | Local or cloud (local recommended) | Memory summarization + RAG injection | Distills long conversations and memory into the context window each turn. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
 | **Sentry** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the laptop camera, applies the editable `security/sentry.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
 
-> 🎛️ **Every agent's model is picked in the dashboard** — local Ollama or cloud, your call. Local and cloud run through the [same Ollama pipeline](#-hybrid-model-architecture), so switching an agent between them needs no code or infrastructure change. **Byte, Dexter, Iris, Mercury, and Sentry share one *Toolcall model*** (a single model + ctx row) — they're light, structured-task agents, so run them on a local model (granite is plenty) and save cloud spend for Atlas and the Council. Each of Atlas, the Orchestrator, and the Toolcall model has a **Keep alive** checkbox that holds the model in VRAM between turns (`keep_alive: -1`); with Ollama's `max_loaded_models=2`, the orchestrator + one sub-agent stay resident and Ollama evicts LRU if a third is needed — so the small orchestrator and the toolcall model don't reload between turns.
+> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=2`, the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on) stay resident in VRAM; Atlas keep-alive can be enabled separately. Any third model evicts the least-recently-used resident.
 
 ![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
 
@@ -230,16 +233,16 @@ Every model selection in the dashboard is per-role:
 
 | Role | Typical Model | Why |
 |------|-------------|-----|
-| **Orchestrator** | Local (gemma, granite) | Fast, cheap, always available. Only routes and supervises. |
-| **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. |
-| **Vulkan** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. |
-| **Iris / Dexter / Byte** | Local (recommended) | Light, structured tasks. Run them local; save cloud for Atlas and the Council. |
+| **Orchestrator** | Local (gemma, granite) | Fast, cheap, always available. Only routes and supervises. Keep-alive is on by default. |
+| **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
+| **Vulkan** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
+| **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
+| **Artemis** | Cloud or local | Read-only audit. Keep-alive optional. |
 | **Council seats** | Cloud (3 different models) | Diverse perspectives for deliberation. |
-| **Sub-agent tools** | Configurable | Tool-calling sub-agents can use a different model. |
 
-All of this is configured from the dashboard's Settings panel — assistant name, model per role, Ollama URL, and automation settings:
+All of this is configured from the dashboard's Settings panel — assistant name, model per role, Ollama URL, and keep-alive toggles:
 
-![Settings panel: assistant name, model configuration per role, Ollama URL, and automation settings](docs/screenshots/settings.png)
+![Settings panel: assistant name, model configuration per role, Ollama URL, and keep-alive toggles](docs/screenshots/settings.png)
 
 ![Local model settings: pick a local Ollama model per role](docs/screenshots/local-settings.png)
 
@@ -388,7 +391,7 @@ Everything talks to Warden through one HTTP server — the dashboard, the thin c
 | **Chat & agents** | `GET/POST /api/messages` · `POST /api/chat/stop` · `POST /api/chat/interrupt` · `POST /api/chat/clear-context` · `POST /api/agents/kill` · `POST /api/voice` |
 | **Files (shared workspace)** | `POST /api/files/upload` · `GET /api/files/download` · `GET /api/files/serve` · `GET /api/files/list` · `GET /api/files/read` · `GET /api/files/stat` · `POST /api/files/mkdir` · `POST /api/files/copy` · `POST /api/files/rename` · `POST /api/files/revert` · `GET /api/files/history` · `GET /api/files/version` |
 | **Digests** | `GET/POST /api/summaries?span=` · `POST /api/digest/generate?span=hourly\|daily\|weekly` |
-| **Tasks & scheduling** | `GET/POST /api/tasks` · `POST /api/tasks/bulk` · `GET/POST /api/work-tasks` · `GET/POST /api/timers` · `GET/POST /api/automations` · `GET/POST /api/automation/model` · `GET/POST /api/alarms` |
+| **Tasks & scheduling** | `GET/POST /api/tasks` · `POST /api/tasks/bulk` · `GET/POST /api/work-tasks` · `GET/POST /api/timers` · `GET/POST /api/automations` · `GET/POST /api/alarms` |
 | **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
 | **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
 | **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
@@ -1008,7 +1011,7 @@ systemctl --user restart warden
 
 Most runtime behavior is controlled from the dashboard at `http://localhost:3200`:
 
-- **Models** — per-agent model selection: orchestrator, Atlas, Vulkan, Sentry, council seats, etc.
+- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Byte/Dexter/Iris/Mercury/Sentry. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
 - **Servers** — Ollama URL, Whisper URL, video server / Satellite IP, and (after the distributed-roles refactor) Audio/Warden/Video role URLs.
 - **Heartbeat** — scheduled standing instructions.
 - **Skills & MCP** — toggle capabilities and external tools.

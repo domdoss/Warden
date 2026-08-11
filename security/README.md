@@ -141,11 +141,7 @@ The frame server (`http://0.0.0.0:8765`) stops with it; Warden's
 
 ## Model
 
-Sentry's model is picked in the dashboard (`sentry:model`); blank inherits the
-orchestrator model. It's a light data-only decision maker — a small local model
-is plenty. Vision is optional: the security laptop runs Moondream on GPU when
-Sentry asks a question via `security_caption({"question":"..."})`, so the
-desktop Sentry model itself can stay text-only.
+Sentry shares the dashboard's **Toolcall model** (`local:subagent_model`). It's a light data-only decision maker — a small local model is plenty. Vision is optional: the security laptop runs Moondream on GPU when Sentry asks a question via `security_caption({"question":"..."})`, so the desktop Sentry model itself can stay text-only.
 
 ## Upgradable (later, not in the demo)
 

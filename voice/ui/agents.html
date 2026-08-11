@@ -510,6 +510,9 @@
   // dropdowns (populated from Warden's /api/ollama/test + /api/settings).
   // Save writes the per-agent keys back via POST /api/settings. The model
   // dropdown has no blank option — every agent always has a concrete model.
+  // NOTE: Byte/Dexter/Iris/Mercury/Sentry now share the Toolcall model/ctx
+  // (local:subagent_model/_ctx), but the popover still reads the replicated
+  // per-agent fields the server returns for display purposes.
   var AGENT_SETTINGS_KEYS = {
     orchestrator:{name:'Orchestrator',model:'globalDefaultModel',ctx:'orchestratorCtx'},
     atlas:{name:'Atlas',model:'atlasModel',ctx:'atlasCtx'},

@@ -169,6 +169,7 @@
   <p style="margin: 4px 0 0; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono);">Multiple sub-agent calls in the same turn run in parallel. The verbose bar below the composer shows which one is live.</p>
 
   <div class="help-section-label"><span>02</span> The sub-agents</div>
+  <p style="margin: -8px 0 14px; color: var(--text-faint); font-size: 13px; line-height: 1.6;">Byte, Dexter, Iris, Mercury, and Sentry share one <strong>Toolcall model</strong> (a single model + ctx override in Settings). Atlas, Vulkan, Artemis, and each Council seat keep their own model.</p>
   <div class="agent-grid">
     <div class="agent-tile" style="--tile-accent: var(--info);">
       <div class="agent-tile-icon">
@@ -185,7 +186,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       </div>
       <div>
-        <h3>Byte <small>compute</small></h3>
+        <h3>Byte <small>compute (toolcall)</small></h3>
         <p>Runs python3 / bash / node one-liners. Anything expressible as a short program, Byte can run and hand back stdout.</p>
         <pre>Compute the factorial of 10 using python3.</pre>
       </div>
@@ -195,7 +196,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       </div>
       <div>
-        <h3>Dexter <small>time + scheduling</small></h3>
+        <h3>Dexter <small>time + scheduling (toolcall)</small></h3>
         <p>Answers date/time questions and manages scheduled tasks. "What time is it in UTC?", "remind me at 3pm to check the deploy."</p>
         <pre>Remind me at 3pm to check the deploy status.</pre>
       </div>
@@ -205,8 +206,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>
       </div>
       <div>
-        <h3>Iris <small>email</small></h3>
-        <p>Lists your inbox, counts unread, searches emails, and (if enabled) drafts and sends mail. Unavailable until email is configured.</p>
+        <h3>Iris <small>email + digest (toolcall)</small></h3>
+        <p>Lists your inbox, counts unread, searches emails, and (if enabled) drafts and sends mail. Also writes hourly/daily/weekly digests. Unavailable until email is configured.</p>
         <pre>List my last 10 unread emails and summarize each.</pre>
       </div>
     </div>
@@ -228,6 +229,36 @@
         <h3>The Council <small>3 Artemis seats</small></h3>
         <p>Skeptic, Pragmatist, Synthesist deliberate in parallel on the same question, iterate until they agree or hit max rounds. 1–3 min, token-heavy.</p>
         <pre>Convene The Council on this: should I use a monorepo for a 2-person team?</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: #00ccff;">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </div>
+      <div>
+        <h3>Vulkan <small>coding + builds</small></h3>
+        <p>Writes code, edits files, runs builds/tests, and handles heavy shell pipelines. Runs in the background like Atlas.</p>
+        <pre>Refactor src/auth.ts to use a timing-safe compare.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: #c8d4e0;">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+      </div>
+      <div>
+        <h3>Mercury <small>memory (toolcall)</small></h3>
+        <p>Distills conversation history and memory into a compact summary/RAG injection that is fed back into the orchestrator each turn.</p>
+        <pre>Remember that I prefer Python over TypeScript.</pre>
+      </div>
+    </div>
+    <div class="agent-tile" style="--tile-accent: #ff4444;">
+      <div class="agent-tile-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <div>
+        <h3>Sentry <small>security (toolcall)</small></h3>
+        <p>Background webcam-awareness agent. Receives AWARENESS events from the security camera, applies editable sentry rules, and decides: alert, greet, or silent.</p>
+        <pre>Alert me if someone unknown approaches the desk.</pre>
       </div>
     </div>
   </div>
