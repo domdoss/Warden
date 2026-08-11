@@ -78,6 +78,7 @@ import { computeNextRun, buildDigestContext, startSchedulerLoop } from './task-s
 import { runMemoryWriteback } from './memory-writeback.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
 import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
+import { startLogCap } from './log-rotator.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
 import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
@@ -2864,6 +2865,10 @@ async function main(): Promise<void> {
   seedPersonalProject(OWNER_JID);
 
   startCalendarSyncPoller();
+
+  // Cap warden.log at ~5 MB in-process (trim the head, keep the tail) so the
+  // log file can't fill the disk — or, on a ramdisk, eat RAM. See log-rotator.
+  startLogCap(path.resolve(process.cwd(), 'logs', 'warden.log'));
 
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

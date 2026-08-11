@@ -129,6 +129,8 @@ The orchestrator owns the intent; Dexter owns the timing. When something needs t
 
 The schedule-value format is where scheduling breaks in every system that has one, so Dexter is built to be obsessive about it: it validates the cron expression, rejects malformed intervals and timestamps, refuses timezone suffixes on `once`, and double-checks its own offset math. The point is that the entry is correct the first time, every time, on a model that costs nothing to run.
 
+> 🪨 **Dexter and Iris are prompted specifically for `granite4.1:8b`.** Their system prompts are tuned to that 8B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing either prompt, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:8b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 8B local one.
+
 ### Persistent Runner
 
 > 🔥 **The agent-runner is a persistent child process** — no Docker, no containers, no cold starts between messages. It stays warm for hours (configurable `IDLE_TIMEOUT`), keeping MCP servers connected and skills loaded. Follow-up messages route over IPC in milliseconds.
