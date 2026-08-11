@@ -77,7 +77,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { computeNextRun, buildDigestContext, startSchedulerLoop } from './task-scheduler.js';
 import { runMemoryWriteback } from './memory-writeback.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
-import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
+import { startStatusServer, pushNotification, pushActivityLine, getCachedInboxEmails } from './status-server.js';
 import { startLogCap } from './log-rotator.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
@@ -351,7 +351,8 @@ async function deliverReply(text: string): Promise<void> {
  * the orchestrator model on first boot, so this is never empty in normal use.
  */
 function resolveAwarenessModel(): string {
-  return (getRouterState('sentry:model') || '').trim().replace(/^local:/, '');
+  // Sentry shares the Toolcall model (local:subagent_model).
+  return (getRouterState('local:subagent_model') || '').trim().replace(/^local:/, '');
 }
 
 /** Satellite IP where the security detector runs. Read from router state first,
@@ -605,6 +606,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const search = typeof args?.search === 'string' && args.search ? args.search : undefined;
         const sinceMs = args?.since ? new Date(args.since).getTime() : NaN;
         const beforeMs = args?.before ? new Date(args.before).getTime() : NaN;
+        const previewOnly = args?.preview_only === true;
         // The agent doesn't supply an accountId. Try each enabled account until
         // one connects, so a broken OAuth-linked account (dangling
         // oauth_account_id — the oauth_accounts row was deleted but the
@@ -621,12 +623,26 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
             continue;
           }
           try {
-            const emails = await fetchEmails(account.id, folder, limit, search);
+            // Prefer the warm INBOX cache (refreshed every ~5 min by
+            // startInboxCacheWarmer). The agent usually wants "recent mail
+            // since X" — the cached recent batch covers that and avoids a live
+            // fetch of up to `limit` messages one-by-one from the provider
+            // (Gmail does sequential per-message GETs → tens of seconds for
+            // limit 500). Serve the cache without a length check: the agent's
+            // limit is an upper bound, not a minimum, and the date filter
+            // narrows the cached set.
+            let emails: any[];
+            const cached = getCachedInboxEmails(account.id, folder);
+            if (cached) {
+              emails = cached.emails;
+            } else {
+              emails = await fetchEmails(account.id, folder, limit, search, previewOnly);
+            }
             // Client-side date-range filter — fetchEmails' 4th param is a text
             // search, not a date filter, so the providers can't do this.
             const filtered = (Number.isNaN(sinceMs) && Number.isNaN(beforeMs))
               ? emails
-              : (emails as any[]).filter((e: any) => {
+              : emails.filter((e: any) => {
                   if (!e.date) return false;
                   const t = new Date(e.date).getTime();
                   if (Number.isNaN(t)) return false;
@@ -1590,7 +1606,8 @@ async function updateMercurySummary(): Promise<void> {
       `Do NOT include the most recent ${MERCURY_RECENT_MESSAGES} turns; they are kept verbatim. ` +
       `Write in short bullet/paragraph form so the main agent can scan it quickly.\n\n${olderLines}\n\nMercury summary:`;
 
-    const model = (getRouterState('mercury:model') || '').replace(/^local:/, '') || undefined;
+    // Mercury shares the Toolcall model (local:subagent_model).
+    const model = (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined;
     const mercuryInput: AgentInput = {
       prompt: summaryPrompt,
       sessionId: 'mercury',
@@ -1792,9 +1809,12 @@ async function processOwnerMessages(): Promise<void> {
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
     vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
-    byteModel: (getRouterState('byte:model') || '').replace(/^local:/, '') || undefined,
-    dexterModel: (getRouterState('dexter:model') || '').replace(/^local:/, '') || undefined,
-    irisModel: (getRouterState('iris:model') || '').replace(/^local:/, '') || undefined,
+    // byte/dexter/iris share the Toolcall model (dashboard "Toolcall model" row,
+    // persisted as local:subagent_model). The host feeds the same value into each
+    // per-agent IPC field so the runner's dispatch is unchanged.
+    byteModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
+    dexterModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
+    irisModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
     artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
     drivingForce: getRouterState('orchestrator:driving_force') || '',
     contextClearAt: getRouterState('orchestrator:context_clear_at') || '',
@@ -2079,13 +2099,14 @@ interface ScanInbox {
   autoConfirm: boolean;
   allowedChats: string;
   model: string;
+  ctx: string;            // scan:ctx override; empty = inherit the toolcall ctx
   lastrun: string | null;
 }
 
 function scanModel(): string {
   // Optional per-scan model override; falls back to the Iris model (same
   // Granite that powers the digest). Never falls back to a hardcoded default.
-  return (getRouterState('scan:model') || getRouterState('iris:model') || '').replace(/^local:/, '');
+  return (getRouterState('scan:model') || getRouterState('local:subagent_model') || '').replace(/^local:/, '');
 }
 
 function scanAutoAccept(): boolean {
@@ -2377,6 +2398,7 @@ function getScanInbox(): ScanInbox {
     autoConfirm: scanAutoAccept(),
     allowedChats: getRouterState('scan:allowed_chats') || '',
     model: scanModel(),
+    ctx: getRouterState('scan:ctx') || '',
     lastrun: getRouterState('scan:lastrun') || null,
   };
 }
@@ -2397,10 +2419,12 @@ function confirmScanItem(kind: 'task' | 'event', id: string): { ok: boolean; err
   }
 }
 
-function setScanConfig(cfg: { autoAccept?: boolean; allowedChats?: string; model?: string }): void {
+function setScanConfig(cfg: { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string }): void {
   if (cfg.autoAccept !== undefined) setRouterState('scan:auto_accept', cfg.autoAccept ? 'true' : 'false');
   if (cfg.allowedChats !== undefined) setRouterState('scan:allowed_chats', cfg.allowedChats);
   if (cfg.model !== undefined && cfg.model.trim()) setRouterState('scan:model', cfg.model.trim());
+  // Empty ctx clears the override → chat-scan inherits the toolcall ctx.
+  if (cfg.ctx !== undefined) setRouterState('scan:ctx', cfg.ctx.trim());
 }
 
 async function startMessageLoop(): Promise<void> {
@@ -2636,13 +2660,32 @@ function startChromeWatchdog(): void {
  */
 function seedPerAgentModelSettings(): void {
   const orch = getRouterState('orchestrator:model') || '';
-  const subagent = getRouterState('local:subagent_model') || orch;
+  // The five toolcall agents share one model/ctx (local:subagent_model/_ctx),
+  // written by the dashboard "Toolcall model" row. On the first boot after this
+  // consolidation, preserve the user's current toolcall agent model (Iris is the
+  // representative one — typically granite4.1:8b) and ctx so nothing changes.
+  const toolcall = getRouterState('local:subagent_model')
+    || getRouterState('iris:model')
+    || getRouterState('byte:model')
+    || orch;
+  const toolcallCtx = getRouterState('local:subagent_ctx')
+    || getRouterState('local:iris_ctx')
+    || getRouterState('local:byte_ctx')
+    || '';
+  const subagent = toolcall;
   const atlas = getRouterState('atlas:model') || orch;
-  const toolsCtx = getRouterState('local:tools_ctx') || getRouterState('local:subagent_ctx') || '';
+  const toolsCtx = toolcallCtx;
   const atlasCtx = getRouterState('local:atlas_ctx') || '';
   const seed = (key: string, value: string) => {
     if (!getRouterState(key) && value) setRouterState(key, value);
   };
+  // Seed the shared toolcall model/ctx (the real runtime source for the 5 agents).
+  seed('local:subagent_model', toolcall);
+  seed('local:subagent_ctx', toolcallCtx);
+  // Orchestrator has historically been resident (keep_alive -1); materialize that
+  // as the default so the checkbox reflects reality. Toolcall/Atlas stay unset →
+  // the runner defaults to 300 (their historic sub-agent TTL).
+  seed('local:orch_keep_alive', '-1');
   // New per-agent model keys inherit the legacy shared value.
   seed('byte:model', subagent);
   seed('dexter:model', subagent);
@@ -2677,13 +2720,21 @@ function syncAgentCtxEnv(): void {
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
-  process.env.MERCURY_NUM_CTX = getRouterState('local:mercury_ctx') || '';
-  process.env.BYTE_NUM_CTX = getRouterState('local:byte_ctx') || '';
-  process.env.DEXTER_NUM_CTX = getRouterState('local:dexter_ctx') || '';
-  process.env.IRIS_NUM_CTX = getRouterState('local:iris_ctx') || '';
+  // The five toolcall agents share one ctx (local:subagent_ctx).
+  process.env.MERCURY_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  process.env.BYTE_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  process.env.DEXTER_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  process.env.IRIS_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
   process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
-  process.env.SENTRY_NUM_CTX = getRouterState('local:sentry_ctx') || '';
+  process.env.SENTRY_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  // chat-scan inherits the toolcall ctx when scan:ctx is unset (empty). Setting
+  // scan:ctx overrides it — e.g. to run the scan on a smaller/cloud model.
+  process.env.SCAN_NUM_CTX = getRouterState('scan:ctx') || '';
+  // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
+  process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
+  process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
+  process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
 }
 
 async function main(): Promise<void> {

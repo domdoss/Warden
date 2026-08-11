@@ -288,6 +288,19 @@ export function pushActivityLine(userId: string, line: string, chatJid: string):
 const INBOX_CACHE_TTL_MS = 5 * 60 * 1000;
 const inboxCache = new Map<string, { emails: any[]; fetchedAt: number }>();
 
+/** Read the warm INBOX cache for the agent's read_emails tool. Returns the
+ *  entry only if fresh (within INBOX_CACHE_TTL_MS); undefined otherwise, so the
+ *  caller falls back to a live fetch. The warmer refreshes every 5 min, so a
+ *  hit is at most ~5 min stale — fine for "new mail since last check". */
+export function getCachedInboxEmails(
+  accountId: string,
+  folder: string,
+): { emails: any[]; fetchedAt: number } | undefined {
+  const cached = inboxCache.get(`${accountId}:${folder}`);
+  if (cached && Date.now() - cached.fetchedAt < INBOX_CACHE_TTL_MS) return cached;
+  return undefined;
+}
+
 export function startInboxCacheWarmer(): void {
   const warm = async () => {
     try {
@@ -1475,6 +1488,12 @@ function handleSettings(res: http.ServerResponse): void {
     if (fs.existsSync(sentryMdPath)) sentryMd = fs.readFileSync(sentryMdPath, 'utf8');
   } catch { /* ignore */ }
   const drivingForces = listDrivingForces();
+  // The five toolcall agents (Byte, Dexter, Iris, Sentry, Mercury) share one
+  // model + ctx — surfaced from the legacy local:subagent_model/_ctx wire that
+  // the dashboard "Toolcall model" row writes. Mirror it into the per-agent
+  // fields too so the voice Agents panel popover still displays a value.
+  const toolcallModel = getRouterState('local:subagent_model') || '';
+  const toolcallCtx = getRouterState('local:subagent_ctx') || '';
   json(res, {
     assistantName: ASSISTANT_NAME,
     localAssistantName: LOCAL_ASSISTANT_NAME,
@@ -1492,16 +1511,17 @@ function handleSettings(res: http.ServerResponse): void {
     atlasModel: getRouterState('atlas:model') || '',
     vulkanModel: getRouterState('vulkan:model') || '',
     // Per-agent models — each agent has its own concrete model (no blank/inherit).
-    byteModel: getRouterState('byte:model') || '',
-    dexterModel: getRouterState('dexter:model') || '',
-    irisModel: getRouterState('iris:model') || '',
+    // The five toolcall agents share one model (the dashboard "Toolcall model" row).
+    byteModel: toolcallModel,
+    dexterModel: toolcallModel,
+    irisModel: toolcallModel,
     artemisModel: getRouterState('artemis:model') || '',
     drivingForce: getRouterState('orchestrator:driving_force') || '',
     drivingForces,
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
     councilPragmatistModel: getRouterState('council:pragmatist_model') || '',
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
-    sentryModel: getRouterState('sentry:model') || '',
+    sentryModel: toolcallModel,
     securitySatelliteIp: getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_SATELLITE_IP || process.env.WARDEN_SECURITY_LAPTOP_IP || '',
     // ── Consolidated role URLs (Servers card) ───────────────────────────────
     wardenUrl: getRouterState('warden:url') || '',
@@ -1520,7 +1540,6 @@ function handleSettings(res: http.ServerResponse): void {
     sentryOllamaServer: getRouterState('sentry:ollama_server') || '',
     sentryMd,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
-    automationModel: getRouterState('automation:model') || '',
     hybridPrivacy: getRouterState('hybrid_privacy') || '',
     localPrivateModel: getRouterState('local:private_model') || '',
     calendarToken: process.env.CALENDAR_TOKEN || envVals.CALENDAR_TOKEN || '',
@@ -1533,15 +1552,21 @@ function handleSettings(res: http.ServerResponse): void {
     atlasCtx: getRouterState('local:atlas_ctx') || '',
     toolsCtx: getRouterState('local:tools_ctx') || '',
     // Per-agent num_ctx overrides — blank means the model's native window.
-    byteCtx: getRouterState('local:byte_ctx') || '',
-    dexterCtx: getRouterState('local:dexter_ctx') || '',
-    irisCtx: getRouterState('local:iris_ctx') || '',
+    // The five toolcall agents share one ctx (the dashboard "Toolcall model" row).
+    byteCtx: toolcallCtx,
+    dexterCtx: toolcallCtx,
+    irisCtx: toolcallCtx,
     artemisCtx: getRouterState('local:artemis_ctx') || '',
     vulkanCtx: getRouterState('local:vulkan_ctx') || '',
-    sentryCtx: getRouterState('local:sentry_ctx') || '',
+    sentryCtx: toolcallCtx,
     mercuryMode: getRouterState('mercury:mode') || 'full',
-    mercuryModel: getRouterState('mercury:model') || '',
-    mercuryCtx: getRouterState('local:mercury_ctx') || '',
+    mercuryModel: toolcallModel,
+    mercuryCtx: toolcallCtx,
+    // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min). Set by the
+    // dashboard "Keep alive" checkboxes on the Orchestrator/Atlas/Toolcall rows.
+    orchestratorKeepAlive: getRouterState('local:orch_keep_alive') || '',
+    atlasKeepAlive: getRouterState('local:atlas_keep_alive') || '',
+    toolcallKeepAlive: getRouterState('local:toolcall_keep_alive') || '',
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
@@ -1705,6 +1730,17 @@ async function handleSettingsSave(
   }
   if (body.subagentCtx !== undefined) {
     setRouterState('local:subagent_ctx', String(body.subagentCtx || ''));
+  }
+  // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min) — set by the
+  // dashboard "Keep alive" checkboxes (Orchestrator / Atlas / Toolcall model).
+  if (body.orchestratorKeepAlive !== undefined) {
+    setRouterState('local:orch_keep_alive', String(body.orchestratorKeepAlive || ''));
+  }
+  if (body.atlasKeepAlive !== undefined) {
+    setRouterState('local:atlas_keep_alive', String(body.atlasKeepAlive || ''));
+  }
+  if (body.toolcallKeepAlive !== undefined) {
+    setRouterState('local:toolcall_keep_alive', String(body.toolcallKeepAlive || ''));
   }
   if (body.atlasCtx !== undefined) {
     setRouterState('local:atlas_ctx', String(body.atlasCtx || ''));
@@ -2019,23 +2055,6 @@ async function handleOllamaToggle(
   const enabled = body.enabled === true;
   setRouterState('ollama_enabled', enabled ? 'true' : 'false');
   json(res, { ok: true, enabled });
-}
-
-async function handleAutomationModel(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): Promise<void> {
-  if (req.method === 'GET') {
-    const model = getRouterState('automation:model') || '';
-    return json(res, { model });
-  }
-  if (req.method === 'POST') {
-    const body = parseJson(await parseBody(req)) as Record<string, unknown>;
-    const model = String(body.model || '');
-    setRouterState('automation:model', model);
-    return json(res, { ok: true, model });
-  }
-  return error(res, 'Method not allowed', 405);
 }
 
 // getUserGroupScope removed — depended on the removed multi-user layer.
@@ -3903,15 +3922,15 @@ export function startStatusServer(d: StatusDeps): void {
         if (!deps.setScanConfig || !deps.getScanInbox) return json(res, { error: 'scan config unavailable' }, 503);
         if (req.method === 'POST') {
           try {
-            const body = parseJson(await parseBody(req)) as { autoAccept?: boolean; allowedChats?: string; model?: string };
+            const body = parseJson(await parseBody(req)) as { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string };
             deps.setScanConfig(body);
             const s = deps.getScanInbox();
-            return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, lastrun: s.lastrun });
+            return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, ctx: s.ctx, lastrun: s.lastrun });
           } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
         }
         try {
           const s = deps.getScanInbox();
-          return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, lastrun: s.lastrun });
+          return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, ctx: s.ctx, lastrun: s.lastrun });
         } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
       }
       if (pathname === '/api/process-logs' && req.method === 'GET') {
@@ -4140,8 +4159,6 @@ export function startStatusServer(d: StatusDeps): void {
       }
       if (pathname === '/api/ollama/toggle' && req.method === 'POST')
         return await handleOllamaToggle(req, res);
-      if (pathname === '/api/automation/model')
-        return await handleAutomationModel(req, res);
       // /api/groups, /api/work-tasks, /api/companies, /api/session-links,
       // /api/users (non-id), and /api/admin/* are 410-gated at the top of
       // this try-block — no dispatcher reaches here.

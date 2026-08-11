@@ -10,8 +10,6 @@
  *   GET    /api/ollama/test         — list of local models, friendly names, cloud models, thinking
  *   POST   /api/ollama/model-names  — { names }
  *   POST   /api/ollama/model-names  — { names }
- *   GET    /api/automation/model   — { model }
- *   POST   /api/automation/model    — { model }
  *   GET    /api/tasks               — { tasks: [...] }
  *   POST   /api/tasks               — create
  *   PATCH  /api/tasks/:id           — { status }
@@ -896,7 +894,7 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint">Every agent has its own model + ctx, selectable per-agent. Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Byte/Dexter/Iris execute fast tool calls. Vulkan codes. The Council uses three separate seats.</div>
+        <div class="hint">Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Byte, Dexter, Iris, Mercury, and Sentry share one <b>Toolcall model</b> — the fast local tool-call agents.</div>
         <div class="setting-row"><label>Orchestrator</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
         </div>
@@ -907,6 +905,9 @@
         <div class="setting-row"><label>Orchestrator ctx</label>
           <select class="select small" id="sOrchestratorCtx">${buildCtxOptions(d.orchestratorCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+        </div>
+        <div class="setting-row"><label>Keep alive</label>
+          <label class="check"><input type="checkbox" id="sOrchKeepAlive"> hold model in VRAM between turns (no reload)</label>
         </div>
         <div class="setting-row"><label>Driving force</label>
           <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
@@ -922,6 +923,9 @@
         <div class="setting-row"><label>Atlas ctx</label>
           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+        </div>
+        <div class="setting-row"><label>Keep alive</label>
+          <label class="check"><input type="checkbox" id="sAtlasKeepAlive"> hold model in VRAM between turns (no reload)</label>
         </div>
         <div class="setting-row"><label>Artemis</label>
           <select class="select" id="sArtemis">${orchHtml}</select>
@@ -949,26 +953,17 @@
             <div><label>Synthesist</label><select class="select" id="sSynthesist">${anyModelHtml}</select></div>
           </div>
         </div>
-        <div class="setting-row"><label>Byte</label>
-          <select class="select" id="sByte">${orchHtml}</select>
-        </div>
-        <div class="setting-row"><label>Byte ctx</label>
-          <select class="select small" id="sByteCtx">${buildCtxOptions(d.byteCtx)}</select>
-          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
-        </div>
-        <div class="setting-row"><label>Dexter</label>
-          <select class="select" id="sDexter">${orchHtml}</select>
-        </div>
-        <div class="setting-row"><label>Dexter ctx</label>
-          <select class="select small" id="sDexterCtx">${buildCtxOptions(d.dexterCtx)}</select>
-          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
-        </div>
-        <div class="setting-row"><label>Iris</label>
-          <select class="select" id="sIris">${orchHtml}</select>
-        </div>
-        <div class="setting-row"><label>Iris ctx</label>
-          <select class="select small" id="sIrisCtx">${buildCtxOptions(d.irisCtx)}</select>
-          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+        <div class="setting-row" style="align-items:flex-start">
+          <label>Toolcall model</label>
+          <div style="flex:1">
+            <select class="select" id="sToolcallModel">${orchHtml}</select>
+            <div class="dim mono" style="font-size:10px;margin-top:2px">Shared by Byte, Dexter, Iris, Mercury, Sentry — the fast local tool-call agents.</div>
+            <div class="setting-row" style="margin-top:6px"><label>ctx</label>
+              <select class="select small" id="sToolcallCtx">${buildCtxOptions(d.subagentCtx)}</select>
+              <span class="dim mono" style="font-size:10px">blank = model default</span>
+            </div>
+            <label class="check" style="margin-top:6px"><input type="checkbox" id="sToolcallKeepAlive"> Keep alive — hold in VRAM between turns (no reload)</label>
+          </div>
         </div>
         <div class="setting-row"><label>Ollama URL</label><input class="input" id="sOllamaUrl" value="${escAttr(d.ollamaUrl || '')}" placeholder="http://127.0.0.1:11434"></div>
         <div class="setting-row"><label>Mercury</label>
@@ -979,25 +974,9 @@
             <option value="full">Full — summary + RAG</option>
           </select>
         </div>
-        <div class="setting-row"><label>Mercury model</label>
-          <select class="select" id="sMercuryModel">${orchHtml}</select>
-          <span class="dim mono" style="font-size:10px">memory distillation agent</span>
-        </div>
-        <div class="setting-row"><label>Mercury ctx</label>
-          <select class="select small" id="sMercuryCtx">${buildCtxOptions(d.mercuryCtx)}</select>
-          <span class="dim mono" style="font-size:10px">blank = model default</span>
-        </div>
-        <div class="setting-row"><label>Awareness / Security (Sentry)</label>
-          <select class="select" id="sSentryModel">${orchHtml}</select>
-          <span class="dim mono" style="font-size:10px">data-only guard that decides normal vs anomaly</span>
-        </div>
         <div class="setting-row"><label>Sentry Ollama</label>
           <select class="select" id="sSentryOllamaServer"></select>
-          <span class="dim mono" style="font-size:10px">blank = default server</span>
-        </div>
-        <div class="setting-row"><label>Sentry ctx</label>
-          <select class="select small" id="sSentryCtx">${buildCtxOptions(d.sentryCtx)}</select>
-          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+          <span class="dim mono" style="font-size:10px">Sentry runs on the Toolcall model; blank = default server</span>
         </div>
         <div class="setting-row"><label>Thinking</label>
           <select class="select" id="sThinking">
@@ -1036,13 +1015,6 @@
           </div>
         </div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveServers">Save</button><span class="status" id="serversStatus"></span></div>
-      </div>
-
-      <div class="setting-card">
-        <h3>Automation model</h3>
-        <div class="hint">Model used for scheduled/automation tasks. Blank = inherit orchestrator.</div>
-        <div class="setting-row"><label>Model</label><select class="select" id="sAutomationModel"><option value="">(inherit orchestrator)</option>${orchHtml}</select></div>
-        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveAutomation">Save</button><span class="status" id="autoStatus"></span></div>
       </div>
 
       <div class="setting-card">
@@ -1092,18 +1064,18 @@
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
     setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
-    setSelect('sByte', (d.byteModel || '').replace(/^local:/, ''));
-    setSelect('sDexter', (d.dexterModel || '').replace(/^local:/, ''));
-    setSelect('sIris', (d.irisModel || '').replace(/^local:/, ''));
+    setSelect('sToolcallModel', (d.ollamaChatModel || '').replace(/^local:/, ''));
+    setSelect('sToolcallCtx', d.subagentCtx || '');
     setSelect('sDrivingForce', d.drivingForce || '');
     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
     setSelect('sSynthesist', (d.councilSynthesistModel || '').replace(/^local:/, ''));
     setSelect('sMercury', d.mercuryMode || 'full');
-    setSelect('sMercuryModel', (d.mercuryModel || '').replace(/^local:/, ''));
-    setSelect('sMercuryCtx', d.mercuryCtx || '');
-    setSelect('sSentryModel', (d.sentryModel || '').replace(/^local:/, ''));
     setSelect('sThinking', d.thinking || 'true');
+    // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
+    $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
+    $('sAtlasKeepAlive').checked = d.atlasKeepAlive === '-1';
+    $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
     setSelect('sContextIdleClear', d.contextIdleClearMinutes || '30');
     // Timezone dropdown: select the saved zone, appending it as an extra
     // option if it isn't in the curated list (preserves custom values).
@@ -1124,7 +1096,6 @@
     setSelect('sDexterCtx', d.dexterCtx || '');
     setSelect('sIrisCtx', d.irisCtx || '');
     setSelect('sSentryCtx', d.sentryCtx || '');
-    setSelect('sAutomationModel', d.automationModel || '');
 
     // Servers card
     $('sAudioServerUrl').value = esc(d.audioServerUrl || '');
@@ -1181,7 +1152,6 @@
     $('btnSaveGeneral').addEventListener('click', saveGeneral);
     $('btnSaveModels').addEventListener('click', saveModels);
     $('btnSaveServers').addEventListener('click', saveServers);
-    $('btnSaveAutomation').addEventListener('click', saveAutomation);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);
     $('btnSaveSentryMd').addEventListener('click', saveSentryMd);
     $('btnRestartServer2').addEventListener('click', restartServer);
@@ -1257,32 +1227,27 @@
         atlasModel: stripLocal($('sAtlas').value),
         artemisModel: stripLocal($('sArtemis').value),
         vulkanModel: stripLocal($('sVulkan').value),
-        byteModel: stripLocal($('sByte').value),
-        dexterModel: stripLocal($('sDexter').value),
-        irisModel: stripLocal($('sIris').value),
+        ollamaChatModel: stripLocal($('sToolcallModel').value),
         drivingForce: $('sDrivingForce').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
         councilPragmatistModel: stripLocal($('sPragmatist').value),
         councilSynthesistModel: stripLocal($('sSynthesist').value),
         mercuryMode: $('sMercury').value,
-        mercuryModel: stripLocal($('sMercuryModel').value),
-        mercuryCtx: $('sMercuryCtx').value,
-        sentryModel: stripLocal($('sSentryModel').value),
         thinking: $('sThinking').value,
         contextIdleClearMinutes: $('sContextIdleClear').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
         artemisCtx: $('sArtemisCtx').value,
         vulkanCtx: $('sVulkanCtx').value,
-        byteCtx: $('sByteCtx').value,
-        dexterCtx: $('sDexterCtx').value,
-        irisCtx: $('sIrisCtx').value,
-        sentryCtx: $('sSentryCtx').value,
+        subagentCtx: $('sToolcallCtx').value,
         ollamaUrl: $('sOllamaUrl').value,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
         sentryOllamaServer: $('sSentryOllamaServer').value,
+        orchestratorKeepAlive: $('sOrchKeepAlive').checked ? '-1' : '300',
+        atlasKeepAlive: $('sAtlasKeepAlive').checked ? '-1' : '300',
+        toolcallKeepAlive: $('sToolcallKeepAlive').checked ? '-1' : '300',
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
@@ -1296,18 +1261,6 @@
       }
       // refresh chat model select
       // per-chat model dropdown removed; model is only configured in Settings
-    } catch (e) {
-      st.textContent = 'failed: ' + e.message; st.className = 'status err';
-    }
-  }
-
-  async function saveAutomation() {
-    const st = $('autoStatus');
-    st.textContent = 'saving…'; st.className = 'status';
-    try {
-      const model = $('sAutomationModel').value.trim();
-      await postJson('/api/automation/model', { model });
-      st.textContent = 'saved'; st.className = 'status ok';
     } catch (e) {
       st.textContent = 'failed: ' + e.message; st.className = 'status err';
     }

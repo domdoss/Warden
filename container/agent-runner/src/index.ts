@@ -489,6 +489,13 @@ function applySettingsSync(data: any) {
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
     if (data.sentryCtx !== undefined) process.env.SENTRY_NUM_CTX = data.sentryCtx ? String(data.sentryCtx) : '';
+    if (data.scanCtx !== undefined) process.env.SCAN_NUM_CTX = data.scanCtx ? String(data.scanCtx) : '';
+    // Per-agent keep_alive overrides (-1 = resident, 300 = 5 min). The host
+    // seeds ORCHESTRATOR_KEEP_ALIVE='-1' to preserve the historic resident
+    // orchestrator; toolcall/atlas stay unset → runner defaults to 300.
+    if (data.orchestratorKeepAlive !== undefined) process.env.ORCHESTRATOR_KEEP_ALIVE = data.orchestratorKeepAlive ? String(data.orchestratorKeepAlive) : '';
+    if (data.atlasKeepAlive !== undefined) process.env.ATLAS_KEEP_ALIVE = data.atlasKeepAlive ? String(data.atlasKeepAlive) : '';
+    if (data.toolcallKeepAlive !== undefined) process.env.TOOLCALL_KEEP_ALIVE = data.toolcallKeepAlive ? String(data.toolcallKeepAlive) : '';
 }
 
 const IPC_RESULTS_DIR = '/workspace/ipc/results';
@@ -1353,6 +1360,15 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     atlas: () => process.env.ATLAS_NUM_CTX || '',
     vulkan: () => process.env.VULKAN_NUM_CTX || '',
     sentry: () => process.env.SENTRY_NUM_CTX || '',
+    // chat-scan (the hourly Ops scan) inherits the toolcall ctx by default so it
+    // reuses the resident instance instead of reloading at the model's native
+    // window. scan:ctx overrides it (e.g. to offload the scan to a smaller/cloud
+    // model with its own ctx). Empty scan:ctx → fall back to IRIS_NUM_CTX.
+    'chat-scan': () => process.env.SCAN_NUM_CTX || process.env.IRIS_NUM_CTX || '',
+    // iris-digest (the hourly memory digest) is another one-shot on the toolcall
+    // model; inherit the toolcall ctx so it reuses the resident instance instead
+    // of reloading granite at native (a different ctx → Ollama reload + gap).
+    'iris-digest': () => process.env.IRIS_NUM_CTX || '',
     'council-skeptic': () => process.env.ATLAS_NUM_CTX || '',
     'council-pragmatist': () => process.env.ATLAS_NUM_CTX || '',
     'council-synthesist': () => process.env.ATLAS_NUM_CTX || '',
@@ -1365,6 +1381,36 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
 function orchestratorCtxOverride(): string {
     if ((globalThis as any)._sessionId === 'mercury') return process.env.MERCURY_NUM_CTX || '';
     return process.env.ORCHESTRATOR_NUM_CTX || '';
+}
+
+// Per-agent Ollama keep_alive (seconds). -1 = hold the model in VRAM
+// indefinitely between turns (no reload); a positive N = unload N seconds
+// after the last request. The dashboard exposes a per-agent "Keep alive"
+// checkbox that writes -1 (on) or 300 (off, the historic sub-agent TTL) into
+// these env vars. `keepAliveEnv` falls back to `dflt` when the env var is
+// unset so a fresh child preserves prior behavior until settings arrive.
+function keepAliveEnv(name: string, dflt: number): number {
+    const e = process.env[name];
+    if (e === '-1') return -1;
+    const n = e ? Number(e) : NaN;
+    return Number.isFinite(n) ? n : dflt;
+}
+// Sub-agent chat calls (runSubAgent): the toolcall agents — byte, dexter,
+// iris, sentry, mercury, and the one-shot iris-digest/chat-scan spawns — share
+// one keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use
+// the atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
+function subAgentKeepAlive(agent: string): number {
+    if (['byte', 'dexter', 'iris', 'sentry', 'mercury', 'chat-scan', 'iris-digest'].includes(agent)) {
+        return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
+    }
+    return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
+}
+// Orchestrator loop: Mercury re-uses this loop but runs on the toolcall model,
+// so it follows the toolcall knob; the orchestrator itself uses ORCHESTRATOR_KEEP_ALIVE.
+// Historic default for both: -1 (resident).
+function orchestratorKeepAlive(): number {
+    if ((globalThis as any)._sessionId === 'mercury') return keepAliveEnv('TOOLCALL_KEEP_ALIVE', -1);
+    return keepAliveEnv('ORCHESTRATOR_KEEP_ALIVE', -1);
 }
 
 // Tell Ollama to unload a model immediately (free VRAM for the next agent's model).
@@ -1657,7 +1703,7 @@ async function runSubAgent(
                 messages,
                 tools,
                 options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride) },
-                keep_alive: 300,
+                keep_alive: subAgentKeepAlive(agentName),
                 // Only send think:true for models that support it — Ollama returns
                 // an error for non-thinking models (e.g. granite) with think:true.
                 think: modelRequiresThink(model),
@@ -1743,15 +1789,17 @@ async function runSubAgent(
                 const alnum = (content.match(/[a-zA-Z0-9]/g) || []).length;
                 if (content.length >= 8 && alnum / content.length < 0.3) {
                     log(`[${agentName}] Degenerate output (${content.length} chars, ${alnum} alphanumeric) — reporting failure instead of relaying it`);
-                    await unloadModel(OLLAMA_URL, model);
                     return {
                         content: `Error: the ${agentName} sub-agent produced degenerate output ("${content.slice(0, 40)}") and did NOT complete the task. Likely cause: sub-agent model or context misconfigured (model=${model}, num_ctx=${getNumCtx(model, ctxOverride)}). Tell the user the task failed — do not claim success.`,
                         modifiedFiles: [...modifiedFiles],
                     };
                 }
                 log(`[${agentName}] Done after ${i + 1} iteration(s): "${content.slice(0, 100)}"`);
-                // Unload this agent's model right away so the next model has VRAM.
-                await unloadModel(OLLAMA_URL, model);
+                // Do NOT unload this agent's model here. The GPU holds the
+                // orchestrator + one sub-agent resident simultaneously, and
+                // Ollama's max_loaded_models caps how many stay loaded (it evicts
+                // LRU itself if exceeded). Proactively evicting forced a full
+                // ~10s model reload on the next delegation to the same agent.
                 return { content, modifiedFiles: [...modifiedFiles] };
             }
         } catch (err: any) {
@@ -1760,7 +1808,6 @@ async function runSubAgent(
         }
     }
     // Hit the iteration ceiling or the wall-clock deadline without a clean finish.
-    await unloadModel(OLLAMA_URL, model);
     const content = lastContent
         ? `${agentName} (stopped at safety limit): ${lastContent}`
         : `${agentName}: stopped at safety limit before finishing. The task may be too large — try a narrower request.`;
@@ -2368,7 +2415,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 }
                 const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
                 log(`[ctx] ${model} sending num_ctx=${_orchCtx ?? '(none → backend default)'} (ORCHESTRATOR_NUM_CTX=${process.env.ORCHESTRATOR_NUM_CTX || '(unset)'}, ATLAS_NUM_CTX=${process.env.ATLAS_NUM_CTX || '(unset)'}, isOrchModel=${model === ORCHESTRATOR_MODEL})`);
-                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: _orchCtx } };
+                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 1, num_ctx: _orchCtx } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
                 // reasoning when thinking is disabled (kimi) stay on every round.
@@ -2395,12 +2442,12 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     log(`No response headers after ${HEADERS_TIMEOUT_MS / 1000}s — aborting fetch (stalled cloud request)`);
                     try { streamController.abort(); } catch { /* already aborted */ }
                 }, HEADERS_TIMEOUT_MS);
-                // On a shared local GPU, evict any other model left loaded (e.g.
-                // the sub-agent model after a delegate call) so this orchestrator
-                // turn gets full VRAM — otherwise two models squeeze KV cache out
-                // and prefill drops to CPU speed. Skip when the orchestrator runs
-                // via the cloud proxy (no local GPU contention).
-                if (!API_PROXY_URL) await unloadOtherModelsOnSameGpu(OLLAMA_URL, model);
+                // Do NOT evict other loaded models before this orchestrator turn.
+                // The orchestrator + one sub-agent coexist in VRAM (Ollama's
+                // max_loaded_models caps residency and evicts LRU if exceeded).
+                // Proactively evicting the sub-agent model here forced a ~10s
+                // reload on the next delegation — see the matching note at the
+                // end of runSubAgent.
                 let response;
                 try {
                     response = await fetch(CHAT_URL, {
@@ -2796,7 +2843,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         try {
                             const trimmedRetry = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
                             if (trimmedRetry.length !== messages.length) messages.length = 0, messages.push(...trimmedRetry);
-                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: -1, options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
+                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
                             if (toolIteration <= 1 || modelRequiresThink(model)) {
                                 retryBody.think = true;
                             } else {
@@ -2915,7 +2962,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     model,
                     messages: forcedMessages,
                     stream: true,
-                    keep_alive: -1,
+                    keep_alive: orchestratorKeepAlive(),
                     options: { num_predict: 8192, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
@@ -3230,7 +3277,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 model: ATLAS_MODEL,
                                 messages: ptMessages,
                                 stream: false,
-                                keep_alive: -1,
+                                keep_alive: keepAliveEnv('ATLAS_KEEP_ALIVE', -1),
                                 options: { num_predict: 1024, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL, process.env.ATLAS_NUM_CTX || '') },
                             }),
                         });
