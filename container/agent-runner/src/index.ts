@@ -1331,7 +1331,10 @@ function toolcallModel(): string | undefined {
     return (process.env.SUBAGENT_MODEL || '').replace(/^local:/, '') || undefined;
 }
 function toolcallCtx(): number | undefined {
-    const raw = process.env.SUBAGENT_NUM_CTX || process.env.IRIS_NUM_CTX || process.env.DEXTER_NUM_CTX || process.env.BYTE_NUM_CTX || process.env.SENTRY_NUM_CTX || process.env.MERCURY_NUM_CTX || '';
+    // The dashboard exposes exactly one ctx for the shared toolcall model
+    // (local:subagent_ctx). No per-agent fallback — every toolcall agent uses
+    // the same model at the same ctx.
+    const raw = process.env.SUBAGENT_NUM_CTX || '';
     if (!raw) return undefined;
     const n = parseInt(raw, 10);
     return n > 0 ? n : undefined;
@@ -1349,7 +1352,7 @@ function getNumCtx(model: string, ctxOverride?: string | number): number | undef
     // The shared toolcall model MUST stay at one ctx. If a caller passes no
     // override, Ollama falls back to the Modelfile default — often 2048 — which
     // is NOT the native window and forces a reload when the next toolcall agent
-    // expects the configured toolcall ctx. Pin it to the toolcall ctx by default.
+    // expects the configured toolcall ctx. Pin it to the dashboard toolcall ctx.
     if (model === toolcallModel()) {
         const tc = toolcallCtx();
         if (tc && tc > 0) return cap(tc);
