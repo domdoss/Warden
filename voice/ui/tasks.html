@@ -226,7 +226,19 @@
     return c;
   }
 
+  var digestTalkState={hourly:false,daily:false,weekly:false};
+  async function loadDigestTalkState(){
+    try{
+      var raw=await api('/api/digest/config');
+      var d=raw?JSON.parse(raw):null;
+      digestTalkState={hourly:!!d?.hourly?.talk,daily:!!d?.daily?.talk,weekly:!!d?.weekly?.talk};
+    }catch(e){}
+  }
+  function spanFromTaskId(id){ return id.replace('iris-digest-',''); }
+  function isDigestId(id){ return id.indexOf('iris-digest-')===0; }
+
   async function loadTasks(){
+    await loadDigestTalkState();
     try{
       var raw=await api('/api/tasks');
       var d=raw?JSON.parse(raw):null;
@@ -248,22 +260,48 @@
         var last=t.last_run?'last '+esc(new Date(t.last_run).toLocaleString())+
                  (t.last_result?(' · '+esc(String(t.last_result).slice(0,80))):''):'';
         var tog=t.status==='active'?['Pause','paused']:['Resume','active'];
-        var tid=t.id||'',titleHtml,isSystem;
+        var tid=t.id||'',titleHtml,isSystem,isDigest;
         isSystem=tid.indexOf('iris-digest-')===0||tid.indexOf('heartbeat-')===0;
-        if(tid.indexOf('iris-digest-')===0){titleHtml=esc('Iris '+tid.replace('iris-digest-','')+' digest');}
+        isDigest=tid.indexOf('iris-digest-')===0;
+        if(isDigest){titleHtml=esc('Iris '+tid.replace('iris-digest-','')+' digest');}
         else if(tid.indexOf('heartbeat-')===0){titleHtml='Heartbeat';}
         else{titleHtml=esc((t.prompt||'(no prompt)').slice(0,120))+((t.prompt||'').length>120?'…':'');}
+        var talkBtn='';
+        if(isDigest){
+          var span=spanFromTaskId(tid);
+          var talkOn=digestTalkState[span]||false;
+          talkBtn='<span class="act-btn '+(talkOn?'confirm':'')+'" data-act="digest-talk" data-span="'+esc(span)+'" data-on="'+(!talkOn)+'">'+(talkOn?'🔊 Speak: ON':'🔊 Speak: off')+'</span>';
+        }
+        var cronInput=isDigest?'<div class="edit-row" style="margin-top:5px"><label>Schedule (cron)</label><input class="cron-edit" data-id="'+esc(tid)+'" value="'+esc(t.schedule_value||'')+'" placeholder="e.g. 17 21 * * *"></div>':'';
         return '<div class="item" data-kind="task" data-id="'+esc(t.id)+'">'+
           (isSystem?'':'<div class="del-x" data-act="del" title="Delete">✕</div>')+
           '<div class="it-title">'+titleHtml+'</div>'+
           '<div class="it-sub">'+esc(sched)+(next?' · '+next:'')+'</div>'+
           (last?'<div class="it-sub">'+last+'</div>':'')+
+          cronInput+
           '<div class="it-row">'+
             '<span class="it-badge '+badge+'">'+esc(t.status||'active')+'</span>'+
             '<span class="act-btn" data-act="toggle" data-status="'+tog[1]+'">'+tog[0]+'</span>'+
+            talkBtn+
           '</div>'+
         '</div>';
       }).join('');
+      // Wire cron edit inputs to PATCH /api/tasks/:id/schedule
+      body.querySelectorAll('.cron-edit').forEach(function(inp){
+        var timer=null;
+        inp.addEventListener('input',function(){
+          if(timer)clearTimeout(timer);
+          var el=inp;
+          timer=setTimeout(async function(){
+            try{
+              await api('/api/tasks/'+encodeURIComponent(el.dataset.id)+'/schedule',{method:'PATCH',body:JSON.stringify({schedule_value:el.value})});
+              el.style.borderColor='rgba(0,255,136,0.4)';
+              setTimeout(function(){el.style.borderColor='';},600);
+            }catch(e){ el.style.borderColor='rgba(255,68,68,0.6)'; }
+            await loadTasks();
+          },1200);
+        });
+      });
     }catch(e){body.innerHTML='<div class="empty">Unable to load tasks.</div>'}
   }
 
@@ -617,6 +655,12 @@
       confirmInboxItem(ck,id);
     }else if(act==='toggle'){
       toggleTask(id,el.getAttribute('data-status'));
+    }else if(act==='digest-talk'){
+      var span=el.getAttribute('data-span');
+      var on=el.getAttribute('data-on')==='true';
+      var payload={}; payload[span]={talk:on};
+      try{ await api('/api/digest/config',{method:'POST',body:JSON.stringify(payload)}); }catch(e){}
+      await loadTasks();
     }else if(act==='edit'&&kind==='calendar'){
       // Expand the inline datetime pickers for this event.
       editingCalId=id; loadCalendar();

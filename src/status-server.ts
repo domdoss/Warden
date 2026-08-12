@@ -2385,16 +2385,28 @@ async function handleTasksCrud(
     return json(res, { id: taskId, status: 'created' }, 201);
   }
 
-  // PATCH /api/tasks/:id — update status
+  // PATCH /api/tasks/:id — update status or schedule_value
   const patchMatch = pathname.match(/^\/api\/tasks\/(.+)$/);
   if (req.method === 'PATCH' && patchMatch) {
     const task = getTaskById(patchMatch[1]);
     if (!task) return error(res, 'Task not found', 404);
     const body = parseJson(await parseBody(req)) as any;
+    const updates: any = {};
     if (body.status && ['active', 'paused'].includes(body.status)) {
-      updateTask(patchMatch[1], { status: body.status });
+      updates.status = body.status;
     }
-    return json(res, { id: patchMatch[1], status: body.status });
+    if (typeof body.schedule_value === 'string' && body.schedule_value.trim()) {
+      const sv = body.schedule_value.trim();
+      try {
+        CronExpressionParser.parse(sv, { tz: TIMEZONE }).next();
+        updates.schedule_value = sv;
+        updates.next_run = CronExpressionParser.parse(sv, { tz: TIMEZONE }).next().toISOString();
+      } catch {
+        return error(res, 'Invalid cron expression', 400);
+      }
+    }
+    if (Object.keys(updates).length > 0) updateTask(patchMatch[1], updates);
+    return json(res, { id: patchMatch[1], ...updates });
   }
 
   // DELETE /api/tasks/bulk — delete active / inactive / all

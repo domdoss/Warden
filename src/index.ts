@@ -67,6 +67,7 @@ import {
   deleteCalendarEvent,
   getCalendarEvent,
   listCalendarEvents,
+  getTaskById,
 } from './db.js';
 import { decryptApiKey } from './encryption.js';
 import { fetchEmails, sendEmail } from './email.js';
@@ -1908,7 +1909,7 @@ const IRIS_DIGEST_TASKS = [
   {
     id: 'iris-digest-hourly',
     cron: '7 * * * *',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 50, preview_only true). Use only emails whose Date is within the last hour.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown summarizing this hour, from INPUT/emails>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nWINDOW: This is the HOURLY digest. Only consider activity in the LAST HOUR (emails received in the last hour; calendar events in the next 2 hours; tasks that were created, completed, or updated in the last hour). Do NOT mention the user bio, sleep schedule, daily routine, or long-running projects unless something about them changed in the last hour.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 50, preview_only true). Use only emails whose Date is within the last hour.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown about what happened in the LAST HOUR only — or say it was quiet>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
   {
     id: 'iris-digest-daily',
@@ -1971,6 +1972,17 @@ function seedIrisDigestTasks(): void {
 const DIGEST_SPANS = ['hourly', 'daily', 'weekly'] as const;
 type DigestSpan = (typeof DIGEST_SPANS)[number];
 
+// Default digest prompts + crons. These are seeded as scheduled_tasks rows on
+// first boot and re-synced when the code prompt changes. The ACTIVE cron is read
+// from the scheduled_tasks row (via getTaskById) so the user can edit it from the
+// schedule UI; this keeps the row visible alongside other recurring automations.
+function getDigestTaskCron(span: string): string {
+  const t = getTaskById(`iris-digest-${span}`);
+  if (t?.schedule_value) return t.schedule_value;
+  const baked = IRIS_DIGEST_TASKS.find((x) => x.id === `iris-digest-${span}`);
+  return baked?.cron || '';
+}
+
 function digestCallbacks(span: string): CallbackMap {
   // Minimal: only read_emails (Iris may call it once for recent inbox
   // activity). Iris compiles + outputs the digest as its final text and the
@@ -1989,7 +2001,7 @@ function digestCallbacks(span: string): CallbackMap {
       // runs speak when digest:talk:<span> is true.
       if (!digestTalk(span)) return { ok: true, silent: true };
       try {
-        const digestText = text.slice(0, 1200);
+        const digestText = extractSpeakableDigest(text, span, 1200);
         storeMessage({
           id: `digest-${span}-${Date.now()}`,
           chat_jid: OWNER_JID,
@@ -2001,10 +2013,13 @@ function digestCallbacks(span: string): CallbackMap {
           is_bot_message: true,
           channel: 'web',
         } as NewMessage);
+        // Push the same notification path normal agent replies use so the voice
+        // client (and dashboard SSE) will speak/read this digest out loud.
+        pushNotification('owner', { type: 'chat_complete', message: digestText, from: OWNER_JID });
         return { ok: true };
       } catch (err: any) {
         logger.warn({ span, err }, 'digest_complete: failed to store spoken digest');
-        return { ok: false, error: err?.message ?? String(err) };
+        return { ok: false, error: err?.message ?? String(err) }; // eslint-disable-line @typescript-eslint/no-explicit-any
       }
     },
   };
@@ -2020,8 +2035,12 @@ async function runDigest(span: string, manual = false): Promise<{ ok: boolean; e
     logger.warn({ span }, 'runDigest: no iris model configured (iris:model) — skipping');
     return { ok: false, error: 'no iris model configured (set iris:model in the Agents panel)' };
   }
-  const t = IRIS_DIGEST_TASKS.find((x) => x.id === `iris-digest-${span}`);
-  if (!t) return { ok: false, error: `no baked digest prompt for ${span}` };
+  const baked = IRIS_DIGEST_TASKS.find((x) => x.id === `iris-digest-${span}`);
+  if (!baked) return { ok: false, error: `no baked digest prompt for ${span}` };
+  // Read the live cron from the scheduled_tasks row if it exists; otherwise use
+  // the baked default. This lets the user edit the digest schedule in the UI.
+  const cron = getDigestTaskCron(span);
+  const t = { ...baked, cron };
   let prompt = t.prompt;
   try {
     const ctx = await buildDigestContext(span);
@@ -2052,6 +2071,33 @@ function setDigestTalk(span: string, talk: boolean): void {
   setRouterState(`digest:talk:${span}`, talk ? 'true' : 'false');
 }
 
+// Convert the structured JSON digest Iris emits into plain, speakable prose for
+// the chat channel / TTS. Keeps only the human-readable summary and any alerts;
+// never dumps raw JSON or markdown tables into chat.
+function extractSpeakableDigest(raw: string, span: string, maxLen = 1200): string {
+  let parsed: any;
+  try {
+    let s = raw.trim();
+    const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (fenced) s = fenced[1].trim();
+    if (s.charAt(0) === '{') parsed = JSON.parse(s);
+  } catch { /* not JSON — fall through */ }
+
+  const parts: string[] = [];
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.summary) parts.push(String(parsed.summary).trim());
+    const alerts = Array.isArray(parsed.alerts) ? parsed.alerts : [];
+    if (alerts.length) {
+      parts.push('Alerts: ' + alerts.map((a: any) => String(a)).join('. '));
+    }
+  }
+
+  let out = parts.length ? parts.join('\n\n') : raw.trim();
+  if (!out) out = `Iris ${span} digest is empty.`;
+  if (out.length > maxLen) out = out.slice(0, maxLen).replace(/\s+\S*$/, '') + '…';
+  return out.replace(/\s+/g, ' ').trim();
+}
+
 // The host poll loop (startMessageLoop) calls this every tick. It checks the
 // baked-in cron schedules against each span's last-run timestamp (kept in
 // router_state) and fires runDigest when one is due. No separate timer thread
@@ -2074,10 +2120,11 @@ async function checkDigestsDue(): Promise<void> {
         continue;
       }
       let nextFireMs: number;
+      const liveCron = getDigestTaskCron(span);
       try {
         // Next cron occurrence AFTER lastrun — currentDate is the reference.
         // CronDate wraps Luxon (not a real Date); use getTime() directly.
-        nextFireMs = CronExpressionParser.parse(t.cron, {
+        nextFireMs = CronExpressionParser.parse(liveCron, {
           tz: TIMEZONE,
           currentDate: new Date(last),
         }).next().getTime();
@@ -2086,7 +2133,7 @@ async function checkDigestsDue(): Promise<void> {
       }
       if (now >= nextFireMs) {
         setRouterState(lastrunKey, new Date(now).toISOString());
-        logger.info({ span, cron: t.cron }, 'checkDigestsDue: firing scheduled digest');
+        logger.info({ span, cron: liveCron }, 'checkDigestsDue: firing scheduled digest');
         void runDigest(span, false).catch((err) => logger.warn({ span, err }, 'runDigest failed'));
       }
     }
