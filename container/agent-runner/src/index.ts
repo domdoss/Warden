@@ -203,26 +203,18 @@ async function readStdin() {
         };
         const onChunk = (chunk: string) => {
             data += chunk;
-            console.error(`[agent-runner readStdin] chunk received: ${chunk.length} bytes, total ${data.length}`);
             if (tryParse()) {
-                console.error(`[agent-runner readStdin] JSON parsed successfully, resolving`);
                 process.stdin.removeListener('data', onChunk);
                 process.stdin.removeListener('end', onEnd);
                 process.stdin.removeListener('error', onError);
                 resolve(data);
-            } else {
-                console.error(`[agent-runner readStdin] JSON parse failed, waiting for more data`);
             }
         };
-        const onEnd = () => {
-            console.error(`[agent-runner readStdin] end event, data: ${data.length} bytes`);
-            resolve(data);
-        };
+        const onEnd = () => resolve(data);
         const onError = (err: Error) => reject(err);
         process.stdin.on('data', onChunk);
         process.stdin.on('end', onEnd);
         process.stdin.on('error', onError);
-        console.error(`[agent-runner readStdin] listeners attached, waiting for data`);
     });
 }
 const OUTPUT_START_MARKER = '---WARDEN_OUTPUT_START---';
@@ -1319,7 +1311,6 @@ async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number |
         }
         if (typeof ctx === 'number' && ctx > 0) {
             MODEL_CTX_CACHE.set(model, ctx);
-            log(`[ctx] ${model} native context length = ${ctx} (from Ollama /api/show)`);
             return ctx;
         }
         return undefined;
@@ -1654,13 +1645,6 @@ async function runSubAgent(
 
     // Warm the native-ctx cache from Ollama so getNumCtx can cap/serve it below.
     await fetchModelCtx(OLLAMA_URL, model);
-
-    // Diagnostic: sub-agents previously had no visibility into what num_ctx they
-    // actually sent, making it impossible to tell from logs why Ollama reloaded a
-    // model. Log the resolved override, the relevant env vars, and the effective
-    // value that will hit the wire.
-    const effectiveCtx = getNumCtx(model, ctxOverride);
-    log(`[ctx] ${agentName} on ${model}: ctxOverride=${ctxOverride ? `"${ctxOverride}"` : '(none)'}, effective_num_ctx=${effectiveCtx ?? '(backend default)'}, IRIS_NUM_CTX=${process.env.IRIS_NUM_CTX || '(unset)'}, SCAN_NUM_CTX=${process.env.SCAN_NUM_CTX || '(unset)'}`);
 
     // NOTE: we deliberately do NOT evict the orchestrator model here. Evicting
     // the orchestrator to run a granite sub-agent forces it to RELOAD (~16s) on
@@ -2421,7 +2405,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     appendStatus({ phase: 'tool', label: 'Loop breaker: forcing a no-tools round to extract an answer' });
                 }
                 const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
-                log(`[ctx] ${model} sending num_ctx=${_orchCtx ?? '(none → backend default)'} (ORCHESTRATOR_NUM_CTX=${process.env.ORCHESTRATOR_NUM_CTX || '(unset)'}, ATLAS_NUM_CTX=${process.env.ATLAS_NUM_CTX || '(unset)'}, isOrchModel=${model === ORCHESTRATOR_MODEL})`);
                 const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 1, num_ctx: _orchCtx } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
