@@ -1327,6 +1327,15 @@ async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number |
 // native window. We never shove a hardcoded ctx at the model. Call
 // fetchModelCtx once before the loop so the cap cache is warm; getNumCtx reads
 // it synchronously.
+function toolcallModel(): string | undefined {
+    return (process.env.SUBAGENT_MODEL || '').replace(/^local:/, '') || undefined;
+}
+function toolcallCtx(): number | undefined {
+    const raw = process.env.SUBAGENT_NUM_CTX || process.env.IRIS_NUM_CTX || process.env.DEXTER_NUM_CTX || process.env.BYTE_NUM_CTX || process.env.SENTRY_NUM_CTX || process.env.MERCURY_NUM_CTX || '';
+    if (!raw) return undefined;
+    const n = parseInt(raw, 10);
+    return n > 0 ? n : undefined;
+}
 function getNumCtx(model: string, ctxOverride?: string | number): number | undefined {
     const nativeMax = MODEL_CTX_CACHE.get(model); // undefined until fetchModelCtx populates it
     const cap = (v: number): number => (nativeMax && v > nativeMax) ? nativeMax : v;
@@ -1337,7 +1346,15 @@ function getNumCtx(model: string, ctxOverride?: string | number): number | undef
         // 16k to keep its KV cache in VRAM. An override above the cap is clamped.
         if (n > 0) return cap(n);
     }
-    return undefined; // no override → send no num_ctx; backend uses the model's own native window
+    // The shared toolcall model MUST stay at one ctx. If a caller passes no
+    // override, Ollama falls back to the Modelfile default — often 2048 — which
+    // is NOT the native window and forces a reload when the next toolcall agent
+    // expects the configured toolcall ctx. Pin it to the toolcall ctx by default.
+    if (model === toolcallModel()) {
+        const tc = toolcallCtx();
+        if (tc && tc > 0) return cap(tc);
+    }
+    return undefined; // non-toolcall models with no override use backend default
 }
 
 // Per-agent ctx override lookup, keyed by the agentName passed to runSubAgent.
