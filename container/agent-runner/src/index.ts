@@ -1655,12 +1655,19 @@ async function runSubAgent(
     // Warm the native-ctx cache from Ollama so getNumCtx can cap/serve it below.
     await fetchModelCtx(OLLAMA_URL, model);
 
+    // Diagnostic: sub-agents previously had no visibility into what num_ctx they
+    // actually sent, making it impossible to tell from logs why Ollama reloaded a
+    // model. Log the resolved override, the relevant env vars, and the effective
+    // value that will hit the wire.
+    const effectiveCtx = getNumCtx(model, ctxOverride);
+    log(`[ctx] ${agentName} on ${model}: ctxOverride=${ctxOverride ? `"${ctxOverride}"` : '(none)'}, effective_num_ctx=${effectiveCtx ?? '(backend default)'}, IRIS_NUM_CTX=${process.env.IRIS_NUM_CTX || '(unset)'}, SCAN_NUM_CTX=${process.env.SCAN_NUM_CTX || '(unset)'}`);
+
     // NOTE: we deliberately do NOT evict the orchestrator model here. Evicting
-    // gemma4:12b to run a granite sub-agent forces gemma to RELOAD (~16s) on the
-    // next orchestrator turn — measured 30s send→first-token vs 1s warm. The
+    // the orchestrator to run a granite sub-agent forces it to RELOAD (~16s) on
+    // the next orchestrator turn — measured 30s send→first-token vs 1s warm. The
     // orchestrator is the hot path; keep it warm. The orchestrator-side unload
-    // (before its own chat) evicts any lingering sub-agent model so gemma gets
-    // full VRAM back, without ever paying a gemma reload.
+    // (before its own chat) evicts any lingering sub-agent model so the orchestrator
+    // gets full VRAM back, without ever paying a reload.
 
     // Context-overflow tripwire: if the initial payload (system prompt + tool
     // schemas + task) already exceeds the model's num_ctx, ollama context-shifts
