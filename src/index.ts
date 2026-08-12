@@ -1971,17 +1971,47 @@ function seedIrisDigestTasks(): void {
 const DIGEST_SPANS = ['hourly', 'daily', 'weekly'] as const;
 type DigestSpan = (typeof DIGEST_SPANS)[number];
 
-function digestCallbacks(): CallbackMap {
+function digestCallbacks(span: string): CallbackMap {
   // Minimal: only read_emails (Iris may call it once for recent inbox
   // activity). Iris compiles + outputs the digest as its final text and the
   // agent-runner publishes that text to /api/summaries directly — so there is
   // no post_summary/ipc callback here, and no send_message (a digest must not
   // write to the chat).
   const base = buildAgentCallbacks();
-  return { read_emails: base.read_emails! };
+  return {
+    read_emails: base.read_emails!,
+    // The runner calls this after publishing to /api/summaries so the host can
+    // optionally echo the digest into the chat (TTS reads it out loud).
+    digest_complete: async (args: any) => {
+      const text = String(args?.text || '');
+      if (!text) return { ok: false };
+      // Manual "Generate" clicks are always silent (dashboard only). Scheduled
+      // runs speak when digest:talk:<span> is true.
+      if (!digestTalk(span)) return { ok: true, silent: true };
+      try {
+        const digestText = text.slice(0, 1200);
+        storeMessage({
+          id: `digest-${span}-${Date.now()}`,
+          chat_jid: OWNER_JID,
+          sender: ASSISTANT_NAME,
+          sender_name: ASSISTANT_NAME,
+          content: `Iris ${span} digest:\n\n${digestText}`,
+          timestamp: new Date().toISOString(),
+          is_from_me: false,
+          is_bot_message: true,
+          channel: 'web',
+        } as NewMessage);
+        return { ok: true };
+      } catch (err: any) {
+        logger.warn({ span, err }, 'digest_complete: failed to store spoken digest');
+        return { ok: false, error: err?.message ?? String(err) };
+      }
+    },
+  };
 }
 
-async function runDigest(span: string): Promise<{ ok: boolean; error?: string }> {
+
+async function runDigest(span: string, manual = false): Promise<{ ok: boolean; error?: string }> {
   if (!DIGEST_SPANS.includes(span as DigestSpan)) {
     return { ok: false, error: `invalid span: ${span}` };
   }
@@ -1999,7 +2029,7 @@ async function runDigest(span: string): Promise<{ ok: boolean; error?: string }>
   } catch (err: any) {
     logger.warn({ span, err }, 'runDigest: buildDigestContext failed — running ungrounded');
   }
-  logger.info({ span, model: irisModel }, 'runDigest: spawning iris-digest directly');
+  logger.info({ span, model: irisModel, manual }, 'runDigest: spawning iris-digest directly');
   runSubAgentBackground({
     agent: `iris-digest-${span}`,
     prompt,
@@ -2010,9 +2040,16 @@ async function runDigest(span: string): Promise<{ ok: boolean; error?: string }>
     groupFolder: 'owner',
     isMain: true,
     timeoutMs: 5 * 60 * 1000,
-    callbacks: digestCallbacks(),
+    callbacks: digestCallbacks(span),
   } as any);
   return { ok: true };
+}
+
+function digestTalk(span: string): boolean {
+  return getRouterState(`digest:talk:${span}`) === 'true';
+}
+function setDigestTalk(span: string, talk: boolean): void {
+  setRouterState(`digest:talk:${span}`, talk ? 'true' : 'false');
 }
 
 // The host poll loop (startMessageLoop) calls this every tick. It checks the
@@ -2050,7 +2087,7 @@ async function checkDigestsDue(): Promise<void> {
       if (now >= nextFireMs) {
         setRouterState(lastrunKey, new Date(now).toISOString());
         logger.info({ span, cron: t.cron }, 'checkDigestsDue: firing scheduled digest');
-        void runDigest(span).catch((err) => logger.warn({ span, err }, 'runDigest failed'));
+        void runDigest(span, false).catch((err) => logger.warn({ span, err }, 'runDigest failed'));
       }
     }
   } finally {
@@ -2073,8 +2110,10 @@ const SPAN_WINDOW_MS: Record<ScanSpan, number> = {
   daily: 24 * 3600_000,
   weekly: 7 * 24 * 3600_000,
 };
-// Every 20 min (off the :00/:30 marks to avoid the global rush).
-const SCAN_CRON = '13,33,53 * * * *';
+// Default scan cadence: every 20 min (off the :00/:30 marks). Overridden by
+// router_state scan:cron so the user can program the daily scan for 6am etc.
+const DEFAULT_SCAN_CRON = '13,33,53 * * * *';
+const SCAN_CRON = DEFAULT_SCAN_CRON;
 const SCAN_MSG_LIMIT = 400;       // cap inbound chat rows fed to the model
 const SCAN_EMAIL_LIMIT = 40;      // cap emails per account fed to the model
 
@@ -2100,6 +2139,7 @@ interface ScanInbox {
   allowedChats: string;
   model: string;
   ctx: string;            // scan:ctx override; empty = inherit the toolcall ctx
+  cron: string;
   lastrun: string | null;
 }
 
@@ -2111,6 +2151,12 @@ function scanModel(): string {
 
 function scanAutoAccept(): boolean {
   return getRouterState('scan:auto_accept') === 'true';
+}
+
+function scanCron(): string {
+  const cron = (getRouterState('scan:cron') || '').trim();
+  if (!cron) return DEFAULT_SCAN_CRON;
+  return cron;
 }
 
 function scanAllowedChannels(): string[] | null {
@@ -2360,9 +2406,10 @@ async function checkScanDue(): Promise<void> {
     const now = Date.now();
     const last = getRouterState('scan:lastrun');
     if (!last) { setRouterState('scan:lastrun', new Date(now).toISOString()); return; }
+    const cron = scanCron();
     let nextFireMs: number;
     try {
-      nextFireMs = CronExpressionParser.parse(SCAN_CRON, {
+      nextFireMs = CronExpressionParser.parse(cron, {
         tz: TIMEZONE,
         currentDate: new Date(last),
       }).next().getTime();
@@ -2373,7 +2420,7 @@ async function checkScanDue(): Promise<void> {
       // backfills missed time. Reading a 24h/7d window on every cron tick would
       // re-process everything and be too much info. The user manually triggers
       // daily/weekly scans from the Actionable tab to catch up on missed spans.
-      logger.info({ cron: SCAN_CRON }, 'checkScanDue: firing scheduled hourly scan');
+      logger.info({ cron }, 'checkScanDue: firing scheduled hourly scan');
       void runScan('hourly').catch((err) => logger.warn({ err }, 'scheduled runScan failed'));
     }
   } finally {
@@ -2399,6 +2446,7 @@ function getScanInbox(): ScanInbox {
     allowedChats: getRouterState('scan:allowed_chats') || '',
     model: scanModel(),
     ctx: getRouterState('scan:ctx') || '',
+    cron: scanCron(),
     lastrun: getRouterState('scan:lastrun') || null,
   };
 }
@@ -2415,16 +2463,30 @@ function confirmScanItem(kind: 'task' | 'event', id: string): { ok: boolean; err
       return { ok: true, result_id: id };
     }
   } catch (err: any) {
-    return { ok: false, error: String(err?.message ?? err) };
+    return { ok: false, error: String(err?.message ?? err) }; // eslint-disable-line @typescript-eslint/no-explicit-any
   }
 }
 
-function setScanConfig(cfg: { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string }): void {
+function setScanConfig(cfg: { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string; cron?: string }): void {
   if (cfg.autoAccept !== undefined) setRouterState('scan:auto_accept', cfg.autoAccept ? 'true' : 'false');
   if (cfg.allowedChats !== undefined) setRouterState('scan:allowed_chats', cfg.allowedChats);
   if (cfg.model !== undefined && cfg.model.trim()) setRouterState('scan:model', cfg.model.trim());
   // Empty ctx clears the override → chat-scan inherits the toolcall ctx.
   if (cfg.ctx !== undefined) setRouterState('scan:ctx', cfg.ctx.trim());
+  if (cfg.cron !== undefined) {
+    const cron = cfg.cron.trim();
+    if (!cron) {
+      setRouterState('scan:cron', '');
+    } else {
+      // Light validation: let the parser tell us if it's garbage.
+      try {
+        CronExpressionParser.parse(cron, { tz: TIMEZONE }).next();
+        setRouterState('scan:cron', cron);
+      } catch (err: any) {
+        throw new Error(`Invalid cron expression: ${err?.message ?? err}`); // eslint-disable-line @typescript-eslint/no-explicit-any
+      }
+    }
+  }
 }
 
 async function startMessageLoop(): Promise<void> {
@@ -2871,8 +2933,19 @@ async function main(): Promise<void> {
         return false;
       }
     },
-    triggerDigest: (span: string) => runDigest(span),
+    triggerDigest: (span: string, manual?: boolean) => runDigest(span, manual),
     triggerScan: (span: string) => runScan(span),
+    getDigestConfig: () => ({
+      hourly: { talk: digestTalk('hourly') },
+      daily: { talk: digestTalk('daily') },
+      weekly: { talk: digestTalk('weekly') },
+    }),
+    setDigestConfig: (cfg) => {
+      for (const span of ['hourly', 'daily', 'weekly']) {
+        const t = (cfg as any)?.[span]?.talk;
+        if (typeof t === 'boolean') setDigestTalk(span, t);
+      }
+    },
     getScanInbox: () => getScanInbox(),
     confirmScanItem: (kind: 'task' | 'event', id: string) => confirmScanItem(kind, id),
     setScanConfig: (cfg: any) => { setScanConfig(cfg); },

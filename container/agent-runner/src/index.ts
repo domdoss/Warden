@@ -4153,6 +4153,7 @@ Call read_emails once if the task needs recent inbox activity, then output the J
                 }
             }
             if (publishedText) {
+                let published = false;
                 try {
                     const port = process.env.STATUS_PORT || '3200';
                     const res = await fetch(`http://127.0.0.1:${port}/api/summaries?span=${encodeURIComponent(span)}`, {
@@ -4161,9 +4162,21 @@ Call read_emails once if the task needs recent inbox activity, then output the J
                         body: JSON.stringify({ text: publishedText }),
                         signal: AbortSignal.timeout(30000),
                     });
+                    published = res.ok;
                     log(`[iris-digest] published ${span} digest to /api/summaries (HTTP ${res.status}, ${publishedText.length} chars)`);
                 } catch (pubErr: any) {
                     log(`[iris-digest] FAILED to publish ${span} digest: ${pubErr?.message ?? pubErr}`);
+                }
+                // Notify the host so it can echo the digest into the chat (TTS) when the
+                // scheduled digest talk toggle is enabled. Manual Generate clicks are
+                // always silent; the host checks the digest:talk:<span> flag.
+                if (published) {
+                    try {
+                        await writeCallbackAsync('digest_complete', { span, text: publishedText }, 30000);
+                        log(`[iris-digest] host notified for ${span} digest_complete`);
+                    } catch (notifyErr: any) {
+                        log(`[iris-digest] digest_complete notify failed: ${notifyErr?.message ?? notifyErr}`);
+                    }
                 }
             } else {
                 log(`[iris-digest] no digest text — nothing published for ${span}`);

@@ -248,6 +248,7 @@
       <button class="scan-btn" id="scan-now-btn">Scan now</button>
       <label class="scan-toggle" id="scan-auto-toggle"><span class="sw"></span><span class="lbl">Auto-accept</span></label>
       <input class="scan-chats" id="scan-chats" placeholder="allowed chats: telegram,slack (blank = all)" title="Which chat channels to scan — comma-separated (telegram, slack, whatsapp, web). Blank = all.">
+      <input class="scan-chats" id="scan-cron" placeholder="schedule cron" title="Cron expression for the scheduled scan (e.g. 0 6 * * * for daily 6am). Blank = default 13,33,53 * * * *.">
       <span class="scan-meta" id="scan-meta"></span>
     </div>
     <div class="scan-section" id="scan-pending"></div>
@@ -260,6 +261,11 @@
     </div>
     <textarea class="lookout-input" id="lookout-input" placeholder="Things you're watching for — a specific event, a pending reply, a package arriving…"></textarea>
     <div class="lookout-status" id="lookout-status"></div>
+  </div>
+  <div class="lookout" id="digest-talk" style="border-top:1px solid rgba(199,125,255,0.12);padding:8px 16px;display:flex;flex-direction:row;align-items:center;gap:10px;">
+    <span class="lookout-label">🔊 Read aloud</span>
+    <span class="lookout-hint">When enabled, the scheduled digest is also sent to the chat channel so it is spoken out loud.</span>
+    <label class="scan-toggle" id="talk-toggle"><span class="sw"></span><span class="lbl" id="talk-lbl">Hourly</span></label>
   </div>
   <div class="footer"><span></span><span class="ts"></span></div>
 </div>
@@ -291,7 +297,10 @@
   var body=document.querySelector('.body'),footerTs=document.querySelector('.footer .ts'),
       tabs=document.querySelectorAll('.tab'),config=null,activeSpan='hourly',interval=null,
       lookoutInput=document.getElementById('lookout-input'),
-      lookoutStatus=document.getElementById('lookout-status');
+      lookoutStatus=document.getElementById('lookout-status'),
+      talkToggle=document.getElementById('talk-toggle'),
+      talkLbl=document.getElementById('talk-lbl'),
+      digestTalkState={hourly:false,daily:false,weekly:false};
   // ── Actionable scanner ──
   var scanPanel=document.getElementById('scan-panel'),
       digestBody=document.getElementById('digest-body'),
@@ -300,9 +309,10 @@
       scanNowBtn=document.getElementById('scan-now-btn'),
       scanAutoToggle=document.getElementById('scan-auto-toggle'),
       scanChatsInput=document.getElementById('scan-chats'),
+      scanCronInput=document.getElementById('scan-cron'),
       scanMeta=document.getElementById('scan-meta'),
       scanSpanSeg=document.getElementById('scan-span-seg'),
-      scanSpan='daily',scanState=null,scanChatsTimer=null;
+      scanSpan='daily',scanState=null,scanChatsTimer=null,scanCronTimer=null;
 
   async function loadConfig(){
     // The pywebview bridge (window.pywebview.api) is injected into the host
@@ -311,7 +321,7 @@
     // quickly until the bridge is ready, then start the slow poll.
     var tries=0;
     function whenReady(){
-      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ refresh(); loadLookout(); }
+      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ refresh(); loadLookout(); loadDigestConfig(); loadScanConfig(); }
       else if(tries++ < 60){ setTimeout(whenReady, 250); }
     }
     whenReady();
@@ -319,6 +329,34 @@
     // generated summary shows up without a manual refresh. The unified refresh
     // dispatches to the scan panel when the Actionable tab is active.
     interval=setInterval(refresh,20000);
+  }
+  async function loadDigestConfig(){
+    try{
+      var raw=await api('/api/digest/config');
+      if(!raw) return;
+      var d=JSON.parse(raw);
+      digestTalkState={
+        hourly:!!d?.hourly?.talk,
+        daily:!!d?.daily?.talk,
+        weekly:!!d?.weekly?.talk,
+      };
+      updateTalkToggle();
+    }catch(e){}
+  }
+  async function loadScanConfig(){
+    try{
+      var raw=await api('/api/scan/config');
+      if(!raw) return;
+      var d=JSON.parse(raw);
+      if(scanCronInput) scanCronInput.value=d?.cron||'';
+      if(scanChatsInput) scanChatsInput.value=d?.allowedChats||'';
+    }catch(e){}
+  }
+  function updateTalkToggle(){
+    if(!talkToggle || !talkLbl) return;
+    var on=digestTalkState[activeSpan]||false;
+    talkToggle.classList.toggle('on', on);
+    talkLbl.textContent=activeSpan.charAt(0).toUpperCase()+activeSpan.slice(1);
   }
   function refresh(){ if(activeSpan==='actionable') fetchScan(); else fetchDigest(); }
 
@@ -397,8 +435,11 @@
       digestBody.style.display=isScan?'none':'block';
       var lookout=document.getElementById('lookout');
       if(lookout) lookout.style.display=isScan?'none':'flex';
+      var digestTalk=document.getElementById('digest-talk');
+      if(digestTalk) digestTalk.style.display=isScan?'none':'flex';
       var genBtn=document.getElementById('gen-btn');
       if(genBtn) genBtn.style.visibility=isScan?'hidden':'visible';
+      updateTalkToggle();
       refresh();
     });
   });
@@ -725,6 +766,21 @@
     scanChatsTimer=setTimeout(async function(){
       try{ await api('/api/scan/config','POST',JSON.stringify({allowedChats:scanChatsInput.value})); }catch(e){}
     },800);
+  });
+  // Scan schedule cron — debounced save.
+  if(scanCronInput) scanCronInput.addEventListener('input',function(){
+    if(scanCronTimer)clearTimeout(scanCronTimer);
+    scanCronTimer=setTimeout(async function(){
+      try{ await api('/api/scan/config','POST',JSON.stringify({cron:scanCronInput.value})); }catch(e){}
+    },1200);
+  });
+  // Digest talk toggle — persisted per span via /api/digest/config.
+  if(talkToggle) talkToggle.addEventListener('click',async function(){
+    var on=!talkToggle.classList.contains('on');
+    talkToggle.classList.toggle('on',on);
+    digestTalkState[activeSpan]=on;
+    var payload={}; payload[activeSpan]={talk:on};
+    try{ await api('/api/digest/config','POST',JSON.stringify(payload)); }catch(e){}
   });
   function cssEsc(s){ return String(s||'').replace(/"/g,'\\"'); }
   if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);

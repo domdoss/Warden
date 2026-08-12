@@ -238,12 +238,14 @@ interface StatusDeps {
   // Manual digest trigger: runs the iris-digest-<span> task through the same
   // grounded runTask path as the cron (buildDigestContext: real calendar,
   // tasks, bio, weather, notes). Wired in src/index.ts.
-  triggerDigest?: (span: string) => Promise<{ ok: boolean; error?: string }>;
+  triggerDigest?: (span: string, manual?: boolean) => Promise<{ ok: boolean; error?: string }>;
   // Actionable-items scanner (email + chat → tasks/events). Wired in src/index.ts.
   triggerScan?: (span: string) => Promise<{ ok: boolean; error?: string; created?: number; pending?: number; skipped?: number }>;
   getScanInbox?: () => any;
   confirmScanItem?: (kind: 'task' | 'event', id: string) => { ok: boolean; error?: string; result_id?: string };
-  setScanConfig?: (cfg: { autoAccept?: boolean; allowedChats?: string; model?: string }) => void;
+  setScanConfig?: (cfg: { autoAccept?: boolean; allowedChats?: string; model?: string; cron?: string }) => void;
+  getDigestConfig?: () => { hourly: { talk: boolean }; daily: { talk: boolean }; weekly: { talk: boolean } };
+  setDigestConfig?: (cfg: { hourly?: { talk?: boolean }; daily?: { talk?: boolean }; weekly?: { talk?: boolean } }) => void;
 }
 
 let deps: StatusDeps;
@@ -3874,10 +3876,25 @@ export function startStatusServer(d: StatusDeps): void {
         }
         if (!deps.triggerDigest) return json(res, { error: 'digest trigger unavailable' }, 503);
         try {
-          const r = await deps.triggerDigest(span);
+          // Manual Generate clicks are always silent (dashboard only).
+          const r = await deps.triggerDigest(span, true);
           return json(res, r, r.ok ? 200 : 404);
         } catch (err: any) {
           return json(res, { error: String(err?.message ?? err) }, 500);
+        }
+      }
+      if (pathname === '/api/digest/config') {
+        if (!deps.getDigestConfig || !deps.setDigestConfig) return json(res, { error: 'digest config unavailable' }, 503);
+        if (req.method === 'GET') {
+          try { return json(res, deps.getDigestConfig()); }
+          catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
+        }
+        if (req.method === 'POST') {
+          try {
+            const body = parseJson(await parseBody(req)) as { hourly?: { talk?: boolean }; daily?: { talk?: boolean }; weekly?: { talk?: boolean } };
+            deps.setDigestConfig(body);
+            return json(res, deps.getDigestConfig());
+          } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
         }
       }
       // ── Actionable Items Scanner ──
@@ -3917,20 +3934,20 @@ export function startStatusServer(d: StatusDeps): void {
           return json(res, r, r.ok ? 200 : 404);
         } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
       }
-      // GET/POST /api/scan/config — read or update { autoAccept, allowedChats, model }.
+      // GET/POST /api/scan/config — read or update { autoAccept, allowedChats, model, cron }.
       if (pathname === '/api/scan/config') {
         if (!deps.setScanConfig || !deps.getScanInbox) return json(res, { error: 'scan config unavailable' }, 503);
         if (req.method === 'POST') {
           try {
-            const body = parseJson(await parseBody(req)) as { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string };
+            const body = parseJson(await parseBody(req)) as { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string; cron?: string };
             deps.setScanConfig(body);
             const s = deps.getScanInbox();
-            return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, ctx: s.ctx, lastrun: s.lastrun });
+            return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, ctx: s.ctx, lastrun: s.lastrun, cron: s.cron });
           } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
         }
         try {
           const s = deps.getScanInbox();
-          return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, ctx: s.ctx, lastrun: s.lastrun });
+          return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, ctx: s.ctx, lastrun: s.lastrun, cron: s.cron });
         } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
       }
       if (pathname === '/api/process-logs' && req.method === 'GET') {
