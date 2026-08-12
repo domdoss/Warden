@@ -52,7 +52,7 @@ Warden is a personal AI assistant that lives on your desktop. It runs local mode
 
 ### The Orchestrator
 
-A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: a Gemma 4 model (`gemma4:latest`) running locally on Ollama. It doesn't write your reports, doesn't browse the web, doesn't run shell commands. It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A 12B model supervising a frontier model, and it doesn't fuck up.
+A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: a 4B Gemma 4 model (`gemma4:latest`) running locally on Ollama. It doesn't write your reports, doesn't browse the web, doesn't run shell commands. It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A 4B model supervising a frontier model, and it doesn't fuck up.
 
 ```
 You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orchestrator → You
@@ -68,11 +68,11 @@ You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orch
 
 > 💡 **The orchestrator never touches the internet directly.** It doesn't browse, search, or fetch URLs. It delegates. That separation lets the orchestrator stay small and local while the internet-connected agents run on the biggest models available.
 
-#### A 12B model is enough — that's the whole point
+#### A 4B model is enough — that's the whole point
 
-This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. A 12B Gemma 4 nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
+This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. A 4B Gemma 4 nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
 
-The expensive generation lives one layer down, in the specialists. Atlas, Vulkan, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 12B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
+The expensive generation lives one layer down, in the specialists. Atlas, Vulkan, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 4B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
 
 #### Babysitting the sub-agents
 
