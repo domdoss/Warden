@@ -2111,6 +2111,11 @@ async function checkDigestsDue(): Promise<void> {
     const now = Date.now();
     for (const t of IRIS_DIGEST_TASKS) {
       const span = t.id.replace('iris-digest-', '');
+      // Respect the Sched UI pause/resume toggle: if the scheduled_tasks row
+      // is paused (or missing), skip this span. The row is seeded at boot, so
+      // missing only happens if the user deleted it (guarded in the UI).
+      const row = getTaskById(t.id);
+      if (row && row.status !== 'active') continue;
       const lastrunKey = `digest:lastrun:${span}`;
       const last = getRouterState(lastrunKey);
       if (!last) {
@@ -2851,6 +2856,10 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   startChromeWatchdog();
   loadState();
+  // Seed the three Iris digest automations (hourly/daily/weekly) as
+  // scheduled_tasks rows so they show in the Sched tab and the host poll loop
+  // can fire them. Re-syncs the prompt/cron when the baked values change.
+  seedIrisDigestTasks();
   // Materialize a concrete per-agent model + ctx for every agent from the
   // legacy shared values BEFORE any agent runs, so every Agents-panel dropdown
   // is populated (no blank) and the agent-runner never sees an empty key. This
@@ -3007,18 +3016,13 @@ async function main(): Promise<void> {
   startSchedulerLoop(schedulerDeps);
 
   // ── Iris digest tasks (hourly / daily / weekly) ───────────────────────
-  // Digests no longer use the scheduler/scheduled_tasks DB or the chat
-  // pipeline. The three schedules + prompts are baked into IRIS_DIGEST_TASKS
-  // (TS constants); checkDigestsDue() — riding the message poll loop above —
-  // fires runDigest(span) directly, spawning Iris with a grounded prompt,
-  // and Iris publishes via post_summary → /api/summaries. The dashboard
-  // "Generate" button calls the same runDigest via deps.triggerDigest.
-  // Purge any stale iris-digest-* rows so the old scheduler path can't
-  // double-fire them through the chat.
-  for (const t of (getAllTasks() ?? []).filter((x) => x.id.startsWith('iris-digest-'))) {
-    deleteTask(t.id);
-    logger.info({ taskId: t.id }, 'removed stale Iris digest scheduled task (digests now run via direct Iris spawn)');
-  }
+  // The three schedules + prompts are baked into IRIS_DIGEST_TASKS and seeded
+  // as scheduled_tasks rows by seedIrisDigestTasks() (so they show in the Sched
+  // UI for cron editing + pause/resume). checkDigestsDue() — riding the message
+  // poll loop above — fires runDigest(span) directly (direct Iris spawn →
+  // post_summary → /api/summaries). The scheduler loop skips iris-digest-*
+  // rows (see task-scheduler.ts) so they can't double-fire through the chat.
+  // The dashboard "Generate" button calls the same runDigest via deps.triggerDigest.
 
   // ── Personal catch-all project ────────────────────────────────────────
   // The system requires every work task to belong to a project. Personal is

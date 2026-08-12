@@ -1348,18 +1348,25 @@
       }
       if (!tasks.length) { list.innerHTML = '<div class="task-empty">No scheduled tasks. Click "+ New Task" above.</div>'; return; }
       list.innerHTML = tasks.map(t => {
+        const tid = t.id || '';
+        const isDigest = tid.indexOf('iris-digest-') === 0;
+        const isHeartbeat = tid.indexOf('heartbeat-') === 0;
+        const isSystem = isDigest || isHeartbeat;
+        const label = isDigest ? ('Iris ' + tid.replace('iris-digest-', '') + ' digest')
+                    : isHeartbeat ? 'Heartbeat'
+                    : (t.prompt || '');
         const badge = t.schedule_type ? '<span class="badge ' + esc(t.schedule_type) + '">' + esc(t.schedule_type) + '</span>' : '';
         const status = t.status === 'paused' ? '<span class="badge paused">paused</span>' : '<span class="badge active">active</span>';
         const next = t.next_run ? fmtTime(t.next_run) : '—';
         const last = t.last_run ? fmtTime(t.last_run) : '—';
         return '<div class="task-item ' + (t.status === 'paused' ? 'paused' : '') + '">' +
-          '<div class="head"><span class="prompt" title="' + escAttr(t.prompt || '') + '">' + esc(t.prompt || '') + '</span>' + badge + status + '</div>' +
+          '<div class="head"><span class="prompt" title="' + escAttr(t.prompt || '') + '">' + esc(label) + '</span>' + badge + status + '</div>' +
           '<div class="meta"><span>id: ' + esc(t.id) + '</span><span>group: ' + esc(t.group_folder || '') + '</span><span>value: ' + esc(t.schedule_value || '') + '</span><span>next: ' + next + '</span><span>last: ' + last + '</span></div>' +
           '<div class="actions">' +
             (t.status === 'paused'
               ? '<button class="btn btn-ghost btn-sm" data-task-resume="' + escAttr(t.id) + '">Resume</button>'
               : '<button class="btn btn-ghost btn-sm" data-task-pause="' + escAttr(t.id) + '">Pause</button>') +
-            '<button class="btn btn-danger btn-sm" data-task-del="' + escAttr(t.id) + '">Delete</button>' +
+            (isSystem ? '' : '<button class="btn btn-danger btn-sm" data-task-del="' + escAttr(t.id) + '">Delete</button>') +
           '</div></div>';
       }).join('');
 

@@ -353,6 +353,18 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         if (!currentTask || currentTask.status !== 'active') {
           continue;
         }
+        // Iris digest tasks are fired directly by the host's checkDigestsDue()
+        // (direct Iris spawn → /api/summaries), NOT injected into the chat. The
+        // scheduled_tasks rows still exist for visibility + cron editing in the
+        // Sched UI; skip them here so they can't double-fire through the chat.
+        if (task.id.startsWith('iris-digest-')) {
+          // Still advance next_run so getDueTasks doesn't keep returning them.
+          try {
+            const nextRun = computeNextRun(currentTask);
+            if (nextRun) updateTaskAfterRun(task.id, nextRun, 'skipped (fired by checkDigestsDue)');
+          } catch { /* ignore */ }
+          continue;
+        }
 
         void runTask(currentTask, deps);
       }

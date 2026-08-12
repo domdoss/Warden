@@ -231,7 +231,11 @@
     try{
       var raw=await api('/api/digest/config');
       var d=raw?JSON.parse(raw):null;
-      digestTalkState={hourly:!!d?.hourly?.talk,daily:!!d?.daily?.talk,weekly:!!d?.weekly?.talk};
+      digestTalkState={
+        hourly:(d&&d.hourly&&d.hourly.talk)?true:false,
+        daily:(d&&d.daily&&d.daily.talk)?true:false,
+        weekly:(d&&d.weekly&&d.weekly.talk)?true:false
+      };
     }catch(e){}
   }
   function spanFromTaskId(id){ return id.replace('iris-digest-',''); }
@@ -287,21 +291,23 @@
         '</div>';
       }).join('');
       // Wire cron edit inputs to PATCH /api/tasks/:id/schedule
-      body.querySelectorAll('.cron-edit').forEach(function(inp){
-        var timer=null;
-        inp.addEventListener('input',function(){
-          if(timer)clearTimeout(timer);
-          var el=inp;
-          timer=setTimeout(async function(){
-            try{
-              await api('/api/tasks/'+encodeURIComponent(el.dataset.id)+'/schedule',{method:'PATCH',body:JSON.stringify({schedule_value:el.value})});
-              el.style.borderColor='rgba(0,255,136,0.4)';
-              setTimeout(function(){el.style.borderColor='';},600);
-            }catch(e){ el.style.borderColor='rgba(255,68,68,0.6)'; }
-            await loadTasks();
-          },1200);
-        });
-      });
+      var cronEdits=body.querySelectorAll('.cron-edit');
+      for(var ci=0;ci<cronEdits.length;ci++){
+        (function(inp){
+          var timer=null;
+          inp.addEventListener('input',function(){
+            if(timer)clearTimeout(timer);
+            var el=inp;
+            timer=setTimeout(function(){
+              api('/api/tasks/'+encodeURIComponent(el.dataset.id),{method:'PATCH',body:JSON.stringify({schedule_value:el.value})}).then(function(){
+                el.style.borderColor='rgba(0,255,136,0.4)';
+                setTimeout(function(){el.style.borderColor='';},600);
+                loadTasks();
+              })['catch'](function(){ el.style.borderColor='rgba(255,68,68,0.6)'; loadTasks(); });
+            },1200);
+          });
+        })(cronEdits[ci]);
+      }
     }catch(e){body.innerHTML='<div class="empty">Unable to load tasks.</div>'}
   }
 
@@ -535,9 +541,9 @@
     finally{addBtn.classList.remove('busy');setAddMode(activeTab);}
   }
 
-  // The header "+" button is context-aware: "New Task" on the Tasks tab (opens
-  // a prompt + cron row), "+ Project" on the Projects tab (name row). The
-  // schedule input is shown only for tasks.
+  // The header "+" button is context-aware: "New Schedule" on the Sched tab
+  // (opens a prompt + cron row), "+ Project" on the Projects tab (name row).
+  // The schedule input is shown only for schedules.
   function setAddMode(tab){
     var addBtn=document.getElementById('add-btn');
     var sched=document.getElementById('new-sched');
@@ -546,8 +552,8 @@
     if(tab==='inbox'){
       addBtn.style.display='none';
     }else if(tab==='tasks'){
-      addBtn.textContent='New Task';addBtn.title='New task';
-      name.placeholder='New task prompt…';sched.type='text';sched.style.display='';
+      addBtn.textContent='New Schedule';addBtn.title='New schedule';
+      name.placeholder='New schedule prompt…';sched.type='text';sched.style.display='';
     }else if(tab==='reminders'){
       addBtn.textContent='New Reminder';addBtn.title='New reminder';
       name.placeholder='Reminder prompt…';sched.type='datetime-local';sched.style.display='';
@@ -659,8 +665,7 @@
       var span=el.getAttribute('data-span');
       var on=el.getAttribute('data-on')==='true';
       var payload={}; payload[span]={talk:on};
-      try{ await api('/api/digest/config',{method:'POST',body:JSON.stringify(payload)}); }catch(e){}
-      await loadTasks();
+      api('/api/digest/config',{method:'POST',body:JSON.stringify(payload)}).then(loadTasks,loadTasks);
     }else if(act==='edit'&&kind==='calendar'){
       // Expand the inline datetime pickers for this event.
       editingCalId=id; loadCalendar();

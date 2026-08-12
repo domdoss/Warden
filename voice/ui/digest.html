@@ -262,9 +262,10 @@
     <textarea class="lookout-input" id="lookout-input" placeholder="Things you're watching for — a specific event, a pending reply, a package arriving…"></textarea>
     <div class="lookout-status" id="lookout-status"></div>
   </div>
-  <div class="lookout" id="digest-talk" style="border-top:1px solid rgba(199,125,255,0.12);padding:8px 16px;display:flex;flex-direction:row;align-items:center;gap:10px;">
+  <div class="lookout" id="digest-talk" style="border-top:1px solid rgba(199,125,255,0.12);padding:8px 16px;display:flex;flex-direction:row;align-items:center;gap:10px;flex-wrap:wrap;">
     <span class="lookout-label">🔊 Read aloud</span>
-    <span class="lookout-hint">When enabled, the scheduled digest is also sent to the chat channel so it is spoken out loud.</span>
+    <input class="scan-chats" id="talk-cron" style="max-width:140px" placeholder="cron" title="Edit the cron schedule for this digest span.">
+    <span class="lookout-hint" id="talk-hint" style="margin-left:auto">fires at minute 0-59</span>
     <label class="scan-toggle" id="talk-toggle"><span class="sw"></span><span class="lbl" id="talk-lbl">Hourly</span></label>
   </div>
   <div class="footer"><span></span><span class="ts"></span></div>
@@ -300,7 +301,9 @@
       lookoutStatus=document.getElementById('lookout-status'),
       talkToggle=document.getElementById('talk-toggle'),
       talkLbl=document.getElementById('talk-lbl'),
-      digestTalkState={hourly:false,daily:false,weekly:false};
+      talkCronInput=document.getElementById('talk-cron'),
+      digestTalkState={hourly:false,daily:false,weekly:false},
+      talkCronTimer=null;
   // ── Actionable scanner ──
   var scanPanel=document.getElementById('scan-panel'),
       digestBody=document.getElementById('digest-body'),
@@ -336,9 +339,9 @@
       if(!raw) return;
       var d=JSON.parse(raw);
       digestTalkState={
-        hourly:!!d?.hourly?.talk,
-        daily:!!d?.daily?.talk,
-        weekly:!!d?.weekly?.talk,
+        hourly:d&&d.hourly&&d.hourly.talk?true:false,
+        daily:d&&d.daily&&d.daily.talk?true:false,
+        weekly:d&&d.weekly&&d.weekly.talk?true:false
       };
       updateTalkToggle();
     }catch(e){}
@@ -348,8 +351,8 @@
       var raw=await api('/api/scan/config');
       if(!raw) return;
       var d=JSON.parse(raw);
-      if(scanCronInput) scanCronInput.value=d?.cron||'';
-      if(scanChatsInput) scanChatsInput.value=d?.allowedChats||'';
+      if(scanCronInput&&d&&d.cron) scanCronInput.value=d.cron;
+      if(scanChatsInput&&d&&d.allowedChats) scanChatsInput.value=d.allowedChats;
     }catch(e){}
   }
   function updateTalkToggle(){
@@ -357,6 +360,7 @@
     var on=digestTalkState[activeSpan]||false;
     talkToggle.classList.toggle('on', on);
     talkLbl.textContent=activeSpan.charAt(0).toUpperCase()+activeSpan.slice(1);
+    setTalkHint();
   }
   function refresh(){ if(activeSpan==='actionable') fetchScan(); else fetchDigest(); }
 
@@ -421,6 +425,7 @@
     lookoutInput.addEventListener('input',scheduleLookoutSave);
     lookoutInput.addEventListener('blur',saveLookout);
   }
+
 
   tabs.forEach(function(t){
     t.addEventListener('click',function(){
@@ -781,6 +786,68 @@
     digestTalkState[activeSpan]=on;
     var payload={}; payload[activeSpan]={talk:on};
     try{ await api('/api/digest/config','POST',JSON.stringify(payload)); }catch(e){}
+  });
+
+  async function loadDigestCron(span){
+    try{
+      var raw=await api('/api/tasks');
+      if(!raw) return '';
+      var d=JSON.parse(raw), tasks=(d&&d.tasks)||[];
+      for(var i=0;i<tasks.length;i++){
+        if(tasks[i].id==='iris-digest-'+span) return tasks[i].schedule_value||'';
+      }
+    }catch(e){}
+    return '';
+  }
+
+  function cronHint(span,cron){
+    if(!cron) return 'read aloud schedule';
+
+    var p=cron.trim().split(/\s+/);
+    if(p.length!==5) return cron;
+    var min=p[0],hr=p[1],dom=p[2],mon=p[3],dow=p[4];
+    if(span==='hourly') return 'fires at minute '+min;
+    if(span==='daily'){
+      var h=hr.replace(/^0/,''), m=min==='0'?'':(':'+min);
+      var ampm=+hr>=12?'pm':'am';
+      if(+hr===0) h='12';
+      else if(+hr>12) h=String(+hr-12);
+      return 'daily at '+h+m+ampm;
+    }
+    if(span==='weekly'){
+      var D=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      var days=dow.split(',').map(function(x){return D[+x]||x;}).join('/');
+      var h=hr.replace(/^0/,''), m=min==='0'?'':(':'+min);
+      var ampm=+hr>=12?'pm':'am';
+      if(+hr===0) h='12'; else if(+hr>12) h=String(+hr-12);
+      return days+' at '+h+m+ampm;
+    }
+    return cron;
+  }
+
+  function setTalkHint(){
+    var hint=document.getElementById('talk-hint');
+    if(!hint) return;
+    loadDigestCron(activeSpan).then(function(cron){
+      if(talkCronInput) talkCronInput.value=cron||'';
+      hint.textContent=cronHint(activeSpan,cron);
+    });
+  }
+
+  if(talkCronInput) talkCronInput.addEventListener('input',function(){
+    if(talkCronTimer) clearTimeout(talkCronTimer);
+    var val=talkCronInput.value;
+    var hint=document.getElementById('talk-hint');
+    if(hint) hint.textContent=cronHint(activeSpan,val);
+    talkCronTimer=setTimeout(async function(){
+      try{
+        await api('/api/tasks/iris-digest-'+activeSpan,'PATCH',JSON.stringify({schedule_value:val}));
+        talkCronInput.style.borderColor='rgba(0,255,136,0.5)';
+        setTimeout(function(){if(talkCronInput)talkCronInput.style.borderColor='';},800);
+      }catch(e){
+        if(talkCronInput) talkCronInput.style.borderColor='rgba(255,68,68,0.6)';
+      }
+    },1200);
   });
   function cssEsc(s){ return String(s||'').replace(/"/g,'\\"'); }
   if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);
