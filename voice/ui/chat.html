@@ -183,6 +183,25 @@
   }
 
   var renderedIds=new Set();
+  // Locally rendered messages (user send + Jarvis reply shown immediately) don't
+  // have server ids yet. When the 8-second history poll later fetches the same
+  // message from the server, skip it by matching role/content/approximate time.
+  var localRenders=[];
+  function addLocalRender(role,text){
+    localRenders.push({role:role,text:text,ts:Date.now()});
+    // keep only the last 60s of local renders
+    localRenders=localRenders.filter(function(r){return Date.now()-r.ts<60000;});
+  }
+  function isLocalDuplicate(m){
+    var role=m.is_bot_message?'jarvis':'user';
+    var mTs=new Date(m.timestamp||0).getTime();
+    for(var i=localRenders.length-1;i>=0;i--){
+      var r=localRenders[i];
+      if(r.role===role && r.text===m.content && Math.abs(mTs-r.ts)<30000) return true;
+    }
+    return false;
+  }
+
   async function loadHistory(){
     try{
       var raw=await window.pywebview.api.warden_api('/api/messages?limit=100');
@@ -191,14 +210,16 @@
       var arr=(d&&d.messages)||[];
       arr.forEach(function(m){
         if(!m||typeof m.content!=='string'||!m.content) return;
-        if(renderedIds.has(m.id)) return;
-        renderedIds.add(m.id);
+        if(m.id && renderedIds.has(m.id)) return;
+        if(isLocalDuplicate(m)) return;
+        if(m.id) renderedIds.add(m.id);
         renderMessage(m.is_bot_message?'jarvis':'user', m.content, m.timestamp);
       });
     }catch(e){}
   }
 
   function addMessage(role,text){
+    addLocalRender(role,text);
     renderMessage(role,text,null);
   }
 
