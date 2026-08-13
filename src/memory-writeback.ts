@@ -59,10 +59,33 @@ function resolveMemoryModel(): string {
   return FALLBACK_MODEL;
 }
 
+// Memory writeback uses the Mercury (toolcall) model — the same granite4.1:8b
+// Iris/scan/digest keep resident at 16384 ctx / keep_alive -1. A bare /api/chat
+// with no num_ctx/keep_alive loads a SECOND copy at Ollama's native 2048 ctx /
+// 300s default, which evicts the resident Iris instance. Mirror the runner's
+// toolcall ctx + keep_alive so writeback reuses the loaded model instead.
+function resolveMemoryCtx(): number | undefined {
+  const raw = (getRouterState('local:subagent_ctx') || '').trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+function resolveMemoryKeepAlive(): number {
+  const raw = (getRouterState('local:toolcall_keep_alive') || '').trim();
+  if (raw === '-1') return -1;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 300;
+}
+
 async function ollamaChat(system: string, user: string, model: string): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
+    // Granite (the toolcall/Mercury model) needs temperature 0 for reliable,
+    // deterministic structured output — same as the runner's sub-agent defs.
+    const options: Record<string, unknown> = { temperature: 0 };
+    const numCtx = resolveMemoryCtx();
+    if (numCtx) options.num_ctx = numCtx;
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -74,7 +97,8 @@ async function ollamaChat(system: string, user: string, model: string): Promise<
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
-        options: { temperature: 0.2 },
+        options,
+        keep_alive: resolveMemoryKeepAlive(),
       }),
     });
     if (!res.ok) return null;
