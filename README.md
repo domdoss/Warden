@@ -265,10 +265,6 @@ The agent-runner speaks Ollama's native HTTP API and talks to Ollama directly �
 
 **Optional — piping in Claude:** `src/credential-proxy.ts` (port 3001) is in the codebase but **not wired in by default**. It exists for one case: routing to Anthropic's Claude. It translates Ollama-native requests ↔ Anthropic format and injects the Claude API key so the agent-runner never sees it. If you want Claude, wire the proxy in and point the agent-runner at it; otherwise everything stays on native Ollama.
 
-### 💾 Session Isolation
-
-Local and cloud models use separate session directories (`.ollama/` vs `.claude/`) to prevent context contamination. Switching models mid-conversation doesn't lose history.
-
 ---
 
 ## 🌐 Real Browser Automation
