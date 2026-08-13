@@ -1914,7 +1914,7 @@ const IRIS_DIGEST_TASKS = [
   {
     id: 'iris-digest-daily',
     cron: '17 21 * * *',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 100, preview_only true). Use only emails whose Date is within the last 24 hours (today).\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<one or two sentences in markdown summarizing the shape of today, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on the shape of today from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 100, preview_only true). Use only emails whose Date is within the last 24 hours (today).\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<Start with: Good morning. Then one or two sentences briefing Dominic on today — calendar events, active tasks, and notable emails. Do NOT mention sleep schedule, wake times, or daily routine.>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on calendar events, tasks, and emails for today from INPUT/emails — or empty if there is no data. Do not mention sleep schedule or daily routine.>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
   {
     id: 'iris-digest-weekly',
@@ -2082,28 +2082,45 @@ function setDigestTalk(span: string, talk: boolean): void {
 // Convert the structured JSON digest Iris emits into plain, speakable prose for
 // the chat channel / TTS. Keeps only the human-readable summary and any alerts;
 // never dumps raw JSON or markdown tables into chat.
-function extractSpeakableDigest(raw: string, span: string, maxLen = 1200): string {
-  let parsed: any;
-  try {
-    let s = raw.trim();
-    const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    if (fenced) s = fenced[1].trim();
-    if (s.charAt(0) === '{') parsed = JSON.parse(s);
-  } catch { /* not JSON — fall through */ }
-
-  const parts: string[] = [];
-  if (parsed && typeof parsed === 'object') {
-    if (parsed.summary) parts.push(String(parsed.summary).trim());
-    const alerts = Array.isArray(parsed.alerts) ? parsed.alerts : [];
-    if (alerts.length) {
-      parts.push('Alerts: ' + alerts.map((a: any) => String(a)).join('. '));
+// Extract the first balanced {...} JSON object from text that may carry a
+// trailing extra brace or surrounding prose/fences. Granite sometimes emits
+// a stray '}' after the object; the old slice(first '{', last '}') swallowed
+// it, JSON.parse threw, and the fallback then read the raw JSON aloud —
+// icons, labels, blocks and all. This scans braces (respecting string
+// literals) and returns exactly the first complete object.
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
     }
   }
+  return null;
+}
 
-  let out = parts.length ? parts.join('\n\n') : raw.trim();
-  if (!out) out = `Iris ${span} digest is empty.`;
-  if (out.length > maxLen) out = out.slice(0, maxLen).replace(/\s+\S*$/, '') + '…';
-  return out.replace(/\s+/g, ' ').trim();
+function extractSpeakableDigest(raw: string, span: string, maxLen = 1200): string {
+  const json = extractFirstJsonObject(raw);
+  let parsed: any;
+  try {
+    parsed = json ? JSON.parse(json) : null;
+  } catch (e: any) {
+    throw new Error(`${span} digest JSON parse failed: ${e.message}`);
+  }
+  const summary = String(parsed?.summary ?? '').trim();
+  if (!summary) throw new Error(`${span} digest has no summary field`);
+  return summary.length > maxLen
+    ? summary.slice(0, maxLen).replace(/\s+\S*$/, '') + '…'
+    : summary;
 }
 
 // The host poll loop (startMessageLoop) calls this every tick. It checks the
