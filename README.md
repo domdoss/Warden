@@ -232,14 +232,16 @@ Warden is built for hybrid operation from the ground up. Different tasks need di
 
 Every model selection in the dashboard is per-role:
 
-| Role | Typical Model | Why |
+| Role | Recommended | Why |
 |------|-------------|-----|
-| **Orchestrator** | Local e4b (gemma4) works; **31B cloud recommended** | Fast, cheap routing + supervision. e4b is the floor; 31B cloud catches sub-agents that bluff a result. Keep-alive is on by default. |
+| **Orchestrator** | e4b local works; **31B cloud recommended** | Fast, cheap routing + supervision. e4b is the floor; 31B cloud catches sub-agents that bluff a result. Keep-alive is on by default. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
-| **Vulkan** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
+| **Vulkan** | Cloud (default) | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
 | **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
-| **Artemis** | Cloud or local | Read-only audit. Keep-alive optional. |
-| **Council seats** | Cloud (3 different models) | Diverse perspectives for deliberation. |
+| **Artemis** | Cloud (default) | Read-only audit. Keep-alive optional. |
+| **Council seats** | Cloud ×3 (different models) | Diverse perspectives for deliberation. |
+
+Every role can be flipped to local or cloud from the dashboard — same pipeline, no code change — so the column above is a recommendation, not a constraint.
 
 All of this is configured from the dashboard's Settings panel — assistant name, model per role, Ollama URL, and keep-alive toggles:
 
