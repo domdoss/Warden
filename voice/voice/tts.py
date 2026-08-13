@@ -119,39 +119,41 @@ class KokoroTTS(BaseTTS):
             pass
 
     def synthesize(self, text: str) -> bytes:
-        """Synthesize text to speech audio bytes (WAV format)."""
-        try:
-            import numpy as np
-            import soundfile as sf
+        """Synthesize text to speech audio bytes (WAV format).
 
-            pipeline = self._get_pipeline()
-            if not text or not text.strip():
-                return b""
+        Errors are NOT swallowed — a synthesis failure (missing dep, empty
+        model output, etc.) raises so the caller (_speak) prints it and the
+        real cause can be addressed. The previous `except: return b""` silently
+        dropped audio and hid the failure (the bootstrap "Assistant online."
+        line would vanish with no error printed).
+        """
+        import numpy as np
+        import soundfile as sf
 
-            generator = pipeline(
-                text=text,
-                voice=self.voice,
-                speed=self.speed,
-                split_pattern=r"\n+",
+        pipeline = self._get_pipeline()
+        if not text or not text.strip():
+            return b""
+
+        generator = pipeline(
+            text=text,
+            voice=self.voice,
+            speed=self.speed,
+            split_pattern=r"\n+",
+        )
+
+        audio_segments = []
+        for _, _, audio in generator:
+            audio_segments.append(audio)
+
+        if not audio_segments:
+            raise RuntimeError(
+                f"Kokoro produced no audio segments for text: {text!r}"
             )
 
-            audio_segments = []
-            for _, _, audio in generator:
-                audio_segments.append(audio)
-
-            if not audio_segments:
-                return b""
-
-            combined = np.concatenate(audio_segments)
-            buffer = io.BytesIO()
-            sf.write(buffer, combined, self.SAMPLE_RATE, format="WAV")
-            return buffer.getvalue()
-
-        except Exception as e:
-            import traceback
-            print(f"TTS error: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            return b""
+        combined = np.concatenate(audio_segments)
+        buffer = io.BytesIO()
+        sf.write(buffer, combined, self.SAMPLE_RATE, format="WAV")
+        return buffer.getvalue()
 
 
 class OrpheusTTS(BaseTTS):
@@ -193,33 +195,35 @@ class OrpheusTTS(BaseTTS):
         return self._model
 
     def synthesize(self, text: str) -> bytes:
-        """Synthesize text to speech audio bytes (WAV format, 24 kHz mono 16-bit)."""
-        try:
-            if not text or not text.strip():
-                return b""
+        """Synthesize text to speech audio bytes (WAV format, 24 kHz mono 16-bit).
 
-            model = self._get_model()
-            syn_tokens = model.generate_speech(
-                prompt=text,
-                voice=self.voice,
-                repetition_penalty=1.1,
-            )
-
-            buffer = io.BytesIO()
-            with wave.open(buffer, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(self.SAMPLE_RATE)
-                for audio_chunk in syn_tokens:
-                    if audio_chunk:
-                        wf.writeframes(audio_chunk)
-            return buffer.getvalue()
-
-        except Exception as e:
-            import traceback
-            print(f"TTS error: {type(e).__name__}: {e}")
-            traceback.print_exc()
+        Errors raise instead of being swallowed (see KokoroTTS.synthesize).
+        """
+        if not text or not text.strip():
             return b""
+
+        model = self._get_model()
+        syn_tokens = model.generate_speech(
+            prompt=text,
+            voice=self.voice,
+            repetition_penalty=1.1,
+        )
+
+        buffer = io.BytesIO()
+        frames_written = 0
+        with wave.open(buffer, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.SAMPLE_RATE)
+            for audio_chunk in syn_tokens:
+                if audio_chunk:
+                    wf.writeframes(audio_chunk)
+                    frames_written += len(audio_chunk)
+        if frames_written == 0:
+            raise RuntimeError(
+                f"Orpheus produced no audio for text: {text!r}"
+            )
+        return buffer.getvalue()
 
 
 class TTS(BaseTTS):
