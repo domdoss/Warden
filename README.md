@@ -51,10 +51,10 @@ Warden is a personal AI assistant that lives on your desktop. It runs local mode
 
 ### The Orchestrator
 
-A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: a 4B Gemma 4 model (`gemma4:latest`) running locally on Ollama. It doesn't write your reports, doesn't browse the web, doesn't run shell commands. It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A 4B model supervising a frontier model, and it doesn't fuck up.
+A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: it can run on an **e4b** (`gemma4:latest`) locally on Ollama — but a **31B cloud model is recommended**. It doesn't write your reports, doesn't browse the web, doesn't run shell commands. It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A small model supervising a frontier model, and it doesn't fuck up.
 
 ```
-You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orchestrator → You
+You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (large, cloud) → result → Orchestrator → You
                                    → Vulkan (coding, background)
                                    → Iris (email/calendar/digest)
                                    → Dexter (scheduling)
@@ -65,13 +65,15 @@ You → Orchestrator (small, local) → Atlas (large, cloud) → result → Orch
                                    → The Council (deliberation)
 ```
 
-> 💡 **The orchestrator never touches the internet directly.** It doesn't browse, search, or fetch URLs. It delegates. That separation lets the orchestrator stay small and local while the internet-connected agents run on the biggest models available.
+> 💡 **The orchestrator never touches the internet directly.** It doesn't browse, search, or fetch URLs. It delegates. That separation lets the orchestrator stay small while the internet-connected agents run on the biggest models available.
 
-#### A 4B model is enough — that's the whole point
+#### A small model is enough — that's the whole point
 
-This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. A 4B Gemma 4 nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
+This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. An e4b nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
 
-The expensive generation lives one layer down, in the specialists. Atlas, Vulkan, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a 4B model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
+**e4b works; 31B cloud is recommended.** The e4b is the floor, and the whole point is that the bar for "good enough to supervise" is low — it routes and composes briefs, it doesn't generate. But supervision has a failure mode the e4b will hit eventually: when a sub-agent returns narration that *looks* like a result (a timestamp computation written as prose, an "I'll do that" with no tool call), an e4b orchestrator will sometimes take it at face value and relay it to you as done. A 31B cloud orchestrator reads the same non-result and notices nothing was actually produced. So: run the e4b if you want it all local and free; run the 31B cloud if you want the babysitting to actually catch sub-agents that bluff.
+
+The expensive generation lives one layer down, in the specialists. Atlas, Vulkan, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a small model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
 
 #### Babysitting the sub-agents
 
@@ -232,7 +234,7 @@ Every model selection in the dashboard is per-role:
 
 | Role | Typical Model | Why |
 |------|-------------|-----|
-| **Orchestrator** | Local (gemma, granite) | Fast, cheap, always available. Only routes and supervises. Keep-alive is on by default. |
+| **Orchestrator** | Local e4b (gemma4) works; **31B cloud recommended** | Fast, cheap routing + supervision. e4b is the floor; 31B cloud catches sub-agents that bluff a result. Keep-alive is on by default. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
 | **Vulkan** | Cloud or local | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
 | **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
