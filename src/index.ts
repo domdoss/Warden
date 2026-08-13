@@ -2030,10 +2030,15 @@ async function runDigest(span: string, manual = false): Promise<{ ok: boolean; e
   if (!DIGEST_SPANS.includes(span as DigestSpan)) {
     return { ok: false, error: `invalid span: ${span}` };
   }
-  const irisModel = (getRouterState('iris:model') || '').replace(/^local:/, '');
+  // Iris digest is a granite toolcall agent — use the shared Toolcall model
+  // (local:subagent_model), falling back to the legacy iris:model key only if
+  // the shared key is unset. The ctx/keep_alive/temp come from the toolcall
+  // settings in the runner (IRIS_NUM_CTX / TOOLCALL_KEEP_ALIVE / temp 0), so
+  // only the model identity is resolved here.
+  const irisModel = (getRouterState('local:subagent_model') || getRouterState('iris:model') || '').replace(/^local:/, '');
   if (!irisModel) {
-    logger.warn({ span }, 'runDigest: no iris model configured (iris:model) — skipping');
-    return { ok: false, error: 'no iris model configured (set iris:model in the Agents panel)' };
+    logger.warn({ span }, 'runDigest: no toolcall/iris model configured (local:subagent_model or iris:model) — skipping');
+    return { ok: false, error: 'no toolcall model configured (set the Toolcall model in the Agents panel)' };
   }
   const baked = IRIS_DIGEST_TASKS.find((x) => x.id === `iris-digest-${span}`);
   if (!baked) return { ok: false, error: `no baked digest prompt for ${span}` };
