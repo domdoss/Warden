@@ -1930,11 +1930,14 @@ function seedIrisDigestTasks(): void {
     // The span belongs in the URL path (?span=hourly) so the orchestrator
     // can't drop it — the first cut put it in the body and the orchestrator
     // posted hourly digests tagged "daily", leaving the Hourly tab empty.
-    // Re-sync the prompt (and cron) on already-seeded tasks so this fix
-    // propagates without needing to delete and recreate the tasks.
+    // Re-sync only the PROMPT on already-seeded tasks so prompt fixes
+    // propagate without deleting/recreating the task. The cron is NOT
+    // re-synced — the user customizes it from the dashboard Schedules tab
+    // (PATCH /api/tasks/:id → schedule_value), and overwriting it here with
+    // the baked default would revert their chosen time on every restart.
     if (found) {
-      if (found.prompt !== t.prompt || found.schedule_value !== t.cron) {
-        updateTask(t.id, { prompt: t.prompt, schedule_value: t.cron });
+      if (found.prompt !== t.prompt) {
+        updateTask(t.id, { prompt: t.prompt });
         logger.info({ taskId: t.id }, 'updated Iris digest task prompt');
       }
       continue;
