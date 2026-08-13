@@ -848,7 +848,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             artemisCtx: process.env.ARTEMIS_NUM_CTX || '',
             vulkanCtx: process.env.VULKAN_NUM_CTX || '',
             sentryCtx: process.env.SENTRY_NUM_CTX || '',
-            scanCtx: process.env.SCAN_NUM_CTX || '',
             orchestratorKeepAlive: process.env.ORCHESTRATOR_KEEP_ALIVE || '',
             atlasKeepAlive: process.env.ATLAS_KEEP_ALIVE || '',
             toolcallKeepAlive: process.env.TOOLCALL_KEEP_ALIVE || '',

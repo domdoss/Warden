@@ -376,6 +376,53 @@ Iris then compiles the markdown digest and publishes it by calling `post_summary
 
 **Manual trigger** — POST `/api/digest/generate?span=hourly|daily|weekly` runs a digest now through the same grounded path as the cron. The panel's **Generate** button does exactly this and polls until the fresh digest lands (timestamp changes, up to ~90s).
 
+### 📥 Actionable Extraction — leave it running, come back to a full inbox
+
+This is the one you leave running overnight. You walk away, Warden keeps working, and when you come back everything that actually needs you is already sitting in the **Ops Inbox** — the meetings and to-dos pulled out of your last hour's email, deduped, and waiting for a single click to confirm. Or flip on **auto-accept** and your calendar fills itself, offline, with no prompt from you.
+
+There is no separate "scan agent." Finding actionable items is just one more job the **hourly** Iris digest does on top of summarizing. The same Iris, on the same cron (`7 * * * *`), reads the last hour's email and emits two extra JSON keys alongside its summary:
+
+```json
+{
+  "title": "...", "summary": "...", "alerts": [], "blocks": [...],
+  "actionable_tasks":  [{ "title": "Confirm the 3pm dentist appointment", "due": "2026-08-14T15:00:00", "project_hint": "personal" }],
+  "actionable_events": [{ "title": "Meeting with Sunny", "start": "2026-08-14T12:00:00", "end": "" }]
+}
+```
+
+When the digest completes, the `digest_complete` callback (`src/index.ts`) parses those keys and calls `createActionableItems`, which writes **real rows** — work tasks and calendar events — exactly the same ones a manual `create_calendar_event` / `schedule_task` would produce. Daily and weekly digests do **not** extract — they only summarize. Extraction is hourly only.
+
+**What counts as actionable** (encoded in the hourly prompt):
+
+| Type | Is one when… | Is not one when… |
+|------|--------------|------------------|
+| **Task** | A concrete to-do the *user* must do — *prepare, make sure, get ready, confirm, review, send, schedule, fix, follow up, deliver, pay, book, submit.* `due` set only when a deadline is stated. | A greeting, question, opinion, status update, or bot-sent message. |
+| **Event** | A scheduled meeting/appointment with a **stated date and start time inside the message** (`start` in ISO from that time; `end` if stated). | The email's *receive/arrival* date (that's metadata, never a start), or a promotion/receipt/newsletter/shipping notice/automated reminder. |
+
+A single email can yield both — the meeting at a stated time is an event; "make sure you're ready for it" is a separate task. Empty arrays are the correct answer when nothing's actionable; Iris is told not to invent items.
+
+**Dedup** — before creating anything, `taskAlreadyExists(title)` checks work tasks by title and `eventAlreadyExists(title, start)` checks calendar events by title **and exact start time**. So the same meeting surfacing in two consecutive hourly windows creates it once, not twice.
+
+**The Ops Inbox** (`/api/scan/inbox` → the Ops Panel's Inbox tab) is where unconfirmed items land:
+
+- `GET /api/scan/inbox` returns the unconfirmed work tasks + calendar events plus the current `autoConfirm` flag.
+- `POST /api/scan/confirm { kind, id }` green-checks one item — sets `confirmed = 1` so it graduates out of the inbox and onto the real calendar / task list. Deny is a normal delete.
+- `GET/POST /api/scan/config { autoAccept }` reads or flips the toggle.
+
+**Auto-accept** — when `scan:auto_accept` is on, `createActionableItems` writes every row with `confirmed = 1` already, so items skip the inbox entirely and land straight on the calendar/task list. Turn it on from the Actionable tab's toggle or `POST /api/scan/config { "autoAccept": true }`. Off (the default) means everything is `confirmed = 0` and waits in the inbox for your ✓.
+
+**Offline calendar fill** — extracted events are written to the **local** calendar DB (`calendar_source: 'local'`, a fresh `ical_uid`), with no round-trip to Google. That's the "auto-fills the calendar offline" part: your inbox-to-calendar pipeline doesn't depend on any provider being reachable. Online calendars sync the *other* direction — the 15-minute `startCalendarSyncPoller` pulls Google events into the same local DB so the models can read both local and remote in one `list_calendar_events` call. (Dexter manages entries on that local copy: create, list, update, and delete by the uid `list_calendar_events` returns.)
+
+**Manual run** — the Actionable tab's **Scan now** button (`POST /api/scan/run`) fires the same hourly Iris digest on demand through `triggerDigest('hourly', true)` → identical path → identical extraction. There is no separate scan cron or scan model; the hourly digest cron is the only thing that extracts, and the button is just "run it now."
+
+**End-to-end, unattended** — set `autoAccept`, walk away, come back: the hourly cron has been pulling actionable items out of each hour's email, deduping them, and writing them to your calendar and task list the whole time. Or leave auto-accept off and triage the inbox in one pass. Either way the work of turning "you've got mail" into "you've got a calendar" is already done.
+
+### ⏰ Daily digest as an alarm clock
+
+Each digest span has a **talk** toggle (`digest:talk:hourly|daily|weekly` in router state, set from the dashboard). When talk is on for a span, that span's digest isn't just published to the panel — `digest_complete` also pushes it through the normal `chat_complete` notification path, and the voice client **speaks it aloud** via TTS.
+
+The daily digest's cron is configurable from the dashboard (default `17 21 * * *`, i.e. 21:17 local — deliberately off the :00 mark). Move it to your wake time, turn on `digest:talk:daily`, and the morning briefing — today's calendar, active tasks, notable emails, and the `alerts` block — is spoken to you at that time. Grounded in your real local data, not a generic forecast. A TTS alarm clock that knows you've got a standup in 20 minutes.
+
 ---
 
 ## 🔌 HTTP API
@@ -390,6 +437,7 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | **Chat & agents** | `GET/POST /api/messages` · `POST /api/chat/stop` · `POST /api/chat/interrupt` · `POST /api/chat/clear-context` · `POST /api/agents/kill` · `POST /api/voice` |
 | **Files (shared workspace)** | `POST /api/files/upload` · `GET /api/files/download` · `GET /api/files/serve` · `GET /api/files/list` · `GET /api/files/read` · `GET /api/files/stat` · `POST /api/files/mkdir` · `POST /api/files/copy` · `POST /api/files/rename` · `POST /api/files/revert` · `GET /api/files/history` · `GET /api/files/version` |
 | **Digests** | `GET/POST /api/summaries?span=` · `POST /api/digest/generate?span=hourly\|daily\|weekly` |
+| **Actionable / Ops inbox** | `POST /api/scan/run` (run hourly extraction now) · `GET /api/scan/inbox` (unconfirmed tasks + events) · `POST /api/scan/confirm` · `GET/POST /api/scan/config` (`{ autoAccept }`) |
 | **Tasks & scheduling** | `GET/POST /api/tasks` · `POST /api/tasks/bulk` · `GET/POST /api/work-tasks` · `GET/POST /api/timers` · `GET/POST /api/automations` · `GET/POST /api/alarms` |
 | **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
 | **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |

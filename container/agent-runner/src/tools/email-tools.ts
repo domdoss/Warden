@@ -41,9 +41,16 @@ registry.register({
         if (resp?.ok) {
             const emails = resp.emails || [];
             if (emails.length === 0) return 'No emails found.';
-            const summaries = emails.slice(0, 50).map((e: any, i: number) =>
-                `${i + 1}. From: ${e.from || 'unknown'} | Subject: ${e.subject || '(no subject)'} | Date: ${e.date || ''}`
-            ).join('\n');
+            const summaries = emails.slice(0, 50).map((e: any, i: number) => {
+                const id = e.id ? `[id: ${e.id}] ` : '';
+                const head = `${i + 1}. ${id}From: ${e.from || 'unknown'} | Subject: ${e.subject || '(no subject)'} | Date: ${e.date || ''}`;
+                // Include whatever body text the host returned (full body from the
+                // warm cache, or the provider snippet for a live preview-only
+                // fetch). The full body is available via get_email using the id.
+                const body = (e.body || e.snippet || '').replace(/\s+/g, ' ').trim();
+                const preview = body ? `\n   ${body.slice(0, 500)}` : '';
+                return `${head}${preview}`;
+            }).join('\n');
             return `${emails.length} emails found:\n${summaries}`;
         }
         return `Email read failed: ${resp?.error || 'unknown error'}`;
@@ -83,8 +90,11 @@ registry.register({
         required: ['email_id'],
     },
     handler: async (args, context) => {
-        const resp = await callHost('get_email', { emailId: args.email_id, userId: context.userId });
-        if (resp?.ok) return `Email content:\n${JSON.stringify(resp.email, null, 2).slice(0, 4000)}`;
+        const resp = await callHost('get_email', { emailId: args.email_id, userId: context.userId }, 60000);
+        if (resp?.ok && resp.email) {
+            const e = resp.email;
+            return `Email content:\nFrom: ${e.from || 'unknown'}\nSubject: ${e.subject || '(no subject)'}\nDate: ${e.date || ''}\n\n${e.body || ''}`;
+        }
         return `Email fetch failed: ${resp?.error || 'unknown error'}`;
     },
     toolset: 'email',

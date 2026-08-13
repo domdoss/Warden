@@ -105,6 +105,16 @@ export async function buildDigestContext(span = 'hourly'): Promise<string> {
   const lines: string[] = [];
   const now = new Date();
   lines.push(`Current local time: ${now.toLocaleString('en-US', { timeZone: TIMEZONE })} (timezone ${TIMEZONE})`);
+  // Email window in UTC. read_emails compares `since`/`before` (ISO 8601)
+  // against each email's Date, which the providers return in UTC. Baking the
+  // exact UTC bounds here so the agent passes them verbatim — otherwise it
+  // derives "last hour" from the local-time string above and tags it with a
+  // trailing Z without converting, producing a window offset by the timezone
+  // that excludes the very emails it should include.
+  const winMs = span === 'hourly' ? 3600_000 : span === 'daily' ? 24 * 3600_000 : 7 * 24 * 3600_000;
+  const sinceIso = new Date(now.getTime() - winMs).toISOString();
+  const beforeIso = now.toISOString();
+  lines.push(`Email window (UTC): since ${sinceIso} before ${beforeIso}`);
 
   // User bio / habits
   let bio = '';
