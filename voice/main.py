@@ -1164,10 +1164,11 @@ class JarvisApp:
         self.bridge.on_turn_end(self._on_turn_end)
         self.bridge.start_stream()
         self._tts_worker = asyncio.create_task(self._tts_loop())
-        try:
-            await self._speak("Assistant online.")
-        except Exception:
-            pass
+        # No try/except: if the bootstrap speak fails, _speak prints the TTS
+        # error (and a raised exception surfaces via the run_coroutine_threadsafe
+        # future). The old silent swallow hid a Kokoro no-segments failure — the
+        # line just vanished with no error printed.
+        await self._speak("Assistant online.")
 
     def run(self):
         signal.signal(signal.SIGINT, self._signal_handler)
