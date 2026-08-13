@@ -9,7 +9,7 @@ import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, getLiveStatus, getProgressHistory } from './agent-spawn.js';
-import { spawnSentryBackground } from './index.js';
+import { spawnSentryBackground, syncAgentCtxEnv } from './index.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -1778,6 +1778,13 @@ async function handleSettingsSave(
   if (body.mercuryCtx !== undefined) {
     setRouterState('local:mercury_ctx', String(body.mercuryCtx || ''));
   }
+  // Push every per-agent ctx + keep_alive override just written into process.env
+  // so they take effect IMMEDIATELY for fresh-spawn sub-agents (the scan/digest
+  // one-shots inherit { ...process.env }) and the persistent child's next re-sync.
+  // Without this, dashboard Toolcall ctx / keep-alive changes only applied at the
+  // next Warden restart — so the scan/digest kept loading granite at the native
+  // 2048 ctx with 300s keep_alive instead of the configured toolcall ctx / -1.
+  syncAgentCtxEnv();
   // Thinking default — stored globally and mirrored to owner JID so the
   // orchestrator picks it up on the next turn without requiring a restart.
   if (body.thinking !== undefined) {

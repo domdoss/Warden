@@ -2829,7 +2829,7 @@ function seedPerAgentModelSettings(): void {
  * migration seed, so background spawns before the first chat turn are covered)
  * and again per turn (so dashboard changes take effect immediately).
  */
-function syncAgentCtxEnv(): void {
+export function syncAgentCtxEnv(): void {
   process.env.ORCHESTRATOR_NUM_CTX = getRouterState('local:orchestrator_ctx') || '';
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';

@@ -15,7 +15,6 @@
 **[🧠 Prompt Engineering](#-prompt-engineering)** ·
 **[☁️ Hybrid Models](#-hybrid-model-architecture)** ·
 **[📊 Dashboard](#-dashboard)** ·
-**[📱 Thin Client](#-thin-client)** ·
 **[🧩 MCP](#-mcp-ecosystem)** ·
 **[📡 Channels](#-channels)** ·
 **[🔊 Audio Pipeline](#modular-audio-pipeline-runsh)** ·
@@ -286,7 +285,7 @@ Warden controls your actual desktop — mouse movement, keystrokes, window manag
 
 ## 📊 Dashboard
 
-A full PWA at `http://localhost:3200`. First launch lands on a **login page** (`public/login.html`) — a user grid with avatars, password auth per user, and a "remember me" session. Once in, you get the full dashboard. There's also a **thin client** at `/thin-client/` for phones and tablets — same API, same session, just the chat.
+A full PWA at `http://localhost:3200`. First launch lands on a **login page** (`public/login.html`) — a user grid with avatars, password auth per user, and a "remember me" session. Once in, you get the full dashboard.
 
 ![The Warden dashboard](docs/screenshots/desktop-ui.png)
 
@@ -381,7 +380,7 @@ Iris then compiles the markdown digest and publishes it by calling `post_summary
 
 ## 🔌 HTTP API
 
-Everything talks to Warden through one HTTP server — the dashboard, the thin client, the hologram panels, the Pi satellite, and Iris's internal loopback. It's a single plain-JSON server on `STATUS_PORT` (default `:3200`), the same one that serves the dashboard UI. There is **no auth gate** — Warden is single-user, so every `/api/*` route is open on the loopback host. (The old multi-user/admin/user route trees return `410 Gone`.)
+Everything talks to Warden through one HTTP server — the dashboard, the hologram panels, the Pi satellite, and Iris's internal loopback. It's a single plain-JSON server on `STATUS_PORT` (default `:3200`), the same one that serves the dashboard UI. There is **no auth gate** — Warden is single-user, so every `/api/*` route is open on the loopback host. (The old multi-user/admin/user route trees return `410 Gone`.)
 
 ### Surface
 
@@ -435,24 +434,11 @@ One conversation, many doors. All channels merge into a single chat:
 | Channel | How |
 |---------|-----|
 | 🌐 **Web Dashboard** | PWA at `http://localhost:3200` |
-| 📱 **Thin Client** | Standalone chat at `/thin-client/` — login, pick a user, start talking. No dashboard chrome, just the conversation. |
 | ✈️ **Telegram** | Bot via grammy *(module present, disabled by default)* |
 | 💚 **WhatsApp** | Baileys (no third-party API) *(module present, disabled by default)* |
 | 💜 **Slack** | Bot integration *(module present, disabled by default)* |
 
-Only the **Web Dashboard** and **Thin Client** are enabled in the default build — `src/channels/index.ts` imports just `./web.js`. The Telegram, WhatsApp, and Slack modules still ship but are commented out; uncomment the relevant `import './<channel>.js';` line there to turn a messaging channel back on. When enabled, message from WhatsApp, continue on Telegram, check the dashboard — same context, same memory.
-
-### 📱 Thin Client
-
-`public/thin-client/` is a standalone single-page chat app — no dashboard, no settings panels, no file browser. Just a login screen, a user picker, and the conversation. It's the lightest way to talk to Warden from a phone or tablet on the same network.
-
-- **User grid** — tap your avatar to log in (password-protected per user).
-- **Model + idea selector** — pick which model and which driving force the orchestrator uses, right from the chat header.
-- **Typing indicator** — shows when the agent is working.
-- **Dark mode** — follows your OS preference.
-- **Full PWA** — add to home screen, runs like a native app.
-
-The thin client talks to the same Warden server on `:3200` — same API, same session, same memory. Open it on your phone while the dashboard is open on your desktop and they share the conversation.
+Only the **Web Dashboard** is enabled in the default build — `src/channels/index.ts` imports just `./web.js`. The Telegram, WhatsApp, and Slack modules still ship but are commented out; uncomment the relevant `import './<channel>.js';` line there to turn a messaging channel back on. When enabled, message from WhatsApp, continue on Telegram, check the dashboard — same context, same memory.
 
 ---
 
