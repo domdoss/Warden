@@ -346,13 +346,13 @@ Iris compiles short briefings from your real local data and publishes them to th
 
 ![Iris hourly digest: a grounded briefing of the next couple hours](docs/screenshots/iris-hourly.png)
 
-**Three cadences**, each a scheduled task that Iris owns:
+**Three cadences**, each a scheduled task that Iris owns, all configurable from the dashboard Ops → Schedules tab (or the voice UI Ops panel) with pause/resume per cadence:
 
-| Span | Cron | Scope |
-|---|---|---|
-| **Hourly** | `7 * * * *` | The present and the next ~2h |
-| **Daily** | `17 21 * * *` | End-of-day — today in review, what's still active, tomorrow |
-| **Weekly** | `30 20 * * 0` | A seven-day roundup with theme-grouped email activity |
+| Span | Scope |
+|---|---|
+| **Hourly** | The present and the next ~2h |
+| **Daily** | End-of-day — today in review, what's still active, tomorrow |
+| **Weekly** | A seven-day roundup with theme-grouped email activity |
 
 **Grounding** — each run is preceded by `buildDigestContext` (`src/task-scheduler.ts`), which assembles a real-world context block from the local DB and prepends it to the prompt:
 

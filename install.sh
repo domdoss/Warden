@@ -73,11 +73,41 @@ fi
 cd "$INSTALL_DIR"
 
 # ── Build ────────────────────────────────────────────────────────────
+# Harden the install: surface real errors instead of swallowing them.
+# The old version piped npm through `tail`, which returns exit 0 even when
+# npm fails — so a broken install marched on to a broken build and the user
+# only saw the last line of 700+ tsc errors ("src missing"). pipefail makes
+# a failed npm command fail the pipeline; dropping `tail` lets the real
+# error stream to the console. `set -e` (set at top of script) then aborts.
+set -o pipefail
+# Dev/build deps (typescript, @types/node) are REQUIRED to compile — without
+# them `tsc` is missing and every use of process/fs/Buffer is an error. The
+# caller's shell may export NODE_ENV=production, which makes npm skip devDeps
+# and break the build. Force development for the install and pass --include=dev
+# explicitly so the build toolchain is always installed.
+export NODE_ENV=development
+NPM_INSTALL_FLAGS=(--include=dev --loglevel=warn)
+
 echo "  Installing npm dependencies..."
-if [ -f package-lock.json ]; then npm ci --loglevel=warn 2>&1 | tail -2; else npm install --loglevel=warn 2>&1 | tail -2; fi
-( cd container/agent-runner && if [ -f package-lock.json ]; then npm ci --loglevel=warn 2>&1 | tail -1; else npm install --loglevel=warn 2>&1 | tail -1; fi )
+if [ -f package-lock.json ]; then
+  npm ci "${NPM_INSTALL_FLAGS[@]}" \
+    || { echo "  ! npm ci failed (lockfile may be out of sync with this npm version); retrying with npm install..."; \
+         npm install "${NPM_INSTALL_FLAGS[@]}"; }
+else
+  npm install "${NPM_INSTALL_FLAGS[@]}"
+fi
+
+echo "  Installing agent-runner dependencies..."
+( cd container/agent-runner && if [ -f package-lock.json ]; then
+    npm ci "${NPM_INSTALL_FLAGS[@]}" \
+      || { echo "  ! agent-runner npm ci failed; retrying with npm install..."; \
+           npm install "${NPM_INSTALL_FLAGS[@]}"; }
+  else
+    npm install "${NPM_INSTALL_FLAGS[@]}"
+  fi )
+
 echo "  Building..."
-npm run build 2>&1 | tail -1
+npm run build
 
 # ── Config ───────────────────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR/data/env" "$INSTALL_DIR/logs" "$INSTALL_DIR/store" \

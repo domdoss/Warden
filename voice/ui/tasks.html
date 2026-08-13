@@ -276,7 +276,11 @@
           var talkOn=digestTalkState[span]||false;
           talkBtn='<span class="act-btn '+(talkOn?'confirm':'')+'" data-act="digest-talk" data-span="'+esc(span)+'" data-on="'+(!talkOn)+'">'+(talkOn?'🔊 Speak: ON':'🔊 Speak: off')+'</span>';
         }
-        var cronInput=isDigest?'<div class="edit-row" style="margin-top:5px"><label>Schedule (cron)</label><input class="cron-edit" data-id="'+esc(tid)+'" value="'+esc(t.schedule_value||'')+'" placeholder="e.g. 17 21 * * *"></div>':'';
+        var cronInput='';
+        if(isDigest){
+          var span=spanFromTaskId(tid);
+          cronInput='<div class="dg-sched" data-id="'+esc(tid)+'" data-span="'+esc(span)+'" style="margin-top:5px">'+renderDigestSched(span,t.schedule_value||'')+'</div>';
+        }
         return '<div class="item" data-kind="task" data-id="'+esc(t.id)+'">'+
           (isSystem?'':'<div class="del-x" data-act="del" title="Delete">✕</div>')+
           '<div class="it-title">'+titleHtml+'</div>'+
@@ -290,25 +294,70 @@
           '</div>'+
         '</div>';
       }).join('');
-      // Wire cron edit inputs to PATCH /api/tasks/:id/schedule
-      var cronEdits=body.querySelectorAll('.cron-edit');
-      for(var ci=0;ci<cronEdits.length;ci++){
-        (function(inp){
+      // Wire the structured digest schedule inputs (minute / time / day) to
+      // build a cron expression and PATCH /api/tasks/:id. No raw cron exposed.
+      var dgScheds=body.querySelectorAll('.dg-sched');
+      for(var di=0;di<dgScheds.length;di++){
+        (function(box){
+          var id=box.getAttribute('data-id'),span=box.getAttribute('data-span');
           var timer=null;
-          inp.addEventListener('input',function(){
+          var handler=function(){
             if(timer)clearTimeout(timer);
-            var el=inp;
             timer=setTimeout(function(){
-              api('/api/tasks/'+encodeURIComponent(el.dataset.id),{method:'PATCH',body:JSON.stringify({schedule_value:el.value})}).then(function(){
-                el.style.borderColor='rgba(0,255,136,0.4)';
-                setTimeout(function(){el.style.borderColor='';},600);
+              var minEl=box.querySelector('.dg-min'),timeEl=box.querySelector('.dg-time'),dowEl=box.querySelector('.dg-dow');
+              var min,hr,dow;
+              if(span==='hourly'){ min=(minEl&&minEl.value)||'0'; hr='*'; dow='*'; }
+              else{
+                var tv=(timeEl&&timeEl.value)||'00:00',tp=tv.split(':');
+                hr=tp[0]||'0'; min=tp[1]||'0'; dow=(span==='weekly'?((dowEl&&dowEl.value)||'0'):'*');
+              }
+              var cron=span==='hourly'?(min+' * * * *'):(span==='daily'?(min+' '+hr+' * * *'):(min+' '+hr+' * * '+dow));
+              api('/api/tasks/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify({schedule_value:cron})}).then(function(){
+                box.style.borderColor='rgba(0,255,136,0.4)';
+                setTimeout(function(){box.style.borderColor='';},600);
                 loadTasks();
-              })['catch'](function(){ el.style.borderColor='rgba(255,68,68,0.6)'; loadTasks(); });
-            },1200);
-          });
-        })(cronEdits[ci]);
+              })['catch'](function(){ box.style.borderColor='rgba(255,68,68,0.6)'; loadTasks(); });
+            },800);
+          };
+          var flds=box.querySelectorAll('input,select');
+          for(var fi=0;fi<flds.length;fi++){ flds[fi].addEventListener('input',handler); flds[fi].addEventListener('change',handler); }
+        })(dgScheds[di]);
       }
     }catch(e){body.innerHTML='<div class="empty">Unable to load tasks.</div>'}
+  }
+
+  // ── Structured digest schedule controls (no raw cron shown) ──
+  // Hourly → a minute (0-59) field. Daily → a time picker. Weekly → a day
+  // dropdown + a time picker. The chosen values build a cron expression that
+  // is saved via PATCH /api/tasks/:id; the row's subtitle shows the
+  // human-readable form via cronToHuman() so the user never reads raw cron.
+  function pad2(n){ n=String(n); return n.length<2?'0'+n:n; }
+  function parseDigestCron(c){
+    var p=(c||'').trim().split(/\s+/);
+    if(p.length!==5) return {min:'0',hr:'0',dow:'0'};
+    return {min:p[0],hr:p[1],dow:p[4]};
+  }
+  function renderDigestSched(span,cron){
+    var p=parseDigestCron(cron),min=p.min,hr=p.hr,dow=p.dow;
+    if(span==='hourly'){
+      return '<label style="font-size:7px;letter-spacing:1px;text-transform:uppercase;color:rgba(204,136,255,0.4)">Minute past the hour</label>'+
+        '<input type="number" min="0" max="59" class="dg-min" value="'+esc(min)+'" style="width:70px">';
+    }
+    var timeVal=pad2((+hr)%24)+':'+pad2(+min);
+    if(span==='weekly'){
+      var D=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      var opts='';
+      for(var i=0;i<7;i++){ opts+='<option value="'+i+'"'+(String(dow)===String(i)?' selected':'')+'>'+D[i]+'</option>'; }
+      return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'+
+        '<div><label style="font-size:7px;letter-spacing:1px;text-transform:uppercase;color:rgba(204,136,255,0.4);display:block">Day</label>'+
+        '<select class="dg-dow" style="background:rgba(0,20,40,0.6);border:1px solid rgba(204,136,255,0.25);color:#e8d8ff;font-size:9px;padding:4px 6px;border-radius:4px">'+opts+'</select></div>'+
+        '<div><label style="font-size:7px;letter-spacing:1px;text-transform:uppercase;color:rgba(204,136,255,0.4);display:block">Time</label>'+
+        '<input type="time" class="dg-time" value="'+timeVal+'" style="background:rgba(0,20,40,0.6);border:1px solid rgba(204,136,255,0.25);color:#e8d8ff;font-size:9px;padding:4px 6px;border-radius:4px"></div>'+
+      '</div>';
+    }
+    // daily
+    return '<label style="font-size:7px;letter-spacing:1px;text-transform:uppercase;color:rgba(204,136,255,0.4);display:block">Time of day</label>'+
+      '<input type="time" class="dg-time" value="'+timeVal+'" style="background:rgba(0,20,40,0.6);border:1px solid rgba(204,136,255,0.25);color:#e8d8ff;font-size:9px;padding:4px 6px;border-radius:4px">';
   }
 
   // Reminders — one-shot schedule_type:'once' jobs (the things Dexter creates
