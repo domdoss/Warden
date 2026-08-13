@@ -66,11 +66,12 @@ import {
   updateCalendarEvent,
   deleteCalendarEvent,
   getCalendarEvent,
+  getCalendarEventByIcalUid,
   listCalendarEvents,
   getTaskById,
 } from './db.js';
 import { decryptApiKey } from './encryption.js';
-import { fetchEmails, sendEmail } from './email.js';
+import { fetchEmails, sendEmail, getEmailById } from './email.js';
 import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
@@ -684,6 +685,38 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
+    // Read a single email's full body by id. The agent's read_emails tool now
+    // passes each email's `id` through, and the runner's get_email tool calls
+    // this with { emailId }. No accountId is supplied, so try each enabled
+    // account and return the first that has a message with that id.
+    get_email: async (args: any) => {
+      try {
+        const emailId = args?.emailId ?? args?.email_id;
+        if (typeof emailId !== 'string' || !emailId) {
+          return { ok: false, error: 'missing emailId' };
+        }
+        const accounts = getEmailAccounts(null).filter((a) => a.enabled);
+        if (accounts.length === 0) {
+          return { ok: false, error: 'no enabled email account' };
+        }
+        const errors: string[] = [];
+        for (const account of accounts) {
+          if (account.oauth_account_id && !getOAuthAccount(account.oauth_account_id)) {
+            continue;
+          }
+          try {
+            const email = await getEmailById(account.id, emailId);
+            if (email) return { ok: true, email };
+          } catch (err: any) {
+            errors.push(`${account.email}: ${String(err?.message ?? err)}`);
+          }
+        }
+        return { ok: false, error: `email not found — ${errors.join('; ')}` };
+      } catch (err: any) {
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
     // ─── Calendar (local DB calendar_events table; OAuth-synced + agent-created) ──
     list_calendar_events: async (args: any) => {
       try {
@@ -727,7 +760,9 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const id = typeof args?.event_id === 'string' ? args.event_id : '';
         if (!id) return { ok: false, error: 'missing event_id' };
-        const existing = getCalendarEvent(id) ?? (args?.uid ? getCalendarEvent(args.uid) : undefined);
+        const existing = getCalendarEvent(id)
+          ?? (args?.uid ? getCalendarEvent(args.uid) : undefined)
+          ?? getCalendarEventByIcalUid(id);
         if (!existing) return { ok: false, error: 'event not found' };
         const updates: Partial<typeof existing> = {};
         if (typeof args?.title === 'string') updates.title = args.title;
@@ -745,8 +780,9 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       try {
         const id = typeof args?.event_id === 'string' ? args.event_id : '';
         if (!id) return { ok: false, error: 'missing event_id' };
-        const ok = deleteCalendarEvent(id);
-        return ok ? { ok: true } : { ok: false, error: 'event not found' };
+        const existing = getCalendarEvent(id) ?? getCalendarEventByIcalUid(id);
+        if (!existing) return { ok: false, error: 'event not found' };
+        return deleteCalendarEvent(existing.id) ? { ok: true } : { ok: false, error: 'event not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
@@ -1909,17 +1945,17 @@ const IRIS_DIGEST_TASKS = [
   {
     id: 'iris-digest-hourly',
     cron: '7 * * * *',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nWINDOW: This is the HOURLY digest. Only consider activity in the LAST HOUR (emails received in the last hour; calendar events in the next 2 hours; tasks that were created, completed, or updated in the last hour). Do NOT mention the user bio, sleep schedule, daily routine, or long-running projects unless something about them changed in the last hour.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 50, preview_only true). Use only emails whose Date is within the last hour.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown about what happened in the LAST HOUR only — or say it was quiet>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nWINDOW: This is the HOURLY digest. Only consider activity in the LAST HOUR (emails received in the last hour; calendar events in the next 2 hours; tasks that were created, completed, or updated in the last hour). Do NOT mention the user bio, sleep schedule, daily routine, or long-running projects unless something about them changed in the last hour.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 50, preview_only true). Do not invent your own timestamps.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nACTIONABLE EXTRACTION: From the emails you read with read_emails, also extract concrete actionable items the user must do or attend. This is separate from the "Recent Emails" display block — these drive task/event creation.\n- A task is a concrete to-do the user must do, expressed as an action the user performs: prepare, make sure, get ready, confirm, review, send, schedule, fix, follow up, deliver, pay, book, submit. Put "due" in ISO only when the message states a deadline; leave it empty otherwise.\n- An event is a scheduled meeting, appointment, or dated occasion the user will attend, where the date and start time are stated inside the message. Title it with the scheduled thing itself (a demo, a review, an appointment). Put "start" in ISO using that stated meeting time. Put "end" in ISO when an end time is stated; leave it empty otherwise. The receive/arrival date of an email is metadata — it is NEVER an event start time. Promotional emails, receipts, newsletters, account alerts, shipping notices, and automated reminders are NOT items.\n- A single message may yield both an event and a task. The scheduled thing at a stated time is an event; a readiness or follow-up action around it (prepare, make sure, get ready, confirm, follow up) is a separate task.\n- Set "project_hint" to "personal", "work", or a project name when the item clearly belongs to one; leave it empty otherwise.\n- Extract only items explicitly stated in the emails. Greetings, questions, opinions, status updates, and automated/bot-sent messages are not items. Empty arrays are the correct answer when nothing is actionable. Do not invent items.\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing, and [] for the actionable arrays when nothing is actionable):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown about what happened in the LAST HOUR only — or say it was quiet>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}],"actionable_tasks":[{"title":"","due":"","project_hint":""}],"actionable_events":[{"title":"","start":"","end":""}]}',
   },
   {
     id: 'iris-digest-daily',
     cron: '17 21 * * *',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 100, preview_only true). Use only emails whose Date is within the last 24 hours (today).\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<Start with: Good morning. Then one or two sentences briefing Dominic on today — calendar events, active tasks, and notable emails. Do NOT mention sleep schedule, wake times, or daily routine.>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on calendar events, tasks, and emails for today from INPUT/emails — or empty if there is no data. Do not mention sleep schedule or daily routine.>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 100, preview_only true). Do not invent your own timestamps.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<Start with: Good morning. Then one or two sentences briefing Dominic on today — calendar events, active tasks, and notable emails. Do NOT mention sleep schedule, wake times, or daily routine.>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on calendar events, tasks, and emails for today from INPUT/emails — or empty if there is no data. Do not mention sleep schedule or daily routine.>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
   {
     id: 'iris-digest-weekly',
     cron: '30 20 * * 0',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 200, preview_only true). Use only emails whose Date is within the last 7 days. Pick the 6-10 most relevant.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 200, preview_only true). Do not invent your own timestamps. Pick the 6-10 most relevant.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
 ];
 
@@ -2000,6 +2036,23 @@ function digestCallbacks(span: string): CallbackMap {
     digest_complete: async (args: any) => {
       const text = String(args?.text || '');
       if (!text) return { ok: false };
+      // The hourly digest's second job: extract actionable tasks/events from
+      // the digest JSON Iris emitted and create real rows (deduped). Runs even
+      // when the digest is silent (manual generate). Daily/weekly don't extract.
+      if (span === 'hourly') {
+        try {
+          const json = extractFirstJsonObject(text);
+          const parsed = json ? JSON.parse(json) : null;
+          if (parsed) {
+            const counts = createActionableItems(parsed);
+            if (counts.created || counts.skipped) {
+              logger.info({ span, ...counts }, 'digest_complete: actionable items extracted');
+            }
+          }
+        } catch (err: any) {
+          logger.warn({ span, err }, 'digest_complete: actionable extraction failed (non-fatal)');
+        }
+      }
       // Manual "Generate" clicks are always silent (dashboard only). Scheduled
       // runs speak when digest:talk:<span> is true.
       if (!digestTalk(span)) return { ok: true, silent: true };
@@ -2123,6 +2176,47 @@ function extractSpeakableDigest(raw: string, span: string, maxLen = 1200): strin
     : summary;
 }
 
+// The hourly digest's second job: create real work-task / calendar-event rows
+// from the `actionable_tasks` / `actionable_events` arrays Iris emitted in the
+// digest JSON. This replaces the old separate chat-scan subagent — finding
+// actionable items is now just another part of Iris's hourly task. Rows are
+// deduped against the existing tables (taskAlreadyExists / eventAlreadyExists)
+// and created with confirmed=0 (awaiting review in Ops -> Inbox) unless
+// scan:auto_accept is on. Non-fatal: a parse/extract failure never blocks the
+// speakable digest.
+function createActionableItems(parsed: any): { created: number; pending: number; skipped: number } {
+  const confirmed = scanAutoAccept() ? 1 : 0;
+  let created = 0, pending = 0, skipped = 0;
+  const addTask = (t: any) => {
+    const title = String(t?.title || '').trim();
+    if (!title) { skipped++; return; }
+    if (taskAlreadyExists(title)) { skipped++; return; }
+    const item: ExtractedItem = {
+      kind: 'task', title, due: t?.due || undefined,
+      project_hint: t?.project_hint || undefined, source: 'email', span: 'hourly',
+    };
+    const r = createTaskFromItem(item, confirmed);
+    if (r.ok) { created++; if (!confirmed) pending++; }
+    else { logger.warn({ err: r.error, title }, 'createActionableItems: create task failed'); skipped++; }
+  };
+  const addEvent = (e: any) => {
+    const title = String(e?.title || '').trim();
+    const start = String(e?.start || '').trim();
+    if (!title || !start) { skipped++; return; }
+    if (eventAlreadyExists(title, start)) { skipped++; return; }
+    const item: ExtractedItem = {
+      kind: 'event', title, start, end: e?.end || undefined,
+      source: 'email', span: 'hourly',
+    };
+    const r = createEventFromItem(item, confirmed);
+    if (r.ok) { created++; if (!confirmed) pending++; }
+    else { logger.warn({ err: r.error, title }, 'createActionableItems: create event failed'); skipped++; }
+  };
+  (parsed?.actionable_tasks || []).forEach(addTask);
+  (parsed?.actionable_events || []).forEach(addEvent);
+  return { created, pending, skipped };
+}
+
 // The host poll loop (startMessageLoop) calls this every tick. It checks the
 // baked-in cron schedules against each span's last-run timestamp (kept in
 // router_state) and fires runDigest when one is due. No separate timer thread
@@ -2172,32 +2266,17 @@ async function checkDigestsDue(): Promise<void> {
   }
 }
 
-// ── Actionable Items Scanner ─────────────────────────────────────────────
-// Scans recent email (all enabled accounts) + chat logs (allowed channels)
-// for actionable tasks/events, then either creates them immediately (auto-
-// accept on) or queues them for manual confirmation. Mirrors the digest
-// architecture: a scheduled run rides the poll loop, the model is the same
-// Granite used by Iris, and the extraction is a one-shot model call with NO
-// tools — the host gathers all content and packs it into the prompt.
+// ── Actionable extraction (part of Iris's hourly digest) ────────────────
+// Iris's hourly digest emits actionable_tasks / actionable_events in its JSON;
+// the host creates real work-task / calendar-event rows from them (see
+// createActionableItems above, called from digest_complete). The helpers below
+// (dedup + create) are reused by that path. There is no separate scan agent —
+// this used to be a standalone chat-scan subagent and has been removed.
 
-const SCAN_SPANS = ['hourly', 'daily', 'weekly'] as const;
-type ScanSpan = (typeof SCAN_SPANS)[number];
-const SPAN_WINDOW_MS: Record<ScanSpan, number> = {
-  hourly: 3600_000,
-  daily: 24 * 3600_000,
-  weekly: 7 * 24 * 3600_000,
-};
-// Default scan cadence: every 20 min (off the :00/:30 marks). Overridden by
-// router_state scan:cron so the user can program the daily scan for 6am etc.
-const DEFAULT_SCAN_CRON = '13,33,53 * * * *';
-const SCAN_CRON = DEFAULT_SCAN_CRON;
-const SCAN_MSG_LIMIT = 400;       // cap inbound chat rows fed to the model
-const SCAN_EMAIL_LIMIT = 40;      // cap emails per account fed to the model
-
-// An item the model extracted from email/chat. The scanner creates a real row
-// (work task or calendar event) for each of these immediately — there is no
-// separate confirmation queue. `confirmed` flags rows the user hasn't green-
-// checked yet (0 = awaiting review in Ops -> Inbox, 1 = confirmed).
+// An item Iris extracted from email. The host creates a real row (work task or
+// calendar event) for each of these immediately — there is no separate
+// confirmation queue. `confirmed` flags rows the user hasn't green-checked yet
+// (0 = awaiting review in Ops -> Inbox, 1 = confirmed).
 interface ExtractedItem {
   kind: 'task' | 'event';
   title: string;
@@ -2213,95 +2292,10 @@ interface ScanInbox {
   tasks: any[];           // unconfirmed user_work_tasks rows (confirmed = 0)
   events: any[];          // unconfirmed calendar_events rows (confirmed = 0)
   autoConfirm: boolean;
-  allowedChats: string;
-  model: string;
-  ctx: string;            // scan:ctx override; empty = inherit the toolcall ctx
-  cron: string;
-  lastrun: string | null;
-}
-
-function scanModel(): string {
-  // Optional per-scan model override; falls back to the Iris model (same
-  // Granite that powers the digest). Never falls back to a hardcoded default.
-  return (getRouterState('scan:model') || getRouterState('local:subagent_model') || '').replace(/^local:/, '');
 }
 
 function scanAutoAccept(): boolean {
   return getRouterState('scan:auto_accept') === 'true';
-}
-
-function scanCron(): string {
-  const cron = (getRouterState('scan:cron') || '').trim();
-  if (!cron) return DEFAULT_SCAN_CRON;
-  return cron;
-}
-
-function scanAllowedChannels(): string[] | null {
-  // Comma-separated channel names in router_state scan:allowed_chats
-  // (e.g. "telegram,slack"). Empty/unset → all channels (no filter).
-  const raw = (getRouterState('scan:allowed_chats') || '').trim();
-  if (!raw) return null;
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
-}
-
-// Build the INPUT block the model scans: recent emails (every enabled account)
-// + recent inbound chat messages (allowed channels) within the window.
-async function buildScanInput(span: ScanSpan): Promise<string> {
-  const now = Date.now();
-  const sinceMs = now - SPAN_WINDOW_MS[span];
-  const sinceISO = new Date(sinceMs).toISOString();
-  const lines: string[] = [];
-  lines.push(`Scan window: ${span} (since ${sinceISO}). Current local time: ${new Date().toLocaleString('en-US', { timeZone: TIMEZONE })} (${TIMEZONE}).`);
-  lines.push('Extract ONLY actionable items — concrete tasks the user committed to / was asked to do, and events with a clear date/time. Ignore greetings, questions, opinions, status updates, and bot-sent messages.');
-
-  // ── Email: every enabled account ──
-  // fetchEmails' 4th param is a TEXT search (Gmail q= / MS $search), NOT a date
-  // filter — so we can't filter by date at the provider. Instead we fetch the N
-  // most recent emails (N scales with the window so a weekly catch-up pulls
-  // more than an hourly tick) and keep only those whose `date` falls inside the
-  // window. This is what actually makes "hourly = last hour only" true.
-  const SPAN_EMAIL_LIMIT: Record<ScanSpan, number> = { hourly: 40, daily: 200, weekly: 500 };
-  const emailBlocks: string[] = [];
-  const accounts = getEmailAccounts(null).filter((a) => a.enabled);
-  for (const account of accounts) {
-    try {
-      const fetched = await fetchEmails(account.id, 'INBOX', SPAN_EMAIL_LIMIT[span], undefined);
-      const inWindow = (fetched as any[]).filter((e: any) => {
-        if (!e.date) return false;
-        const t = new Date(e.date).getTime();
-        return !Number.isNaN(t) && t >= sinceMs;
-      });
-      const items = inWindow.map((e: any) => {
-        const from = e.from || e.sender || '';
-        const subj = e.subject || '';
-        const snippet = (e.snippet || e.preview || '').slice(0, 400);
-        // Deliberately DO NOT render the email's receive/arrival date. The
-        // window filtering already happened above (client-side, on e.date), so
-        // the date is not needed here — and an 8B extractor will grab any bare
-        // timestamp as an event start / task due, turning every promotional
-        // email and receipt into a bogus calendar event. Dates the model SHOULD
-        // use (a stated meeting time, a stated deadline) live in the subject
-        // and snippet, which we keep. With no date in the envelope, "expires
-        // Aug 20" in the body still works, but the receive date cannot leak in.
-        return `from: ${from}\nsubject: ${subj}\n${snippet}`;
-      });
-      if (items.length) emailBlocks.push(`### Inbox: ${account.email} (${items.length} in window)\n${items.join('\n\n')}`);
-    } catch (err: any) {
-      emailBlocks.push(`### Inbox: ${account.email} — unreadable (${String(err?.message ?? err)})`);
-    }
-  }
-  lines.push(emailBlocks.length ? `\nEMAILS:\n${emailBlocks.join('\n\n')}` : '\nEMAILS: none');
-
-  // ── Chat logs: DISABLED (email-only scan) ──
-  // Chat/message scanning was removed because the extractor kept re-surfacing
-  // items from message text (appointments, pharmacy visits) that Warden had
-  // already handled in conversation, and could not reliably distinguish its own
-  // outbound messages from genuine new actionable inbound. The Actionable scan
-  // is now EMAIL-ONLY. Do not re-add getRecentInboundMessages here without
-  // solving the self-message / re-extraction problem.
-
-  lines.push('\n=== INSTRUCTIONS ===\nExtract the actionable tasks and events from the emails above. Output only the JSON object (keys: tasks, events).');
-  return lines.join('\n');
 }
 
 // Dedup guard: skip a task whose title already exists (case-insensitive,
@@ -2380,131 +2374,6 @@ function createEventFromItem(item: ExtractedItem, confirmed: number): { ok: bool
   }
 }
 
-// Process the JSON the model returned: dedup against the real tables, then
-// create a real work task / calendar event row for each new item. There is no
-// queue — every item lands in the store immediately. Rows are created with
-// confirmed=0 (awaiting review in Ops -> Inbox) unless auto-confirm is on,
-// in which case confirmed=1. `pending` counts the rows created unconfirmed.
-function processScanResult(span: ScanSpan, jsonText: string): { created: number; pending: number; skipped: number } {
-  let parsed: { tasks?: any[]; events?: any[] };
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    logger.warn({ span, jsonText: jsonText.slice(0, 300) }, 'processScanResult: model output not valid JSON — skipping');
-    return { created: 0, pending: 0, skipped: 0 };
-  }
-  logger.info({ span, rawLen: jsonText.length, keys: Object.keys(parsed||{}), tasks: (parsed?.tasks||[]).length, events: (parsed?.events||[]).length, snippet: jsonText.slice(0, 120) }, 'processScanResult: parsed model output');
-  const confirmed = scanAutoAccept() ? 1 : 0;
-  let created = 0, pending = 0, skipped = 0;
-
-  const addTask = (t: any) => {
-    const title = String(t?.title || '').trim();
-    if (!title) { skipped++; return; }
-    if (taskAlreadyExists(title)) { skipped++; return; }
-    const item: ExtractedItem = {
-      kind: 'task', title, due: t?.due || undefined,
-      project_hint: t?.project_hint || undefined,
-      source: String(t?.source || 'chat'), span,
-    };
-    const r = createTaskFromItem(item, confirmed);
-    if (r.ok) { created++; if (!confirmed) pending++; }
-    else { logger.warn({ err: r.error, title }, 'processScanResult: create task failed'); skipped++; }
-  };
-  const addEvent = (e: any) => {
-    const title = String(e?.title || '').trim();
-    const start = String(e?.start || '').trim();
-    if (!title || !start) { skipped++; return; }
-    if (eventAlreadyExists(title, start)) { skipped++; return; }
-    const item: ExtractedItem = {
-      kind: 'event', title, start, end: e?.end || undefined,
-      source: String(e?.source || 'chat'), span,
-    };
-    const r = createEventFromItem(item, confirmed);
-    if (r.ok) { created++; if (!confirmed) pending++; }
-    else { logger.warn({ err: r.error, title }, 'processScanResult: create event failed'); skipped++; }
-  };
-  (parsed.tasks || []).forEach(addTask);
-  (parsed.events || []).forEach(addEvent);
-  return { created, pending, skipped };
-}
-
-async function runScan(span: string): Promise<{ ok: boolean; error?: string; created?: number; pending?: number; skipped?: number }> {
-  if (!SCAN_SPANS.includes(span as ScanSpan)) return { ok: false, error: `invalid span: ${span}` };
-  const model = scanModel();
-  if (!model) {
-    logger.warn({ span }, 'runScan: no scan model configured (scan:model or iris:model) — skipping');
-    return { ok: false, error: 'no scan model configured (set iris:model or scan:model in the Agents panel)' };
-  }
-  let prompt: string;
-  try {
-    prompt = await buildScanInput(span as ScanSpan);
-  } catch (err: any) {
-    logger.warn({ span, err }, 'runScan: buildScanInput failed — aborting scan');
-    return { ok: false, error: `scan input failed: ${String(err?.message ?? err)}` };
-  }
-  logger.info({ span, model, promptChars: prompt.length }, 'runScan: spawning chat-scan (sync)');
-  let content = '';
-  try {
-    const r = await runSubAgentSync({
-      agent: 'chat-scan',
-      prompt,
-      model,
-      sessionId: 'owner',
-      workspaceRoot: WORKSPACE_ROOT,
-      chatJid: OWNER_JID,
-      groupFolder: 'owner',
-      isMain: true,
-      timeoutMs: 4 * 60 * 1000,
-    } as any);
-    content = (r.content || '').trim();
-  } catch (err: any) {
-    logger.warn({ span, err }, 'runScan: chat-scan child failed');
-    return { ok: false, error: `scan child failed: ${String(err?.message ?? err)}` };
-  }
-  if (!content) {
-    logger.warn({ span }, 'runScan: chat-scan returned no output');
-    return { ok: false, error: 'scan returned no output' };
-  }
-  const counts = processScanResult(span as ScanSpan, content);
-  setRouterState('scan:lastrun', new Date().toISOString());
-  logger.info({ span, ...counts }, 'runScan: complete');
-  return { ok: true, ...counts };
-}
-
-// Scheduled-scan monitor — rides the existing poll loop (no separate timer),
-// the same pattern as checkDigestsDue. Fires runScan at SCAN_CRON cadence.
-// First boot seeds lastrun=now so the first scan waits for the next slot
-// (no backlog dump), matching the digest's skip-on-boot behaviour.
-let scanMonitorBusy = false;
-async function checkScanDue(): Promise<void> {
-  if (scanMonitorBusy) return;
-  scanMonitorBusy = true;
-  try {
-    const now = Date.now();
-    const last = getRouterState('scan:lastrun');
-    if (!last) { setRouterState('scan:lastrun', new Date(now).toISOString()); return; }
-    const cron = scanCron();
-    let nextFireMs: number;
-    try {
-      nextFireMs = CronExpressionParser.parse(cron, {
-        tz: TIMEZONE,
-        currentDate: new Date(last),
-      }).next().getTime();
-    } catch { return; }
-    if (now >= nextFireMs) {
-      setRouterState('scan:lastrun', new Date(now).toISOString());
-      // Auto cadence scans ONLY the last hour (hourly window) — it never
-      // backfills missed time. Reading a 24h/7d window on every cron tick would
-      // re-process everything and be too much info. The user manually triggers
-      // daily/weekly scans from the Actionable tab to catch up on missed spans.
-      logger.info({ cron }, 'checkScanDue: firing scheduled hourly scan');
-      void runScan('hourly').catch((err) => logger.warn({ err }, 'scheduled runScan failed'));
-    }
-  } finally {
-    scanMonitorBusy = false;
-  }
-}
-
 // ── Inbox + confirm exposed to the API (deps callbacks) ──────────────────
 // Scanned items live in the real tables with confirmed=0 until the user green-
 // checks them in Ops -> Inbox. "Confirm" flips confirmed to 1 (the row stays in
@@ -2516,16 +2385,7 @@ function getScanInbox(): ScanInbox {
   let events: any[] = [];
   try { tasks = getWorkTasks().filter((t) => !t.confirmed); } catch { /* ignore */ }
   try { events = listCalendarEvents().filter((e) => !e.confirmed); } catch { /* ignore */ }
-  return {
-    tasks,
-    events,
-    autoConfirm: scanAutoAccept(),
-    allowedChats: getRouterState('scan:allowed_chats') || '',
-    model: scanModel(),
-    ctx: getRouterState('scan:ctx') || '',
-    cron: scanCron(),
-    lastrun: getRouterState('scan:lastrun') || null,
-  };
+  return { tasks, events, autoConfirm: scanAutoAccept() };
 }
 
 function confirmScanItem(kind: 'task' | 'event', id: string): { ok: boolean; error?: string; result_id?: string } {
@@ -2544,26 +2404,8 @@ function confirmScanItem(kind: 'task' | 'event', id: string): { ok: boolean; err
   }
 }
 
-function setScanConfig(cfg: { autoAccept?: boolean; allowedChats?: string; model?: string; ctx?: string; cron?: string }): void {
+function setScanConfig(cfg: { autoAccept?: boolean }): void {
   if (cfg.autoAccept !== undefined) setRouterState('scan:auto_accept', cfg.autoAccept ? 'true' : 'false');
-  if (cfg.allowedChats !== undefined) setRouterState('scan:allowed_chats', cfg.allowedChats);
-  if (cfg.model !== undefined && cfg.model.trim()) setRouterState('scan:model', cfg.model.trim());
-  // Empty ctx clears the override → chat-scan inherits the toolcall ctx.
-  if (cfg.ctx !== undefined) setRouterState('scan:ctx', cfg.ctx.trim());
-  if (cfg.cron !== undefined) {
-    const cron = cfg.cron.trim();
-    if (!cron) {
-      setRouterState('scan:cron', '');
-    } else {
-      // Light validation: let the parser tell us if it's garbage.
-      try {
-        CronExpressionParser.parse(cron, { tz: TIMEZONE }).next();
-        setRouterState('scan:cron', cron);
-      } catch (err: any) {
-        throw new Error(`Invalid cron expression: ${err?.message ?? err}`); // eslint-disable-line @typescript-eslint/no-explicit-any
-      }
-    }
-  }
 }
 
 async function startMessageLoop(): Promise<void> {
@@ -2616,9 +2458,6 @@ async function startMessageLoop(): Promise<void> {
       // timer. Fires runDigest(span) directly (Iris, no chat) when a baked-in
       // cron schedule is due. Fire-and-forget; never blocks message pickup.
       void checkDigestsDue();
-      // Actionable-items scanner monitor — same fire-and-forget poll-loop
-      // pattern as the digest monitor. Never blocks message pickup.
-      void checkScanDue();
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }
@@ -2867,9 +2706,6 @@ export function syncAgentCtxEnv(): void {
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
   process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
   process.env.SENTRY_NUM_CTX = getRouterState('local:subagent_ctx') || '';
-  // chat-scan inherits the toolcall ctx when scan:ctx is unset (empty). Setting
-  // scan:ctx overrides it — e.g. to run the scan on a smaller/cloud model.
-  process.env.SCAN_NUM_CTX = getRouterState('scan:ctx') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
@@ -3015,7 +2851,6 @@ async function main(): Promise<void> {
       }
     },
     triggerDigest: (span: string, manual?: boolean) => runDigest(span, manual),
-    triggerScan: (span: string) => runScan(span),
     getDigestConfig: () => ({
       hourly: { talk: digestTalk('hourly') },
       daily: { talk: digestTalk('daily') },

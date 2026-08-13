@@ -164,13 +164,6 @@
   .scan-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
     padding:8px 12px;border-bottom:1px solid rgba(199,125,255,0.12);
     font-size:11px;color:rgba(230,210,255,0.85)}
-  .scan-toolbar .seg{display:inline-flex;border:1px solid rgba(199,125,255,0.25);
-    border-radius:4px;overflow:hidden}
-  .scan-toolbar .seg button{background:transparent;border:none;color:rgba(230,210,255,0.7);
-    font-family:inherit;font-size:10px;letter-spacing:0.5px;padding:3px 8px;cursor:pointer;
-    text-transform:uppercase;transition:background 0.15s,color 0.15s}
-  .scan-toolbar .seg button.active{background:rgba(199,125,255,0.18);color:#e8d4ff}
-  .scan-toolbar .seg button:hover:not(.active){background:rgba(199,125,255,0.07)}
   .scan-btn{background:rgba(199,125,255,0.12);border:1px solid rgba(199,125,255,0.35);
     color:#e8d4ff;font-family:inherit;font-size:10px;letter-spacing:0.5px;padding:3px 10px;
     border-radius:4px;cursor:pointer;text-transform:uppercase}
@@ -184,11 +177,6 @@
   .scan-toggle.on .sw{background:rgba(120,255,160,0.25);border-color:rgba(120,255,160,0.4)}
   .scan-toggle.on .sw::after{left:15px;background:#a0ffc0}
   .scan-toggle .lbl{font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:rgba(230,210,255,0.7)}
-  .scan-chats{flex:1;min-width:120px;background:rgba(199,125,255,0.04);
-    border:1px solid rgba(199,125,255,0.18);border-radius:4px;padding:3px 7px;
-    font-family:inherit;font-size:10px;color:rgba(240,225,255,0.85);outline:none}
-  .scan-chats:focus{border-color:rgba(199,125,255,0.5)}
-  .scan-chats::placeholder{color:rgba(199,125,255,0.22)}
   .scan-meta{font-size:8px;color:rgba(199,125,255,0.3);letter-spacing:0.5px;margin-left:auto}
   .scan-section{padding:10px 12px 4px}
   .scan-section h3{font-size:9px;font-weight:700;letter-spacing:1.2px;color:#c77dff;
@@ -240,15 +228,8 @@
   <div class="body" id="digest-body"><div class="empty">No digest yet — Iris compiles these automatically.</div></div>
   <div class="body scan-panel" id="scan-panel" style="display:none">
     <div class="scan-toolbar">
-      <span class="seg" id="scan-span-seg">
-        <button data-span="hourly">1h</button>
-        <button data-span="daily" class="active">24h</button>
-        <button data-span="weekly">7d</button>
-      </span>
       <button class="scan-btn" id="scan-now-btn">Scan now</button>
       <label class="scan-toggle" id="scan-auto-toggle"><span class="sw"></span><span class="lbl">Auto-accept</span></label>
-      <input class="scan-chats" id="scan-chats" placeholder="allowed chats: telegram,slack (blank = all)" title="Which chat channels to scan — comma-separated (telegram, slack, whatsapp, web). Blank = all.">
-      <input class="scan-chats" id="scan-cron" placeholder="schedule cron" title="Cron expression for the scheduled scan (e.g. 0 6 * * * for daily 6am). Blank = default 13,33,53 * * * *.">
       <span class="scan-meta" id="scan-meta"></span>
     </div>
     <div class="scan-section" id="scan-pending"></div>
@@ -300,11 +281,8 @@
       scanDecided=document.getElementById('scan-decided'),
       scanNowBtn=document.getElementById('scan-now-btn'),
       scanAutoToggle=document.getElementById('scan-auto-toggle'),
-      scanChatsInput=document.getElementById('scan-chats'),
-      scanCronInput=document.getElementById('scan-cron'),
       scanMeta=document.getElementById('scan-meta'),
-      scanSpanSeg=document.getElementById('scan-span-seg'),
-      scanSpan='daily',scanState=null,scanChatsTimer=null,scanCronTimer=null;
+      scanState=null;
 
   async function loadConfig(){
     // The pywebview bridge (window.pywebview.api) is injected into the host
@@ -329,8 +307,7 @@
       var raw=await api('/api/scan/config');
       if(!raw) return;
       var d=JSON.parse(raw);
-      if(scanCronInput&&d&&d.cron) scanCronInput.value=d.cron;
-      if(scanChatsInput&&d&&d.allowedChats) scanChatsInput.value=d.allowedChats;
+      if(scanAutoToggle&&d&&typeof d.autoAccept==='boolean') scanAutoToggle.classList.toggle('on', d.autoAccept);
     }catch(e){}
   }
   function refresh(){ if(activeSpan==='actionable') fetchScan(); else fetchDigest(); }
@@ -677,11 +654,6 @@
       renderScan(scanState);
     }catch(e){ renderScan(null); }
   }
-  function fmtWhen(iso){
-    if(!iso) return '';
-    try{ var d=new Date(iso); return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
-    catch(e){ return iso; }
-  }
   function renderScan(st){
     if(!st){
       scanPending.innerHTML='<div class="scan-empty">Scanner unavailable.</div>';
@@ -690,9 +662,7 @@
     }
     // Toolbar config state
     scanAutoToggle.classList.toggle('on', !!st.autoConfirm);
-    scanChatsInput.value=st.allowedChats||'';
-    var last=st.lastrun?('last run '+fmtWhen(st.lastrun)):('not run yet');
-    scanMeta.textContent=(st.model?('model '+(st.model.slice(0,24))+' · '):'')+last;
+    scanMeta.textContent='Auto-confirm '+(st.autoConfirm?'ON':'OFF');
     // Scanned items now land directly in the real stores (Ops -> Inbox) as
     // unconfirmed rows — the confirmation queue is gone. Show a status summary +
     // a pointer to Ops -> Inbox where the user green-checks / deletes.
@@ -710,42 +680,24 @@
     if(scanNowBtn.classList.contains('busy'))return;
     scanNowBtn.classList.add('busy'); scanNowBtn.textContent='Scanning…';
     try{
-      var raw=await api('/api/scan/run?span='+scanSpan,'POST','{}');
+      var raw=await api('/api/scan/run','POST','{}');
       var r=raw?JSON.parse(raw):null;
-      if(r&&r.ok){
-        scanMeta.textContent='scan done: '+(r.created||0)+' created, '+(r.pending||0)+' pending review, '+(r.skipped||0)+' skipped';
+      if(r&&r.ok&&r.started){
+        scanMeta.textContent='running hourly scan…';
+        // The digest compiles async (~6–8s). Poll the inbox afterwards so the
+        // freshly extracted items show up.
+        setTimeout(fetchScan, 8000);
       }else{
         scanMeta.textContent='scan failed: '+(r&&r.error||'unknown');
       }
     }catch(e){ scanMeta.textContent='scan failed: '+e; }
-    finally{ scanNowBtn.classList.remove('busy'); scanNowBtn.textContent='Scan now'; fetchScan(); }
-  });
-  // Window selector (1h / 24h / 7d) — sets which window "Scan now" uses.
-  if(scanSpanSeg) scanSpanSeg.querySelectorAll('button').forEach(function(b){
-    b.addEventListener('click',function(){
-      scanSpanSeg.querySelectorAll('button').forEach(function(x){x.classList.remove('active')});
-      b.classList.add('active'); scanSpan=b.dataset.span;
-    });
+    finally{ scanNowBtn.classList.remove('busy'); scanNowBtn.textContent='Scan now'; }
   });
   // Auto-accept toggle — persisted via /api/scan/config.
   if(scanAutoToggle) scanAutoToggle.addEventListener('click',async function(){
     var on=!scanAutoToggle.classList.contains('on');
     scanAutoToggle.classList.toggle('on',on);
     try{ await api('/api/scan/config','POST',JSON.stringify({autoAccept:on})); }catch(e){}
-  });
-  // Allowed-chats input — debounced save.
-  if(scanChatsInput) scanChatsInput.addEventListener('input',function(){
-    if(scanChatsTimer)clearTimeout(scanChatsTimer);
-    scanChatsTimer=setTimeout(async function(){
-      try{ await api('/api/scan/config','POST',JSON.stringify({allowedChats:scanChatsInput.value})); }catch(e){}
-    },800);
-  });
-  // Scan schedule cron — debounced save.
-  if(scanCronInput) scanCronInput.addEventListener('input',function(){
-    if(scanCronTimer)clearTimeout(scanCronTimer);
-    scanCronTimer=setTimeout(async function(){
-      try{ await api('/api/scan/config','POST',JSON.stringify({cron:scanCronInput.value})); }catch(e){}
-    },1200);
   });
   function cssEsc(s){ return String(s||'').replace(/"/g,'\\"'); }
   if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);

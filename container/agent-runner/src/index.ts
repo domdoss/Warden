@@ -373,11 +373,11 @@ function toolDetailLabel(name, args) {
         case 'read_sms': return `Read SMS${args.from ? ' from ' + short(args.from, 20) : ''}`;
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'set_user_email': return `Set email: ${short(args.email || '', 30)}`;
-        case 'byte': return `📋 Byte: ${short(args.task || '', 50)}`;
-        case 'dexter': return `⏰ Dexter: ${short(args.task || '', 50)}`;
-        case 'atlas': return `🌍 Atlas: ${short(args.task || '', 50)}`;
-        case 'artemis': return `🏹 Artemis: ${short(args.task || 'reviewing the conversation', 50)}`;
-        case 'iris': return `✉️ Iris: ${short(args.task || '', 50)}`;
+        case 'byte': return `📋 Byte: ${args.task || ''}`;
+        case 'dexter': return `⏰ Dexter: ${args.task || ''}`;
+        case 'atlas': return `🌍 Atlas: ${args.task || ''}`;
+        case 'artemis': return `🏹 Artemis: ${args.task || 'reviewing the conversation'}`;
+        case 'iris': return `✉️ Iris: ${args.task || ''}`;
         default: {
             const label = toolLabel(name);
             const keyArg = args.file_path || args.path || args.title || args.name || args.query || args.task_id || '';
@@ -481,7 +481,6 @@ function applySettingsSync(data: any) {
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
     if (data.sentryCtx !== undefined) process.env.SENTRY_NUM_CTX = data.sentryCtx ? String(data.sentryCtx) : '';
-    if (data.scanCtx !== undefined) process.env.SCAN_NUM_CTX = data.scanCtx ? String(data.scanCtx) : '';
     // Per-agent keep_alive overrides (-1 = resident, 300 = 5 min). The host
     // seeds ORCHESTRATOR_KEEP_ALIVE='-1' to preserve the historic resident
     // orchestrator; toolcall/atlas stay unset → runner defaults to 300.
@@ -652,40 +651,41 @@ FORMAT: one plain-text line or short list naming what you created or changed, wi
         label: 'Dexter',
         maxIterations: 200,
         summary: 'anything time-based: reminders, follow-ups, sending or doing something later, scheduled/recurring tasks, and time-based automations (e.g. "send a survey in 3 days") — create, list, pause, resume, cancel or update them',
-        systemPrompt: `You are Dexter, the scheduling agent. You create and manage schedule entries and calendar events with your tools; the scheduled work runs later in a separate turn.
+        systemPrompt: `You are Dexter, the scheduling agent. You create and manage calendar events and scheduled tasks with your tools.
 
-The FIRST LINE of the task gives the current LOCAL time as "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)". Compute every timestamp from that value. All times are LOCAL.
+The first line of the task gives the current local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)". Compute all timestamps from this value. Times are LOCAL. Pass the computed timestamps as tool arguments.
 
-TOOL SELECTION — decide which tool to call FIRST, by matching keywords in the request. This is a fixed rule; apply it the same way every time:
+Match the request to a tool.
 
-CREATION:
-- create_calendar_event — the request names an APPOINTMENT, a MEETING, or a CALENDAR EVENT: a thing that happens, with a title and a time, that belongs ON the calendar. Keywords: "appointment", "meeting", "calendar event", "on the calendar", "add to my calendar", or a named event ("Doctor's Appointment", "Lunch with Sam", "team standup"). Required args: title, start_time. end_time is optional.
-- schedule_task — the request is a REMINDER or an AUTOMATION: a prompt that should fire LATER as a scheduled action. Keywords: "remind me", "reminder", "send/do X in N minutes", "every N hours/days", "on Mondays", "follow up", "check X regularly", "in 3 days". Required args: schedule_type, schedule_value, prompt.
-- BOTH — if the request asks for a calendar event AND a reminder (e.g. "create a calendar event and remind me 15 minutes before"), call create_calendar_event AND schedule_task in the same turn. Do not drop either. Do not substitute one for the other.
+Create:
+- create_calendar_event — an appointment, meeting, or calendar event (a thing that happens at a time). Args: title, start_time. end_time optional.
+- schedule_task — a reminder or automation that fires later. Args: schedule_type, schedule_value, prompt.
+- A request for both a calendar event and a reminder: call create_calendar_event and schedule_task in the same turn.
 
-MANAGEMENT (operate on something that already exists — ALWAYS call list_tasks or list_calendar_events FIRST to get the real ID, then act on that ID):
-- list_tasks — "list/show/what are my tasks/reminders/automations".
-- cancel_task — "delete/cancel/remove/stop a task or reminder". There is NO delete_task tool; tasks and reminders are REMOVED by cancelling. Required arg: id (from list_tasks). Never call schedule_task to "delete" — that creates a new task.
-- pause_task — "pause/suspend/hold a task". Required arg: id.
-- resume_task — "resume/continue/unpause a task". Required arg: id.
-- update_task — "change/update/modify/edit a task" (reschedule, edit the prompt). Required arg: id.
-- delete_calendar_event — "delete/cancel/remove a calendar event/appointment/meeting" (calendar events DO have a delete tool, unlike tasks). Required arg: id (from list_calendar_events).
-- update_calendar_event — "change/reschedule/update a calendar event". Required arg: id.
+Manage (call list_tasks or list_calendar_events first to get the id, then use that id):
+- list_tasks — show tasks, reminders, automations.
+- list_calendar_events — show calendar events.
+- cancel_task — remove a task or reminder. Arg: id.
+- pause_task — hold a task. Arg: id.
+- resume_task — continue a held task. Arg: id.
+- update_task — reschedule or edit a task. Arg: id.
+- delete_calendar_event — remove a calendar event. Arg: id.
+- update_calendar_event — reschedule or edit a calendar event. Arg: id.
 
-schedule_value format (for schedule_task) — pick ONE schedule_type and use its exact value form:
-- once     → absolute local timestamp "YYYY-MM-DDTHH:MM:SS"
+schedule_value forms (for schedule_task):
+- once → absolute local timestamp "YYYY-MM-DDTHH:MM:SS"
 - interval → milliseconds as a string (N minutes = N×60000, N hours = N×3600000, N days = N×86400000)
-- cron     → 5-field cron expression in local time
+- cron → 5-field cron expression in local time
 
-The prompt you store in schedule_task runs later in a turn with no memory of this conversation, so write it as a complete imperative instruction with all needed context.
+The schedule_task prompt runs later in a turn with no memory of this conversation; write it as a complete instruction with all needed context.
 
-GUIDELINES:
-- For ANY management request (delete/cancel/pause/resume/update), call list_tasks (or list_calendar_events) FIRST, then use ONLY an ID that tool returned. Never guess an ID; never use the task's name as an ID.
-- "Delete a task" means cancel_task — never schedule_task. Creating a task to represent a delete is always wrong.
-- For a "once" time, verify with the time tool before calling schedule_task: computed time minus current time must equal the requested offset; recompute if it does not.
-- Call each tool exactly once, with every required arg filled.
-- Scope is time-based scheduling only. A plain to-do or work item with no time trigger belongs to Byte — name it in one line and stop.
-- After the last tool call, reply with one sentence stating exactly what you created/changed/cancelled and when.`,
+A plain to-do with no time trigger belongs to Byte; name it in one line.
+
+For a "once" time, check the computed time with the time tool before calling schedule_task.
+
+Call each tool once with all required args filled.
+
+After the last tool call, reply with one sentence stating what you created, changed, or cancelled, and when.`,
         toolsets: ['dexter-core'],
         mcpServers: ['tasks', 'mcp-server-time'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable,
@@ -1223,7 +1223,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
     }
     const activeCount = backgroundJobs.size;
-    writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${task.slice(0, 50)}...${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, ts: Date.now() });
+    writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${task}${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, ts: Date.now() });
     const abortFlag = { aborted: false };
     const jobRecord: BackgroundJob = {
         promise: null as any, startedAt: Date.now(), agent: delegate, task, shortId: jobShortId,
@@ -1371,11 +1371,6 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     atlas: () => process.env.ATLAS_NUM_CTX || '',
     vulkan: () => process.env.VULKAN_NUM_CTX || '',
     sentry: () => process.env.SENTRY_NUM_CTX || '',
-    // chat-scan (the hourly Ops scan) inherits the toolcall ctx by default so it
-    // reuses the resident instance instead of reloading at the model's native
-    // window. scan:ctx overrides it (e.g. to offload the scan to a smaller/cloud
-    // model with its own ctx). Empty scan:ctx → fall back to IRIS_NUM_CTX.
-    'chat-scan': () => process.env.SCAN_NUM_CTX || process.env.IRIS_NUM_CTX || '',
     // iris-digest (the hourly memory digest) is another one-shot on the toolcall
     // model; inherit the toolcall ctx so it reuses the resident instance instead
     // of reloading granite at native (a different ctx → Ollama reload + gap).
@@ -1407,11 +1402,11 @@ function keepAliveEnv(name: string, dflt: number): number {
     return Number.isFinite(n) ? n : dflt;
 }
 // Sub-agent chat calls (runSubAgent): the toolcall agents — byte, dexter,
-// iris, sentry, mercury, and the one-shot iris-digest/chat-scan spawns — share
-// one keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use
-// the atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
+// iris, sentry, mercury, and the one-shot iris-digest spawn — share one
+// keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use the
+// atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
 function subAgentKeepAlive(agent: string): number {
-    if (['byte', 'dexter', 'iris', 'sentry', 'mercury', 'chat-scan', 'iris-digest'].includes(agent)) {
+    if (['byte', 'dexter', 'iris', 'sentry', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
@@ -3812,7 +3807,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
                 task = `Current local time is ${localNow} (timezone ${tz}). Compute every absolute timestamp from this.\n\n${task}`;
             }
-            writeStatus({ phase: toolName, label: `${def.label}: ${task.slice(0, 50)}...`, ts: Date.now() });
+            writeStatus({ phase: toolName, label: `${def.label}: ${task}`, ts: Date.now() });
             let tools = SUBAGENT_TOOL_DEFS.get(toolName)!;
             // Merge in this sub-agent's allow-listed MCP server tools (e.g.
             // iris → kmail, dexter → tasks). Execution routes through the
@@ -4185,103 +4180,6 @@ Call read_emails once if the task needs recent inbox activity, then output the J
         } catch (err: any) {
             log(`[iris-digest] error: ${err.message}`);
             writeOutput({ status: 'error', result: null, error: `Iris digest error: ${err.message}` });
-        }
-        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-        process.exit(0);
-    }
-
-    // ── chat-scan ──────────────────────────────────────────────────────────
-    // One-shot actionable-items scanner. The host (runScan) already gathers the
-    // email + chat-log content for the window and packs it into the prompt;
-    // this branch just runs one model call with NO tools and returns the JSON
-    // {tasks,events} the model emits. The host parses it, dedups, and creates
-    // tasks/events (or queues them for confirmation). Nothing is published here.
-    if (containerInput.agent === 'chat-scan') {
-        try {
-            const model = (containerInput.model || '').replace(/^local:/, '');
-            if (!model) {
-                writeOutput({ status: 'error', result: null, error: 'No scan model configured (set iris:model or scan:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
-                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-                process.exit(0);
-            }
-            ORCHESTRATOR_MODEL = model;
-            const chatScanSystemPrompt = `You are an actionable-items extractor. You read recent EMAIL and CHAT messages and output the tasks and events the user actually committed to or was asked to commit to.
-
-A task is a concrete to-do that the user must do, expressed as an action the user performs: prepare, make sure, get ready, confirm, review, send, schedule, fix, follow up, deliver, pay, book, submit. Put "due" in ISO only when the message states a deadline; leave "due" empty otherwise.
-
-An event is a scheduled meeting, appointment, or dated occasion that the user will attend, where the date and start time are stated inside the message content. Title the event with the scheduled thing itself — the name of what happens at that time (a demo, a review, an appointment). Put "start" in ISO using that stated meeting time. Put "end" in ISO when the message states an end time; leave it empty otherwise. The "received" date on an email is metadata about when it arrived — it is never an event start time. Promotional emails, receipts, newsletters, account alerts, shipping notices, and automated reminders are not events.
-
-A single message often yields both an event and a task. The scheduled thing (the meeting or appointment at a stated time) is an event. A readiness or follow-up action around it is a task — the words "prepare", "make sure", "get ready", "beforehand", "confirm", or "follow up" signal a task the user must do, separate from the event. Extract the event and the task as two separate items, and title the event with what happens at the stated time, not the preparation.
-
-Set "source" to "email" or "chat" matching where the item came from.
-Set "project_hint" to "personal", "work", or a project name when the item clearly belongs to one; leave it empty otherwise.
-
-Extract only items explicitly stated in the input. Greetings, questions, opinions, status updates, and automated or bot-sent messages are not items. An empty result is the correct answer when nothing is actionable.
-
-Your output is constrained to a JSON object with two keys: "tasks" and "events". Output the JSON object only.`;
-            // Ollama structured outputs: grammar-constrain the response to the
-            // {tasks, events} schema so the small model cannot drift into the
-            // Iris-digest shape (recent_emails/upcoming_events/active_tasks/...),
-            // which it defaults to without a schema constraint.
-            const scanSchema = {
-                type: 'object',
-                properties: {
-                    tasks: {
-                        type: 'array',
-                        items: {
-                            type: 'object',
-                            properties: {
-                                title: { type: 'string' },
-                                due: { type: 'string' },
-                                project_hint: { type: 'string' },
-                                source: { type: 'string', enum: ['email', 'chat'] },
-                            },
-                            required: ['title', 'due', 'project_hint', 'source'],
-                        },
-                    },
-                    events: {
-                        type: 'array',
-                        items: {
-                            type: 'object',
-                            properties: {
-                                title: { type: 'string' },
-                                start: { type: 'string' },
-                                end: { type: 'string' },
-                                source: { type: 'string', enum: ['email', 'chat'] },
-                            },
-                            required: ['title', 'start', 'end', 'source'],
-                        },
-                    },
-                },
-                required: ['tasks', 'events'],
-            };
-            const ctx = {
-                chatJid: containerInput.chatJid || 'owner@local',
-                groupFolder: containerInput.groupFolder || 'owner',
-                isMain: containerInput.isMain ?? true,
-                userId: process.env.WARDEN_USER_ID || '',
-            };
-            log(`[chat-scan] starting scanner: model=${model}, tools=0, maxIter=1, prompt=${(containerInput.prompt || '').slice(0, 80)}…`);
-            const sa = await runSubAgent('chat-scan', model, chatScanSystemPrompt, [], containerInput.prompt || '', ctx, 1, undefined, undefined, 0, scanSchema);
-            // Recover the JSON object the model emitted (it may wrap it in a
-            // code fence or surround it with stray prose). Pass the clean JSON
-            // back to the host in result; the host parses + dedups + creates.
-            let jsonText = (sa.content || '').trim();
-            const fence = jsonText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-            if (fence) jsonText = fence[1].trim();
-            else {
-                const s = jsonText.indexOf('{');
-                const e = jsonText.lastIndexOf('}');
-                if (s >= 0 && e > s) {
-                    const slice = jsonText.slice(s, e + 1);
-                    try { JSON.parse(slice); jsonText = slice; } catch { /* not JSON; keep raw */ }
-                }
-            }
-            log(`[chat-scan] complete: ${jsonText.length} chars JSON returned`);
-            writeOutput({ status: 'success', result: jsonText, error: null });
-        } catch (err: any) {
-            log(`[chat-scan] error: ${err.message}`);
-            writeOutput({ status: 'error', result: null, error: `chat-scan error: ${err.message}` });
         }
         if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
         process.exit(0);

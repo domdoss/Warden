@@ -2231,6 +2231,10 @@ export function getCalendarEvent(id: string): CalendarEvent | undefined {
   return db.prepare('SELECT * FROM calendar_events WHERE id = ?').get(id) as CalendarEvent | undefined;
 }
 
+export function getCalendarEventByIcalUid(icalUid: string): CalendarEvent | undefined {
+  return db.prepare('SELECT * FROM calendar_events WHERE ical_uid = ?').get(icalUid) as CalendarEvent | undefined;
+}
+
 export function listCalendarEvents(filter?: {
   start?: string;
   end?: string;

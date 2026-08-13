@@ -56,6 +56,7 @@ export async function fetchEmails(
       : new MicrosoftProvider();
     const providerEmails = await provider.fetchEmails(token, folder, limit, search, previewOnly);
     return providerEmails.map((e) => ({
+      id: e.id,
       from: e.from,
       to: Array.isArray(e.to) ? e.to.join(', ') : e.to,
       subject: e.subject,
@@ -132,6 +133,7 @@ export async function fetchEmails(
         }
 
         emails.push({
+          id: message.uid != null ? String(message.uid) : undefined,
           from: fromAddr,
           to: toAddr,
           subject: envelope.subject || '(no subject)',
@@ -176,8 +178,59 @@ export async function getEmailById(
     return await provider.getEmailById?.(token, emailId) ?? null;
   }
 
-  // IMAP path - not implemented for single fetch
-  throw new Error('getEmailById requires OAuth (Gmail/Microsoft)');
+  // IMAP path — fetch a single message by UID and extract its body. The
+  // list path (fetchEmails) tags each email with id = String(message.uid), so
+  // emailId here is that UID. Without this, an IMAP/password account can list
+  // emails but Iris can never read an individual email's body (get_email would
+  // throw "requires OAuth"), which is exactly the "can't read the body" gap.
+  const client = new ImapFlow({
+    host: account.imap_host,
+    port: account.imap_port,
+    secure: !!account.use_tls,
+    auth: { user: account.username, pass: account.password },
+    logger: false,
+  });
+  try {
+    await client.connect();
+    const folder = 'INBOX';
+    const lock = await client.getMailboxLock(folder);
+    let result: EmailMessage | null = null;
+    try {
+      const uid = Number(emailId);
+      if (!Number.isFinite(uid)) throw new Error(`invalid IMAP uid: ${emailId}`);
+      const message: any = await client.fetchOne(uid, { envelope: true, source: true }, { uid: true });
+      if (message) {
+        const envelope = message.envelope;
+        const fromAddr = envelope?.from?.length
+          ? envelope.from.map((a: any) => (a.name ? `${a.name} <${a.address}>` : a.address || '')).join(', ')
+          : '';
+        let body = '';
+        if (message.source) {
+          const sourceStr = message.source.toString('utf-8');
+          const headerEnd = sourceStr.indexOf('\r\n\r\n');
+          if (headerEnd !== -1) body = sourceStr.substring(headerEnd + 4);
+          if (body.length > 20000) body = body.substring(0, 20000) + '\n... [truncated]';
+        }
+        result = {
+          id: String(message.uid ?? uid),
+          from: fromAddr,
+          to: '',
+          subject: envelope?.subject || '(no subject)',
+          date: envelope?.date ? new Date(envelope.date).toISOString() : '',
+          body,
+          folder,
+          attachments: [],
+        };
+      }
+    } finally {
+      lock.release();
+    }
+    await client.logout();
+    return result;
+  } catch (err: any) {
+    logger.error({ err, accountId, emailId }, 'IMAP get_email error');
+    throw new Error(`Failed to fetch email: ${err.message}`);
+  }
 }
 
 /**
