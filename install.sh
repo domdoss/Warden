@@ -97,6 +97,13 @@ else
   npm install "${NPM_INSTALL_FLAGS[@]}"
 fi
 
+# --ignore-scripts (above) gets the tree installed without a flaky postinstall
+# aborting the whole install, but it also skips the native build step the addon
+# modules need to fetch/compile their .node binaries. Rebuild those explicitly
+# so better-sqlite3, node-pty, sharp, and @napi-rs/canvas actually load at runtime.
+echo "  Building native modules..."
+npm rebuild better-sqlite3 node-pty sharp @napi-rs/canvas --loglevel=warn
+
 echo "  Installing agent-runner dependencies..."
 ( cd container/agent-runner && if [ -f package-lock.json ]; then
     npm ci "${NPM_INSTALL_FLAGS[@]}" \
