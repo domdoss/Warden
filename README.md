@@ -285,7 +285,7 @@ Warden controls your actual desktop — mouse movement, keystrokes, window manag
 
 ## 📊 Dashboard
 
-A full PWA at `http://localhost:3200`. First launch lands on a **login page** (`public/login.html`) — a user grid with avatars, password auth per user, and a "remember me" session. Once in, you get the full dashboard.
+A full PWA at `http://localhost:3200`. Open it and you're in — single-user, the full dashboard is right there.
 
 ![The Warden dashboard](docs/screenshots/desktop-ui.png)
 
@@ -585,7 +585,6 @@ Open `data/env/env` and set at least the assistant identity and Ollama endpoint:
 
 ```bash
 ASSISTANT_NAME=Warden
-ADMIN_PASSWORD=change-me-please
 TZ=America/Vancouver
 OLLAMA_URL=http://127.0.0.1:11434
 ```
@@ -611,7 +610,7 @@ curl -fsS http://localhost:3200/api/status
 open http://localhost:3200
 ```
 
-Log in with the `ADMIN_PASSWORD` you set.
+The dashboard loads directly.
 
 ### Day-to-day control
 
@@ -799,7 +798,7 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing
 - 📸 Vision: capture a photo, describe a scene, read text (OCR), find objects.
 - 💬 Direct Line chat panel — type messages from the hologram UI instead of the dashboard.
 - 🖥️ Built-in dashboard panels — today, digest, agents, chat, tasks, upload, and system tabs in the hologram window.
-- 🔗 Talks to your existing Warden session — no new login.
+- 🔗 Talks to your existing Warden session.
 - 🔀 Independent mic/speaker routing — each side can be local or a remote satellite. See [Modular audio pipeline](#modular-audio-pipeline-runsh).
 
 #### Hologram window
@@ -1016,7 +1015,6 @@ LOCAL_ASSISTANT_NAME=Kimi
 
 # Server
 STATUS_PORT=3200               # dashboard / API port
-ADMIN_PASSWORD=warden          # dashboard login
 TZ=America/Vancouver
 
 # Ollama / models
