@@ -2,7 +2,7 @@
 # Warden installer — single-user, host-native (no Docker).
 #
 # Deploys the project to /opt/warden, builds the Node backend, creates the
-# voice + security Python venvs, and provisions a systemd --user service.
+# eyes_ears Python venv, and provisions a systemd --user service.
 # Runtime data (notes, memory, uploads, groups) lives in $WORKSPACE_ROOT
 # (~/warden), separate from the code so a reinstall preserves it.
 #
@@ -172,24 +172,21 @@ fi
 # Record the resolved workspace root so manual (non-systemd) launches use it.
 grep -q "^WORKSPACE_ROOT=" "$ENV_FILE" 2>/dev/null || echo "WORKSPACE_ROOT=$WORKSPACE_ROOT" >> "$ENV_FILE"
 
-# ── Voice + security config templates ───────────────────────────────
-# Copy example configs if the real ones don't exist yet.
-if [ ! -f "$INSTALL_DIR/voice/config/settings.yaml" ] && [ -f "$INSTALL_DIR/voice/config/settings.example.yaml" ]; then
-    cp "$INSTALL_DIR/voice/config/settings.example.yaml" "$INSTALL_DIR/voice/config/settings.yaml"
-    echo "  Wrote voice config template — edit $INSTALL_DIR/voice/config/settings.yaml"
-fi
-if [ ! -f "$INSTALL_DIR/security/config/settings.yaml" ] && [ -f "$INSTALL_DIR/security/config/settings.example.yaml" ]; then
-    cp "$INSTALL_DIR/security/config/settings.example.yaml" "$INSTALL_DIR/security/config/settings.yaml"
-    echo "  Wrote security config template — edit $INSTALL_DIR/security/config/settings.yaml"
+# ── eyes_ears config template ────────────────────────────────────────
+# One merged config for both eyes (detector) and ears (voice). Copy the
+# example if the real one doesn't exist yet.
+if [ ! -f "$INSTALL_DIR/eyes_ears/config/settings.yaml" ] && [ -f "$INSTALL_DIR/eyes_ears/config/settings.example.yaml" ]; then
+    cp "$INSTALL_DIR/eyes_ears/config/settings.example.yaml" "$INSTALL_DIR/eyes_ears/config/settings.yaml"
+    echo "  Wrote eyes_ears config template — edit $INSTALL_DIR/eyes_ears/config/settings.yaml"
 fi
 
 echo "  Initializing database..."
 node --input-type=module -e "import { initDatabase } from './dist/db.js'; initDatabase(); console.log('  Database ready');"
 
-# ── Voice + security Python apps ─────────────────────────────────────
-# The Node backend (above) is the brain; the voice + security venvs are the
-# ears/eyes. Each gets its own venv under $INSTALL_DIR. Best-effort: a failure
-# warns but doesn't tear down the backend already installed.
+# ── eyes_ears Python app ─────────────────────────────────────────────
+# The Node backend (above) is the brain; eyes_ears is the eyes + ears — one
+# combined venv under $INSTALL_DIR/eyes_ears. Best-effort: a failure warns but
+# doesn't tear down the backend already installed.
 install_venv() {  # $1 = app dir, $2 = requirements file
   local dir="$1" req="$2" name venv
   name="$(basename "$dir")"
@@ -212,18 +209,7 @@ install_venv() {  # $1 = app dir, $2 = requirements file
 }
 
 PY_FAIL=0
-install_venv "$INSTALL_DIR/voice" "$INSTALL_DIR/voice/requirements.txt" || PY_FAIL=1
-
-# Optional GPU TTS engines (vLLM "orpheus") — CUDA-only, not used on the AMD
-# box (which runs kokoro / orpheus_cpp). Best-effort; never fatal.
-if [ -f "$INSTALL_DIR/voice/requirements-tts-optional.txt" ]; then
-  echo "  [voice] optional GPU TTS engines (best-effort)..."
-  "$INSTALL_DIR/voice/.venv/bin/pip" install -r "$INSTALL_DIR/voice/requirements-tts-optional.txt" \
-    2>/dev/null && echo "  [voice] optional TTS engines OK" \
-    || echo "  ! optional TTS engines skipped (install manually for the vLLM 'orpheus' engine)"
-fi
-
-install_venv "$INSTALL_DIR/security" "$INSTALL_DIR/security/requirements.txt" || PY_FAIL=1
+install_venv "$INSTALL_DIR/eyes_ears" "$INSTALL_DIR/eyes_ears/requirements.txt" || PY_FAIL=1
 
 # ── Services (systemd user units) ────────────────────────────────────
 mkdir -p ~/.config/systemd/user
@@ -285,5 +271,5 @@ echo "  Config:    $ENV_FILE  (add your LLM key/token if you skipped it)"
 echo "  Workspace: $WORKSPACE_ROOT  (notes/memory/uploads/groups)"
 echo "  Logs:      $INSTALL_DIR/logs/warden.log"
 [ "$PY_FAIL" = "1" ] && echo "  ! One or more Python apps failed to install fully — see warnings above."
-echo "  Voice/security entrypoint: $INSTALL_DIR/run.sh"
+echo "  Eyes & Ears entrypoint: $INSTALL_DIR/run.sh  (delegates to eyes_ears/run.sh)"
 echo ""

@@ -314,7 +314,7 @@ export class TelegramChannel implements Channel {
       for (const rel of images) {
         const abs = path.isAbsolute(rel) ? rel : path.resolve(process.cwd(), rel);
         // Security frames are stored under groups/owner/attachments, but the
-        // Sentry image tag is repo-relative (attachments/...). If the root
+        // Oculus image tag is repo-relative (attachments/...). If the root
         // path is missing, fall back to the owner group folder.
         let finalAbs = abs;
         if (!fs.existsSync(finalAbs)) {

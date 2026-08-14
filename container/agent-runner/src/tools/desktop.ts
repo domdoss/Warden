@@ -64,7 +64,7 @@ registry.register({
 
 registry.register({
     name: 'webcam_capture',
-    description: 'Capture a single frame from the host webcam and load it into YOUR vision context. The Warden orchestrator grabs the frame on the host. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the resolution.',
+    description: 'Take a photo, picture, or selfie with the host webcam (camera) and load it into YOUR vision context. Use when the user asks to take a photo, snap a picture, take a selfie, see what the camera sees, or check who/what is in the room. The Warden orchestrator grabs the frame on the host. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the resolution.',
     schema: {
         type: 'object',
         properties: {

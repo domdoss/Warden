@@ -31,7 +31,7 @@ export type AgentRunInput = AgentInput & {
   executable?: string;
   executableArgs?: string[];
   callbacks?: CallbackMap;
-  /** When set (e.g. 'sentry'), runSubAgentBackground spawns the named sub-agent
+  /** When set (e.g. 'oculus'), runSubAgentBackground spawns the named sub-agent
    *  directly instead of the orchestrator. */
   agent?: string;
   chatJid?: string;
@@ -40,13 +40,13 @@ export type AgentRunInput = AgentInput & {
 };
 
 /**
- * Spawn a background sub-agent (e.g. Sentry, the security/awareness agent) in a
+ * Spawn a background sub-agent (e.g. Oculus, the security/awareness agent) in a
  * FRESH child process with its OWN self-contained CALLBACK pump — it does NOT
  * touch the global `agentState`/persistent orchestrator child, so it runs
  * alongside the main loop without clashing. Fire-and-forget: the host does not
  * await it; the child runs the sub-agent, its tool calls are handled by
  * `input.callbacks` (send_message / close_security_alert / webcam_capture /
- * security_log), and it exits when done. Sentry's user-facing output goes via its
+ * security_log), and it exits when done. Oculus's user-facing output goes via its
  * own send_message callback; the raw AWARENESS trigger is consumed here, not by
  * the orchestrator, so the main chat isn't muddied.
  */
@@ -63,7 +63,7 @@ export function runSubAgentBackground(input: AgentRunInput): void {
   // ~/warden, matching what the orchestrator loads each turn.
   const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
   const callbacks = input.callbacks ?? {};
-  const agentName = input.agent || 'sentry';
+  const agentName = input.agent || 'oculus';
 
   let stdoutBuf = '';
   let insideCallback = false;
@@ -152,8 +152,8 @@ export function runSubAgentBackground(input: AgentRunInput): void {
  * Spawn a sub-agent synchronously and return its final stdout result. Unlike
  * runSubAgentBackground, this waits for the child to exit and captures the JSON
  * payload inside the first OUTPUT_START/OUTPUT_END block. Callbacks are still
- * handled live (e.g. Sentry may log), but the agent's final textual output is
- * returned to the host. Used for orchestrator → Sentry live status queries.
+ * handled live (e.g. Oculus may log), but the agent's final textual output is
+ * returned to the host. Used for orchestrator → Oculus live status queries.
  */
 export function runSubAgentSync(input: AgentRunInput): Promise<{ content: string; exitCode: number | null }> {
   return new Promise((resolve) => {
@@ -169,7 +169,7 @@ export function runSubAgentSync(input: AgentRunInput): Promise<{ content: string
   // ~/warden, matching what the orchestrator loads each turn.
   const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
     const callbacks = input.callbacks ?? {};
-    const agentName = input.agent || 'sentry';
+    const agentName = input.agent || 'oculus';
 
     let stdoutBuf = '';
     let insideCallback = false;
@@ -621,7 +621,7 @@ async function handleCallback(raw: string) {
     if (result && (result as any).ok === false) {
       logger.warn({ tool, error: (result as any).error }, 'agent-spawn: callback handler returned error');
     }
-    // Note: a sub-agent's send_message callback (e.g. a Sentry alert) must NOT
+    // Note: a sub-agent's send_message callback (e.g. a Oculus alert) must NOT
     // suppress the orchestrator's own captured final reply — the host delivers
     // both. So we no longer flip a sentMessageCallback flag here.
     writeCallbackResponse({ id, ...result });
@@ -699,7 +699,7 @@ function onPersistentStdoutData(chunk: Buffer) {
           return;
         }
         // Always deliver the captured output. Sub-agent send_message callbacks
-        // (e.g. Sentry alerts) must not suppress the orchestrator's final reply.
+        // (e.g. Oculus alerts) must not suppress the orchestrator's final reply.
         r({ text: agentState.captured, exitCode: 0, durationMs: Date.now() - agentState.startedAt });
       }
       // Keep child alive for next turn — do NOT end stdin or kill
@@ -847,7 +847,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             irisCtx: process.env.IRIS_NUM_CTX || '',
             artemisCtx: process.env.ARTEMIS_NUM_CTX || '',
             vulkanCtx: process.env.VULKAN_NUM_CTX || '',
-            sentryCtx: process.env.SENTRY_NUM_CTX || '',
+            oculusCtx: process.env.OCULUS_NUM_CTX || '',
             orchestratorKeepAlive: process.env.ORCHESTRATOR_KEEP_ALIVE || '',
             atlasKeepAlive: process.env.ATLAS_KEEP_ALIVE || '',
             toolcallKeepAlive: process.env.TOOLCALL_KEEP_ALIVE || '',

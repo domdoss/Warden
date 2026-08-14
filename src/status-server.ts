@@ -9,7 +9,7 @@ import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, getLiveStatus, getProgressHistory } from './agent-spawn.js';
-import { spawnSentryBackground, syncAgentCtxEnv } from './index.js';
+import { spawnOculusBackground, syncAgentCtxEnv } from './index.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -58,6 +58,7 @@ import {
 import {
   recordAwarenessEvent,
   queryAwarenessHostEvents,
+  clearOculusLogs,
 } from './security-log.js';
 import {
   createTask,
@@ -185,7 +186,7 @@ import {
   deletePasswordResetToken,
   getUserByEmail,
 } from './db.js';
-import { getDb } from './db.js';
+import { getDb, getSatelliteIp } from './db.js';
 import { AgentSessionStore } from './agent-session-store.js';
 import { encryptApiKey } from './encryption.js';
 import httpProxy from 'http-proxy';
@@ -916,7 +917,7 @@ async function handleMessages(
     const idea = params.get('idea') || '';
     const messages = deps.getMessagesForDashboard(jid, since, limit, idea || undefined)
       // Hide raw AWARENESS triggers from the chat — they're internal events for
-      // Sentry, not user-facing. Sentry's own send_message reply still shows.
+      // Oculus, not user-facing. Oculus's own send_message reply still shows.
       .filter((m: any) => !(m.content || '').startsWith('AWARENESS'));
     return json(res, { messages, jid });
   }
@@ -934,7 +935,7 @@ async function handleMessages(
     };
     if (!body.text) return error(res, 'text required');
 
-    // AWARENESS events are internal control messages for Sentry. They must be
+    // AWARENESS events are internal control messages for Oculus. They must be
     // sent to the dedicated /api/awareness endpoint; they are never stored as
     // chat/bot messages here.
     if ((body.text || '').startsWith('AWARENESS')) {
@@ -1460,7 +1461,7 @@ async function handleFiles(
 // it can be edited from the dashboard "Servers" card or the run.sh launcher UI
 // and take effect live (no restart). This replaces the scattered configs that
 // used to live in voice-button.py (hardcoded BASE), ~/.config/jarvis/config.yaml
-// (single.py dockbox.base_url), security/config/settings.yaml (warden.base_url),
+// (single.py warden.base_url), eyes_ears/config/settings.yaml (warden.base_url),
 // and bare env vars (OLLAMA_URL / WHISPER_URL).
 // The helpers themselves live in ./ollama-servers.js (no import cycles).
 
@@ -1486,13 +1487,13 @@ function handleSettings(res: http.ServerResponse): void {
   const googleSecret = process.env.GOOGLE_CLIENT_SECRET || envVals.GOOGLE_CLIENT_SECRET || '';
   const msId = process.env.MICROSOFT_CLIENT_ID || envVals.MICROSOFT_CLIENT_ID || '';
   const msSecret = process.env.MICROSOFT_CLIENT_SECRET || envVals.MICROSOFT_CLIENT_SECRET || '';
-  let sentryMd = '';
+  let oculusMd = '';
   try {
-    const sentryMdPath = path.resolve(WORKSPACE_ROOT, 'security', 'sentry.md');
-    if (fs.existsSync(sentryMdPath)) sentryMd = fs.readFileSync(sentryMdPath, 'utf8');
+    const oculusMdPath = path.resolve(WORKSPACE_ROOT, 'eyes_ears', 'oculus.md');
+    if (fs.existsSync(oculusMdPath)) oculusMd = fs.readFileSync(oculusMdPath, 'utf8');
   } catch { /* ignore */ }
   const drivingForces = listDrivingForces();
-  // The five toolcall agents (Byte, Dexter, Iris, Sentry, Mercury) share one
+  // The five toolcall agents (Byte, Dexter, Iris, Oculus, Mercury) share one
   // model + ctx — surfaced from the legacy local:subagent_model/_ctx wire that
   // the dashboard "Toolcall model" row writes. Mirror it into the per-agent
   // fields too so the voice Agents panel popover still displays a value.
@@ -1525,14 +1526,13 @@ function handleSettings(res: http.ServerResponse): void {
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
     councilPragmatistModel: getRouterState('council:pragmatist_model') || '',
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
-    sentryModel: toolcallModel,
-    securitySatelliteIp: getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || process.env.WARDEN_SECURITY_SATELLITE_IP || process.env.WARDEN_SECURITY_LAPTOP_IP || '',
+    oculusModel: toolcallModel,
+    securitySatelliteIp: getSatelliteIp(),
     // ── Consolidated role URLs (Servers card) ───────────────────────────────
     wardenUrl: getRouterState('warden:url') || '',
     audioServerUrl: getRouterState('audio:url') || '',
     videoServerUrl: getRouterState('video:url')
-      || (satIp => satIp ? `http://${satIp}:8765` : '')(
-        getRouterState('security:satellite_ip') || getRouterState('security:laptop_ip') || ''),
+      || (satIp => satIp ? `http://${satIp}:8765` : '')(getSatelliteIp()),
     satelliteUrl: getRouterState('satellite:url') || '',
     transcriptionUrl: getRouterState('transcription:whisper_url') || process.env.WHISPER_URL || '',
     transcriptionApiUrl: getRouterState('transcription:whisper_api_url') || process.env.WHISPER_API_URL || '',
@@ -1541,8 +1541,8 @@ function handleSettings(res: http.ServerResponse): void {
     orchestratorOllamaServer: getRouterState('orchestrator:ollama_server') || '',
     atlasOllamaServer: getRouterState('atlas:ollama_server') || '',
     vulkanOllamaServer: getRouterState('vulkan:ollama_server') || '',
-    sentryOllamaServer: getRouterState('sentry:ollama_server') || '',
-    sentryMd,
+    oculusOllamaServer: getRouterState('oculus:ollama_server') || '',
+    oculusMd,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     hybridPrivacy: getRouterState('hybrid_privacy') || '',
     localPrivateModel: getRouterState('local:private_model') || '',
@@ -1562,7 +1562,7 @@ function handleSettings(res: http.ServerResponse): void {
     irisCtx: toolcallCtx,
     artemisCtx: getRouterState('local:artemis_ctx') || '',
     vulkanCtx: getRouterState('local:vulkan_ctx') || '',
-    sentryCtx: toolcallCtx,
+    oculusCtx: toolcallCtx,
     mercuryMode: getRouterState('mercury:mode') || 'full',
     mercuryModel: toolcallModel,
     mercuryCtx: toolcallCtx,
@@ -1660,11 +1660,11 @@ async function handleSettingsSave(
   if (body.councilSynthesistModel !== undefined) {
     setRouterState('council:synthesist_model', String(body.councilSynthesistModel));
   }
-  // Sentry (background security/awareness agent) model — vision-capable model
+  // Oculus (background security/awareness agent) model — vision-capable model
   // that reads alert frames and structured camera data. Blank inherits the
   // orchestrator model.
-  if (body.sentryModel !== undefined) {
-    setRouterState('sentry:model', String(body.sentryModel || ''));
+  if (body.oculusModel !== undefined) {
+    setRouterState('oculus:model', String(body.oculusModel || ''));
   }
   // IP of the satellite running the security detector (camera + structured data feed).
   if (body.securitySatelliteIp !== undefined) {
@@ -1717,8 +1717,8 @@ async function handleSettingsSave(
   if (body.vulkanOllamaServer !== undefined) {
     setRouterState('vulkan:ollama_server', String(body.vulkanOllamaServer || ''));
   }
-  if (body.sentryOllamaServer !== undefined) {
-    setRouterState('sentry:ollama_server', String(body.sentryOllamaServer || ''));
+  if (body.oculusOllamaServer !== undefined) {
+    setRouterState('oculus:ollama_server', String(body.oculusOllamaServer || ''));
   }
   // Mirror toolcall model into router_state and live env so subprocess inherits it.
   if (body.ollamaChatModel !== undefined) {
@@ -1768,8 +1768,8 @@ async function handleSettingsSave(
   if (body.vulkanCtx !== undefined) {
     setRouterState('local:vulkan_ctx', String(body.vulkanCtx || ''));
   }
-  if (body.sentryCtx !== undefined) {
-    setRouterState('local:sentry_ctx', String(body.sentryCtx || ''));
+  if (body.oculusCtx !== undefined) {
+    setRouterState('local:oculus_ctx', String(body.oculusCtx || ''));
   }
   if (body.mercuryMode !== undefined) {
     setRouterState('mercury:mode', String(body.mercuryMode || 'full'));
@@ -1804,10 +1804,10 @@ async function handleSettingsSave(
     body.irisModel !== undefined || body.artemisModel !== undefined ||
     body.byteCtx !== undefined || body.dexterCtx !== undefined ||
     body.irisCtx !== undefined || body.artemisCtx !== undefined ||
-    body.vulkanCtx !== undefined || body.sentryCtx !== undefined ||
+    body.vulkanCtx !== undefined || body.oculusCtx !== undefined ||
     body.councilSkepticModel !== undefined ||
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
-    body.sentryModel !== undefined ||
+    body.oculusModel !== undefined ||
     body.securitySatelliteIp !== undefined || body.mercuryMode !== undefined ||
     body.contextIdleClearMinutes !== undefined ||
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
@@ -1818,7 +1818,7 @@ async function handleSettingsSave(
     body.ollamaServers !== undefined ||
     body.ollamaDefaultServerId !== undefined ||
     body.orchestratorOllamaServer !== undefined || body.atlasOllamaServer !== undefined ||
-    body.vulkanOllamaServer !== undefined || body.sentryOllamaServer !== undefined;
+    body.vulkanOllamaServer !== undefined || body.oculusOllamaServer !== undefined;
 
   const vars: Record<string, string> = {};
   for (const [key, envKey] of Object.entries(envMap)) {
@@ -2194,14 +2194,25 @@ function handleActivity(
   json(res, { items: items.slice(0, limit) });
 }
 
-/** GET /api/security/awareness-log?limit=N — recent host AWARENESS event rows
+/** GET /api/oculus/awareness-log?limit=N — recent host AWARENESS event rows
  *  (assessment IS NULL, i.e. the rows the host auto-logged independent of
- *  Sentry's verdict rows), newest-first, with seconds_empty for arrivals. */
-function handleAwarenessLog(res: http.ServerResponse, params: URLSearchParams): void {
+ *  Oculus's verdict rows), newest-first, with seconds_empty for arrivals. */
+async function handleAwarenessLog(res: http.ServerResponse, params: URLSearchParams): Promise<void> {
   const limit = Math.min(Math.max(1, parseInt(params.get('limit') || '50', 10)), 1000);
   try {
-    const rows = queryAwarenessHostEvents(limit);
+    const rows = await queryAwarenessHostEvents(limit);
     json(res, { rows });
+  } catch (err: any) {
+    json(res, { ok: false, error: String(err?.message ?? err) });
+  }
+}
+
+/** DELETE /api/oculus/logs — clear all Oculus logs on the laptop store. Backs
+ *  the dashboard "Clear logs" button. */
+async function handleOculusClearLogs(res: http.ServerResponse): Promise<void> {
+  try {
+    const result = await clearOculusLogs();
+    json(res, result);
   } catch (err: any) {
     json(res, { ok: false, error: String(err?.message ?? err) });
   }
@@ -2694,6 +2705,126 @@ function getClientIp(req: http.IncomingMessage): string {
   const xff = req.headers['x-forwarded-for'];
   if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim();
   return req.socket.remoteAddress || 'unknown';
+}
+
+// --- Security frame-server proxy (the "eyes") ---
+// The security detector (RF-DETR + webcam) runs on a separate host (the laptop)
+// and serves a frame server on 8765. The UI never reaches 8765 directly — the
+// Warden server proxies it "the same as any" tab. The host IP is getSatelliteIp()
+// (an explicit user setting set by run.sh; defaults to the Warden server itself,
+// so an unconfigured proxy fails clearly at 127.0.0.1:8765 rather than hitting a
+// wrong IP). No fallbacks: surface the satellite's status/body on failure.
+
+/** Fetch the 8765 frame server. Returns the Response on success (caller reads
+ *  it); throws on network error or non-2xx. */
+async function fetchOculusSatellite(
+  subpath: string,
+  init: RequestInit = {},
+  timeoutMs = 8000,
+): Promise<Response> {
+  const ip = getSatelliteIp();
+  const url = `http://${ip}:8765${subpath}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`satellite ${subpath} returned ${res.status}${errText ? `: ${errText}` : ''}`);
+    }
+    return res;
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw new Error(`satellite ${subpath} timed out`);
+    throw new Error(`satellite ${subpath} unreachable: ${String(err?.message ?? err)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** GET /api/oculus/status — satellite state {state, eyes_open, last_alert_ts}. */
+async function handleOculusStatus(res: http.ServerResponse): Promise<void> {
+  try {
+    const r = await fetchOculusSatellite('/status');
+    const data = await r.json();
+    return json(res, data);
+  } catch (err: any) {
+    return json(res, { ok: false, error: String(err?.message ?? err) }, 502);
+  }
+}
+
+/** GET /api/oculus/frame — latest JPEG frame as base64 over JSON, so it flows
+ *  through the existing warden_api text bridge (QtWebEngine blocks binary
+ *  fetch from file://). UI sets img.src = 'data:image/jpeg;base64,'+data. */
+async function handleOculusFrame(res: http.ServerResponse): Promise<void> {
+  try {
+    const r = await fetchOculusSatellite('/frame');
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (!buf || buf.length === 0) throw new Error('empty frame');
+    return json(res, { ok: true, data: buf.toString('base64'), ts: Date.now() });
+  } catch (err: any) {
+    return json(res, { ok: false, error: String(err?.message ?? err) }, 503);
+  }
+}
+
+/** POST a no-body action to the satellite (open/close eyes / alert close) and
+ *  pass its JSON response through. */
+async function handleOculusPostAction(
+  res: http.ServerResponse,
+  subpath: string,
+): Promise<void> {
+  try {
+    const r = await fetchOculusSatellite(subpath, { method: 'POST' });
+    const data = await r.json().catch(() => ({ ok: true }));
+    return json(res, data);
+  } catch (err: any) {
+    return json(res, { ok: false, error: String(err?.message ?? err) }, 502);
+  }
+}
+
+/** POST /api/oculus/known/save {label} — register a known person. */
+async function handleOculusKnownSave(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const body = parseJson(await parseBody(req)) as { label?: string };
+    const label = String(body?.label || '').trim();
+    if (!label) return error(res, 'label required');
+    const r = await fetchOculusSatellite('/known/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+    const data = await r.json().catch(() => ({ ok: true }));
+    return json(res, data);
+  } catch (err: any) {
+    return json(res, { ok: false, error: String(err?.message ?? err) }, 502);
+  }
+}
+
+/** GET/POST /api/oculus/watch-out — the user's "watch out for" situations.
+ *  Stored in router_state under `oculus:watch_out_for` as a JSON array of
+ *  plain-text descriptions. Oculus matches incoming AWARENESS events against
+ *  this list; on match it captures the frame to uploads + logs silently.
+ *  GET returns the list; POST {items:[...]} replaces it. */
+async function handleOculusWatchOut(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const KEY = 'oculus:watch_out_for';
+  try {
+    if (req.method === 'GET') {
+      const raw = getRouterState(KEY) || '[]';
+      let items: string[] = [];
+      try { items = JSON.parse(raw); } catch { items = []; }
+      return json(res, { ok: true, items });
+    }
+    if (req.method === 'POST') {
+      const body = parseJson(await parseBody(req)) as { items?: string[] };
+      const items = Array.isArray(body?.items)
+        ? body.items.map((s) => String(s || '').trim()).filter(Boolean)
+        : [];
+      setRouterState(KEY, JSON.stringify(items));
+      return json(res, { ok: true, items });
+    }
+    return error(res, 'Method not allowed', 405);
+  } catch (err: any) {
+    return json(res, { ok: false, error: String(err?.message ?? err) });
+  }
 }
 
 // --- Voice ---
@@ -4070,15 +4201,21 @@ export function startStatusServer(d: StatusDeps): void {
             return error(res, 'expected AWARENESS message');
           }
 
-          // Spawn Sentry directly; no chat message, no channel relay.
+          // Spawn Oculus directly; no chat message, no channel relay.
           const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
           const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-          const task = `Current local time is ${localNow} (timezone ${tz }).\n\n${text}\n\nYou are Sentry, Warden's situational-awareness agent. Use tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent.\n\nThe AWARENESS payload now includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- room occupancy, motion area, camera state, and keypoint/bbox data\n\nUse awareness_log (action: record/query) to record your verdict and avoid repeating greetings.\n\nDo not write a plain-text response; use tools only.`;
-          // Host-side auto-log of the raw event, independent of Sentry.
+          // Pull the user's "watch out for" list so Oculus can match silently.
+          let watchOut: string[] = [];
+          try { watchOut = JSON.parse(getRouterState('oculus:watch_out_for') || '[]'); } catch { watchOut = []; }
+          const watchOutBlock = watchOut.length
+            ? `\n\nWatch out for (user-defined situations; if this event CLEARLY matches one, record it in awareness_log with assessment "flagged" and the matched situation, then call oculus_capture to save the photo to uploads — stay SILENT, do not message the user):\n${watchOut.map((w) => `- ${w}`).join('\n')}`
+            : '';
+          const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${text}\n\nYou are Oculus, Warden's SILENT situational-awareness agent. Use tools only. Read eyes_ears/oculus.md and apply its rules exactly. Your ONLY job is to LOG this event silently: call awareness_log (action: record) with the event details, then stop. Do NOT message the user, do NOT greet, do NOT alert — you have no send_message.${watchOutBlock}\n\nThe AWARENESS payload includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- room occupancy, motion area, camera state\n\nDo not write a plain-text response; use tools only.`;
+          // Host-side auto-log of the raw event, independent of Oculus.
           recordAwarenessEvent(text);
-          spawnSentryBackground(task, text);
+          spawnOculusBackground(task, text);
 
-          logger.info({ text: text.slice(0, 80) }, 'AWARENESS routed directly to Sentry');
+          logger.info({ text: text.slice(0, 80) }, 'AWARENESS routed directly to Oculus');
           return json(res, { ok: true });
         } catch (err: any) {
           return json(res, { ok: false, error: String(err?.message ?? err) });
@@ -4090,24 +4227,40 @@ export function startStatusServer(d: StatusDeps): void {
         return handleSettings(res);
       if (pathname === '/api/settings' && req.method === 'POST')
         return await handleSettingsSave(req, res);
-      if (pathname === '/api/security/sentry-md') {
-        const sentryMdPath = path.resolve(WORKSPACE_ROOT, 'security', 'sentry.md');
+      if (pathname === '/api/oculus/rules') {
+        const oculusMdPath = path.resolve(WORKSPACE_ROOT, 'eyes_ears', 'oculus.md');
         try {
           if (req.method === 'GET') {
-            const content = fs.existsSync(sentryMdPath) ? fs.readFileSync(sentryMdPath, 'utf8') : '';
+            const content = fs.existsSync(oculusMdPath) ? fs.readFileSync(oculusMdPath, 'utf8') : '';
             return json(res, { ok: true, content });
           }
           if (req.method === 'POST') {
             const body = parseJson(await parseBody(req)) as any;
             const content = typeof body?.content === 'string' ? body.content : '';
-            fs.mkdirSync(path.dirname(sentryMdPath), { recursive: true });
-            fs.writeFileSync(sentryMdPath, content, 'utf8');
+            fs.mkdirSync(path.dirname(oculusMdPath), { recursive: true });
+            fs.writeFileSync(oculusMdPath, content, 'utf8');
             return json(res, { ok: true });
           }
         } catch (err: any) {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }
       }
+      // Oculus frame-server proxies (the "eyes" — UI pulls these "the same
+      // as any" tab; the Warden server reaches 8765 on getSatelliteIp()).
+      if (pathname === '/api/oculus/status' && req.method === 'GET')
+        return await handleOculusStatus(res);
+      if (pathname === '/api/oculus/frame' && req.method === 'GET')
+        return await handleOculusFrame(res);
+      if (pathname === '/api/oculus/open' && req.method === 'POST')
+        return await handleOculusPostAction(res, '/open');
+      if (pathname === '/api/oculus/close' && req.method === 'POST')
+        return await handleOculusPostAction(res, '/close');
+      if (pathname === '/api/oculus/alert/close' && req.method === 'POST')
+        return await handleOculusPostAction(res, '/alert/close');
+      if (pathname === '/api/oculus/known/save' && req.method === 'POST')
+        return await handleOculusKnownSave(req, res);
+      if (pathname === '/api/oculus/watch-out')
+        return await handleOculusWatchOut(req, res);
       if (pathname === '/api/audit/run' && req.method === 'POST') {
         try {
           const script = path.resolve(process.cwd(), 'tests/audit-agent-behavior.sh');
@@ -4207,7 +4360,9 @@ export function startStatusServer(d: StatusDeps): void {
         return await handleVault(req, res, pathname);
       if (pathname === '/api/search') return await handleSearch(res, params);
       if (pathname === '/api/activity') return handleActivity(res, params);
-      if (pathname === '/api/security/awareness-log') return handleAwarenessLog(res, params);
+      if (pathname === '/api/oculus/awareness-log') return await handleAwarenessLog(res, params);
+      if (pathname === '/api/oculus/logs' && req.method === 'DELETE')
+        return await handleOculusClearLogs(res);
       if (pathname === '/api/notifications' && req.method === 'GET')
         return handleNotificationsSse(req, res);
       if (pathname === '/api/notifications/poll' && req.method === 'GET')

@@ -1,0 +1,40 @@
+# Eyes & Ears — ONE combined venv for both apps.
+# Install:  python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+#
+# For NVIDIA CUDA (torch is pulled transitively by rfdetr / openai-whisper /
+# kokoro; install with the CUDA index if you need GPU):
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+#
+# ---- Eyes (security detector + frame server) ----
+# RF-DETR Keypoint (Apache 2.0) — the light model that watches the webcam.
+rfdetr>=0.1.0
+supervision>=0.21.0
+# Capture + image handling.
+opencv-python>=4.8.0
+Pillow>=10.0.0
+# Keyframe recognition (known-person pHash compare, application-side).
+imagehash>=4.3.0
+# Face-ID embeddings (default recognition method).
+insightface>=0.7.3
+onnxruntime>=1.16
+# ---- Ears (voice STT/TTS/UI + Warden bridge) ----
+httpx>=0.27.0
+httpx-sse>=0.4.0
+pywebview[qt]>=5.0
+openai-whisper>=20231117
+webrtcvad-wheels>=2.0.10
+audioop-lts>=0.2.1; python_version >= "3.13"
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+pyaudio>=0.2.11
+kokoro>=0.3.0
+soundfile>=0.12.1
+pynput>=1.7.6
+# ---- Shared ----
+numpy>=1.24.0
+pyyaml>=6.0
+#
+# Optional GPU TTS engines (NOT installed by default). The default engine is
+# kokoro (above). orpheus_cpp (ROCm llama.cpp backend) needs a ROCm-built
+# llama-cpp-python — install manually. The vLLM "orpheus" engine is CUDA-only:
+#   pip install orpheus-speech>=0.1.0 vllm>=0.7.3

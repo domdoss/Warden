@@ -31,7 +31,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
                                              'update_calendar_event','delete_calendar_event'], tier: 'private' },
     alarms:    { name: 'alarms',    tools: ['create_alarm','list_alarms','update_alarm','delete_alarm'], tier: 'private' },
     sms:       { name: 'sms',       tools: ['send_sms','read_sms'], tier: 'private' },
-    chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_sentry'], tier: 'both' },
+    chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_oculus'], tier: 'both' },
     // admin tools must be listed explicitly — resolveToolset() only walks the
     // `tools` array + `includes`, NOT the `toolset` property tools are
     // registered with. post_summary was registered with toolset:'admin' but
@@ -44,15 +44,19 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
     agent:     { name: 'agent',     tools: ['byte','dexter','atlas','vulkan','artemis','iris'], tier: 'public' },
 
-    // Security tools — used by Sentry (the single background security agent) to
-    // send alerts, open/dismiss detector alerts, arm/disarm, and log events.
-    security:     { name: 'security',     tools: ['security_frame','security_caption','save_known_person','send_message','open_security_alert','security_log','dismiss_security_flag','alert_security','arm_security','disarm_security'], tier: 'public' },
+    // Security tools — used by Oculus (the single background security agent) to
+    // Oculus awareness tools — look at the live frame + log. Oculus is a SILENT
+    // awareness agent: it records to awareness_log/security_log and can look at the
+    // frame / register a known face, but it has NO send_message, NO alerting, NO
+    // arm/disarm — it never proactively speaks or raises an alert. The user opens
+    // / closes the eyes (toggles eyes_open) and queries Oculus at will.
+    security:     { name: 'security',     tools: ['security_frame','security_caption','save_known_person','security_log','oculus_capture'], tier: 'public' },
     'security-core': { name: 'security-core', includes: ['security'] },
 
-    // Sentry — the single background situational-awareness + security agent.
-    // Decides whether to alert/greet/silent, sends the captioned photo alert, and
-    // updates physical security state. No file tools, no fabric, no web.
-    awareness:    { name: 'awareness',    tools: ['send_message'], tier: 'public' },
+    // awareness_log / awareness_status — the record/query + live-room-state tools
+    // Oculus uses on every event and every orchestrator query. No send_message
+    // here either: Oculus is silent by design.
+    awareness:    { name: 'awareness',    tools: ['awareness_log','awareness_status'], tier: 'public' },
     'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
 
     // Byte — work management. `email` is included so Byte can read the inbox

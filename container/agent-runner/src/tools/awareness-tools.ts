@@ -1,10 +1,10 @@
 import { registry } from '../tool-registry.js';
 import { writeCallbackAsync } from '../index.js';
 
-// The Sentry run-mode branch in index.ts sets this to the original task prompt
+// The Oculus run-mode branch in index.ts sets this to the original task prompt
 // so the host callback tools can log the full AWARENESS context if needed.
-let sentryTaskPrompt = '';
-export function setSentryTaskPrompt(prompt: string): void { sentryTaskPrompt = prompt; }
+let oculusTaskPrompt = '';
+export function setOculusTaskPrompt(prompt: string): void { oculusTaskPrompt = prompt; }
 
 async function callHost(tool: string, args: any, timeoutMs = 10000): Promise<any> {
     try {
@@ -16,17 +16,17 @@ async function callHost(tool: string, args: any, timeoutMs = 10000): Promise<any
 
 /** Whether the current task is an orchestrator status query (not an AWARENESS event). */
 function isStatusQuery(): boolean {
-    return sentryTaskPrompt.startsWith('[ORCHESTRATOR_QUERY]');
+    return oculusTaskPrompt.startsWith('[ORCHESTRATOR_QUERY]');
 }
 
-// Situational-awareness tools (Sentry, the background awareness agent). Mirrors
-// security-tools.ts. awareness_log records/queries Sentry's sqlite history;
-// tell_sentry lets the orchestrator pass a fact to Sentry (recorded as context).
+// Situational-awareness tools (Oculus, the background awareness agent). Mirrors
+// security-tools.ts. awareness_log records/queries Oculus's sqlite history;
+// tell_oculus lets the orchestrator pass a fact to Oculus (recorded as context).
 
 registry.register({
     name: 'awareness_log',
     description:
-        "Record or query Sentry's situational-awareness log. Use this FIRST on every AWARENESS event. " +
+        "Record or query Oculus's situational-awareness log. Use this FIRST on every AWARENESS event. " +
         "ACTION 'record': append a verdict row. Required fields: action='record', ts (YYYY-MM-DDTHH:MM:SS), " +
         "event (arrival|departure|movement|motion_burst|camera_covered|camera_moved|note), assessment " +
         "('spoken'|'silent'|'note'|'flagged'), and optionally label, is_known, seconds_empty, " +
@@ -71,36 +71,36 @@ registry.register({
     tier: 'public',
 });
 
-// Orchestrator → Sentry direct. tier:'public' + toolset 'chat' keeps it
+// Orchestrator → Oculus direct. tier:'public' + toolset 'chat' keeps it
 // orchestrator-only (sub-agents don't include 'chat'). The user tells Jarvis a
-// fact that should affect greeting behavior; Sentry records it silently, no chat
+// fact that should affect greeting behavior; Oculus records it silently, no chat
 // reply.
 registry.register({
-    name: 'tell_sentry',
+    name: 'tell_oculus',
     description:
-        "Send a message directly to Sentry, the background situational-awareness agent. Use this when " +
+        "Send a message directly to Oculus, the background situational-awareness agent. Use this when " +
         "the user wants to tell Jarvis something about their presence/schedule that should affect " +
         "greeting behavior (e.g. 'heading out for the evening', 'I'm back, no need to greet me', " +
-        "'my partner is staying over') so Sentry records it and factors it into future greetings. Do NOT " +
-        "use the security agent for awareness notes — use this. Sentry records the message silently; it " +
+        "'my partner is staying over') so Oculus records it and factors it into future greetings. Do NOT " +
+        "use the security agent for awareness notes — use this. Oculus records the message silently; it " +
         "will not reply in the chat. Returns confirmation.",
     schema: {
         type: 'object',
         properties: {
-            message: { type: 'string', description: 'The message to pass to Sentry.' },
+            message: { type: 'string', description: 'The message to pass to Oculus.' },
         },
         required: ['message'],
     },
     handler: async (args, _context) => {
-        const resp = await callHost('tell_sentry', { message: String(args?.message || '') });
-        if (resp?.ok) return `Told Sentry: ${String(args?.message || '').slice(0, 120)}. It will record this for future greetings.`;
-        return `Could not reach Sentry: ${resp?.error || 'unknown error'}`;
+        const resp = await callHost('tell_oculus', { message: String(args?.message || '') });
+        if (resp?.ok) return `Told Oculus: ${String(args?.message || '').slice(0, 120)}. It will record this for future greetings.`;
+        return `Could not reach Oculus: ${resp?.error || 'unknown error'}`;
     },
     toolset: 'chat',
     tier: 'public',
 });
 
-// Read-only access for the orchestrator to Sentry's latest AWARENESS data: the
+// Read-only access for the orchestrator to Oculus's latest AWARENESS data: the
 // most recent event (arrival/departure/...) plus recognized person (is_known +
 // label), person_count, and how long the room's been occupied/empty. Call this
 // together with webcam_capture so a vision answer ("who's in the room", "what
@@ -108,7 +108,7 @@ registry.register({
 registry.register({
     name: 'awareness_status',
     description:
-        "Get Sentry's latest AWARENESS info from the security camera: the most recent event " +
+        "Get Oculus's latest AWARENESS info from the security camera: the most recent event " +
         "(arrival/departure/camera_covered/...), recognized person (is_known + label from " +
         "InsightFace), person_count, and how long the room's been occupied or empty. Use this " +
         "ALONGSIDE webcam_capture to answer 'who's in the room' or 'what do you see' accurately " +
@@ -131,22 +131,22 @@ registry.register({
     tier: 'public',
 });
 
-// Orchestrator → Sentry live status query. Sentry pulls current data, decides
+// Orchestrator → Oculus live status query. Oculus pulls current data, decides
 // the CURRENT room state, and returns a concise report. The orchestrator uses
 // this instead of stale cached rows to decide whether to pull a webcam frame.
 registry.register({
-    name: 'sentry_query',
+    name: 'oculus_query',
     description:
-        "Ask Sentry, the situational-awareness agent, for a live status report. " +
-        "Sentry pulls current AWARENESS data from the satellite and decides the CURRENT room state. " +
+        "Ask Oculus, the situational-awareness agent, for a live status report. " +
+        "Oculus pulls current AWARENESS data from the satellite and decides the CURRENT room state. " +
         "If the report starts with NOTEWORTHY (person present, unknown person, recent motion, alert, camera issue), " +
         "you MUST then call webcam_capture to verify visually. If the report starts with NOTHING_NOTEWORTHY, " +
         "answer from the report alone and do NOT pull a frame. Use this for 'who's in the room' / 'what's happening' " +
         "/ 'security status' questions — NOT awareness_status, which only returns stale cached events.",
-    schema: { type: 'object', properties: { question: { type: 'string', description: 'Optional question to pass to Sentry (e.g. who is in the room).' } }, required: [] },
+    schema: { type: 'object', properties: { question: { type: 'string', description: 'Optional question to pass to Oculus (e.g. who is in the room).' } }, required: [] },
     handler: async (args, _context) => {
-        const resp = await callHost('sentry_query', { question: String(args?.question || 'live status') }, 35000);
-        if (!resp || resp.ok === false) return `sentry_query unavailable: ${resp?.error || 'host unreachable'}`;
+        const resp = await callHost('oculus_query', { question: String(args?.question || 'live status') }, 35000);
+        if (!resp || resp.ok === false) return `oculus_query unavailable: ${resp?.error || 'host unreachable'}`;
         return resp.report || '(no report)';
     },
     toolset: 'chat',

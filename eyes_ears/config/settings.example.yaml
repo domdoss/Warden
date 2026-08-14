@@ -1,0 +1,227 @@
+# Eyes & Ears — one config for both apps (eyes = security detector + frame
+# server; ears = voice STT/TTS/UI + Warden bridge). Copy this file to
+# settings.yaml and fill in your values, or run `./run.sh` and pick "Configure".
+#
+# ONE config file — no shadow configs. The Warden server URL lives only in the
+# `warden` section below (the legacy `dockbox` key is gone).
+
+warden:
+  # The Warden server (Node brain). Eyes POSTs AWARENESS events here; ears
+  # bridges chat here. Use http://localhost:3200 for a local install, or the
+  # LAN IP of whichever machine runs the Warden server. run.sh "Configure"
+  # writes this for you.
+  base_url: http://localhost:3200
+  owner_jid: owner@local
+  user_id: ""
+  default_jid: ""
+  # 'local:' prefix pins the server orchestrator for this app's chat to a
+  # specific local Ollama model (sent on every message -> ollama_chat_model:<jid>).
+  model: local:gemma4:latest
+  tools_model: glm-5.1:cloud
+  vision_model: gemma4:31b-cloud
+  # Only needed for the Cloudflare-protected cloud endpoint, not for a local server.
+  cf_access_token: ""
+
+# ---- Eyes (security detector + frame server) ----
+
+camera:
+  # Local webcam (OpenCV index). 0 = default. Use `v4l2-ctl --list-devices`
+  # or pass --camera to override without editing this.
+  index: 0
+  # Downscale before inference. RF-DETR Keypoint runs at 576x576 internally,
+  # so anything larger just costs capture bandwidth.
+  width: 640
+  height: 480
+  # Frames per second to actually process. CPU inference is the bottleneck.
+  fps: 3
+
+model:
+  # "keypoint" = RF-DETR Keypoint Preview (Apache 2.0). Its detection head
+  # reliably finds person on CPU; the pose head partially loads but we only
+  # need the box/keypoints for the structured situation.
+  variant: keypoint
+  # Detection checkpoint size for the "detection" variant (nano|small|medium|
+  # large). Ignored for keypoint (xlarge only).
+  size: small
+  # Detection confidence floor. The keypoint model can hallucinate many
+  # overlapping low-confidence "person" boxes; 0.5+ suppresses most flicker.
+  threshold: 0.5
+
+# Motion detection. Frame differencing produces a motion mask; its nonzero area
+# is the motion signal. Used for "motion burst while empty" and for UI status.
+motion:
+  # Grayscale frames are differenced, blurred, then thresholded.
+  blur: 21
+  # Pixel-difference threshold (0-255). Higher = less sensitive.
+  pixel_threshold: 25
+  # Minimum nonzero area in the motion mask to count as "movement".
+  min_area: 800
+
+# Situational-awareness tuning.
+awareness:
+  enabled: true
+  # Min seconds between any two AWARENESS posts to Warden.
+  cooldown_seconds: 30
+  # Consecutive frames with/without a person before flipping room occupied/empty.
+  # Higher = less sensitive to brief detector flicker. At 3 fps, 6 frames = 2s.
+  presence_debounce: 6
+  absence_debounce: 9
+  # Minimum motion-area to count as a "motion burst" while the room is empty.
+  motion_min_area: 1500
+  # Centroid shift (pixels) that counts as a tracked person "movement" event.
+  motion_movement_px: 80
+  # pHash Hamming distance threshold for "camera moved". Lower = less sensitive.
+  camera_moved_threshold: 16
+  # Number of recent frame hashes to compare against for camera-moved detection.
+  camera_moved_history: 5
+  # Min confidence for non-person objects to be included in the situation JSON.
+  # The keypoint model is person-only, so this is mostly future-proofing.
+  object_min_confidence: 0.2
+  # Camera-tamper detection. Near-uniform frame std over this many frames = covered.
+  covered_std: 6
+  covered_frames: 3
+  # Room must be empty this many seconds before an unknown arrival counts as an
+  # anomaly worth a Moondream caption.
+  empty_threshold_seconds: 60
+
+recognition:
+  # Person recognition method. "insightface" uses local face embeddings (default);
+  # "phash" falls back to whole-frame perceptual hashes.
+  method: insightface
+  # cuda is fast; cpu works too. Face recognition runs only on events / overlay,
+  # so a short GPU inference doesn't steal much time from RF-DETR detection.
+  device: cuda
+  # Cosine-similarity threshold for a face to count as a known person.
+  match_threshold: 0.42
+  # Ignore faces smaller than this (too far away to ID reliably).
+  min_face_size: 60
+  # How often to run face recognition just for the live GUI overlay (seconds).
+  # Awareness events do their own recognition; this is purely visual feedback.
+  # Lower = more responsive name labels; higher = less GPU/CPU use.
+  overlay_interval_seconds: 0.5
+
+# Optional Ollama scene caption for AWARENESS events. Disabled by default so the
+# security feed stays pure structured data; the orchestrator/Sentry can call
+# webcam_capture if it needs a visual description. Enable this if you want the
+# laptop to auto-caption anomalies via Ollama.
+caption:
+  enabled: false
+  # Local Ollama API endpoint on the laptop/satellite.
+  ollama_url: http://127.0.0.1:11434
+  # Vision model pulled in Ollama. gemma3:4b is small and works on 4 GB VRAM.
+  model: gemma3:4b
+  # Max seconds to wait for an Ollama caption response.
+  timeout_seconds: 60
+
+# Frame server — lets the Warden server pull the latest frame over HTTP while
+# this app owns /dev/video0. Bind to 0.0.0.0 so the Warden server can reach it
+# over the LAN. run.sh "Configure" sets the host for this machine's role.
+frame_server:
+  host: 0.0.0.0
+  port: 8765
+
+# ---- Ears (voice + UI + Warden bridge) ----
+
+voice:
+  # Native sample rate for the ALSA/PulseAudio device. 48000 is supported by
+  # most hardware; 16000/24000 often fail on PipeWire/Bluetooth. TTS/Whisper
+  # inputs are resampled as needed.
+  sample_rate: 48000
+  channels: 1
+  chunk_size: 1024
+  # VAD sensitivity. silence_timeout = how long a pause (s) before the
+  # recorder stops; vad_aggressiveness = webrtcvad mode 0-3 (lower = less
+  # likely to flag quiet speech as silence, so fewer dropouts). Raise
+  # silence_timeout and/or lower aggressiveness if it cuts you off mid-sentence.
+  silence_timeout: 1.2
+  vad_aggressiveness: 1
+  max_recording_seconds: 30
+  silence_threshold: 500
+  whisper_model: base
+  # Device for Whisper STT. Default "cpu": on the Radeon VII (ROCm), torch's
+  # HIP backend shows up as torch.cuda.*, so auto-pick would grab the GPU and
+  # loading Whisper alongside Kokoro TTS segfaults. CPU is fast enough for
+  # "small" and leaves the GPU for TTS. Set "cuda" to use the GPU anyway.
+  stt_device: cpu
+  # TTS engine: "kokoro" (default, fast, low-VRAM), "orpheus"
+  # (LLM-based via vLLM, high quality, requires a CUDA GPU with ~6+ GB VRAM),
+  # or "orpheus_cpp" (same Orpheus model via llama.cpp/GGUF — runs on AMD ROCm
+  # where vLLM doesn't; set ORPHEUS_N_GPU_LAYERS=-1 to offload to the GPU).
+  tts_engine: kokoro
+  # Kokoro voices (examples): am_michael, af_heart, bm_george, af_bella.
+  # Orpheus voices (both engines): tara, leah, jess, leo, dan, mia, zac, zoe.
+  tts_voice: bm_george
+  tts_speed: 1.0
+  # Device for Kokoro TTS. "cuda" runs it on the NVIDIA GPU (faster, frees the
+  # CPU); blank/omitted = auto-pick (CUDA if available, else CPU). Safe to run
+  # alongside GPU STT on NVIDIA (the old CPU-only default was an AMD-ROCm
+  # workaround that doesn't apply here).
+  tts_device: ""
+  # Double-clap wake: clap twice to activate. clap_threshold is the
+  # AC-coupled int16 peak (DC offset removed) that counts as a clap onset.
+  # It's an amplitude floor: set it above your mic's speech peaks so only a
+  # deliberate, loud double-clap wakes the assistant. Raise it if talking false-
+  # triggers; lower it if loud claps get missed.
+  clap_enabled: true
+  # Sample rate (Hz) for the clap detector's mic stream. Independent of the STT
+  # sample_rate above (which must stay 16000 for Whisper). 48000 is the most
+  # universally supported by PipeWire/ALSA input nodes; 16000 can be rejected on
+  # some nodes on reopen (pause/resume), surfacing as "Invalid sample rate".
+  clap_sample_rate: 48000
+  clap_threshold: 7200
+  # Minimum peak/RMS (crest factor) for an onset to count as a clap. A clap is
+  # impulsive (high crest); speech/music/steady noise are flatter. Raise it to
+  # reject more non-clap sounds, lower it if real claps get missed.
+  clap_crest: 4.0
+
+ui:
+  button_color: '#DC143C'
+  button_hover_color: '#B22222'
+  window_width: 480
+  window_height: 480
+  button_size: 300
+  pulse_animation: true
+
+audio:
+  playback_device: null
+  input_device: null
+
+# Remote audio relay (satellite). The satellite is a dumb mic/speaker relay
+# (satellite/satellite_server.py) — it has nothing to do with the UI except
+# where audio comes from / goes. It can run on any machine (Pi, laptop, …).
+# `host` is the satellite this app should connect to for remote audio; set it
+# via run.sh "Configure" (no hardcoded IPs in the scripts).
+satellite:
+  host: 127.0.0.1
+  port: 8766
+  # Push-to-talk on the satellite: hold the button to record the whole hold (no
+  # VAD — the button, not silence, ends the turn), release to send it. One turn
+  # per press; no auto-listen loop after the reply. true = button (default for a
+  # Pi with a push button); false = VAD auto-stop (for a buttonless remote mic
+  # that should record until speech pauses). Only affects satellite mode; the
+  # local laptop hologram always uses VAD + clap + the listen loop.
+  push_to_talk: true
+
+# Widget companion feed — the band of auto-refreshing tiles shown below the
+# hologram. The hologram stays as the voice button on top; the feed polls the
+# Warden server directly on the heartbeat cadence. Tiles whose endpoints don't
+# exist yet show a clean "waiting for backend" state.
+widgets:
+  enabled: [weather, email, task, notes]
+  # Heartbeat cadence (minutes). Selectable: 10/20/30/60/90/120.
+  refresh_minutes: 60
+  # Height of the feed band in px. 0 disables the feed (hologram fills the window).
+  feed_height: 280
+
+weather:
+  # Location for the weather tile. null = IP-geolocate on first fetch; if that
+  # also fails the tile shows "set location in settings".
+  lat: null
+  lon: null
+
+notes:
+  # Folder under ~/Documents/Notes where quick-captured notes are filed.
+  default_folder: Inbox
+
+logging:
+  level: INFO

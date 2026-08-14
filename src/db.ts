@@ -1033,6 +1033,24 @@ export function setRouterState(key: string, value: string): void {
   ).run(key, value);
 }
 
+// --- Security frame-server host (the detector + webcam + display) ---
+// "Satellite" in the codebase means the remote mic/speaker (audio, on the Pi);
+// this is a DIFFERENT thing — the host running the security frame server on
+// port 8765 (the laptop, where the webcam + GPU live). It is NOT discovered
+// from the UI's connection (the UI and the frame server are separate); it is
+// an explicit setting (router state `security:satellite_ip` / env), defaulting
+// to the Warden server itself (127.0.0.1) so capture fails clearly rather than
+// hitting a wrong IP when unconfigured. No hardcoded laptop IP.
+export function getSatelliteIp(): string {
+  return (
+    getRouterState('security:satellite_ip') ||
+    getRouterState('security:laptop_ip') ||
+    process.env.WARDEN_SECURITY_SATELLITE_IP ||
+    process.env.WARDEN_SECURITY_LAPTOP_IP ||
+    '127.0.0.1'
+  ).trim();
+}
+
 // --- Session accessors ---
 
 export function getSession(groupFolder: string): string | undefined {

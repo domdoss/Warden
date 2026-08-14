@@ -54,13 +54,13 @@
   <div class="help-section-label"><span>01</span> Models</div>
   <div class="setting-grid">
     <div class="setting-tile"><h3>Orchestrator</h3><div class="where">Settings → Model Configuration</div><p>The model that replies to you. Pick a strong cloud model — this is where most of the thinking happens.</p></div>
-    <div class="setting-tile info"><h3>Per-agent models</h3><div class="where">Settings → Model Configuration</div><p>Atlas, Artemis, Vulkan, and the Council each have their own model. Byte, Dexter, Iris, Mercury, and Sentry share one <b>Toolcall model</b> row (one model + ctx for all five). No fallback — every agent always runs on the model you pick. Settable here or per-agent from the Agents panel.</p></div>
+    <div class="setting-tile info"><h3>Per-agent models</h3><div class="where">Settings → Model Configuration</div><p>Atlas, Artemis, Vulkan, and the Council each have their own model. Byte, Dexter, Iris, Mercury, and Oculus share one <b>Toolcall model</b> row (one model + ctx for all five). No fallback — every agent always runs on the model you pick. Settable here or per-agent from the Agents panel.</p></div>
     <div class="setting-tile violet"><h3>Council Seats × 3</h3><div class="where">Settings → Model Configuration → Council</div><p>Skeptic, Pragmatist, Synthesist. Different models = genuinely different perspectives.</p></div>
   </div>
 
   <div class="help-section-label"><span>02</span> Context overrides</div>
   <div class="setting-grid">
-    <div class="setting-tile"><h3>num_ctx — per role</h3><div class="where">Settings → Model Configuration</div><p>Orchestrator, Atlas, Vulkan, Artemis, and each Council seat have their own num_ctx override. The five toolcall agents (Byte, Dexter, Iris, Mercury, Sentry) share one <b>Toolcall ctx</b> override. Leave blank for the model's native window.</p></div>
+    <div class="setting-tile"><h3>num_ctx — per role</h3><div class="where">Settings → Model Configuration</div><p>Orchestrator, Atlas, Vulkan, Artemis, and each Council seat have their own num_ctx override. The five toolcall agents (Byte, Dexter, Iris, Mercury, Oculus) share one <b>Toolcall ctx</b> override. Leave blank for the model's native window.</p></div>
     <div class="setting-tile info"><h3>Keep alive</h3><div class="where">Settings → Model Configuration</div><p>Per-agent checkbox on the Orchestrator, Atlas, and Toolcall model rows. On = hold the model in VRAM between turns (<code>keep_alive: -1</code>, no reload); off = unload after 5 min. With Ollama <code>max_loaded_models=2</code>, the orchestrator + one sub-agent stay resident and Ollama evicts the least-recently-used if a third is needed.</p></div>
     <div class="setting-tile danger"><h3>Thinking mode</h3><div class="where">Settings → Model Configuration</div><p>Global default: On (first turn + always-think models), Max (every iteration), or Off. No per-chat override.</p></div>
   </div>

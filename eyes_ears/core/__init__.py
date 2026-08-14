@@ -1,0 +1,1 @@
+"""Eyes & Ears shared package — config loader lives in `core.config`."""
