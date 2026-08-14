@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+# Live config (machine-specific; copy settings.example.yaml to customize).
+config/settings.yaml
+# Detector event store + known-face DB (untracked runtime data).
+data/

@@ -1,0 +1,298 @@
+"""Thin Warden bridge — the brain lives on the server.
+
+Replaces the local Ollama/tools-based assistant with a small orchestration layer
+that:
+  - Sends transcribed text to Warden via WardenClient.send_message.
+  - Consumes the SSE notification stream and yields response chunks.
+
+Voice transcription stays local (Whisper); the audio never leaves the device.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from pathlib import Path
+from typing import Callable, Optional
+
+from core.config import Config
+from ears.warden_client import WardenAuthError, WardenClient
+from ears.session_store import SessionStore
+
+_STREAM_LOG = Path(__file__).resolve().parent.parent / "agent_stream.log"
+
+# Stray container stdout the server forwards as its own activity lines:
+# service-startup banners (``[start-services] ttyd :7681, novnc :6080``) and
+# exported env vars (``PORT=5900``). They match none of the tool-loop chrome
+# prefixes, so without this they get spoken — as numbers — before the reply.
+_CONTAINER_LOG_RE = re.compile(r"^(\[[a-z0-9_-]+\]|[A-Z][A-Z0-9_]*=)")
+
+
+class WardenBridge:
+    """High-level orchestrator used by ``main.py``."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.session_store = SessionStore()
+        base_url = config.warden.get("base_url")
+        if not base_url:
+            raise RuntimeError(
+                "warden.base_url is not configured — run './run.sh --configure' "
+                "(Warden server → base_url) first.")
+        self.client = WardenClient(
+            base_url=base_url,
+            session_store=self.session_store,
+            cf_access_token=config.warden.get("cf_access_token") or None,
+        )
+
+        self.active_jid: str = config.warden.get("default_jid", "") or ""
+        self.model: Optional[str] = config.warden.get("model") or None
+
+        self._sse_task: Optional[asyncio.Task] = None
+        self._on_chunk: Optional[Callable[[str], None]] = None
+        self._on_turn_end: Optional[Callable[[], None]] = None
+        # ANSI dim escapes wrap the model's reasoning tokens; we forward only
+        # non-dim text. State spans events because dim runs can cross chunks.
+        self._dim_active: bool = False
+        # Tool-result lines (✅/❌/⚠️) are followed by a multi-line JSON dump.
+        # Drop everything after a tool-result header until the next
+        # ``[agent-runner]`` log line resets us.
+        self._in_tool_result: bool = False
+        # The model often re-generates the same reply across several tool
+        # iterations; the server keeps only the last as the written response.
+        # Buffer the current iteration's spoken text and reset it whenever a
+        # new iteration begins, so we speak the final response exactly once
+        # instead of every intermediate duplicate.
+        self._turn_text: list[str] = []
+        # The user-facing reply now arrives as a ``chat_complete`` event's
+        # ``message`` (e.g. delivered via the model's say_to_user tool). When
+        # we've spoken that, suppress the agent_activity tool-loop wrap-up
+        # ("The story has been told.") for the same turn.
+        self._spoke_message: bool = False
+
+    # ---------- lifecycle ----------
+
+    async def aclose(self) -> None:
+        if self._sse_task is not None:
+            self._sse_task.cancel()
+        await self.client.aclose()
+
+    async def is_logged_in(self) -> bool:
+        return await self.client.verify()
+
+    def set_active_jid(self, jid: str) -> None:
+        self.active_jid = jid
+        self.config.set("warden.default_jid", jid)
+        self.config.save()
+
+    # ---------- callbacks ----------
+
+    def on_chunk(self, cb: Callable[[str], None]) -> None:
+        """Called with each text chunk that arrives over SSE."""
+        self._on_chunk = cb
+
+    def on_turn_end(self, cb: Callable[[], None]) -> None:
+        """Called when the server marks a turn complete (event type 'done' or 'turn_end')."""
+        self._on_turn_end = cb
+
+    # ---------- send ----------
+
+    async def send_text(self, text: str, sender_name: Optional[str] = None) -> dict:
+        return await self.client.send_message(
+            text=text,
+            jid=self.active_jid,
+            sender_name=sender_name,
+            model=self.model,
+        )
+
+    async def send_image(
+        self,
+        image_bytes: bytes,
+        caption: str = "",
+        sender_name: Optional[str] = None,
+        ext: str = "png",
+    ) -> dict:
+        """Send a captured image (+ optional spoken caption) for vision.
+
+        The reply streams back over SSE exactly like ``send_text``.
+        """
+        return await self.client.send_image(
+            image_bytes=image_bytes,
+            jid=self.active_jid,
+            caption=caption,
+            sender_name=sender_name,
+            model=self.model,
+            ext=ext,
+        )
+
+    async def stop(self) -> None:
+        try:
+            await self.client.stop_chat(self.active_jid)
+        except Exception as e:
+            print(f"[bridge] stop_chat failed: {e}")
+
+    # ---------- SSE consumption ----------
+
+    def start_stream(self) -> None:
+        if self._sse_task is None or self._sse_task.done():
+            self._sse_task = asyncio.create_task(self._sse_loop())
+
+    async def _sse_loop(self) -> None:
+        try:
+            async for event in self.client.stream_notifications():
+                et = (event.get("type") or "").lower()
+                if et not in ("connected", "ping", "keepalive"):
+                    if et != "agent_activity":
+                        print(f"[bridge] SSE event: {event}")
+                await self._handle_event(event)
+        except WardenAuthError as e:
+            print(f"[bridge] SSE auth error: {e}")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            print(f"[bridge] SSE loop error: {e}")
+
+    async def _handle_event(self, event: dict) -> None:
+        et = (event.get("type") or "").lower()
+        if et in ("connected", "ping", "keepalive"):
+            return
+        if et == "agent_activity":
+            line = event.get("line") or ""
+            try:
+                with _STREAM_LOG.open("a", encoding="utf-8") as fh:
+                    fh.write(repr(line) + "\n")
+            except Exception as e:
+                print(f"[bridge] stream log write failed: {e}")
+            # A new turn starts a fresh "did we already speak the reply?" state.
+            if "Entering tool loop" in line:
+                self._spoke_message = False
+                self._last_spoken_preview = None
+            # A new tool iteration means the model is regenerating its reply
+            # from scratch — drop the previous iteration's buffer so only the
+            # final iteration survives to be spoken.
+            if "Entering tool loop" in line or "Tool iteration" in line:
+                self._turn_text = []
+            text = self._filter_agent_line(line)
+            if text:
+                self._turn_text.append(text)
+            # Server doesn't emit done/turn_end — "Query complete" is the
+            # de-facto end-of-turn signal.
+            if "Query complete" in line or "Exited tool loop" in line:
+                self._dim_active = False
+                self._in_tool_result = False
+                self._finish_turn()
+            return
+        if et in ("done", "turn_end", "complete", "agent_done", "chat_complete"):
+            self._dim_active = False
+            self._in_tool_result = False
+            preview = self._strip_attachments((event.get("message") or "").strip())
+            if preview:
+                # Deduplicate: if we already spoke this exact content, don't repeat it.
+                if preview == getattr(self, "_last_spoken_preview", None):
+                    return
+                self._last_spoken_preview = preview
+                self._spoke_message = True
+                self._turn_text = []
+                full = await self._full_message(preview)
+                # Echo the full reply to stdout so it's visible in the run.sh
+                # terminal, not just spoken over TTS. The SSE event print above only
+                # carries a truncated preview.
+                print(f"[Jarvis] {full}")
+                if self._on_chunk is not None:
+                    try:
+                        self._on_chunk(full)
+                    except Exception as e:
+                        print(f"[bridge] on_chunk raised: {e}")
+                if self._on_turn_end is not None:
+                    try:
+                        self._on_turn_end()
+                    except Exception as e:
+                        print(f"[bridge] on_turn_end raised: {e}")
+            else:
+                self._finish_turn()
+            return
+
+    async def _full_message(self, preview: str) -> str:
+        """Resolve a truncated chat_complete preview to the full stored reply.
+
+        The notification cuts the text mid-word, so we match by prefix against
+        recent messages and return the complete ``content``. Falls back to the
+        preview if nothing matches or the fetch fails.
+        """
+        head = preview.rstrip("…").rstrip(". ").strip()
+        if not head or not self.active_jid:
+            return self._strip_attachments(preview)
+        try:
+            msgs = await self.client.get_messages(self.active_jid, limit=10)
+        except Exception as e:
+            print(f"[bridge] get_messages failed: {e}")
+            return self._strip_attachments(preview)
+        for m in msgs:
+            content = (m.get("content") or "").strip()
+            if content and content.startswith(head):
+                return self._strip_attachments(content)
+        return self._strip_attachments(preview)
+
+    @staticmethod
+    def _strip_attachments(text: str) -> str:
+        """Remove bracketed attachment placeholders and markdown images from TTS text."""
+        # Markdown image/link syntax: ![label](url) or [label](url)
+        text = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", text)
+        # Bare bracketed placeholders like [Image: ...], [file], [audio]
+        text = re.sub(r"\[.*?\]", "", text)
+        # Collapse leftover whitespace
+        text = re.sub(r"[ \t]+", " ", text)
+        return text.strip()
+
+    def _finish_turn(self) -> None:
+        """Speak the buffered final-iteration text once, then end the turn."""
+        spoken = "" if self._spoke_message else self._strip_attachments("".join(self._turn_text).strip())
+        self._turn_text = []
+        if spoken and self._on_chunk is not None:
+            try:
+                self._on_chunk(spoken)
+            except Exception as e:
+                print(f"[bridge] on_chunk raised: {e}")
+        if self._on_turn_end is not None:
+            try:
+                self._on_turn_end()
+            except Exception as e:
+                print(f"[bridge] on_turn_end raised: {e}")
+
+    def _filter_agent_line(self, line: str) -> str:
+        """Return an agent_activity line for speaking.
+
+        The final user-facing reply now arrives reliably as a ``chat_complete``
+        event, so agent_activity lines should never be spoken. They still drive
+        turn-end signalling (``Query complete`` / ``Exited tool loop``), but
+        any text they carry is dropped to prevent the orchestrator's delegated
+        prompts or tool-loop chrome from being read aloud.
+        """
+        return ""
+
+    @staticmethod
+    def _is_delegation_prompt(text: str) -> bool:
+        """True if the text looks like an orchestrator task brief to a sub-agent
+        rather than a user-facing reply. These often start with action verbs or
+        name the specialist agent.
+        """
+        t = text.lower().strip()
+        # Direct imperative/task patterns at the start of the message.
+        task_starts = (
+            "find ", "research ", "look up ", "look into ", "investigate ",
+            "search for ", "summarize ", "write ", "create ", "update ",
+            "delete ", "analyze ", "compare ", "list ", "describe ",
+            "compile ", "generate ", "retrieve ", "get ", "fetch ",
+            "can you find", "please find", "please research", "i need you to",
+        )
+        if any(t.startswith(s) for s in task_starts):
+            return True
+        # Explicit delegation markers anywhere.
+        markers = (
+            "using the available tools", "atlas:", "iris:", "dexter:", "byte:",
+            "artemis:", "sentry:", "the council", ", atlas", ", iris",
+            ", dexter", ", byte", ", artemis", ", sentry", ", council",
+        )
+        if any(m in t for m in markers):
+            return True
+        return False

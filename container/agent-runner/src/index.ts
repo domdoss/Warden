@@ -20,7 +20,7 @@ import path from 'path';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
-import { setSentryTaskPrompt } from './tools/awareness-tools.js';
+import { setOculusTaskPrompt } from './tools/awareness-tools.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
 import { hooks } from './hooks.js';
@@ -480,7 +480,7 @@ function applySettingsSync(data: any) {
     if (data.irisCtx !== undefined) process.env.IRIS_NUM_CTX = data.irisCtx ? String(data.irisCtx) : '';
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
-    if (data.sentryCtx !== undefined) process.env.SENTRY_NUM_CTX = data.sentryCtx ? String(data.sentryCtx) : '';
+    if (data.oculusCtx !== undefined) process.env.OCULUS_NUM_CTX = data.oculusCtx ? String(data.oculusCtx) : '';
     // Per-agent keep_alive overrides (-1 = resident, 300 = 5 min). The host
     // seeds ORCHESTRATOR_KEEP_ALIVE='-1' to preserve the historic resident
     // orchestrator; toolcall/atlas stay unset → runner defaults to 300.
@@ -700,7 +700,7 @@ After the last tool call, reply with one sentence stating what you created, chan
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
         systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the execution expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit your tools or a better approach exists, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/home/dominic/Projects/Warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
+WARDEN ITSELF — Warden's own source lives at \`/opt/warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
 
 FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
 
@@ -737,7 +737,7 @@ PERSISTENCE — never call a task "impossible", "not supported", or "limited by 
         summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
         systemPrompt: `You are Vulkan, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/home/dominic/Projects/Warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
+WARDEN ITSELF — Warden's own source lives at \`/opt/warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
 
 CODE — Read or Grep before you change anything: understand the real data flow (written → read → rendered) end to end before editing. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). Match the surrounding style — naming, indentation, comment density. Run the build and the tests to confirm a change; a successful Edit is not a working change. When your code references something defined elsewhere (a fetch→route, a field, an export), Grep that file once to confirm the contract exists before relying on it.
 
@@ -789,8 +789,8 @@ FORMAT: one plain-text confirmation — what you did, what you found, and any fa
         systemPrompt: `You are Artemis, a critical reviewer inside Warden. You are handed a transcript of a conversation between the user and the AI assistant (Warden). Your job is to audit it: read what the user actually asked and what the assistant said and did, and find mistakes, errors, and oversights. Your tools are for INSPECTION ONLY — Read (open a file), Grep (search file contents), Glob (find files), get_chat_history, and Bash for read-only inspection of system state. Use them to verify claims by inspecting the files, messages, databases, and logs referenced in the conversation. You audit — you never modify, send, or browse the web.
 
 BASH — READ-ONLY INSPECTION ONLY:
-- SQLite: the live Warden database is /home/dominic/Projects/Warden/store/messages.db (WAL mode — open it read-only: \`sqlite3 "file:/home/dominic/Projects/Warden/store/messages.db?mode=ro" "SELECT ..."\`). It holds chats, messages, registered_groups, sessions, scheduled_tasks, task_run_logs, user_work_tasks, dashboard_users, email_accounts, and more — use .tables and .schema <table> to explore. The .db files under data/ are empty stubs; store/messages.db is the real one.
-- Logs: the Warden service appends stdout to /home/dominic/Projects/Warden/logs/warden.log and stderr to /home/dominic/Projects/Warden/logs/warden.error.log — tail/grep these to see what the system actually did and when.
+- SQLite: the live Warden database is /opt/warden/store/messages.db (WAL mode — open it read-only: \`sqlite3 "file:/opt/warden/store/messages.db?mode=ro" "SELECT ..."\`). It holds chats, messages, registered_groups, sessions, scheduled_tasks, task_run_logs, user_work_tasks, dashboard_users, email_accounts, and more — use .tables and .schema <table> to explore. The .db files under data/ are empty stubs; store/messages.db is the real one.
+- Logs: the Warden service appends stdout to /opt/warden/logs/warden.log and stderr to /opt/warden/logs/warden.error.log — tail/grep these to see what the system actually did and when.
 - Allowed: SELECT queries, .tables/.schema, tail, grep, cat, ls, date. NEVER: INSERT/UPDATE/DELETE/DROP or any write pragma, file writes or shell redirection, sending anything, installing anything, or long-running/interactive commands.
 
 Look for:
@@ -807,15 +807,15 @@ Be direct and specific — reference the exact point you're critiquing. Do not f
         toolsets: [],
     },
     {
-        delegate: 'sentry',
-        label: 'Sentry',
+        delegate: 'oculus',
+        label: 'Oculus',
         maxIterations: 4,
-        summary: "single background security / situational-awareness agent: read security/sentry.md, decide alert/greet/silent, send one captioned photo alert, and update security state (open/dismiss alert, arm/disarm, log). Runs in the background.",
-        systemPrompt: `You are Sentry, Warden's single background security / situational-awareness agent. You are a data-only decision maker.
+        summary: "single background situational-awareness agent: SILENTLY logs each AWARENESS event to awareness_log, captures+logs watch-out-for matches to uploads, and answers orchestrator queries about the room/logs at a given time. Never proactively messages or alerts.",
+        systemPrompt: `You are Oculus, Warden's background situational-AWARENESS agent. You are SILENT. You never message the user, never raise an alert, never arm/disarm anything. You only record and, on demand, report.
 
-You receive one structured JSON AWARENESS event from the satellite camera detector. Your ONLY job is to apply the user notes below.
+You receive one structured JSON AWARENESS event from the camera detector. Your ONLY job is to LOG it. Apply the user rules in eyes_ears/oculus.md.
 
-Event fields available in the task:
+Event fields in the task:
 - event: arrival | departure | movement | motion_burst | camera_covered | camera_uncovered | camera_moved | note
 - situation.person_count, situation.labels, situation.room_occupied
 - situation.seconds_empty, situation.seconds_occupied, situation.motion_area
@@ -823,40 +823,31 @@ Event fields available in the task:
 - is_known (bool) and label (string) from InsightFace face recognition, when a face is visible
 - ts (timestamp)
 
-A latest security frame reference is provided in your task when available (e.g. "Latest security frame: [Image: attachments/img-....jpg]"). When you send an alert message, include that EXACT reference on the SAME LINE as your text so Telegram sends the photo with caption.
+A latest frame reference is provided in your task when the user's eyes are OPEN (e.g. "Latest security frame: [Image: attachments/img-....jpg]"). When eyes are CLOSED, no frame is provided and you log the text event only.
 
-Use awareness_log FIRST on every AWARENESS event to record your verdict (assessment: spoken|silent|note|flagged) and avoid repeating greetings. Query awareness_log to check recent history before deciding to speak again.
+ON EVERY AWARENESS EVENT — your one action is:
+1. awareness_log({"action":"record", "ts":..., "event":..., "label":..., "is_known":..., "assessment":"logged"}) — record the event. If a latest security frame IS provided in your task (eyes open), look at it and add a one-line "description" of what you see to the record. If no frame is provided (eyes closed), record the text event with no description. That is the whole job. Then stop. Do NOT call send_message (you do not have it). Do NOT output plain text. Use tools only.
 
-You have several security tools. For alert events (anything suspicious, or when the user notes say to alert), use them in this order:
-1. awareness_log({"action":"record", ...}) — record the event and your verdict.
-2. send_message({"sender": "Sentry", "text": "Alert sentence. [Image: attachments/img-....jpg]"}) — include the latest frame reference. One short plain sentence, no markdown, no emoji.
-3. alert_security({"reason": "concise reason"}) — mock escalation to the guard service.
-4. open_security_alert({"reason": "concise reason"}) — opens the detector's red STAND DOWN button.
+WATCH-OUT-FOR MATCH — the task may include a "Watch out for" list (situations the user defined). If the current event clearly matches one of those situations:
+1. awareness_log({"action":"record", "assessment":"flagged", "watch_out_for":"<the matched situation>", ...}) — record that it matched.
+2. oculus_capture({}) — save the latest frame to the uploads area so the user can review it later. (The frame was already fetched for you.)
+Then stop. Still SILENT — do not message the user about the match; the photo in uploads + the log entry is the record.
 
-For friendly, non-alert events, record awareness_log then optionally use send_message WITHOUT the image reference. Stay silent for routine arrivals you already greeted, brief absences, or when the user notes say to be quiet. Non-alert events use at most one awareness_log + one send_message.
+If the model you are running on is vision-capable, you may call security_frame once to load the live frame and verify what you see before logging. Otherwise rely on the structured payload.
 
-If the model you are running on is vision-capable, you may call security_frame once to load the live frame into your vision context and verify what you see. Otherwise rely on the structured payload.
+If the user asks to register a person as known (e.g. "this is dominic, remember him"), call save_known_person({"label":"dominic"}).
 
-For false-positive / non-event detections:
-1. awareness_log({"action":"record","assessment":"silent", ...})
-2. dismiss_security_flag({}) — re-arms the detector and closes the alert.
-3. security_log({"action":"record","assessment":"normal","condition":"what you saw or why it was normal","escalated":false}).
+Do NOT output plain-text summaries. Only call tools, then stop.
 
-You are text-only and rely on the structured AWARENESS payload. If the user asks what the camera sees, the orchestrator can pull the frame with webcam_capture itself.
-
-If the user asks to register a person as known (e.g. "this is dominic, remember him"), call save_known_person({"label":"dominic"}). The laptop computes a face embedding on CPU and stores it; future arrivals will report is_known=true and label.
-
-Arm/disarm only when the user explicitly asks you to change the system's armed state. Do NOT output plain text summaries. Only call tools.
-
-STATUS QUERY MODE: sometimes the orchestrator asks you a direct question such as "who's in the room" or "what's happening" by passing a task that starts with [ORCHESTRATOR_QUERY]. This is DIFFERENT from an AWARENESS event. In this mode:
-- Do NOT send_message to the user.
-- Do NOT use security_log.
-- Use ONLY these two tools: awareness_log({"action":"query", ...}) and awareness_status. NOTHING ELSE.
-- After reading the results, return a concise report as your final plain-text output.
-- The first word of your report MUST be either NOTHING_NOTEWORTHY or NOTEWORTHY.
-- Use NOTHING_NOTEWORTHY ONLY when the room is currently empty AND there is no person present, no recent arrival/departure, no motion, no alert, and the camera is normal. Example: NOTHING_NOTEWORTHY. The room has been empty with no motion or alerts.
-- Use NOTEWORTHY when a person is currently present, an unknown person is detected, there is recent motion/arrival/departure, an alert is open, or the camera is covered/moved. Example: NOTEWORTHY. One known person (dominic) is present.
-- After the keyword, add exactly one sentence of detail. Do not greet or alert the user directly.`,
+STATUS QUERY MODE — the orchestrator asks you a direct question such as "who's in the room", "what's happening", or "what did the logs show around <time>" by passing a task that starts with [ORCHESTRATOR_QUERY]. This is DIFFERENT from an AWARENESS event. In this mode:
+- Do NOT message the user. You do not have send_message.
+- Use awareness_status for the CURRENT room state, and security_frame (once) to look at the live screen if the question is about what is on screen now.
+- Use awareness_log({"action":"query", ...}) and security_log to read TEXT LOGS — query by the time window the user asked about.
+- Decide the CURRENT room state and return a concise report as your final plain-text output.
+- Start with NOTHING_NOTEWORTHY if the room is currently empty and there is no person present, no recent motion/arrival/departure, and the camera is normal.
+- Start with NOTEWORTHY if a person is currently present, an unknown person is detected, there is recent motion, or the camera is covered/moved.
+- If the user asked about a specific time, report what the logs show for that window.
+- Then add one sentence of detail. Do not greet or alert the user.`,
         toolsets: ['awareness-core', 'security-core'],
     },
 ];
@@ -872,7 +863,7 @@ const SUBAGENT_BY_DELEGATE = new Map<string, SubAgentDef>(SUBAGENTS.map(s => [s.
 
 const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'convert_file', 'api_request', 'list_api_keys',
-    // The orchestrator's EYES — also listed in Sentry's security toolset, so
+    // The orchestrator's EYES — also listed in Oculus's security toolset, so
     // without this the SUBAGENT_OWNED filter would strip them from the
     // orchestrator's tool defs and the # EYES instructions couldn't fire.
     'desktop_screenshot', 'webcam_capture', 'read_image',
@@ -1063,13 +1054,13 @@ const BOTH_TOOL_DEFS = stripTier(registry.getDefinitions(
 ));
 
 // Each sub-agent's actual tool defs: its toolsets' tools + shared 'both' tools,
-// EXCEPT for Sentry, which gets only its explicit toolsets to prevent
+// EXCEPT for Oculus, which gets only its explicit toolsets to prevent
 // fabric/MCP/web noise from derailing its narrow background job.
 const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
     SUBAGENTS.map(s => [
         s.delegate,
         stripTier(
-            s.delegate === 'sentry'
+            s.delegate === 'oculus'
                 ? registry.getDefinitions(getSubAgentToolNames(s))
                 : [
                     ...registry.getDefinitions(getSubAgentToolNames(s)),
@@ -1081,11 +1072,11 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
 
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
-    // Atlas, artemis, and sentry run async by default: the call returns a job
+    // Atlas, artemis, and oculus run async by default: the call returns a job
     // id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
     // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry') {
+    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'oculus') {
         return {
             type: 'function',
             function: {
@@ -1370,7 +1361,7 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     artemis: () => process.env.ARTEMIS_NUM_CTX || '',
     atlas: () => process.env.ATLAS_NUM_CTX || '',
     vulkan: () => process.env.VULKAN_NUM_CTX || '',
-    sentry: () => process.env.SENTRY_NUM_CTX || '',
+    oculus: () => process.env.OCULUS_NUM_CTX || '',
     // iris-digest (the hourly memory digest) is another one-shot on the toolcall
     // model; inherit the toolcall ctx so it reuses the resident instance instead
     // of reloading granite at native (a different ctx → Ollama reload + gap).
@@ -1402,11 +1393,11 @@ function keepAliveEnv(name: string, dflt: number): number {
     return Number.isFinite(n) ? n : dflt;
 }
 // Sub-agent chat calls (runSubAgent): the toolcall agents — byte, dexter,
-// iris, sentry, mercury, and the one-shot iris-digest spawn — share one
+// iris, oculus, mercury, and the one-shot iris-digest spawn — share one
 // keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use the
 // atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
 function subAgentKeepAlive(agent: string): number {
-    if (['byte', 'dexter', 'iris', 'sentry', 'mercury', 'iris-digest'].includes(agent)) {
+    if (['byte', 'dexter', 'iris', 'oculus', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
@@ -1828,7 +1819,7 @@ interface ContainerInput {
     chatJid: string;
     isMain: boolean;
     isScheduledTask?: boolean;
-    /** When set (e.g. 'sentry'), main() runs that sub-agent directly instead
+    /** When set (e.g. 'oculus'), main() runs that sub-agent directly instead
      *  of the orchestrator loop — used for the background security agent. */
     agent?: string;
     assistantName?: string;
@@ -1940,25 +1931,27 @@ async function runNativeOllama(input: ContainerInput) {
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request', 'list_api_keys',
         // Vision captures are orchestrator-only (sub-agents can't see images —
-        // _pendingImages is consumed only by runNativeOllama). desktop_screenshot
-        // and webcam_capture are the orchestrator's "eyes" for awareness/security
-        // and take no user path, so they stay always-on. read_image takes an
-        // arbitrary HOST file path — always-exposing it dangled a host-path
-        // reader on every trivial turn, which the small model hallucinated
-        // (it parroted the example path from the description on an empty-context
-        // greeting). It is now keyword-gated via the dynamic top-K instead.
-        'desktop_screenshot', 'webcam_capture',
-        // Orchestrator → Sentry direct line (registered by awareness-tools.ts,
+        // _pendingImages is consumed only by runNativeOllama). desktop_screenshot,
+        // webcam_capture, and read_image are ALL keyword-gated via the dynamic
+        // top-K now. Always-exposing desktop_screenshot/webcam_capture let the
+        // small model grab them for unrelated requests — e.g. "show me my emails"
+        // matched the desktop_screenshot description ("use this to SEE a native
+        // desktop app") and the model took a screenshot instead of delegating to
+        // iris. They stay in ORCHESTRATOR_SHARED_TOOLS (so the SUBAGENT_OWNED
+        // filter doesn't strip them from the ranked pool) but are no longer
+        // always-on: they surface only when the user's words match (screen,
+        // screenshot, see, webcam, photo, camera, room).
+        // Orchestrator → Oculus direct line (registered by awareness-tools.ts,
         // toolset 'chat'). Always exposed so presence/schedule notes from the
-        // user reach Sentry regardless of the dynamic top-K ranking.
-        'tell_sentry',
+        // user reach Oculus regardless of the dynamic top-K ranking.
+        'tell_oculus',
         // Read-only latest AWARENESS data (is_known/label, counts, occupancy
         // duration) for the webcam-vision skill. Always exposed so a vision
-        // question can combine a webcam_capture photo with Sentry's context.
+        // question can combine a webcam_capture photo with Oculus's context.
         'awareness_status',
-        // Live Sentry status query: spawns Sentry synchronously so it can decide
+        // Live Oculus status query: spawns Oculus synchronously so it can decide
         // the CURRENT room state instead of returning stale cached rows.
-        'sentry_query',
+        'oculus_query',
     ]);
     const DYNAMIC_TOOL_TOP_K = 5;
     let activeToolDefs = fullToolDefs;
@@ -2097,13 +2090,14 @@ Each specialist is a separate model with its own tools and its own context — i
 - **byte** — projects, deliverables, blockers, financials, work tasks, time tracking.
 - **artemis** — audit / second opinion on the conversation. Runs in the background like atlas.
 - **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree (see COUNCIL).
-- **sentry** — background security and situational awareness. AWARENESS events are piped to Sentry in code; you don't see them. Delegate only if the user explicitly asks for a security status check. For "who's / what's in the room", call \`sentry_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
+- **oculus** — background security and situational awareness. AWARENESS events are piped to Oculus in code; you don't see them. Delegate only if the user explicitly asks for a security status check. For "who's / what's in the room", call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
 
 # ROUTING
 
 Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts you already know, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user actually wants something done or looked up. When work is needed, route by what they want, not the verb — the roster above is the map, the cue words below just point intent at the right seat, and the recurring gotchas below that are the ones that actually trip routing. When in doubt, delegate to atlas — except coding, building, and heavy scripting, which go to vulkan.
 
 Cue words:
+- "read/check my emails", "any new emails", "what's in my inbox", "show me my emails/inbox" → **iris** (it reads email with read_emails). Email lives in iris's tools, not on the screen — never take a screenshot or webcam photo for an email request; delegate to iris.
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file or feature and the goal as plain English intent, never a shell command or step list.
 - "play X on youtube", "youtube X", "put on X", "play that song", "change/skip the song/video" → **atlas** with the song/artist as plain English intent (e.g. "Play chillstep on YouTube"), never a shell command — atlas finds it on YouTube and sets playback.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
@@ -4031,60 +4025,60 @@ async function main() {
         process.exit(1);
     }
 
-    // Sentry run-mode: the host spawns this
-    // process with agent:'sentry' (AWARENESS event from the detector's presence
-    // tracker, or a tell_sentry note) to run the background security/awareness
+    // Oculus run-mode: the host spawns this
+    // process with agent:'oculus' (AWARENESS event from the detector's presence
+    // tracker, or a tell_oculus note) to run the background security/awareness
     // agent directly — NOT the orchestrator loop. Tool calls (send_message,
     // open_security_alert, security_log, etc.) route to the host via CALLBACK stdio.
-    if (containerInput.agent === 'sentry') {
+    if (containerInput.agent === 'oculus') {
         try {
-            const def = SUBAGENT_BY_DELEGATE.get('sentry');
-            if (!def) throw new Error('sentry sub-agent not defined');
-            const tools = SUBAGENT_TOOL_DEFS.get('sentry') || [];
+            const def = SUBAGENT_BY_DELEGATE.get('oculus');
+            if (!def) throw new Error('oculus sub-agent not defined');
+            const tools = SUBAGENT_TOOL_DEFS.get('oculus') || [];
             const ctx = {
                 chatJid: containerInput.chatJid || 'owner@local',
                 groupFolder: containerInput.groupFolder || 'owner',
                 isMain: containerInput.isMain ?? true,
                 userId: process.env.WARDEN_USER_ID || '',
             };
-            // The host resolves the model (sentry:model router key, seeded from
+            // The host resolves the model (oculus:model router key, seeded from
             // the orchestrator model on first boot) and passes it in
             // containerInput.model. No hardcoded fallback: an empty model errors
             // out instead of silently running on a baked-in model.
             const model = (containerInput.model || '').replace(/^local:/, '');
             if (!model) {
-                writeOutput({ status: 'error', result: null, error: 'No sentry model configured (set sentry:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
+                writeOutput({ status: 'error', result: null, error: 'No oculus model configured (set oculus:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
                 if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
                 process.exit(0);
             }
-            // Track the sentry model so unloadModel keeps it consistent.
+            // Track the oculus model so unloadModel keeps it consistent.
             ORCHESTRATOR_MODEL = model;
-            // Sentry's num_ctx comes from its own setting (local:sentry_ctx, seeded
+            // Oculus's num_ctx comes from its own setting (local:oculus_ctx, seeded
             // to 8192 on first boot so granite4.1:8b's 9 tool schemas + system
             // prompt don't overflow the 2048 default). getNumCtx picks it up via
-            // the AGENT_CTX_OVERRIDE['sentry'] entry — no hardcoded bake here.
-            // Load the user-editable rules from security/sentry.md and inject them
+            // the AGENT_CTX_OVERRIDE['oculus'] entry — no hardcoded bake here.
+            // Load the user-editable rules from security/oculus.md and inject them
             // as trusted instructions. The user writes freeform notes like "I will
             // be out all day, anyone is an alert". Treat those notes as the primary
             // behavior guide; they are NOT untrusted tool output.
             let systemPrompt = def.systemPrompt;
             try {
-                const sentryMdPath = path.join(containerInput.workspaceRoot || '', 'security', 'sentry.md');
-                const sentryMd = fs.existsSync(sentryMdPath) ? fs.readFileSync(sentryMdPath, 'utf8') : '';
-                if (sentryMd) {
-                    systemPrompt = `${systemPrompt}\n\n# YOUR USER'S SENTRY NOTES — FOLLOW THESE\n${sentryMd}`;
+                const oculusMdPath = path.join(containerInput.workspaceRoot || '', 'security', 'oculus.md');
+                const oculusMd = fs.existsSync(oculusMdPath) ? fs.readFileSync(oculusMdPath, 'utf8') : '';
+                if (oculusMd) {
+                    systemPrompt = `${systemPrompt}\n\n# YOUR USER'S OCULUS NOTES — FOLLOW THESE\n${oculusMd}`;
                 }
             } catch (e: any) {
-                log(`[sentry] could not read sentry.md: ${e.message}`);
+                log(`[oculus] could not read oculus.md: ${e.message}`);
             }
-            log(`[sentry] starting background awareness agent: model=${model || '(none)'}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
-            setSentryTaskPrompt(containerInput.prompt || '');
-            (globalThis as any).__sentryQueryMode = (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]');
-            const sa = await runSubAgent('sentry', model, systemPrompt, tools, containerInput.prompt || '', ctx, (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]') ? 2 : def.maxIterations);
-            writeOutput({ status: 'success', result: sa.content || 'Sentry: done (silent).', error: null });
+            log(`[oculus] starting background awareness agent: model=${model || '(none)'}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
+            setOculusTaskPrompt(containerInput.prompt || '');
+            (globalThis as any).__oculusQueryMode = (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]');
+            const sa = await runSubAgent('oculus', model, systemPrompt, tools, containerInput.prompt || '', ctx, (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]') ? 2 : def.maxIterations);
+            writeOutput({ status: 'success', result: sa.content || 'Oculus: done (silent).', error: null });
         } catch (err: any) {
-            log(`[sentry] error: ${err.message}`);
-            writeOutput({ status: 'error', result: null, error: `Sentry error: ${err.message}` });
+            log(`[oculus] error: ${err.message}`);
+            writeOutput({ status: 'error', result: null, error: `Oculus error: ${err.message}` });
         }
         if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
         process.exit(0);

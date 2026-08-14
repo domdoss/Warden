@@ -69,6 +69,7 @@ import {
   getCalendarEventByIcalUid,
   listCalendarEvents,
   getTaskById,
+  getSatelliteIp,
 } from './db.js';
 import { decryptApiKey } from './encryption.js';
 import { fetchEmails, sendEmail, getEmailById } from './email.js';
@@ -83,7 +84,7 @@ import { startStatusServer, pushNotification, pushActivityLine, getCachedInboxEm
 import { startLogCap } from './log-rotator.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
-import { captureScreenshot, captureWebcam, captureWebcamFromSecurityApp, securityAppHasFrameServer, readHostImage } from './capture.js';
+import { captureScreenshotFromSecurityApp, captureWebcamFromSecurityApp, readHostImage } from './capture.js';
 import { securityLog, awarenessLog, recordAwarenessEvent, queryAwarenessHostEvents } from './security-log.js';
 
 // Re-export for backwards compatibility during refactor
@@ -126,9 +127,9 @@ let messageLoopRunning = false;
 export let agentProcessing = false;
 let lastAwarenessEvent: string = '';
 
-// Security senders — background agents (Sentry) whose send_message output
+// Oculus senders — background agents (Oculus) whose send_message output
 // should also be spoken over the voice client's SSE stream.
-const SECURITY_SENDERS = new Set(['Sentry']);
+const OCULUS_SENDERS = new Set(['Oculus']);
 
 const channels: Channel[] = [];
 
@@ -272,11 +273,11 @@ function buildPrompt(newMessages: NewMessage[]): string {
   const rawHistory = clearAt
     ? allHistory.filter((m) => (m.timestamp || '') > clearAt)
     : allHistory;
-  // Exclude background agent messages (Sentry security alerts and greetings) —
+  // Exclude background agent messages (Oculus security alerts and greetings) —
   // they are stored for the user/dashboard, but the orchestrator must NOT see them
   // in its history (otherwise it parrots/acknowledges them).
   const contextMessages = rawHistory
-    .filter((m) => !pendingIds.has(m.id) && m.sender_name !== 'Sentry')
+    .filter((m) => !pendingIds.has(m.id) && m.sender_name !== 'Oculus')
     .slice(-MERCURY_RECENT_MESSAGES);
 
   if (contextMessages.length > 0) {
@@ -347,26 +348,14 @@ async function deliverReply(text: string): Promise<void> {
 }
 
 /**
- * Sentry (situational-awareness agent) model resolution. Uses the dedicated
- * sentry:model router setting (dashboard Models card) — no fallback. A `local:`
- * prefix is stripped. seedPerAgentModelSettings() materializes sentry:model from
+ * Oculus (situational-awareness agent) model resolution. Uses the dedicated
+ * oculus:model router setting (dashboard Models card) — no fallback. A `local:`
+ * prefix is stripped. seedPerAgentModelSettings() materializes oculus:model from
  * the orchestrator model on first boot, so this is never empty in normal use.
  */
 function resolveAwarenessModel(): string {
-  // Sentry shares the Toolcall model (local:subagent_model).
+  // Oculus shares the Toolcall model (local:subagent_model).
   return (getRouterState('local:subagent_model') || '').trim().replace(/^local:/, '');
-}
-
-/** Satellite IP where the security detector runs. Read from router state first,
- *  then env, then localhost fallback. */
-function getSatelliteIp(): string {
-  return (
-    getRouterState('security:satellite_ip') ||
-    getRouterState('security:laptop_ip') ||
-    process.env.WARDEN_SECURITY_SATELLITE_IP ||
-    process.env.WARDEN_SECURITY_LAPTOP_IP ||
-    '127.0.0.1'
-  ).trim();
 }
 
 /** Pull the current frame from the satellite security detector and save it to
@@ -392,31 +381,33 @@ async function fetchAndSaveSecurityFrame(): Promise<string | null> {
   }
 }
 
-/** Latest security frame reference fetched for the current Sentry run, so the
- *  host can attach it to Sentry's send_message even if the model forgets. */
-let latestSentryFrame: string | null = null;
+/** Latest security frame reference fetched for the current Oculus run, so the
+ *  host can attach it to Oculus's send_message even if the model forgets. */
+let latestOculusFrame: string | null = null;
 
-/** Spawn Sentry, the single background security/awareness agent (fire-and-forget).
- *  Never awaited. Pass the original awareness text so Sentry has full context. */
-export function spawnSentryBackground(task: string, awarenessText?: string): void {
+/** Spawn Oculus, the single background security/awareness agent (fire-and-forget).
+ *  Never awaited. Pass the original awareness text so Oculus has full context.
+ *
+ *  eyes_open gates the IMAGE only. Text awareness events are always logged
+ *  (arrivals/departures/face labels) while the eyes server runs; "eyes closed"
+ *  means Oculus logs the text event with no image. "eyes open" means on a new
+ *  (debounced) event the host fetches the frame so Oculus can look at it,
+ *  describe it, log it, and move on. The detector reports eyes_open in the
+ *  AWARENESS payload; if it's missing we default to text-only (eyes closed). */
+export function spawnOculusBackground(task: string, awarenessText?: string): void {
   if (awarenessText) {
     lastAwarenessEvent = awarenessText;
   }
-  // Pre-fetch the latest security frame so Sentry can include it in any alert
-  // message it sends. If the frame server is slow/down, Sentry still runs without
-  // the image rather than being blocked. Wait ~2s before pulling the frame so the
-  // person has settled into view — fetching the instant the event arrives is too
-  // quick and often catches an empty or mid-entry frame.
-  void new Promise((resolve) => setTimeout(resolve, 2000))
-    .then(() => fetchAndSaveSecurityFrame())
-    .then((imageTag) => {
-    latestSentryFrame = imageTag || null;
-    if (!imageTag) {
-      logger.warn('spawnSentryBackground: could not fetch security frame for Sentry');
+  let eyesOpen = false;
+  if (awarenessText) {
+    const m = awarenessText.match(/data:\s*(\{.*\})/);
+    if (m) {
+      try { eyesOpen = !!JSON.parse(m[1]).eyes_open; } catch { /* default text-only */ }
     }
-    const prompt = imageTag ? `${task}\n\nLatest security frame: ${imageTag}` : task;
+  }
+  const spawn = (prompt: string) =>
     runSubAgentBackground({
-      agent: 'sentry',
+      agent: 'oculus',
       prompt,
       model: resolveAwarenessModel(),
       sessionId: 'owner',
@@ -424,10 +415,29 @@ export function spawnSentryBackground(task: string, awarenessText?: string): voi
       chatJid: OWNER_JID,
       groupFolder: 'owner',
       isMain: true,
-      timeoutMs: 90 * 1000, // greetings are short — don't let a stuck model linger
+      timeoutMs: 90 * 1000, // short — don't let a stuck model linger
       callbacks: buildAgentCallbacks({ awarenessText }),
     } as any);
-  });
+
+  // Eyes closed: log the text event only — no image fetch, no description.
+  if (!eyesOpen) {
+    latestOculusFrame = null;
+    spawn(task);
+    return;
+  }
+  // Eyes open: wait ~2s for the person to settle, then pull the frame so Oculus
+  // can look at it + describe it. If the frame server is slow/down, Oculus still
+  // runs with text only rather than being blocked.
+  void new Promise((resolve) => setTimeout(resolve, 2000))
+    .then(() => fetchAndSaveSecurityFrame())
+    .then((imageTag) => {
+      latestOculusFrame = imageTag || null;
+      if (!imageTag) {
+        logger.warn('spawnOculusBackground: could not fetch security frame for Oculus');
+      }
+      const prompt = imageTag ? `${task}\n\nLatest security frame: ${imageTag}` : task;
+      spawn(prompt);
+    });
 }
 
 /**
@@ -454,14 +464,14 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           return { ok: true, skipped: true };
         }
 
-        // For Sentry security alerts, append the real pre-fetched security
+        // For Oculus security alerts, append the real pre-fetched security
         // frame so Telegram sends the photo. Only swap when we actually have a
-        // frame — otherwise leave whatever [Image: ...] reference Sentry wrote
+        // frame — otherwise leave whatever [Image: ...] reference Oculus wrote
         // in place so Telegram can still resolve and send it.
         let finalText = text;
-        if (senderName === 'Sentry' && latestSentryFrame) {
+        if (senderName === 'Oculus' && latestOculusFrame) {
           finalText = finalText.replace(/\s*\[Image:\s*[^\]]+\]/gi, '').trim();
-          finalText = `${finalText} ${latestSentryFrame}`;
+          finalText = `${finalText} ${latestOculusFrame}`;
         }
         if (!finalText.trim()) return { ok: false, error: 'missing text' };
         const messageId = `bot-cb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -1153,10 +1163,11 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
 
     desktop_screenshot: async (args: any) => {
       try {
-        const windowTitle =
-          typeof args?.window_title === 'string' && args.window_title.trim()
-            ? args.window_title.trim()
-            : undefined;
+        // The Pi is headless — it has no display to capture. The screenshot is
+        // pulled from the laptop satellite's /screenshot endpoint (the security
+        // app's frame server, which runs in the laptop's graphical session).
+        // Region is cropped here from the full-screen PNG. window_title is not
+        // supported remotely (no way to focus a window on the laptop from here).
         let region: { x: number; y: number; w: number; h: number } | undefined;
         const r = args?.region;
         if (r && typeof r === 'object') {
@@ -1166,10 +1177,11 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
             region = { x: Math.round(+r.x || 0), y: Math.round(+r.y || 0), w, h };
           }
         }
-        const cap = await captureScreenshot({ windowTitle, region });
+        const shotUrl = `http://${getSatelliteIp()}:8765/screenshot`;
+        const cap = await captureScreenshotFromSecurityApp(shotUrl, region);
         logger.info(
-          { width: cap.width, height: cap.height, mediaType: cap.mediaType, windowTitle, region },
-          'desktop_screenshot: captured on host',
+          { width: cap.width, height: cap.height, mediaType: cap.mediaType, region, url: shotUrl },
+          'desktop_screenshot: captured from laptop satellite',
         );
         return { ok: true, image: cap.image, mediaType: cap.mediaType, width: cap.width, height: cap.height };
       } catch (err: any) {
@@ -1179,32 +1191,16 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
 
     webcam_capture: async (args: any) => {
       try {
-        // Prefer the satellite's Security Mode frame server. The detector owns the
-        // webcam, so grabbing /dev/video0 directly would fail. Fall back to ffmpeg.
-        let cap;
-        let source = 'ffmpeg';
-        const satelliteIp = getSatelliteIp();
-        const frameUrl = `http://${satelliteIp}:8765/frame`;
-        if (await securityAppHasFrameServer(frameUrl)) {
-          try {
-            cap = await captureWebcamFromSecurityApp(frameUrl);
-            source = 'security-app';
-          } catch (err: any) {
-            logger.warn({ err }, 'webcam_capture: security frame server up but fetch failed — falling back to ffmpeg');
-            cap = await captureWebcam({
-              device: typeof args?.device === 'string' ? args.device : undefined,
-              width: typeof args?.width === 'number' ? args.width : undefined,
-            });
-          }
-        } else {
-          cap = await captureWebcam({
-            device: typeof args?.device === 'string' ? args.device : undefined,
-            width: typeof args?.width === 'number' ? args.width : undefined,
-          });
-        }
+        // The webcam lives on the laptop, and the security detector owns
+        // /dev/video0 there. Pull the latest frame from the satellite's /frame
+        // endpoint — the one way Warden gets a webcam photo. No ffmpeg/local
+        // fallback: the Pi has no webcam, and a fallback would mask the real
+        // path failing.
+        const frameUrl = `http://${getSatelliteIp()}:8765/frame`;
+        const cap = await captureWebcamFromSecurityApp(frameUrl);
         logger.info(
-          { source, width: cap.width, height: cap.height, mediaType: cap.mediaType },
-          'webcam_capture: captured on host',
+          { width: cap.width, height: cap.height, mediaType: cap.mediaType, url: frameUrl },
+          'webcam_capture: captured from laptop satellite',
         );
         return { ok: true, image: cap.image, mediaType: cap.mediaType, width: cap.width, height: cap.height };
       } catch (err: any) {
@@ -1242,7 +1238,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
-    // ─── Security Mode ─────────────────────────────────────────────────────
+    // ─── Oculus alert (close) ──────────────────────────────────────────────
     // Close the open security alert on the standalone detector app, re-arming
     // it so it can raise the next alert. The detector holds an alert OPEN until
     // this is called (one alert per incident, not one per detection).
@@ -1266,63 +1262,93 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
-    // Guard's chat command: arm the standalone detector (enable flagging).
-    // Mirrors close_security_alert. The detector keeps running + showing the
-    // feed; armed means Sentry flagging is active, disarmed means it's paused.
+    // "Open your eyes" — toggle the detector's eyes_open flag on (it will POST
+    // AWARENESS events again). Mirrors close_oculus_alert. The detector keeps
+    // running + showing the feed; eyes_open means awareness is active, eyes
+    // closed means it's paused.
     arm_security: async (_args: any) => {
       const ip = getSatelliteIp();
-      const url = `http://${ip}:8765/arm`;
+      const url = `http://${ip}:8765/open`;
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 3000);
         try {
           const res = await fetch(url, { method: 'POST', signal: controller.signal });
           const body = await res.text().catch(() => '');
-          logger.info({ status: res.status, body: body.slice(0, 120) }, 'arm_security: detector armed');
+          logger.info({ status: res.status, body: body.slice(0, 120) }, 'arm_security: eyes opened');
           return { ok: res.ok, state: body };
         } finally {
           clearTimeout(timer);
         }
       } catch (err: any) {
-        logger.warn({ err }, 'arm_security: security app not reachable');
+        logger.warn({ err }, 'arm_security: oculus app not reachable');
         return { ok: false, error: String(err?.message ?? err) };
       }
     },
 
-    // Guard's chat command: disarm the standalone detector (stop flagging).
+    // "Close your eyes" — toggle the detector's eyes_open flag off (stop posting
+    // AWARENESS events).
     disarm_security: async (_args: any) => {
       const ip = getSatelliteIp();
-      const url = `http://${ip}:8765/disarm`;
+      const url = `http://${ip}:8765/close`;
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 3000);
         try {
           const res = await fetch(url, { method: 'POST', signal: controller.signal });
           const body = await res.text().catch(() => '');
-          logger.info({ status: res.status, body: body.slice(0, 120) }, 'disarm_security: detector disarmed');
+          logger.info({ status: res.status, body: body.slice(0, 120) }, 'disarm_security: eyes closed');
           return { ok: res.ok, state: body };
         } finally {
           clearTimeout(timer);
         }
       } catch (err: any) {
-        logger.warn({ err }, 'disarm_security: security app not reachable');
+        logger.warn({ err }, 'disarm_security: oculus app not reachable');
         return { ok: false, error: String(err?.message ?? err) };
       }
     },
 
-    // Sentry's conditions log (own sqlite store, store/security.db). Records
+    // Oculus's conditions log (own sqlite store, store/security.db). Records
     // each alert assessment with an exact timestamp, and queries history by
-    // local-time range so Sentry can reference events by time/date.
+    // local-time range so Oculus can reference events by time/date.
     security_log: async (args: any) => {
       return securityLog(args);
     },
 
-    // Sentry's situational-awareness history (arrivals/departures/greetings).
+    // Oculus's situational-awareness history (arrivals/departures/greetings).
     awareness_log: async (args: any) => {
       return awarenessLog(args);
     },
 
-    // Sentry registers a known person; the satellite computes the face embedding
+    // Oculus watch-out-for match: copy the latest fetched frame into the owner's
+    // uploads tree (groups/owner/oculus/<ts>.jpg) so the user can review it later,
+    // and return the uploads path. Silent — no message to the user. Called by the
+    // Oculus agent when an AWARENESS event matches a user-defined watch-out-for
+    // situation. The frame was already pulled + saved by fetchAndSaveSecurityFrame.
+    oculus_capture: async (_args: any) => {
+      try {
+        if (!latestOculusFrame) return { ok: false, error: 'no frame available' };
+        const m = latestOculusFrame.match(/\[Image:\s*(.+?)\]/);
+        if (!m) return { ok: false, error: 'could not parse frame reference' };
+        const rel = m[1].trim();                      // e.g. attachments/xyz.jpg
+        const src = path.join(WORKSPACE_ROOT, 'groups', 'owner', rel);
+        if (!fs.existsSync(src)) return { ok: false, error: 'frame file not found' };
+        const destDir = path.join(WORKSPACE_ROOT, 'groups', 'owner', 'oculus');
+        fs.mkdirSync(destDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const base = path.basename(rel);
+        const dest = path.join(destDir, `${stamp}-${base}`);
+        fs.copyFileSync(src, dest);
+        const uploadPath = `oculus/${stamp}-${base}`;
+        logger.info({ uploadPath }, 'oculus_capture: watch-out-for match saved to uploads');
+        return { ok: true, path: uploadPath };
+      } catch (err: any) {
+        logger.warn({ err }, 'oculus_capture: failed to save frame');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
+    // Oculus registers a known person; the satellite computes the face embedding
     // on CPU and stores it locally.
     save_known_person: async (args: any) => {
       try {
@@ -1350,7 +1376,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
-    // Orchestrator vision aid: the latest AWARENESS info from Sentry / the
+    // Orchestrator vision aid: the latest AWARENESS info from Oculus / the
     // camera detector — the most recent event text plus the recent host event
     // rows (event, is_known/label, person_count, how long the room's been
     // occupied/empty). Lets the orchestrator answer "who's in the room" by
@@ -1358,17 +1384,17 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
     // counts, durations) that the photo alone can't provide.
     awareness_status: async () => {
       try {
-        const recent = queryAwarenessHostEvents(5);
+        const recent = await queryAwarenessHostEvents(5);
         return { ok: true, latest: lastAwarenessEvent, recent };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }
     },
 
-    // Orchestrator → Sentry direct. The user tells Jarvis a presence/schedule
-    // note (e.g. "heading out for the evening"); Sentry processes it according to
-    // the rules in security/sentry.md. Sentry does not reply in the chat.
-    tell_sentry: async (args: any) => {
+    // Orchestrator → Oculus direct. The user tells Jarvis a presence/schedule
+    // note (e.g. "heading out for the evening"); Oculus processes it according to
+    // the rules in eyes_ears/oculus.md. Oculus does not reply in the chat.
+    tell_oculus: async (args: any) => {
       try {
         const message = typeof args?.message === 'string' ? args.message.trim() : '';
         if (!message) return { ok: false, error: 'missing message' };
@@ -1378,22 +1404,22 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const task =
           `Current local time is ${localNow} (timezone ${tz}).\n\n` +
           `AWARENESS — note at ${compactTs}. data: {"event":"note","message":${JSON.stringify(message)},"ts":"${compactTs}"}\n\n` +
-          `The user passed you a note. Read security/sentry.md and follow its rules. ` +
+          `The user passed you a note. Read eyes_ears/oculus.md and follow its rules. ` +
           `Do NOT send_message and do NOT reply in chat unless the rules explicitly tell you to greet. Stop after one action.`;
-        spawnSentryBackground(task);
-        logger.info('tell_sentry: spawned Sentry to process note');
+        spawnOculusBackground(task);
+        logger.info('tell_oculus: spawned Oculus to process note');
         return { ok: true };
       } catch (err: any) {
-        logger.warn({ err }, 'tell_sentry: failed to spawn Sentry');
+        logger.warn({ err }, 'tell_oculus: failed to spawn Oculus');
         return { ok: false, error: String(err?.message ?? err) };
       }
     },
 
-    // Orchestrator → Sentry live status query. Spawns Sentry synchronously so
+    // Orchestrator → Oculus live status query. Spawns Oculus synchronously so
     // it can pull/process live data and return a concise report, instead of
     // returning stale cached rows. The orchestrator uses this to decide whether
     // a current room-status question needs a webcam frame.
-    sentry_query: async (args: any) => {
+    oculus_query: async (args: any) => {
       try {
         const question = typeof args?.question === 'string' && args.question.trim()
           ? args.question.trim()
@@ -1403,15 +1429,18 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const task =
           `[ORCHESTRATOR_QUERY] Current local time is ${localNow} (timezone ${tz}).\n\n` +
           `The orchestrator asks: "${question}"\n\n` +
-          `You are Sentry, the situational-awareness agent. This is a live status query from the orchestrator, NOT an AWARENESS event. ` +
-          `Do NOT send_message to the user. Do NOT use security_log. Use ONLY awareness_log (action: query) and awareness_status. ` +
-          `Decide the CURRENT room state and return a concise report as your final plain-text output. ` +
-          `Start with NOTHING_NOTEWORTHY if the room is currently empty and there is no person present, no recent motion/arrival/departure/alert, and the camera is normal. ` +
-          `Start with NOTEWORTHY if a person is currently present, an unknown person is detected, there is recent motion, an alert is open, or the camera is covered/moved. ` +
-          `Then add one sentence of detail. Read security/sentry.md if you need user-specific rules, but do not greet or alert the user directly.`;
+          `You are Oculus, the situational-awareness agent. This is a live query from the orchestrator, NOT an AWARENESS event. ` +
+          `Do NOT send_message to the user (you do not have it). ` +
+          `If the question is about what is happening NOW or what is on screen: call awareness_status for the current room state, and security_frame once to look at the live screen if it would help answer. ` +
+          `If the question is about what happened at or around a given time: query awareness_log (action: query) and security_log for that time window to read the text logs. ` +
+          `Then return a concise report as your final plain-text output. ` +
+          `Start with NOTHING_NOTEWORTHY if the room is currently empty and there is no person present, no recent motion/arrival/departure, and the camera is normal. ` +
+          `Start with NOTEWORTHY if a person is currently present, an unknown person is detected, there is recent motion, or the camera is covered/moved. ` +
+          `If the user asked about a specific time, report what the logs show for that window. ` +
+          `Then add one sentence of detail. Read eyes_ears/oculus.md if you need user-specific rules, but do not greet or alert the user directly.`;
         const model = resolveAwarenessModel();
         const result = await runSubAgentSync({
-          agent: 'sentry',
+          agent: 'oculus',
           prompt: task,
           model,
           workspaceRoot: WORKSPACE_ROOT,
@@ -1421,15 +1450,15 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           timeoutMs: 30 * 1000,
           callbacks: buildAgentCallbacks({}),
         } as any);
-        logger.info({ report: result.content.slice(0, 200), exitCode: result.exitCode }, 'sentry_query: got report');
+        logger.info({ report: result.content.slice(0, 200), exitCode: result.exitCode }, 'oculus_query: got report');
         return { ok: true, report: result.content };
       } catch (err: any) {
-        logger.warn({ err }, 'sentry_query: failed to query Sentry');
+        logger.warn({ err }, 'oculus_query: failed to query Oculus');
         return { ok: false, error: String(err?.message ?? err) };
       }
     },
 
-    // Sentry raised an alert → light the red alert on the satellite detector.
+    // Oculus raised an alert → light the red alert on the satellite detector.
     open_security_alert: async (args: any) => {
       const reason = String(args?.reason || '').trim();
       if (!reason) return { ok: false, error: 'missing reason' };
@@ -1709,7 +1738,7 @@ async function processOwnerMessages(): Promise<void> {
   setRouterState('orchestrator:last_user_message_at', latestUserTs);
 
   // ── "Close the alert" — the person at the keyboard re-arms the detector ──
-  // Sentry never closes an ABNORMAL alert itself; the user closes it after
+  // Oculus never closes an ABNORMAL alert itself; the user closes it after
   // they've checked / acted on it. This intercepts that command and calls the
   // close_security_alert host callback directly (the orchestrator doesn't own
   // that tool), then acknowledges — no orchestrator turn needed.
@@ -1722,7 +1751,7 @@ async function processOwnerMessages(): Promise<void> {
   if (closeText) {
     lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
     saveState();
-    let reply = 'Security alert closed — detector re-armed.';
+    let reply = 'Alert closed.';
     try {
       const r = await buildAgentCallbacks().close_security_alert({});
       if (r && r.ok === false) reply = `Tried to close the security alert: ${r.error || 'detector app not reachable'}.`;
@@ -1731,75 +1760,83 @@ async function processOwnerMessages(): Promise<void> {
     }
     await deliverReply(reply);
     pushNotification('owner', { type: 'chat_complete', message: reply, from: OWNER_JID });
-    logger.info({ chatJid: OWNER_JID }, 'Security alert closed by user → detector re-armed');
+    logger.info({ chatJid: OWNER_JID }, 'Oculus alert closed by user');
     return;
   }
 
-  // ── "Arm / disarm the system" — the guard toggles the detector ──────────
-  // 2-way: the user says "arm the system"/"disarm" in chat; we call the
-  // arm_security/disarm_security host callback directly (the orchestrator
-  // doesn't own that tool) and acknowledge — no orchestrator turn needed.
-  // "disarm" is specific enough to match alone; "arm" requires a security
-  // context word so body-part / "alarm" uses don't fire.
-  const disarmText = pending.some((m) => /\bdisarm\b/.test((m.content || '').toLowerCase()));
-  const armText = pending.some((m) => {
+  // ── "Open / close your eyes" — the user toggles the detector's eyes_open
+  // flag (awareness on/off). We call the arm_security/disarm_security host
+  // callback directly (the orchestrator doesn't own that tool — the callback
+  // POSTs to the detector's /open or /close) and acknowledge — no orchestrator
+  // turn needed.
+  const closeEyesText = pending.some((m) => {
     const s = (m.content || '').toLowerCase();
-    return /\barm\b/.test(s) && /\b(system|security|detector|camera|it)\b/.test(s);
+    return (/\bclose\b/.test(s) && /\beyes?\b/.test(s)) || /\bshut\b.*\beyes?\b/.test(s);
   });
-  if (armText || disarmText) {
+  const openEyesText = pending.some((m) => {
+    const s = (m.content || '').toLowerCase();
+    return /\bopen\b/.test(s) && /\beyes?\b/.test(s);
+  });
+  if (openEyesText || closeEyesText) {
     lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
     saveState();
     let reply = '';
     try {
       const cb = buildAgentCallbacks();
-      if (disarmText) {
+      if (closeEyesText) {
         const r = await cb.disarm_security({});
         reply = r && r.ok === false
-          ? `Tried to disarm: ${r.error || 'detector app not reachable'}.`
-          : 'Security system disarmed — flagging paused.';
+          ? `Tried to close your eyes: ${r.error || 'detector app not reachable'}.`
+          : 'Eyes closed — awareness paused.';
       } else {
         const r = await cb.arm_security({});
         reply = r && r.ok === false
-          ? `Tried to arm: ${r.error || 'detector app not reachable'}.`
-          : 'Security system armed — flagging enabled.';
+          ? `Tried to open your eyes: ${r.error || 'detector app not reachable'}.`
+          : 'Eyes open — awareness active.';
       }
     } catch (err: any) {
-      reply = `Could not toggle the security system: ${err?.message ?? err}.`;
+      reply = `Could not toggle the eyes: ${err?.message ?? err}.`;
     }
     await deliverReply(reply);
     pushNotification('owner', { type: 'chat_complete', message: reply, from: OWNER_JID });
-    logger.info({ chatJid: OWNER_JID, arm: armText, disarm: disarmText }, 'Security system toggled by user');
+    logger.info({ chatJid: OWNER_JID, open: openEyesText, close: closeEyesText }, 'Eyes toggled by user');
     return;
   }
 
-  // ── Awareness events → Sentry direct pipe ───────────────────────────────
+  // ── Awareness events → Oculus direct pipe ───────────────────────────────
   // An AWARENESS message (posted by the standalone detector's presence
   // tracker — arrival/departure/note, event-driven, never per-frame) is piped
-  // straight to Sentry, the background situational-awareness agent, in code.
+  // straight to Oculus, the background situational-awareness agent, in code.
   // Same engrained pattern: the event row is pre-written to awareness_log
-  // (so it's recorded even if Sentry crashes), Sentry runs on the model
-  // configured in dashboard (sentry:model), and we return so the orchestrator
+  // (so it's recorded even if Oculus crashes), Oculus runs on the model
+  // configured in dashboard (oculus:model), and we return so the orchestrator
   // never burns a turn on it.
   // Independent of the arm/disarm state — awareness ≠ security arming.
   const isAwareness = pending.some((m) => (m.content || '').startsWith('AWARENESS'));
   if (isAwareness) {
     lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
     saveState();
-    logger.info({ chatJid: OWNER_JID, messageCount: pending.length }, 'Security awareness → routing to Sentry (background)');
+    logger.info({ chatJid: OWNER_JID, messageCount: pending.length }, 'Awareness → routing to Oculus (background)');
 
     const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
     const events = pending.filter((m) => (m.content || '').startsWith('AWARENESS'));
     const latest = events.length > 0 ? events[events.length - 1] : pending[pending.length - 1]!;
     const awarenessText = latest.content || '';
-    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}\n\nYou are Sentry, Warden's situational-awareness agent. Use tools only. Read security/sentry.md and apply its rules exactly. Decide: alert, greet, or stay silent.\n\nThe AWARENESS payload now includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- room occupancy, motion area, camera state, and keypoint/bbox data\n\nUse awareness_log (action: record/query) to record your verdict and avoid repeating greetings.\n\nDo not write a plain-text response; use tools only.`;
+    // Pull the user's "watch out for" list so Oculus can match silently.
+    let watchOut: string[] = [];
+    try { watchOut = JSON.parse(getRouterState('oculus:watch_out_for') || '[]'); } catch { watchOut = []; }
+    const watchOutBlock = watchOut.length
+      ? `\n\nWatch out for (user-defined situations; if this event CLEARLY matches one, record it in awareness_log with assessment "flagged" and the matched situation, then call oculus_capture to save the photo to uploads — stay SILENT, do not message the user):\n${watchOut.map((w) => `- ${w}`).join('\n')}`
+      : '';
+    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}\n\nYou are Oculus, Warden's SILENT situational-awareness agent. Use tools only. Read eyes_ears/oculus.md and apply its rules exactly. Your ONLY job is to LOG this event silently: call awareness_log (action: record) with the event details, then stop. Do NOT message the user, do NOT greet, do NOT alert — you have no send_message.${watchOutBlock}\n\nThe AWARENESS payload includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- room occupancy, motion area, camera state\n\nDo not write a plain-text response; use tools only.`;
 
     try {
-      // Host-side auto-log of the raw event, independent of Sentry.
+      // Host-side auto-log of the raw event, independent of Oculus.
       recordAwarenessEvent(awarenessText);
-      spawnSentryBackground(task, awarenessText);
+      spawnOculusBackground(task, awarenessText);
     } catch (err: any) {
-      logger.warn({ err }, 'Awareness: failed to spawn Sentry');
+      logger.warn({ err }, 'Awareness: failed to spawn Oculus');
     }
     return; // do NOT run the orchestrator for awareness events
   }
@@ -2674,21 +2711,21 @@ function seedPerAgentModelSettings(): void {
   seed('atlas:model', orch);
   seed('vulkan:model', orch);
   seed('mercury:model', orch);
-  seed('sentry:model', orch);
+  seed('oculus:model', orch);
   // ctx — preserve each agent's current effective value.
   seed('local:byte_ctx', toolsCtx);
   seed('local:dexter_ctx', toolsCtx);
   seed('local:iris_ctx', toolsCtx);
   seed('local:artemis_ctx', atlasCtx);
-  // Sentry bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
+  // Oculus bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
   // materialize that as its ctx setting so the hardcoded bake can be removed.
-  seed('local:sentry_ctx', '8192');
+  seed('local:oculus_ctx', '8192');
   // Vulkan had no ctx override (native window) — leave it blank (native).
 }
 
 /**
  * Sync every per-agent num_ctx override from router_state into process.env so
- * the agent-runner child (and background spawns like Sentry, which inherit
+ * the agent-runner child (and background spawns like Oculus, which inherit
  * ...process.env) always sees the current value. Called at boot (after the
  * migration seed, so background spawns before the first chat turn are covered)
  * and again per turn (so dashboard changes take effect immediately).
@@ -2705,7 +2742,7 @@ export function syncAgentCtxEnv(): void {
   process.env.IRIS_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
   process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
-  process.env.SENTRY_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  process.env.OCULUS_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';

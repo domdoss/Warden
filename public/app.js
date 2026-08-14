@@ -957,12 +957,12 @@
           <select class="select small" id="sMercuryCtx">${buildCtxOptions(d.mercuryCtx)}</select>
           <span class="dim mono" style="font-size:10px">blank = model default</span>
         </div>
-        <div class="setting-row"><label>Awareness / Security (Sentry)</label>
-          <select class="select" id="sSentryModel">${anyModelHtml}</select>
+        <div class="setting-row"><label>Awareness / Security (Oculus)</label>
+          <select class="select" id="sOculusModel">${anyModelHtml}</select>
           <span class="dim mono" style="font-size:10px">data-only guard that decides normal vs anomaly; blank = inherit orchestrator</span>
         </div>
-        <div class="setting-row"><label>Sentry Ollama</label>
-          <select class="select" id="sSentryOllamaServer"></select>
+        <div class="setting-row"><label>Oculus Ollama</label>
+          <select class="select" id="sOculusOllamaServer"></select>
           <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
         <div class="setting-row"><label>Thinking</label>
@@ -1008,12 +1008,22 @@
       </div>
 
       <div class="setting-card">
-        <h3>Security — Sentry rules</h3>
-        <div class="hint">Edit security/sentry.md. Sentry uses this file to decide what camera events are normal vs anomalous.</div>
-        <textarea class="input" id="sSentryMd" rows="16" style="font-family:monospace;font-size:12px;white-space:pre-wrap">${escAttr(d.sentryMd || '')}</textarea>
+        <h3>Oculus rules</h3>
+        <div class="hint">Edit eyes_ears/oculus.md. Oculus reads this file to know how to silently log camera events.</div>
+        <textarea class="input" id="sOculusMd" rows="16" style="font-family:monospace;font-size:12px;white-space:pre-wrap">${escAttr(d.oculusMd || '')}</textarea>
         <div class="save-row">
-          <button class="btn btn-primary btn-sm" id="btnSaveSentryMd">Save Sentry.md</button>
-          <span class="status" id="sentryMdStatus"></span>
+          <button class="btn btn-primary btn-sm" id="btnSaveOculusMd">Save Oculus.md</button>
+          <span class="status" id="oculusMdStatus"></span>
+        </div>
+      </div>
+
+      <div class="setting-card">
+        <h3>Oculus — watch out for</h3>
+        <div class="hint">One situation per line. When an awareness event clearly matches one, Oculus saves the photo to uploads and logs it silently (it does not message you).</div>
+        <textarea class="input" id="sWatchOut" rows="6" placeholder="e.g. someone taking food from the fridge"></textarea>
+        <div class="save-row">
+          <button class="btn btn-primary btn-sm" id="btnSaveWatchOut">Save list</button>
+          <span class="status" id="watchOutStatus"></span>
         </div>
       </div>
 
@@ -1054,7 +1064,7 @@
     setSelect('sMercury', d.mercuryMode || 'full');
     setSelect('sMercuryModel', (d.mercuryModel || '').replace(/^local:/, ''));
     setSelect('sMercuryCtx', d.mercuryCtx || '');
-    setSelect('sSentryModel', (d.sentryModel || '').replace(/^local:/, ''));
+    setSelect('sOculusModel', (d.oculusModel || '').replace(/^local:/, ''));
     setSelect('sThinking', d.thinking || 'true');
     // Timezone dropdown: select the saved zone, appending it as an extra
     // option if it isn't in the curated list (preserves custom values).
@@ -1108,7 +1118,7 @@
     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
     fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
     fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
-    fillAgentServerSelect('sSentryOllamaServer', d.sentryOllamaServer || '');
+    fillAgentServerSelect('sOculusOllamaServer', d.oculusOllamaServer || '');
 
     // Friendly names list
     const fl = $('friendlyList');
@@ -1129,9 +1139,11 @@
     $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveAutomation').addEventListener('click', saveAutomation);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);
-    $('btnSaveSentryMd').addEventListener('click', saveSentryMd);
+    $('btnSaveOculusMd').addEventListener('click', saveOculusMd);
+    $('btnSaveWatchOut').addEventListener('click', saveWatchOut);
     $('btnRestartServer2').addEventListener('click', restartServer);
 
+    loadWatchOut();
     refreshLogInfo();
     $('btnRefreshLogInfo').addEventListener('click', refreshLogInfo);
     $('btnTruncateLogs').addEventListener('click', truncateLogs);
@@ -1210,7 +1222,7 @@
         mercuryMode: $('sMercury').value,
         mercuryModel: stripLocal($('sMercuryModel').value),
         mercuryCtx: $('sMercuryCtx').value,
-        sentryModel: stripLocal($('sSentryModel').value),
+        oculusModel: stripLocal($('sOculusModel').value),
         thinking: $('sThinking').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
@@ -1219,7 +1231,7 @@
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
-        sentryOllamaServer: $('sSentryOllamaServer').value,
+        oculusOllamaServer: $('sOculusOllamaServer').value,
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
@@ -1273,7 +1285,7 @@
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
-        sentryOllamaServer: $('sSentryOllamaServer').value,
+        oculusOllamaServer: $('sOculusOllamaServer').value,
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
@@ -1302,14 +1314,38 @@
     }
   }
 
-  async function saveSentryMd() {
-    const st = $('sentryMdStatus');
+  async function saveOculusMd() {
+    const st = $('oculusMdStatus');
     st.textContent = 'saving…'; st.className = 'status';
     try {
-      const content = $('sSentryMd').value;
-      await postJson('/api/security/sentry-md', { content });
+      const content = $('sOculusMd').value;
+      await postJson('/api/oculus/rules', { content });
       st.textContent = 'saved'; st.className = 'status ok';
-      toast('Sentry rules saved', 'success');
+      toast('Oculus rules saved', 'success');
+    } catch (e) {
+      st.textContent = 'failed: ' + e.message; st.className = 'status err';
+    }
+  }
+
+  async function loadWatchOut() {
+    const ta = $('sWatchOut');
+    if (!ta) return;
+    try {
+      const data = await api('/api/oculus/watch-out');
+      ta.value = Array.isArray(data.items) ? data.items.join('\n') : '';
+    } catch (e) {
+      // leave the textarea blank on first load
+    }
+  }
+
+  async function saveWatchOut() {
+    const st = $('watchOutStatus');
+    st.textContent = 'saving…'; st.className = 'status';
+    try {
+      const items = $('sWatchOut').value.split('\n').map(s => s.trim()).filter(Boolean);
+      await postJson('/api/oculus/watch-out', { items });
+      st.textContent = 'saved'; st.className = 'status ok';
+      toast('Watch-out-for list saved', 'success');
     } catch (e) {
       st.textContent = 'failed: ' + e.message; st.className = 'status err';
     }
@@ -2063,7 +2099,7 @@
     if (!el) return;
     el.innerHTML = '<div class="task-empty">Loading…</div>';
     try {
-      const data = await api('/api/security/awareness-log?limit=50');
+      const data = await api('/api/oculus/awareness-log?limit=50');
       const rows = data.rows || [];
       if (!rows.length) { el.innerHTML = '<div class="task-empty">No security events yet.</div>'; return; }
       el.innerHTML = rows.map(r => {
@@ -2080,6 +2116,18 @@
       }).join('');
     } catch (e) {
       el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function clearOculusLogs() {
+    if (!confirm('Clear all Oculus awareness + security logs on the laptop store?')) return;
+    try {
+      const d = await api('/api/oculus/logs', { method: 'DELETE' });
+      if (!d.ok) { toast(d.error || 'Clear failed', 'error'); return; }
+      toast('Oculus logs cleared', 'success');
+      refreshSecurity();
+    } catch (e) {
+      toast(e.message || 'Clear failed', 'error');
     }
   }
 
@@ -2492,6 +2540,7 @@
     $('btnRefreshSkills').addEventListener('click', () => { refreshSkills(); refreshMcp(); });
     $('btnRefreshActivity').addEventListener('click', refreshActivity);
     const btnSec = $('btnRefreshSecurity'); if (btnSec) btnSec.addEventListener('click', refreshSecurity);
+    const btnClear = $('btnClearOculusLogs'); if (btnClear) btnClear.addEventListener('click', clearOculusLogs);
 
     // MCP + Skills mutation controls
     $('btnMcpAdd').addEventListener('click', mcpAddSubmit);

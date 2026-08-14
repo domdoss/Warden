@@ -60,7 +60,7 @@ You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (
                                    → Dexter (scheduling)
                                    → Byte (projects)
                                    → Mercury (memory)
-                                   → Sentry (security)
+                                   → Oculus (security)
                                    → Artemis (audit)
                                    → The Council (deliberation)
 ```
@@ -95,7 +95,7 @@ Your raw message never reaches a specialist. *"hey can you set the volume to lik
 
 ### Sub-Agents
 
-Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercury, and Sentry share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
+Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercury, and Oculus share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
 
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
@@ -107,9 +107,9 @@ Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercur
 | **Mercury** | Local or cloud (local recommended) | Memory summarization + RAG injection | Distills long conversations and memory into the context window each turn. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
-| **Sentry** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the laptop camera, applies the editable `security/sentry.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
+| **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the laptop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
 
-> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=2`, the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on) stay resident in VRAM; Atlas keep-alive can be enabled separately. Any third model evicts the least-recently-used resident.
+> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Oculus share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=2`, the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on) stay resident in VRAM; Atlas keep-alive can be enabled separately. Any third model evicts the least-recently-used resident.
 
 ![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
 
@@ -237,7 +237,7 @@ Every model selection in the dashboard is per-role:
 | **Orchestrator** | e4b local works; **31B cloud recommended** | Fast, cheap routing + supervision. e4b is the floor; 31B cloud catches sub-agents that bluff a result. Keep-alive is on by default. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
 | **Vulkan** | Cloud (default) | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
-| **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
+| **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Oculus share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
 | **Artemis** | Cloud (default) | Read-only audit. Keep-alive optional. |
 | **Council seats** | Cloud ×3 (different models) | Diverse perspectives for deliberation. |
 
@@ -341,7 +341,7 @@ A markdown file at `USER_BIO.md` in the workspace root that tells the agent who 
 
 ### 📰 Digest
 
-Iris compiles short briefings from your real local data and publishes them to the dashboard digest panel and the hologram UI (`voice/ui/digest.html`). There's no scraped news feed — every line comes from a grounded source.
+Iris compiles short briefings from your real local data and publishes them to the dashboard digest panel and the hologram UI (`eyes_ears/ui/digest.html`). There's no scraped news feed — every line comes from a grounded source.
 
 ![Iris hourly digest: a grounded briefing of the next couple hours](docs/screenshots/iris-hourly.png)
 
@@ -442,15 +442,15 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
 | **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
 | **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
-| **Security & vault** | `POST /api/awareness` · `GET /api/security/awareness-log` · `GET/POST /api/security/sentry-md` · `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
+| **Security & vault** | `POST /api/awareness` · `GET /api/security/awareness-log` · `GET/POST /api/security/oculus-md` · `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
 | **Settings & UI plumbing** | `GET/POST /api/settings` · `GET/POST /api/dashboard-pages` (live/beta file editing) · `GET/POST /api/mcp-servers` · `GET /api/notifications` · `GET /api/notifications/poll` · `GET/POST /api/notification-list` · `POST /api/notification-list/read-all` · `GET/POST /api/api-keys` |
 
 ### Things worth knowing
 
 - **Files are workspace-scoped.** Every `/api/files/*` route resolves its `?path=` under `GROUPS_DIR` (`~/warden/groups`) and rejects anything that escapes it (`..`, absolute paths). The shared uploads/downloads folder the hologram panel uses is `groups/uploads/`. Uploads take the file body as `application/octet-stream` with the filename in an `x-filename` header (up to 1 GB); downloads stream a single file as octet-stream or a directory as `tar.gz`.
 - **Digests are a loopback.** Iris compiles a digest and publishes it by `POST /api/summaries?span=X` — a keyless internal call back to this same server. The panel then reads `GET /api/summaries?span=X`. That loopback is the *only* way a digest reaches the UI.
-- **AWARENESS bypasses chat.** The laptop camera stack `POST /api/awareness` with a structured `AWARENESS…` payload; the server routes it straight to the Sentry sub-agent — it never becomes a chat message.
-- **The hologram can't `fetch()` directly.** Its panels load from `file://`, so Qt WebEngine's same-origin policy blocks them from reaching `:3200`. `voice/ui/jarvis_window.py` bridges this with `warden_api(path, method, body)` (JSON proxy), `warden_upload(dir, name, b64)`, and `warden_download(path)` (base64 in/out) — Python makes the real HTTP request and hands the result back to the iframe.
+- **AWARENESS bypasses chat.** The laptop camera stack `POST /api/awareness` with a structured `AWARENESS…` payload; the server routes it straight to the Oculus sub-agent — it never becomes a chat message.
+- **The hologram can't `fetch()` directly.** Its panels load from `file://`, so Qt WebEngine's same-origin policy blocks them from reaching `:3200`. `eyes_ears/ui/jarvis_window.py` bridges this with `warden_api(path, method, body)` (JSON proxy), `warden_upload(dir, name, b64)`, and `warden_download(path)` (base64 in/out) — Python makes the real HTTP request and hands the result back to the iframe.
 - **Quick checks.** `curl -fsS http://localhost:3200/api/status` for a live snapshot; `curl -fsS http://localhost:3200/api/health` for a liveness ping.
 
 ---
@@ -684,44 +684,51 @@ The `--mic` and `--speaker` flags accept `local`, `remote` (resolves to the defa
 Audio (voice assistant) and video (security camera) are independent subprocesses launched by the same parent. They can run together, separately, or on different machines:
 
 ```bash
-./run.sh --audio-only              # just the voice assistant, no camera
-./run.sh --video-only              # just the security camera, no voice
-./run.sh --audio-only --remote ... # voice on a satellite, camera off
+./run.sh --ears                    # just the voice assistant, no camera
+./run.sh --eyes                    # just the security camera, no voice
+./run.sh --both                    # both — eyes in background, ears in foreground
+./run.sh --ears --remote ...       # voice on a satellite, camera off
+./run.sh --ui-only                 # hologram + panels + text chat, NO audio routing
 ```
 
-This means you can run the camera on a box with a webcam and the voice client on a different box with a good mic — each pointed at the same Warden brain via `--warden <ip>`.
+This means you can run the camera on a box with a webcam and the voice client on a different box with a good mic — each pointed at the same Warden brain via `--warden <ip>`. The new `--ui-only` mode lets a machine run just the hologram + panels against the Warden server with no mic, speaker, STT, TTS, clap-detector, control-server, or global-hotkey — handy for a desktop that shouldn't route audio.
 
 #### Interactive launcher
 
-With no flags and a TTY, `run.sh` drops into an interactive launcher that walks through every choice:
+With no flags and a TTY, `eyes_ears/run.sh` drops into an interactive menu (prefaced with an ANSI `EYES & EARS` block banner):
 
 ```
-=== Warden audio + video server launcher ===
-Warden IP (leave empty to keep current):
-Satellite IP (default for remote mic/speaker) [192.168.0.171]:
-Mic source:
-  (1) local  (2) remote [192.168.0.171] :
-Speaker source:
-  (1) local  (2) remote [192.168.0.171] :
-Start: (1) Audio + Video  (2) Audio only  (3) Video only  (q) Quit [1]:
+1) Eyes       — Oculus detector + frame server, background awareness
+2) Ears       — voice + UI, local mic + speaker
+3) Both       — eyes in background, ears in foreground
+4) Satellite  — this machine is the audio relay on :8766
+5) UI only    — hologram + panels + text chat, NO audio routing
+6) Configure  — set warden.base_url / satellite.host / oculus toggle
+7) Quit
 ```
 
-The Warden IP is **never baked in** — the brain runs on another machine, so it's always entered at launch or passed via `--warden`. Empty keeps whatever the client already has in its settings.
+The same choices exist as flags for scripting: `--eyes`, `--ears`, `--both`, `--ui-only`, `--satellite`, `--configure`. Bare `--mic`/`--speaker`/`--remote` audio flags forward to ears (`--remote <host>` is shorthand for `--mic remote:HOST --speaker remote:HOST`). No Warden or satellite IPs are hardcoded in the script — both come from `eyes_ears/config/settings.yaml`, set via the Configure menu or `--configure`.
 
-#### `voice/run.sh` — the voice client entrypoint
+#### `eyes_ears/run.sh` — the single entrypoint
 
-The voice subdirectory has its own `run.sh` that handles the voice-specific setup before handing off to `main.py`:
+`eyes_ears/run.sh` is now the one launcher for both halves (the old `security/run.sh` and `voice/run.sh` are merged). It handles the eyes/ears-specific setup before handing off to `eyes.main` / `ears.main`:
 
-- **Dual-mode**: `./run.sh --satellite` runs the dumb audio relay (`satellite_server.py`) on the current machine instead of the voice client — same script, opposite role. The relay is stdlib-only, so this works on a bare Pi with no venv.
+- **Dual-mode**: `./run.sh --satellite` runs the dumb audio relay (`../satellite/satellite_server.py`) on the current machine instead of either eyes or ears — same script, opposite role. The relay is stdlib-only, so this works on a bare Pi with no venv.
 - **GPU setup**: Sets ROCm library paths for AMD GPUs, persists compiled GPU kernels so cold starts are fast, and configures Qt WebEngine flags for the hologram UI (skips slow D-Bus probes, collapses 5 renderer processes into 2).
-- **TTS persistence**: Reads `TTS_ENGINE` and `KOKORO_VOICE` from the environment and writes them to `voice/config/settings.yaml` before launch, so the in-process TTS picks them up at startup. Defaults to Kokoro with `af_bella`; swap to Orpheus with `TTS_ENGINE=orpheus_cpp ./run.sh`.
-- **Sensible defaults**: No flags = fully local (desk mic + desk speaker, Kokoro on GPU). Any `--mic`/`--speaker`/`--remote` flag and it forwards them through.
+- **TTS persistence**: Reads `TTS_ENGINE` and `KOKORO_VOICE` from the environment and writes them to `eyes_ears/config/settings.yaml` before launch, so the in-process TTS picks them up at startup. Defaults to Kokoro with `af_bella`; swap to Orpheus with `TTS_ENGINE=orpheus_cpp ./run.sh`.
+- **Sensible defaults**: No flags (with a TTY) drops into the menu; otherwise no flags = fully local (desk mic + desk speaker, Kokoro on GPU). Any `--mic`/`--speaker`/`--remote` flag and it forwards them through.
 
 ```bash
-cd voice
+cd eyes_ears
 
-# Fully local (default)
+# Menu (default, with a TTY)
 ./run.sh
+
+# Or pick a role directly
+./run.sh --ears
+./run.sh --eyes
+./run.sh --both
+./run.sh --ui-only
 
 # Run the satellite relay on this machine instead
 ./run.sh --satellite
@@ -743,11 +750,11 @@ Warden is split into roles that can run on different machines on the same LAN. B
 
 | Role | What to set | Where |
 |------|-------------|-------|
-| **Warden** (brain/dashboard) | `WARDEN_URL` or `dockbox.base_url` | `data/env/env` for server; `voice/config/settings.yaml` for the voice client |
-| **Video** (security detector) | Warden URL it POSTs awareness to | `security/config/settings.yaml` under `warden.base_url` |
-| **Audio** (hologram) | Warden URL + Satellite URL | `voice/config/settings.yaml` under `dockbox.base_url`; `--remote <satellite-ip>` on launch |
+| **Warden** (brain/dashboard) | `WARDEN_URL` or `warden.base_url` | `data/env/env` for server; `eyes_ears/config/settings.yaml` for eyes + ears |
+| **Video** (security detector) | Warden URL it POSTs awareness to | `eyes_ears/config/settings.yaml` under `warden.base_url` |
+| **Audio** (hologram) | Warden URL + Satellite URL | `eyes_ears/config/settings.yaml` under `warden.base_url`; `--remote <satellite-ip>` on launch |
 | **Ollama** | `OLLAMA_URL` | `data/env/env` |
-| **Satellite** (Pi audio relay) | Audio server IP | Pi TUI (`warden-tui.sh`) |
+| **Satellite** (Pi audio relay) | Audio server IP | Pi TUI (`tui/graice-tui.sh`) |
 
 ### Example: split across three machines
 
@@ -762,33 +769,26 @@ Set on the **Warden host** (`data/env/env`):
 OLLAMA_URL=http://<ollama-host>:11434
 ```
 
-Set on the **Video host** (`security/config/settings.yaml`):
+Set on the **Video and/or Audio host** (`eyes_ears/config/settings.yaml`) — one merged file, one `warden.base_url`:
 
 ```yaml
 warden:
   base_url: http://<warden-host>:3200
 ```
 
-Set on the **Audio host** (`voice/config/settings.yaml`):
-
-```yaml
-dockbox:
-  base_url: http://<warden-host>:3200
-```
-
 Then start Audio pointed at the Satellite:
 
 ```bash
-./run.sh --remote <satellite-host>
+./eyes_ears/run.sh --remote <satellite-host>
 ```
 
-See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing matrix — independent mic/speaker, audio-only/video-only, and the interactive launcher.
+See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing matrix — independent mic/speaker, eyes/ears/ui-only, and the interactive launcher.
 
 ---
 
 ## 🗣️ Voice Assistant
 
-`voice/` is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro or Orpheus) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears, eyes, and a mouth.
+`eyes_ears/` (the ears half) is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro or Orpheus) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears, eyes, and a mouth.
 
 ![The Warden TUI / hologram window](docs/screenshots/warden-tui.png)
 
@@ -803,20 +803,20 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing
 
 #### Hologram window
 
-The voice UI runs in its own GPU-accelerated window via `pywebview` + Qt WebEngine. It's a real Chromium instance with hardware rendering — D3D11 ANGLE on capable GPUs, automatic SwiftShader fallback on VMs or machines without a GPU. The window hosts `jarvis.html` (the animated hologram face with idle/listening/thinking/speaking states) and `panels.html` (the dashboard panels laid out as iframes in a single transparent window).
+The voice UI runs in its own GPU-accelerated window via `pywebview` + Qt WebEngine. It's a real Chromium instance with hardware rendering — D3D11 ANGLE on capable GPUs, automatic SwiftShader fallback on VMs or machines without a GPU. The window hosts `eyes_ears/ui/jarvis.html` (the animated hologram face with idle/listening/thinking/speaking states) and `eyes_ears/ui/panels.html` (the dashboard panels laid out as iframes in a single transparent window).
 
-Collapsing what used to be 5 separate windows into 1 cut Qt WebEngine's renderer-process startup from ~3 minutes cold to well under a minute. The panels layout stacks three rows: a top strip for the hologram, a middle row with digest, chat, ops, and upload side-by-side, and a bottom ambient strip. Each panel is an iframe loading its own HTML file from `voice/ui/` — they share the pywebview JS bridge so they can talk to the Python host.
+Collapsing what used to be 5 separate windows into 1 cut Qt WebEngine's renderer-process startup from ~3 minutes cold to well under a minute. The panels layout stacks three rows: a top strip for the hologram, a middle row with digest, chat, ops, and upload side-by-side, and a bottom ambient strip. Each panel is an iframe loading its own HTML file from `eyes_ears/ui/` — they share the pywebview JS bridge so they can talk to the Python host.
 
-Because those iframes load from `file://`, Qt WebEngine's same-origin policy blocks them from `fetch()`-ing the Warden API directly. `jarvis_window.py` bridges this with a `warden_api(path, method, body)` proxy: the iframe calls it through the pywebview bridge, and Python makes the real HTTP request to the Warden URL and returns the raw body. It's the only path the digest, chat, and ops panels have to `/api/*` — which is why a bug that passed an `Event` object where a `span` string belonged surfaced as a `warden_api proxy failed` traceback rather than a silent network error.
+Because those iframes load from `file://`, Qt WebEngine's same-origin policy blocks them from `fetch()`-ing the Warden API directly. `eyes_ears/ui/jarvis_window.py` bridges this with a `warden_api(path, method, body)` proxy: the iframe calls it through the pywebview bridge, and Python makes the real HTTP request to the Warden URL and returns the raw body. It's the only path the digest, chat, and ops panels have to `/api/*` — which is why a bug that passed an `Event` object where a `span` string belonged surfaced as a `warden_api proxy failed` traceback rather than a silent network error.
 
-The window wrapper (`jarvis_window.py`) exposes the same interface as the old button-window code, so `main.py` can swap between them with almost no changes. GPU flags are tuned per-platform: `--enable-unsafe-swiftshader` lets Chromium fall back to software rendering when no GPU is present, and `--ignore-gpu-blocklist` stops it from refusing integrated graphics it considers too old.
+The window wrapper (`eyes_ears/ui/jarvis_window.py`) exposes the same interface as the old button-window code, so `main.py` can swap between them with almost no changes. GPU flags are tuned per-platform: `--enable-unsafe-swiftshader` lets Chromium fall back to software rendering when no GPU is present, and `--ignore-gpu-blocklist` stops it from refusing integrated graphics it considers too old.
 
 ### Install the voice client
 
-1. Create a Python virtual environment:
+1. Create a Python virtual environment (one combined venv for eyes + ears):
 
 ```bash
-cd voice
+cd eyes_ears
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -831,7 +831,7 @@ cp config/settings.example.yaml config/settings.yaml
 Set at least:
 
 ```yaml
-dockbox:
+warden:
   base_url: http://localhost:3200
 
 voice:
@@ -844,13 +844,15 @@ voice:
 3. Run it:
 
 ```bash
-python main.py
+python -m ears.main
+# or
+./run.sh --ears
 ```
 
 ### Common flags
 
 ```bash
-python main.py --remote <satellite-host>   # use a Pi/headless box for mic + speaker
+python -m ears.main --remote <satellite-host>   # use a Pi/headless box for mic + speaker
 ```
 
 ### Troubleshooting audio
@@ -858,8 +860,6 @@ python main.py --remote <satellite-host>   # use a Pi/headless box for mic + spe
 - If you see `Invalid sample rate`, try `48000` instead of `16000` in `settings.yaml`.
 - Bluetooth HFP headsets often need the `pipewire` or `pulse` backend devices. Set explicit `audio.input_device` / `audio.playback_device` indices if auto-detection fails.
 - The clap detector has its own sample rate (`clap_sample_rate`). Keep it at `48000` unless you know the mic supports the chosen rate.
-
-See `voice/README.md` for more.
 
 ---
 
@@ -877,7 +877,7 @@ The satellite relay is a single ~200-line Python file (`satellite_server.py`) wi
 
 The satellite mic also supports **double-clap wake** — clap twice near the Pi and the hologram starts listening, no button press needed.
 
-Launch it from `voice/run.sh --satellite` (same script, opposite role) or directly:
+Launch it from `eyes_ears/run.sh --satellite` (same script, opposite role) or directly:
 
 ```bash
 python3 satellite/satellite_server.py --host 0.0.0.0 --port 8766
@@ -890,8 +890,8 @@ See [Modular audio pipeline](#modular-audio-pipeline-runsh) above for how mic an
 | File | What it is |
 |------|------------|
 | `satellite_server.py` | HTTP audio relay (`:8766`). `GET /mic` streams 16 kHz PCM from the default mic; `POST /play` accepts a WAV body and plays it on the default speaker; `POST /cancel` stops playback (barge-in). |
-| `voice-button.py` | GPIO hold-to-talk button (gpiozero, BCM pin 17 to GND). |
-| `warden-tui.sh` | On-device settings menu: WiFi, Bluetooth, speaker/mic volume, mode selection, and start/stop. |
+| `hardware/voice-button.py` | GPIO hold-to-talk button (gpiozero, BCM pin 17 to GND). |
+| `tui/graice-tui.sh` | On-device settings menu: WiFi, Bluetooth, speaker/mic volume, mode selection, and start/stop. |
 | `boot-defaults.sh` + `warden-boot-defaults.service` | Restores saved WiFi, Bluetooth, and default audio sink/source at boot. |
 | `install-deps-pi.sh` | apt-based installer for Raspberry Pi OS. |
 
@@ -914,7 +914,7 @@ bash install.sh
 5. Configure the Pi from the TUI:
 
 ```bash
-bash satellite/warden-tui.sh
+bash tui/graice-tui.sh
 ```
 
 Pick a **mode** and, if using the Pi as a satellite, set the **audio server IP** to the laptop running the voice client.
@@ -940,25 +940,25 @@ The relay binds `:8766` by default.
 
 ## 🛡️ Security Mode
 
-`security/` is a webcam awareness system. The camera machine runs the cheap RF-DETR detector and sends only structured JSON events to the Warden service. One background agent handles the rest.
+`eyes_ears/` (the eyes half) is a webcam awareness system. The camera machine runs the cheap RF-DETR detector and sends only structured JSON events to the Warden service. One background agent handles the rest.
 
-![Sentry rules: the editable `security/sentry.md` decision rules](docs/screenshots/sentry-rules.png)
+![Oculus rules: the editable `eyes_ears/oculus.md` decision rules](docs/screenshots/oculus-rules.png)
 
 ### Features
 
 - 📷 **RF-DETR Keypoint** watches the webcam (CPU or NVIDIA GPU) and builds a compact JSON situation each frame.
 - 🔔 **AWARENESS events** are POSTed to `/api/awareness` only when something changes.
-- 🛡️ **Sentry** receives the JSON, applies editable `security/sentry.md` rules, and decides: alert, greet, or stay silent.
+- 🛡️ **Oculus** receives the JSON, applies editable `eyes_ears/oculus.md` rules, and decides: alert, greet, or stay silent.
 - 👤 **Face recognition** runs on every AWARENESS event — known people are identified by name, unknown faces escalate.
-- 🎛️ Sentry model and camera host are set from the dashboard.
+- 🎛️ Oculus model and camera host are set from the dashboard.
 - 🗄️ `store/security.db` logs every event and assessment.
 
 ### Install
 
-1. Create a Python virtual environment:
+1. Create a Python virtual environment (one combined venv for eyes + ears):
 
 ```bash
-cd security
+cd eyes_ears
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -985,20 +985,22 @@ Use `camera.stream_url` instead of `index` if you want an ESP32-CAM or other HTT
 3. Run it:
 
 ```bash
-python main.py
+python -m eyes.main
+# or
+./run.sh --eyes
 ```
 
 Or start it via `run.sh` from the project root:
 
 ```bash
-./run.sh --no-voice --no-server
+./eyes_ears/run.sh --eyes
 ```
 
 ### Dashboard setup
 
-Open the dashboard, go to **Settings**, and set the **Video server** / **Satellite IP** to the host running `security/main.py`. Warden will pull frames from `http://<host>:8765/frame`.
+Open the dashboard, go to **Settings**, and set the **Video server** / **Satellite IP** to the host running `eyes.main`. Warden will pull frames from `http://<host>:8765/frame`.
 
-See `security/README.md` for tuning, arming/disarming, and the Sentry rules.
+See `eyes_ears/README.security.md` for tuning, arming/disarming, and the Oculus rules.
 
 ---
 
@@ -1043,7 +1045,7 @@ systemctl --user restart warden
 
 Most runtime behavior is controlled from the dashboard at `http://localhost:3200`:
 
-- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Byte/Dexter/Iris/Mercury/Sentry. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
+- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Byte/Dexter/Iris/Mercury/Oculus. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
 - **Servers** — Ollama URL, Whisper URL, video server / Satellite IP, and (after the distributed-roles refactor) Audio/Warden/Video role URLs.
 - **Heartbeat** — scheduled standing instructions.
 - **Skills & MCP** — toggle capabilities and external tools.
@@ -1052,11 +1054,11 @@ Dashboard settings are stored in the router state and take effect immediately �
 
 ### Voice config
 
-`voice/config/settings.yaml` holds STT/TTS parameters, audio devices, the Warden server URL (`dockbox.base_url`), and the Satellite port. Copy from `voice/config/settings.example.yaml` or run `python voice/setup.py` to generate it. This file is gitignored.
+`eyes_ears/config/settings.yaml` holds STT/TTS parameters, audio devices, the Warden server URL (`warden.base_url`), and the Satellite port. Copy from `eyes_ears/config/settings.example.yaml` or run `./eyes_ears/run.sh --configure` to generate it. This file is gitignored.
 
 ### Security config
 
-`security/config/settings.yaml` controls the camera, detector model, awareness cooldown, face-ID settings, and the Warden URL the detector POSTs events to. Copy from `security/config/settings.example.yaml`.
+`eyes_ears/config/settings.yaml` also controls the camera, detector model, awareness cooldown, face-ID settings, and the Warden URL the detector POSTs events to (same single merged file).
 
 ---
 

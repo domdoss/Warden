@@ -44,12 +44,12 @@ registry.register({
     tier: 'public',
 });
 
-// Security Mode tools (Sentry, the single background security agent). The
+// Security Mode tools (Oculus, the single background security agent). The
 // standalone detector app holds an alert OPEN until Warden closes it;
 // close_security_alert (via dismiss_security_flag) re-arms it. alert_security
 // is the MOCK external-escalation call (no real guard service yet — it just
 // acknowledges it would alert them). arm_security/disarm_security toggle the
-// detector's flagging. send_message lets Sentry tell the user about an abnormal
+// detector's flagging. send_message lets Oculus tell the user about an abnormal
 // alert. security_log lets it persist/query a dated conditions history.
 
 registry.register({
@@ -86,7 +86,7 @@ registry.register({
     },
     handler: async (args, _context) => {
         const reason = String(args?.reason || '').trim();
-        // MOCK — no external call is made yet. The tool exists so Sentry calls
+        // MOCK — no external call is made yet. The tool exists so Oculus calls
         // it for real and the escalation path is wired; swap the body for a real
         // HTTP call to a guard/dispatch service when one exists.
         return `Mock Alert: If there were security guards I would be alerting them now.${reason ? ` (reason: ${reason})` : ''}`;
@@ -98,7 +98,7 @@ registry.register({
 registry.register({
     name: 'arm_security',
     description:
-        "Arm the security system — enable the detector's flagging (so it raises alerts to Sentry). " +
+        "Arm the security system — enable the detector's flagging (so it raises alerts to Oculus). " +
         "Use this when the user wants flagging on.",
     schema: { type: 'object', properties: {} },
     handler: async (_args, _context) => {
@@ -113,7 +113,7 @@ registry.register({
 registry.register({
     name: 'disarm_security',
     description:
-        "Disarm the security system — pause the detector's flagging (no alerts raised to Sentry). " +
+        "Disarm the security system — pause the detector's flagging (no alerts raised to Oculus). " +
         "Use this when the user wants flagging off.",
     schema: { type: 'object', properties: {} },
     handler: async (_args, _context) => {
@@ -161,7 +161,7 @@ registry.register({
             text: { type: 'string', description: 'The message text to send.' },
             message: { type: 'string', description: 'Alias for text.' },
             target_jid: { type: 'string', description: 'Optional target chat jid; defaults to the owner chat.' },
-            sender: { type: 'string', description: 'Optional sender identity name (e.g. "Sentry").' },
+            sender: { type: 'string', description: 'Optional sender identity name (e.g. "Oculus").' },
         },
         anyOf: [{ required: ['text'] }, { required: ['message'] }],
     },
@@ -170,7 +170,7 @@ registry.register({
         const resp = await callHost('send_message', {
             text: content,
             target_jid: args?.target_jid,
-            sender: args?.sender || 'Sentry',
+            sender: args?.sender || 'Oculus',
         });
         if (resp?.ok) return 'Message sent.';
         return `send_message failed: ${resp?.error || 'unknown error'}`;
@@ -182,7 +182,7 @@ registry.register({
 registry.register({
     name: 'security_log',
     description:
-        "Record or query Sentry's security-conditions log (a persistent sqlite store of every " +
+        "Record or query Oculus's security-conditions log (a persistent sqlite store of every " +
         "alert assessment, by time). ACTION 'record': append a row {timestamp, alert_ts, assessment " +
         "('normal'|'abnormal'), condition, escalated (bool)}. ACTION 'query': return rows within an " +
         "optional since/until local-time range (YYYY-MM-DDTHH:MM:SS), newest-first, up to limit. Use " +
@@ -202,10 +202,10 @@ registry.register({
         required: ['action'],
     },
     handler: async (args, _context) => {
-        // During orchestrator status queries, Sentry must use awareness_log/
+        // During orchestrator status queries, Oculus must use awareness_log/
         // awareness_status only. security_log is for alert-event logging, not
         // live room-status polling, and using it makes the query slow/wrong.
-        if ((globalThis as any).__sentryQueryMode) {
+        if ((globalThis as any).__oculusQueryMode) {
             return 'security_log is not available during a live status query. Use awareness_log (action: query) and awareness_status instead.';
         }
         const resp = await callHost('security_log', args || {});
@@ -242,6 +242,28 @@ registry.register({
         const resp = await callHost('save_known_person', { label });
         if (resp?.ok) return `Saved known person ${label}.`;
         return `save_known_person failed: ${resp?.error || 'unknown error'}`;
+    },
+    toolset: 'security',
+    tier: 'public',
+});
+
+// Oculus watch-out-for capture: when an AWARENESS event matches one of the
+// user's "watch out for" situations, Oculus calls this to save the latest
+// frame into the owner's uploads tree (groups/owner/oculus/<ts>.jpg) so the
+// user can review it later. Silent — it does NOT message the user; the photo
+// in uploads + the awareness_log row IS the record.
+registry.register({
+    name: 'oculus_capture',
+    description:
+        "Save the latest camera frame to the user's uploads area (oculus/<timestamp>.jpg). Call this " +
+        "ONCE, only when the current AWARENESS event matches one of the user's 'watch out for' " +
+        "situations listed in your task. This is silent — it does not message the user. Record the " +
+        "match in awareness_log first (assessment 'flagged'), then call this to keep the photo.",
+    schema: { type: 'object', properties: {}, required: [] },
+    handler: async (_args, _context) => {
+        const resp = await callHost('oculus_capture', {});
+        if (resp?.ok) return `Frame saved to uploads: ${resp.path}`;
+        return `oculus_capture failed: ${resp?.error || 'no frame available'}`;
     },
     toolset: 'security',
     tier: 'public',

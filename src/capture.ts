@@ -156,6 +156,39 @@ function securityFrameUrl(override?: string): string {
 }
 
 /**
+ * Fetch a screenshot from the Security Mode app's HTTP /screenshot endpoint
+ * (the laptop display — the Pi is headless and has no screen to capture).
+ * `region` crops to a sub-rectangle in pixels, applied before the max-dimension
+ * resize. Returns a PNG (text stays sharp). Throws on any failure — there is
+ * no local fallback, the satellite is the one way Warden gets a screenshot.
+ */
+export async function captureScreenshotFromSecurityApp(
+  url: string,
+  region?: { x: number; y: number; w: number; h: number },
+): Promise<CapturedImage> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`screenshot server returned ${res.status}${errText ? `: ${errText}` : ''}`);
+    }
+    let buf = Buffer.from(await res.arrayBuffer());
+    if (!buf || buf.length === 0) throw new Error('screenshot server returned empty body');
+    if (region && region.w > 0 && region.h > 0) {
+      buf = (await sharp(buf)
+        .extract({ left: region.x, top: region.y, width: region.w, height: region.h })
+        .png()
+        .toBuffer()) as any;
+    }
+    return toPngCaptured(buf);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Fetch the latest frame from the Security Mode app's HTTP /frame endpoint and
  * return it as a JPEG CapturedImage. Throws on any failure so the caller can
  * fall back to the ffmpeg path.
