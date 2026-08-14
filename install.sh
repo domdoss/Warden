@@ -86,7 +86,7 @@ set -o pipefail
 # and break the build. Force development for the install and pass --include=dev
 # explicitly so the build toolchain is always installed.
 export NODE_ENV=development
-NPM_INSTALL_FLAGS=(--include=dev --loglevel=warn)
+NPM_INSTALL_FLAGS=(--include=dev --ignore-scripts --loglevel=warn)
 
 echo "  Installing npm dependencies..."
 if [ -f package-lock.json ]; then
