@@ -37,7 +37,7 @@ Warden is an AI agent with **the same access as your user account**. It executes
 
 This is the warning the dashboard shows on first launch. It is not a joke and it is not boilerplate. Do not run Warden on a machine you care about unless you have read the code, understood the risks, and accepted that you are handing a language model the keys to your computer.
 
-Now that *that's* out of the way — I'm currently running it on my laptop and my desktop, just rawdogging the system, and it has been solid. `sudo` prompts pop up graphically (polkit catches them), and in practice it doesn't stray out of its workspace unless it's actively searching for files or the like. Is this stupid in theory? Yes, absolutely. Does it work in practice? So far, yes — for now. Just back things up from time to time, in case.
+Now that *that's* out of the way — I'm currently running it on my desktop, just rawdogging the system, and it has been solid. `sudo` prompts pop up graphically (polkit catches them), and in practice it doesn't stray out of its workspace unless it's actively searching for files or the like. Is this stupid in theory? Yes, absolutely. Does it work in practice? So far, yes — for now. Just back things up from time to time, in case.
 
 ---
 
@@ -107,7 +107,7 @@ Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercur
 | **Mercury** | Local or cloud (local recommended) | Memory summarization + RAG injection | Distills long conversations and memory into the context window each turn. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
-| **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the laptop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
+| **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the desktop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
 
 > 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Oculus share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=2`, the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on) stay resident in VRAM; Atlas keep-alive can be enabled separately. Any third model evicts the least-recently-used resident.
 
@@ -449,7 +449,7 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 
 - **Files are workspace-scoped.** Every `/api/files/*` route resolves its `?path=` under `GROUPS_DIR` (`~/warden/groups`) and rejects anything that escapes it (`..`, absolute paths). The shared uploads/downloads folder the hologram panel uses is `groups/uploads/`. Uploads take the file body as `application/octet-stream` with the filename in an `x-filename` header (up to 1 GB); downloads stream a single file as octet-stream or a directory as `tar.gz`.
 - **Digests are a loopback.** Iris compiles a digest and publishes it by `POST /api/summaries?span=X` — a keyless internal call back to this same server. The panel then reads `GET /api/summaries?span=X`. That loopback is the *only* way a digest reaches the UI.
-- **AWARENESS bypasses chat.** The laptop camera stack `POST /api/awareness` with a structured `AWARENESS…` payload; the server routes it straight to the Oculus sub-agent — it never becomes a chat message.
+- **AWARENESS bypasses chat.** The desktop camera stack `POST /api/awareness` with a structured `AWARENESS…` payload; the server routes it straight to the Oculus sub-agent — it never becomes a chat message.
 - **The hologram can't `fetch()` directly.** Its panels load from `file://`, so Qt WebEngine's same-origin policy blocks them from reaching `:3200`. `eyes_ears/ui/jarvis_window.py` bridges this with `warden_api(path, method, body)` (JSON proxy), `warden_upload(dir, name, b64)`, and `warden_download(path)` (base64 in/out) — Python makes the real HTTP request and hands the result back to the iframe.
 - **Quick checks.** `curl -fsS http://localhost:3200/api/status` for a live snapshot; `curl -fsS http://localhost:3200/api/health` for a liveness ping.
 
@@ -481,12 +481,20 @@ One conversation, many doors. All channels merge into a single chat:
 
 | Channel | How |
 |---------|-----|
-| 🌐 **Web Dashboard** | PWA at `http://localhost:3200` |
-| ✈️ **Telegram** | Bot via grammy *(module present, disabled by default)* |
+| 🌐 **Web Dashboard** | PWA at `http://localhost:3200` — always enabled |
+| ✈️ **Telegram** | Bot via grammy — enabled |
 | 💚 **WhatsApp** | Baileys (no third-party API) *(module present, disabled by default)* |
 | 💜 **Slack** | Bot integration *(module present, disabled by default)* |
 
-Only the **Web Dashboard** is enabled in the default build — `src/channels/index.ts` imports just `./web.js`. The Telegram, WhatsApp, and Slack modules still ship but are commented out; uncomment the relevant `import './<channel>.js';` line there to turn a messaging channel back on. When enabled, message from WhatsApp, continue on Telegram, check the dashboard — same context, same memory.
+The Web Dashboard and Telegram are enabled in the default build — `src/channels/index.ts` imports `./web.js` and `./telegram.js`. WhatsApp and Slack still ship but are commented out; uncomment the relevant `import './<channel>.js';` line there to turn one back on. Message from the dashboard, continue on Telegram, check back on the web — same context, same memory.
+
+### Telegram
+
+The Telegram bot is **single-owner by design** — it only talks to one chat. The bot can drive a whole computer, so it's not open to anyone: the first chat to `/start` it claims ownership, and every other chat is politely refused. The refusal message includes that chat's id, so you know exactly what to paste to re-point the bot there.
+
+- **Editable owner chat** — Settings → Channels → Edit Telegram exposes a **Chat ID** field that sets the *real* owner chat (`TELEGRAM_OWNER_ID` in `data/env/env` + the `telegram:owner_id` router state) and reconnects the bot. Paste a different chat id and save; the bot re-points there on reconnect. Leave the bot-token field blank to keep the current token.
+- **Group support** — add the bot to a group and `/start` it there; it replies with that group's chat id (a negative `-100…` number). Paste that id (including the leading `-`) into the Chat ID field and save, and the bot listens on the group instead of your DM. To actually see group messages, disable **Group Privacy** via @BotFather (`/mybots` → your bot → *Bot Settings* → *Group Privacy* → Turn off), then re-add the bot to the group.
+- **Full sender names** — every inbound message is tagged with the sender's full name (First Last, or username) so the orchestrator can tell *who* is talking in a group, not just "a user." The name flows straight into the agent's message context (`<message sender="First Last">…</message>`).
 
 ---
 
@@ -627,7 +635,7 @@ tail -f logs/warden.log
 
 ### Modular audio pipeline (`run.sh`)
 
-Warden's audio system is a **composable pipeline** where every piece — mic, speaker, STT, TTS, the Warden brain — can run on a different machine, and you pick which pieces go where with a handful of flags. There is no hardwired topology. The same `run.sh` entrypoint covers everything from "all-local on a laptop" to "brain on a GPU box, mic on a Pi in the kitchen, speaker on a Pi in the living room."
+Warden's audio system runs on a **single desktop** by default — mic, speaker, STT, TTS, and the Warden brain all on one machine. The pipeline is composable, though: if you want, you can offload just the raw mic/speaker I/O to a small satellite box on the LAN (a Pi or any headless box). The same `run.sh` entrypoint covers everything from "all-local on the desktop" (the default) to "mic on a Pi in the kitchen, speaker on a Pi in the living room."
 
 The pipeline looks like this:
 
@@ -645,13 +653,13 @@ The pipeline looks like this:
 └──────────┘                 └──────────────┘
 ```
 
-Here's how a spoken question travels through the pipeline. You press the push-to-talk button on the Pi. The Pi's `satellite_server.py` opens a PipeWire capture stream and starts serving raw 16 kHz PCM over HTTP. Back on the laptop, the voice client pulls that stream, feeds it through Whisper, and gets back text. The text goes to the Warden server — which might be on the same laptop, or a GPU box downstairs, or a cloud VM. Warden's orchestrator reads it, delegates to whatever specialists are needed, and sends back a reply. That reply hits the laptop's TTS engine (Kokoro or Orpheus, running on the local GPU), which synthesizes a WAV file. If the speaker is local, PipeWire plays it on the desk speakers. If the speaker is the Pi, the WAV gets POSTed to the Pi's `:8766/play` endpoint and comes out of whatever speaker is plugged into the Pi's headphone jack.
+Here's how a spoken question travels through the pipeline. By default everything is local: you press the push-to-talk button (or clap twice), the desktop's mic captures audio, Whisper transcribes it, and the text goes to the Warden orchestrator on the same machine. Warden reads it, delegates to whatever specialists are needed, and sends back a reply. The reply hits the local TTS engine (Kokoro or Orpheus, running on the GPU), which synthesizes a WAV file and PipeWire plays it on the desk speakers. If you've offloaded audio I/O to a satellite, the mic stream comes from the satellite's `satellite_server.py` over HTTP instead, and the finished WAV is POSTed to the satellite's `:8766/play` endpoint to come out of whatever speaker is plugged into it.
 
-Every joint in that chain is a flag. `--mic local` means "read the laptop's built-in mic." `--mic 192.168.0.171` means "stream it from the Pi." `--speaker local` means "play through the laptop speakers." `--speaker 192.168.0.180` means "send the WAV to a different Pi in another room." The laptop always runs STT, TTS, and the hologram UI — those need the GPU. The satellite only ever runs `pw-record` and `pw-play`. It has no Python dependencies. It doesn't even need a virtual environment. You could run it on a Pi Zero and it wouldn't break a sweat.
+Every joint in that chain is a flag. `--mic local` means "read the desktop's built-in mic." `--mic 192.168.0.171` means "stream it from a satellite." `--speaker local` means "play through the desktop speakers." `--speaker 192.168.0.180` means "send the WAV to a satellite in another room." The desktop always runs STT, TTS, and the hologram UI — those need the GPU. The satellite only ever runs `pw-record` and `pw-play`. It has no Python dependencies. It doesn't even need a virtual environment. You could run it on a Pi Zero and it wouldn't break a sweat.
 
-This means you can put mics and speakers wherever you actually spend time — kitchen, workshop, bedside table — without moving the GPU. Each satellite is just a Pi with a USB mic and a powered speaker, running one script. The laptop stays on your desk. The brain stays wherever it has the most RAM. And `run.sh` ties it all together: one command, a few flags, and the whole distributed system comes up.
+This means you can put mics and speakers wherever you actually spend time — kitchen, workshop, bedside table — without moving the GPU. Each satellite is just a small box with a USB mic and a powered speaker, running one script. The desktop stays on your desk. And `run.sh` ties it all together: one command, a few flags, and the whole system comes up.
 
-**STT, TTS, and the hologram UI always run on the laptop.** Only raw audio I/O — the microphone stream and speaker playback — can be offloaded to a satellite. The satellite is a dumb pipe: it runs `satellite_server.py`, a ~200-line Python script with zero dependencies beyond PipeWire's `pw-record` and `pw-play`. No venv, no GPU, no models. A Pi Zero is overkill.
+**STT, TTS, and the hologram UI always run on the desktop.** Only raw audio I/O — the microphone stream and speaker playback — can be offloaded to a satellite. The satellite is a dumb pipe: it runs `satellite_server.py`, a ~200-line Python script with zero dependencies beyond PipeWire's `pw-record` and `pw-play`. No venv, no GPU, no models. A Pi Zero is overkill.
 
 #### Independent per-side routing
 
@@ -670,7 +678,7 @@ Mic and speaker are chosen **independently**. You can have the Pi mic in one roo
 # Pi mic, local desk speaker
 ./run.sh --mic 192.168.0.171 --speaker local
 
-# Local laptop mic, Pi speaker in another room
+# Local desktop mic, Pi speaker in another room
 ./run.sh --mic local --speaker 192.168.0.171
 
 # Different Pis for mic and speaker
@@ -746,6 +754,8 @@ For a permanent install, prefer the systemd service. `run.sh` is for development
 
 ## 🌐 Multi-Machine / Bare-Metal Role Configuration
 
+> **Note (2026-08):** Warden now runs on a **single desktop** — the old two-box desktop + Pi setup was retired. The role-split below still works if you genuinely want to distribute roles across machines on a LAN, but it is no longer the default or the supported path. Most users want everything on one box.
+
 Warden is split into roles that can run on different machines on the same LAN. By default everything assumes `localhost`, but you can point each role at another host by editing the right config.
 
 | Role | What to set | Where |
@@ -760,8 +770,8 @@ Warden is split into roles that can run on different machines on the same LAN. B
 
 - **Warden** on a small box at `http://<warden-host>:3200`
 - **Ollama** on a GPU box at `http://<ollama-host>:11434`
-- **Video** on a laptop with a webcam
-- **Audio** on the same laptop, using a Pi Satellite at `<satellite-host>`
+- **Video** on a desktop with a webcam
+- **Audio** on the same desktop, using a Pi Satellite at `<satellite-host>`
 
 Set on the **Warden host** (`data/env/env`):
 
@@ -865,7 +875,9 @@ python -m ears.main --remote <satellite-host>   # use a Pi/headless box for mic 
 
 ## 🛰️ Satellite (Pi audio relay)
 
-`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is a **dumb pipe**: it streams raw microphone audio to the laptop and plays back the TTS the laptop returns. No STT, no TTS, no model inference happens on the Pi — transcription and synthesis run on the laptop, so a Pi Zero is plenty.
+> **Note (2026-08):** The dedicated-Pi satellite is **optional / legacy** — Warden's voice system runs fully on the desktop now. This section describes the optional remote mic/speaker relay for when you want audio I/O in another room.
+
+`satellite/` is the Raspberry Pi side of the voice system — the ears and mouth that live on a dedicated Pi (or any small headless box). The Pi is a **dumb pipe**: it streams raw microphone audio to the desktop and plays back the TTS the desktop returns. No STT, no TTS, no model inference happens on the Pi — transcription and synthesis run on the desktop, so a Pi Zero is plenty.
 
 The satellite relay is a single ~200-line Python file (`satellite_server.py`) with **zero dependencies** beyond PipeWire's `pw-record` and `pw-play`. It exposes three HTTP endpoints on `:8766`:
 
@@ -1070,7 +1082,7 @@ Warden runs on **your** machine. It uses **your** browser, **your** desktop, **y
 
 It is not a demo. It is a real assistant with browser automation, desktop control, voice, email, calendar, multi-channel messaging, a plugin ecosystem, an agent architecture that can reason about your work and audit its own decisions, and a prompt engineering surface that has been battle-tested across hundreds of hours of real use.
 
-Warden stole fire from the gods. This one runs on your laptop.
+Warden stole fire from the gods. This one runs on your desktop.
 
 ---
 
