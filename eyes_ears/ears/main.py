@@ -891,8 +891,13 @@ class JarvisApp:
             return f"[error: {e}]"
 
     async def _chat_turn(self, text: str) -> str:
-        """Send a text message through the bridge and collect the text reply
-        (no TTS, no audio — just the text response for the chat panel)."""
+        """Send a text message through the bridge, collect the text reply for
+        the chat panel, and speak it aloud.
+
+        The temp on_chunk collector swallows this turn's chunks, so the TTS
+        queue only receives the turn-end sentinel (empty reply — that's why
+        typed chat used to be silent). We speak the collected reply here, after
+        the turn completes. In --ui-only mode this stays text-only."""
         chunks: list[str] = []
         got_content = asyncio.Event()
 
@@ -917,7 +922,18 @@ class JarvisApp:
                 await asyncio.wait_for(got_content.wait(), timeout=55)
             except asyncio.TimeoutError:
                 pass
-            return self._join_chunks(chunks) if chunks else "[no response]"
+            reply = self._join_chunks(chunks) if chunks else "[no response]"
+            if chunks:
+                # Speak the typed-chat reply (see docstring). Fire-and-forget:
+                # this must NOT be awaited — chat_send's return is what renders
+                # the reply text in the panel, and awaiting the full synthesis+
+                # playback delays that render past the 8s history poll, which
+                # then renders the same message from the server → double bubble.
+                # The turn-end sentinel already drained through _tts_loop with
+                # no content, so there is no double-speak; _speak_lock keeps
+                # this ordered against any voice-turn speech.
+                asyncio.create_task(self._speak(reply))
+            return reply
         finally:
             self.bridge.on_chunk(orig_chunk)
 
@@ -1201,6 +1217,13 @@ class JarvisApp:
             # started so text-chat replies (via _chat_turn) arrive.
             return
         self._tts_worker = asyncio.create_task(self._tts_loop())
+        # Load Whisper BEFORE the greeting so "Assistant online." is true: TTS
+        # warmup already ran during setup; STT is the other big lazy load.
+        # Doing it here (not lazily on the first turn) also keeps its load
+        # churn from garbling the greeting and stalls off the user's first turn.
+        if self.stt is not None:
+            print("[jarvis] warming STT before greeting…")
+            await asyncio.get_running_loop().run_in_executor(None, self.stt.warmup)
         # No try/except: if the bootstrap speak fails, _speak prints the TTS
         # error (and a raised exception surfaces via the run_coroutine_threadsafe
         # future). The old silent swallow hid a Kokoro no-segments failure — the

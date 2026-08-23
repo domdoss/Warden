@@ -20,6 +20,11 @@
 #   ./run.sh --both                # eyes (background) + ears (foreground)
 #   ./run.sh --satellite           # this machine is the audio relay
 #   ./run.sh --configure           # set warden.base_url / satellite.host / ...
+#   ./run.sh --tts kokoro --tts-device cpu --ears   # quick engine/device switch
+#                                    (persisted to config; --tts takes
+#                                     kokoro|orpheus_cpp|orpheus, --tts-device
+#                                     takes cpu|cuda for kokoro, or
+#                                     both|cuda:0|cuda:1|cpu for orpheus_cpp)
 #
 # Any other args forward to the app (e.g. --camera 1, --no-window, --mic local).
 set -euo pipefail
@@ -53,6 +58,22 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 # shellcheck disable=SC1091
 . "$VENV/bin/activate"
+
+# CUDA 12 runtime for the orpheus_cpp TTS engine. Its llama-cpp-python cu124
+# wheel does not bundle libcudart/libcublas — they come from the nvidia-*-cu12
+# pip packages inside the venv. Prepend (not append) so the system's CUDA 13
+# in /opt/cuda can never satisfy the .so.12 sonames. Silent no-op when those
+# packages aren't installed (e.g. kokoro-only install).
+EE_SITE_PKGS="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+if [ -n "$EE_SITE_PKGS" ]; then
+  for d in "$EE_SITE_PKGS/nvidia/cuda_runtime/lib" "$EE_SITE_PKGS/nvidia/cublas/lib"; do
+    if [ -d "$d" ]; then
+      LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+  done
+  export LD_LIBRARY_PATH
+fi
+unset EE_SITE_PKGS d
 
 # Qt WebEngine (Chromium) flags for the ears UI (pywebview). --no-sandbox +
 # --password-store=basic skip slow kwallet/keyring probes; --allow-file-access-
@@ -101,8 +122,18 @@ ptt = ask("satellite.push_to_talk (true/false)", c.get("satellite.push_to_talk")
 c.set("satellite.push_to_talk", ptt in ("true", "1", "yes", "y"))
 print()
 hdr("Ears voice:")
-c.set("voice.tts_engine", ask("voice.tts_engine (kokoro|orpheus|orpheus_cpp)", c.get("voice.tts_engine"), "kokoro"))
-c.set("voice.tts_voice", ask("voice.tts_voice", c.get("voice.tts_voice"), "af_heart"))
+eng = ask("voice.tts_engine (kokoro|orpheus_cpp|orpheus)", c.get("voice.tts_engine"), "kokoro")
+c.set("voice.tts_engine", eng)
+voice_default = "af_heart" if eng == "kokoro" else "zoe"
+c.set("voice.tts_voice", ask("voice.tts_voice", c.get("voice.tts_voice"), voice_default))
+if eng == "kokoro":
+    # Kokoro is tiny (82M); either is fine. cuda frees the CPU, cpu leaves the
+    # GPU alone for other models. cpu also sidesteps STT/TTS GPU contention.
+    c.set("voice.tts_device", ask("voice.tts_device (cpu|cuda)", c.get("voice.tts_device"), "cpu"))
+else:
+    # orpheus_cpp: cuda:N pins one card; "both" layer-splits across all NVIDIA
+    # cards; cpu is a last resort (very slow). vLLM "orpheus" is CUDA-only.
+    c.set("voice.tts_device", ask("voice.tts_device (both|cuda:0|cuda:1|cpu)", c.get("voice.tts_device"), "both"))
 print()
 hdr("Oculus background awareness (describe + comment on motion when eyes run):")
 ba = ask("oculus.background_awareness (true/false)", c.get("oculus.background_awareness"), "true").lower()
@@ -117,6 +148,24 @@ PY
 }
 
 # ── arg parsing ──────────────────────────────────────────────────────────────
+# Pre-scan the run.sh-owned flags that take a value (the main loop below only
+# sees valueless flags and forwards everything else to the app). --tts and
+# --tts-device persist to config/settings.yaml, then are consumed (not
+# forwarded — ears.main doesn't know them).
+TTS_ENGINE=""
+TTS_DEVICE=""
+TTS_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tts)        TTS_ENGINE="${2:-}"; shift 2 ;;
+    --tts=*)      TTS_ENGINE="${1#--tts=}"; shift ;;
+    --tts-device) TTS_DEVICE="${2:-}"; shift 2 ;;
+    --tts-device=*) TTS_DEVICE="${1#--tts-device=}"; shift ;;
+    *)            TTS_ARGS+=("$1"); shift ;;
+  esac
+done
+set -- ${TTS_ARGS[@]+"${TTS_ARGS[@]}"}
+
 MODE=""
 HAS_AUDIO=0
 BG_AWARENESS=""  # "" = use config; "1" = force on; "0" = force off
@@ -141,6 +190,31 @@ if [ -n "$BG_AWARENESS" ]; then
   python -c "from core.config import Config; c=Config(); c.set('oculus.background_awareness', $BG_AWARENESS=='1'); c.save()" 2>/dev/null || true
 fi
 export OCULUS_BACKGROUND_AWARENESS="$BG_AWARENESS"
+
+# Persist --tts/--tts-device overrides to config/settings.yaml before launch so
+# both apps see them. Also keeps the voice sensible when switching engine
+# families (kokoro voices like af_heart don't exist in Orpheus and vice versa).
+if [ -n "$TTS_ENGINE" ] || [ -n "$TTS_DEVICE" ]; then
+  python - "$TTS_ENGINE" "$TTS_DEVICE" <<'PY'
+import sys
+from core.config import Config
+c = Config()
+eng, dev = sys.argv[1], sys.argv[2]
+KOKORO = {"af_heart", "am_michael", "bm_george", "af_bella"}
+ORPHEUS = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
+if eng:
+    c.set("voice.tts_engine", eng)
+    cur = c.get("voice.tts_voice")
+    if eng == "kokoro" and (not cur or cur in ORPHEUS):
+        c.set("voice.tts_voice", "af_heart")
+    elif eng != "kokoro" and (not cur or cur in KOKORO):
+        c.set("voice.tts_voice", "zoe")
+if dev:
+    c.set("voice.tts_device", dev)
+c.save()
+print(f"[run.sh] tts: engine={c.get('voice.tts_engine')} voice={c.get('voice.tts_voice')} device={c.get('voice.tts_device')}")
+PY
+fi
 
 # ── interactive menu (no mode arg) ───────────────────────────────────────────
 if [ -z "$MODE" ] && [ $# -eq 0 ]; then

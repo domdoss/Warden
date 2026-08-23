@@ -10,6 +10,7 @@ import {
   ASSISTANT_NAME,
   DATA_DIR,
   OLLAMA_CHAT_MODEL,
+  OLLAMA_URL,
   POLL_INTERVAL,
   TIMEZONE,
   WORKSPACE_ROOT,
@@ -19,7 +20,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher } from './agent-spawn.js';
 import {
   createTask,
   getAllTasks,
@@ -157,7 +158,6 @@ function saveState(): void {
 const MERCURY_MEMORY_FILE = 'MERCURY_MEMORY.md';
 const MERCURY_RECENT_MESSAGES = 12;
 const MERCURY_CONTEXT_TURNS = 8;
-const MERCURY_SUMMARY_EVERY = 15;
 
 function mercuryMode(): 'off' | 'rag' | 'summary' | 'full' {
   const m = (getRouterState('mercury:mode') || 'full').toLowerCase();
@@ -354,8 +354,10 @@ async function deliverReply(text: string): Promise<void> {
  * the orchestrator model on first boot, so this is never empty in normal use.
  */
 function resolveAwarenessModel(): string {
-  // Oculus shares the Toolcall model (local:subagent_model).
-  return (getRouterState('local:subagent_model') || '').trim().replace(/^local:/, '');
+  // Oculus has its own model row in Settings (oculus:model) — no sharing, no
+  // fallback: seedPerAgentModelSettings materializes it on first boot, so an
+  // empty value here means it was manually cleared and should surface loudly.
+  return (getRouterState('oculus:model') || '').trim().replace(/^local:/, '');
 }
 
 /** Pull the current frame from the satellite security detector and save it to
@@ -1625,20 +1627,71 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
   };
 }
 
-let mercuryTurnCounter = 0;
+// Mercury scheduling — runs on the 2s poll loop (see startMessageLoop), not
+// the per-turn tail, so the downtime trigger can fire while no turn is in
+// flight. Two independent triggers, both idle-gated (agent:processing !==
+// 'true') so a compaction never contends with an in-flight orchestrator turn:
+//   - interval  (mercury:interval_minutes,  default 30, 0 = off): fire if it's
+//     been at least this long since the last compaction.
+//   - downtime  (mercury:downtime_minutes,  default  5, 0 = off): fire if the
+//     user has been quiet this long (and at least this long since the last run).
+// All thresholds are read LIVE from router_state, so a dashboard settings
+// change takes effect on the next tick — no restart. cleanerBusy is the
+// shared stagger lock (see digestMonitorBusy): Mercury compaction, the Iris
+// digests, and memory writeback all acquire it so no two cleaners run at once.
+let cleanerBusy = false;
+let mercuryRunning = false;
 
-function maybeUpdateMercurySummary(): void {
-  mercuryTurnCounter++;
-  if (mercuryTurnCounter % MERCURY_SUMMARY_EVERY === 0) {
-    void updateMercurySummary();
+function maybeScheduleMercury(): void {
+  if (mercuryMode() === 'off') return;
+  if (cleanerBusy || mercuryRunning) return;
+  const now = Date.now();
+  // Lazy first-boot seed (mirrors digest:lastrun seeding): advance to now and
+  // wait for the interval/downtime rather than compacting immediately at boot.
+  const lastRaw = getRouterState('mercury:lastrun') || '';
+  const last = Date.parse(lastRaw) || 0;
+  if (!last) {
+    setRouterState('mercury:lastrun', new Date(now).toISOString());
+    return;
   }
+  // '' → default, '0' → disabled — same parse as the idle-clear consumer.
+  const intervalRaw = getRouterState('mercury:interval_minutes') || '';
+  const intervalMin = intervalRaw === '' ? 30 : (parseInt(intervalRaw, 10) || 0);
+  const downtimeRaw = getRouterState('mercury:downtime_minutes') || '';
+  const downtimeMin = downtimeRaw === '' ? 5 : (parseInt(downtimeRaw, 10) || 0);
+  if (intervalMin === 0 && downtimeMin === 0) return;
+  if (getRouterState('agent:processing') === 'true') return; // idle-gate
+
+  const sinceRun = now - last;
+  // Only compact when there is NEW conversation since the last run — otherwise
+  // a long idle would re-compact identical content every few minutes (and an
+  // unchanged summary is pure token waste).
+  const lastUser = Date.parse(getRouterState('orchestrator:last_user_message_at') || '');
+  const newContent = !!lastUser && lastUser > last;
+  const timeDue = intervalMin > 0 && sinceRun >= intervalMin * 60_000 && newContent;
+  const downDue =
+    downtimeMin > 0 &&
+    newContent &&
+    now - lastUser >= downtimeMin * 60_000; // user quiet, and (since lastUser > last) it's been at least this long since the last run
+  if (!timeDue && !downDue) return;
+
+  // Advance lastrun BEFORE firing so a slow run can't double-fire on the next tick.
+  setRouterState('mercury:lastrun', new Date(now).toISOString());
+  cleanerBusy = true;
+  mercuryRunning = true;
+  void updateMercurySummary()
+    .catch((err) => logger.warn({ err: err?.message ?? err }, 'Mercury scheduled summary failed'))
+    .finally(() => {
+      cleanerBusy = false;
+      mercuryRunning = false;
+    });
 }
 
 /**
  * Mercury — automatic rolling conversation compaction.
  *
  * Reads the last ~40 messages, preserves the most recent turns verbatim, and
- * asks the orchestrator model to compress the older turns into a concise
+ * asks the dashboard Mercury model to compress the older turns into a concise
  * summary of facts, decisions, open questions, and relevant context. Writes the
  * result to MERCURY_MEMORY.md so every subsequent prompt starts with compact
  * context instead of an ever-growing transcript.
@@ -1672,21 +1725,53 @@ async function updateMercurySummary(): Promise<void> {
       `Do NOT include the most recent ${MERCURY_RECENT_MESSAGES} turns; they are kept verbatim. ` +
       `Write in short bullet/paragraph form so the main agent can scan it quickly.\n\n${olderLines}\n\nMercury summary:`;
 
-    // Mercury shares the Toolcall model (local:subagent_model).
-    const model = (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined;
-    const mercuryInput: AgentInput = {
-      prompt: summaryPrompt,
-      sessionId: 'mercury',
-      workspaceRoot: WORKSPACE_ROOT,
-      history: [],
-      timeoutMs: 120_000,
-      orchestratorModel: model,
-      showThinking: 'false',
-      verbose: false,
-    };
+    // Mercury respects the dashboard Mercury rows (mercury:model /
+    // local:mercury_ctx) — the same rows the memory writeback resolves. A bare
+    // /api/chat goes straight to the endpoint with the model and ctx the
+    // dashboard actually shows, instead of spawning through the agent loop on
+    // the shared Toolcall row. Explicit env override still wins.
+    const model = (process.env.WARDEN_MEMORY_MODEL
+      || getRouterState('mercury:model')
+      || getRouterState('local:subagent_model')
+      || '').replace(/^local:/, '').trim();
+    if (!model) return;
+    // num_ctx and keep_alive must travel with the call — a bare request without
+    // them loads a second copy of the model at Ollama's native 2048 ctx / 300s
+    // default, which can evict an instance the user keeps resident.
+    const ctxRaw = (getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '').trim();
+    const ctxNum = Number(ctxRaw);
+    const numCtx = Number.isFinite(ctxNum) && ctxNum > 0 ? ctxNum : undefined;
+    const keepRaw = (getRouterState('local:toolcall_keep_alive') || '').trim();
+    const keepAlive = keepRaw === '-1' ? -1 : (Number.isFinite(Number(keepRaw)) && keepRaw ? Number(keepRaw) : 300);
 
-    const result = await runAgent({ ...mercuryInput, callbacks: {} });
-    let summary = cleanAgentText(result.text || '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    let summary = '';
+    try {
+      const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          stream: false,
+          messages: [{ role: 'user', content: summaryPrompt }],
+          options: { temperature: 0, ...(numCtx ? { num_ctx: numCtx } : {}) },
+          keep_alive: keepAlive,
+        }),
+      });
+      if (!resp.ok) {
+        logger.warn({ status: resp.status, model }, 'Mercury summary call failed');
+        return;
+      }
+      const data = (await resp.json()) as { message?: { content?: string } };
+      summary = cleanAgentText(data.message?.content || '');
+    } catch (err: any) {
+      logger.warn({ err: err?.message ?? err, model }, 'Mercury summary call failed');
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
     try {
       const parsed = JSON.parse(summary);
       if (parsed && typeof parsed === 'object' && typeof parsed.result === 'string') summary = cleanAgentText(parsed.result);
@@ -1712,7 +1797,21 @@ async function processOwnerMessages(): Promise<void> {
   // Re-sync cursor with router state in case an external stop/advance changed it.
   lastAgentTimestamp = getRouterState('last_agent_timestamp') || lastAgentTimestamp;
   const since = lastAgentTimestamp;
-  const pending = getMessagesSince(OWNER_JID, since, ASSISTANT_NAME);
+  let pending = getMessagesSince(OWNER_JID, since, ASSISTANT_NAME);
+
+  // Requeue after a user stop: if the previous turn was stopped (soft interrupt
+  // or kill), its messages were dropped by the cursor advance. The marker holds
+  // the timestamp just BEFORE the stopped turn's first message — extend `since`
+  // back to it so that turn's text is answered alongside the new message. Only
+  // when something newer is actually pending; a bare stop must not retrigger.
+  if (pending.length > 0) {
+    const stoppedSince = getRouterState('orchestrator:stopped_turn_since');
+    if (stoppedSince && stoppedSince < since) {
+      setRouterState('orchestrator:stopped_turn_since', '');
+      pending = getMessagesSince(OWNER_JID, stoppedSince, ASSISTANT_NAME);
+      logger.info({ stoppedSince }, 'Re-including messages from the stopped turn');
+    }
+  }
   if (pending.length === 0) return;
 
   // ── Idle context clear ──────────────────────────────────────────────────
@@ -1883,6 +1982,9 @@ async function processOwnerMessages(): Promise<void> {
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
     vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
+    // Supervisor (monitor-tick) model — blank inherits the orchestrator model in
+    // the runner. No ctx row: cloud/small models use their native window.
+    supervisorModel: (getRouterState('supervisor:model') || '').replace(/^local:/, '') || undefined,
     // byte/dexter/iris share the Toolcall model (dashboard "Toolcall model" row,
     // persisted as local:subagent_model). The host feeds the same value into each
     // per-agent IPC field so the runner's dispatch is unchanged.
@@ -1917,7 +2019,11 @@ async function processOwnerMessages(): Promise<void> {
   agentProcessing = false;
   setRouterState('agent:processing', 'false');
   if (output.userStopped) {
-    logger.info('Agent run stopped by user; no reply delivered and cursor stays advanced');
+    // Mark the window BEFORE this turn's first message so the next real message
+    // re-includes the stopped turn's text (see the extension above). `since`
+    // still holds the pre-turn cursor value at this point.
+    setRouterState('orchestrator:stopped_turn_since', since);
+    logger.info('Agent run stopped by user; no reply delivered — turn marked for requeue on next message');
     return;
   }
 
@@ -1948,16 +2054,22 @@ async function processOwnerMessages(): Promise<void> {
 
   await deliverReply(text);
 
-  // Mercury: asynchronously compact the conversation after each turn so the
-  // context window keeps flowing without manual resets.
-  void maybeUpdateMercurySummary();
+  // Mercury compaction now runs on the 2s poll loop (maybeScheduleMercury in
+  // startMessageLoop) on a time/downtime schedule — not after every turn.
 
   // Memory writeback (Mercury's durable-memory half): distill durable facts
   // + a journal entry from this turn's conversation and append them to
   // MEMORY.md / JOURNAL.md at WORKSPACE_ROOT — which the orchestrator loads
   // next turn. Fire-and-forget; self-throttled (15-min cooldown, ≥4 new
-  // messages) and non-fatal so it can never break the message loop.
-  void runMemoryWriteback(OWNER_JID);
+  // messages) and non-fatal so it can never break the message loop. Skips this
+  // turn if another cleaner (Mercury compaction / an Iris digest) is running,
+  // and holds the cleaner lock while it runs so no cleaner starts mid-writeback.
+  if (!cleanerBusy) {
+    cleanerBusy = true;
+    void runMemoryWriteback(OWNER_JID)
+      .catch(() => { /* already logs internally */ })
+      .finally(() => { cleanerBusy = false; });
+  }
 
   // Push a notification so the dashboard SSE can react even if it polls slowly.
   pushNotification('owner', {
@@ -2293,9 +2405,18 @@ async function checkDigestsDue(): Promise<void> {
         continue;
       }
       if (now >= nextFireMs) {
+        // Stagger against the other cleaners (Mercury compaction, memory
+        // writeback): if one is running, skip this tick WITHOUT advancing
+        // lastrun, so the digest retries on the next 2s tick once the lock is
+        // free. (Advancing lastrun here would burn the slot entirely — the
+        // digest wouldn't fire again until the NEXT cron occurrence.)
+        if (cleanerBusy) continue;
         setRouterState(lastrunKey, new Date(now).toISOString());
+        cleanerBusy = true;
         logger.info({ span, cron: liveCron }, 'checkDigestsDue: firing scheduled digest');
-        void runDigest(span, false).catch((err) => logger.warn({ span, err }, 'runDigest failed'));
+        void runDigest(span, false)
+          .catch((err) => logger.warn({ span, err }, 'runDigest failed'))
+          .finally(() => { cleanerBusy = false; });
       }
     }
   } finally {
@@ -2473,8 +2594,10 @@ async function startMessageLoop(): Promise<void> {
         if (agentRunInFlight) {
           const stopMsg = [...messages].reverse().find((m) => STOP_COMMAND_RE.test(m.content || ''));
           if (stopMsg) {
-            logger.info({ text: stopMsg.content }, 'Stop command received mid-run — killing agent');
-            killCurrentAgent();
+            logger.info({ text: stopMsg.content }, 'Stop command received mid-run — interrupting agent');
+            // Soft-interrupt so the warm runner child survives the stop; fall
+            // back to a kill only when there is no persistent child.
+            if (!cancelCurrentTurn()) killCurrentAgent();
             // Consume everything up to and including the stop message so it
             // isn't replayed as a prompt on the next tick. Messages sent
             // after the stop stay pending and start a fresh run.
@@ -2495,6 +2618,10 @@ async function startMessageLoop(): Promise<void> {
       // timer. Fires runDigest(span) directly (Iris, no chat) when a baked-in
       // cron schedule is due. Fire-and-forget; never blocks message pickup.
       void checkDigestsDue();
+      // Mercury compaction scheduler: same poll loop, time/downtime trigger.
+      // Fire-and-forget; idle-gated + shared cleaner lock so it never overlaps
+      // a turn or another cleaner.
+      void maybeScheduleMercury();
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }
@@ -2526,47 +2653,47 @@ function recoverPendingMessages(): void {
 const CHROME_CDP_PORT = 9222;
 const WARDEN_CHROME_PROFILE = path.join(process.env.HOME ?? '/root', '.config', 'playwright-jarvis');
 const CHROME_BIN = '/usr/bin/google-chrome-stable';
+// Tracks whether the currently-running Chrome was launched headless (no
+// graphical session existed at launch time). The watchdog watches this so it
+// can relaunch Chrome headed once a session appears.
+let chromeHeadless = false;
 
 // dockbox runs as a systemd user unit without DISPLAY/XAUTHORITY in its env,
 // so Chrome can't reach the X server and dies on launch. Discover the active
 // session's display env from a running user process (plasmashell, kded, or
 // anything with DISPLAY set) so Chrome can attach to the visible session.
-function discoverDisplayEnv(): { DISPLAY?: string; XAUTHORITY?: string } {
+function discoverDisplayEnv(): { DISPLAY?: string; XAUTHORITY?: string; WAYLAND_DISPLAY?: string; XDG_RUNTIME_DIR?: string } {
   const uid = process.getuid?.() ?? 0;
   // Prefer processes likely to own the user's graphical session.
   const candidates = ['plasmashell', 'kded', 'gnome-shell', 'Xwayland', 'Xorg', 'sway', 'i3'];
+  const readEnv = (pid: string) => {
+    const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
+    const get = (prefix: string) => env.find((e) => e.startsWith(prefix))?.slice(prefix.length);
+    return {
+      DISPLAY: get('DISPLAY='),
+      XAUTHORITY: get('XAUTHORITY='),
+      WAYLAND_DISPLAY: get('WAYLAND_DISPLAY='),
+      XDG_RUNTIME_DIR: get('XDG_RUNTIME_DIR='),
+    };
+  };
   for (const name of candidates) {
     try {
       const pids = execSync(`pgrep -u ${uid} -x ${name} 2>/dev/null`, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
       for (const pid of pids) {
-        const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
-        const DISPLAY = env.find((e) => e.startsWith('DISPLAY='));
-        const XAUTHORITY = env.find((e) => e.startsWith('XAUTHORITY='));
-        if (DISPLAY) {
-          return {
-            DISPLAY: DISPLAY.slice('DISPLAY='.length),
-            XAUTHORITY: XAUTHORITY ? XAUTHORITY.slice('XAUTHORITY='.length) : undefined,
-          };
-        }
+        const e = readEnv(pid);
+        if (e.DISPLAY || e.WAYLAND_DISPLAY) return e;
       }
     } catch { /* try next candidate */ }
   }
-  // Fallback: scan any user process for DISPLAY.
+  // Fallback: scan any user process for a display (X or Wayland).
   try {
     const pids = fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p));
     for (const pid of pids) {
       try {
         const stat = fs.statSync(`/proc/${pid}`);
         if (stat.uid !== uid) continue;
-        const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
-        const DISPLAY = env.find((e) => e.startsWith('DISPLAY='));
-        if (DISPLAY) {
-          const XAUTHORITY = env.find((e) => e.startsWith('XAUTHORITY='));
-          return {
-            DISPLAY: DISPLAY.slice('DISPLAY='.length),
-            XAUTHORITY: XAUTHORITY ? XAUTHORITY.slice('XAUTHORITY='.length) : undefined,
-          };
-        }
+        const e = readEnv(pid);
+        if (e.DISPLAY || e.WAYLAND_DISPLAY) return e;
       } catch { /* process died */ }
     }
   } catch { /* /proc unreadable */ }
@@ -2580,24 +2707,36 @@ function spawnChrome(): void {
     fs.rmSync(path.join(WARDEN_CHROME_PROFILE, 'SingletonSocket'), { force: true });
   } catch { /* ignore */ }
   const displayEnv = discoverDisplayEnv();
-  // Headless hosts (the Pi runs Warden as a systemd user unit with no X/Wayland
-  // session) can't open a display, so Chrome exits immediately and the watchdog
-  // relaunches it in a boot loop. Run headless when there's no DISPLAY to attach
-  // to; --disable-gpu skips the EGL init noise on those boxes.
-  const headless = !displayEnv.DISPLAY;
+  // Run headed on the user's live graphical session so the agent-driven browser
+  // is a real, visible window. Wayland is preferred (native window, no X-auth
+  // dependency); XWayland is the fallback. Headless is only a safety net for a
+  // session-less host — this desktop always has a Wayland session, so in
+  // practice Chrome always launches headed. --disable-gpu skips EGL noise
+  // headless.
+  const hasWayland = !!(displayEnv.WAYLAND_DISPLAY && displayEnv.XDG_RUNTIME_DIR);
+  const hasX = !!displayEnv.DISPLAY;
+  const headless = !hasWayland && !hasX;
   const chromeArgs = [
     `--remote-debugging-port=${CHROME_CDP_PORT}`,
     `--user-data-dir=${WARDEN_CHROME_PROFILE}`,
     '--no-sandbox',
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-features=Translate',
+    // Suppress the recurring "Verify it's you" Google-account sync re-auth
+    // prompt: disable Chrome Sync entirely (site login cookies persist, so
+    // signed-in sessions like YouTube keep working) and block the sync
+    // sign-in/consent dialogs. NB: Chrome only honors the LAST --disable-features
+    // flag, so all disabled features go in ONE comma-separated list.
+    '--disable-sync',
+    '--disable-features=Translate,LockProfileCookieDatabase,SyncSignin,SyncConsentDialog',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
-    '--disable-features=LockProfileCookieDatabase',
   ];
   if (headless) {
     chromeArgs.push('--headless=new', '--disable-gpu');
+  } else if (hasWayland) {
+    // Native Wayland window on the user's Plasma desktop.
+    chromeArgs.push('--ozone-platform=wayland');
   }
   const child = spawn(CHROME_BIN, chromeArgs, {
     detached: true,
@@ -2614,7 +2753,8 @@ function spawnChrome(): void {
     logger.warn({ code, signal }, 'Chrome process exited');
   });
   child.unref();
-  logger.info({ cdpPort: CHROME_CDP_PORT, headless, ...displayEnv }, 'Launched persistent Chrome');
+  chromeHeadless = headless;
+  logger.info({ cdpPort: CHROME_CDP_PORT, headless, wayland: hasWayland, ...displayEnv }, 'Launched persistent Chrome');
 }
 
 function startChromeWatchdog(): void {
@@ -2622,6 +2762,7 @@ function startChromeWatchdog(): void {
   try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
   let chromeLaunchTime = Date.now();
   let chromeFailures = 0;
+  let chromeLaunched = false;
 
   function restartChrome(reason: string): void {
     logger.warn({ reason, chromeFailures }, 'Relaunching Chrome');
@@ -2629,9 +2770,26 @@ function startChromeWatchdog(): void {
     chromeFailures = 0;
     chromeLaunchTime = Date.now();
     spawnChrome();
+    chromeLaunched = true;
   }
 
-  spawnChrome();
+  // Initial launch: wait for the graphical session to come up so Chrome starts
+  // headed (a visible window) instead of going headless. systemd user services
+  // start at login, so the Wayland/X session is usually up within seconds;
+  // poll for up to 30s. If no session is found, Chrome launches headless as a
+  // fallback (this desktop always has a Wayland session, so the wait resolves
+  // in seconds). This does not block the rest of startup — it runs async while
+  // DB/channels/agents come up.
+  void (async () => {
+    for (let i = 0; i < 15; i++) {
+      const e = discoverDisplayEnv();
+      if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    spawnChrome();
+    chromeLaunched = true;
+    chromeLaunchTime = Date.now();
+  })();
 
   const httpOk = (url: string, timeoutMs = 3000) =>
     new Promise<boolean>((resolve) => {
@@ -2649,6 +2807,18 @@ function startChromeWatchdog(): void {
   setInterval(async () => {
     const now = Date.now();
     if (now - chromeLaunchTime < 10000) return;
+    if (!chromeLaunched) return; // still waiting for the session before first launch
+
+    // If Chrome started headless (no session yet) but one has since appeared,
+    // relaunch it headed — visible window, and plasma-browser-integration-host
+    // stops crashing (the Qt6 helper gets a real display instead of aborting).
+    if (chromeHeadless) {
+      const e = discoverDisplayEnv();
+      if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) {
+        restartChrome('graphical session appeared — switching to headed');
+        return;
+      }
+    }
 
     const chromeUp = await httpOk(`http://localhost:${CHROME_CDP_PORT}/json/version`, 3000);
     if (!chromeUp) {
@@ -2712,6 +2882,10 @@ function seedPerAgentModelSettings(): void {
   seed('vulkan:model', orch);
   seed('mercury:model', orch);
   seed('oculus:model', orch);
+  // Supervisor (monitor-tick) model inherits the orchestrator on first boot —
+  // no blank anywhere: every dashboard model dropdown always shows a concrete
+  // model. The user picks a small/cloud one afterward if they want.
+  seed('supervisor:model', orch);
   // ctx — preserve each agent's current effective value.
   seed('local:byte_ctx', toolsCtx);
   seed('local:dexter_ctx', toolsCtx);
@@ -2735,18 +2909,74 @@ export function syncAgentCtxEnv(): void {
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
-  // The five toolcall agents share one ctx (local:subagent_ctx).
-  process.env.MERCURY_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  // Byte, Dexter, and Iris share one ctx (local:subagent_ctx).
   process.env.BYTE_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.DEXTER_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.IRIS_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
   process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
-  process.env.OCULUS_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  // Mercury and Oculus have their own ctx rows in Settings. Until a per-agent
+  // value is saved they inherit the shared toolcall ctx so effective behavior
+  // is unchanged.
+  process.env.MERCURY_NUM_CTX =
+    getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '';
+  process.env.OCULUS_NUM_CTX =
+    getRouterState('local:oculus_ctx') || getRouterState('local:subagent_ctx') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
   process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
+}
+
+/**
+ * Fire-and-forget Ollama model warmup at boot. Every model configured to stay
+ * resident (keep_alive = -1) gets a trivial /api/generate so the first real
+ * message doesn't pay a multi-minute cold load. Only the models that should
+ * stay resident: orchestrator, atlas, and the shared toolcall model when
+ * local:toolcall_keep_alive is -1. Cloud models are excluded (no VRAM to warm).
+ * Retries /api/ps until Ollama is reachable (it may still be starting).
+ */
+async function warmResidentOllamaModels(): Promise<void> {
+  // Wait for Ollama to answer (service may start before Ollama is up).
+  let up = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/ps`);
+      if (res.ok) { up = true; break; }
+    } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  if (!up) {
+    logger.warn('Ollama unreachable after 60s — skipping model warmup');
+    return;
+  }
+
+  const candidates = [
+    getRouterState('orchestrator:model'),
+    getRouterState('atlas:model'),
+    getRouterState('local:toolcall_keep_alive') === '-1'
+      ? getRouterState('local:subagent_model')
+      : '',
+  ];
+  const toWarm = [
+    ...new Set(
+      candidates
+        .map((m) => (m || '').replace(/^local:/, '').trim())
+        .filter((m) => m && !/cloud/i.test(m)),
+    ),
+  ];
+  for (const model of toWarm) {
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt: ' ', keep_alive: -1, stream: false }),
+      });
+      logger.info({ model, ok: res.ok }, 'Warmed resident Ollama model');
+    } catch (err) {
+      logger.warn({ model, err }, 'Model warmup failed (non-fatal)');
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -2765,6 +2995,9 @@ async function main(): Promise<void> {
   // when the key is empty), then runtime uses the key directly with no `||`.
   seedPerAgentModelSettings();
   syncAgentCtxEnv();
+  // Warm resident Ollama models in the background (fire-and-forget) so the
+  // first message after a service start doesn't pay a multi-minute cold load.
+  void warmResidentOllamaModels();
 
   // Wire the activity publisher so agent-runner stderr thinking tokens reach
   // the dashboard's live thinking bar via SSE.

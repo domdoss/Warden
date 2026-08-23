@@ -171,7 +171,10 @@ export class TelegramChannel implements Channel {
   private wireHandlers(): void {
     this.bot.command('start', async (ctx) => {
       const chatId = String(ctx.chat.id);
-      const name = ctx.from?.first_name || 'owner';
+      const from = ctx.from;
+      const name = [from?.first_name, from?.last_name].filter(Boolean).join(' ')
+        || from?.username
+        || 'owner';
       if (!this.ownerChatId) {
         this.pair(chatId, name);
         await ctx.reply(`Paired. This device is now Warden's owner — just talk to me like you do on the dashboard.`);
@@ -180,7 +183,7 @@ export class TelegramChannel implements Channel {
       if (this.isOwner(chatId)) {
         await ctx.reply(`Already paired and listening.`);
       } else {
-        await ctx.reply(`This is a private assistant and it's already paired to its owner.`);
+        await ctx.reply(`This is a private assistant and it's already paired to its owner. To re-point it here, set this chat id (${chatId}) in the dashboard Telegram settings and save.`);
       }
     });
 
@@ -190,7 +193,12 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message', async (ctx) => {
       const chatId = String(ctx.chat.id);
-      const name = ctx.from?.first_name || 'user';
+      const from = ctx.from;
+      // Full display name so the agent can tell who is speaking in a group —
+      // "First Last", else username, else a non-generic fallback.
+      const name = [from?.first_name, from?.last_name].filter(Boolean).join(' ')
+        || from?.username
+        || 'Telegram user';
       if (!this.ownerChatId) {
         await ctx.reply(`Not paired yet — send /start to claim this bot.`);
         return;

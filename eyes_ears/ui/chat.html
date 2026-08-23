@@ -172,13 +172,43 @@
     return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
   }
 
+  function msOf(ts){
+    if(!ts) return Date.now();
+    if(typeof ts==='number') return ts;
+    if(typeof ts==='string'&&/^\d+$/.test(ts)) return parseInt(ts,10);
+    var d=new Date(ts);
+    return isNaN(d)?Date.now():d.getTime();
+  }
+
   function renderMessage(role,text,ts){
     var el=emptyState();if(el)el.remove();
     var div=document.createElement('div');
     div.className='msg '+role;
     var sender=role==='user'?'YOU':'JARVIS';
     div.innerHTML='<span class="sender">'+sender+'</span>'+esc(text)+'<span class="ts">'+fmtTs(ts)+'</span>';
+    div.setAttribute('data-ms', msOf(ts));
     messagesEl.appendChild(div);
+    messagesEl.scrollTop=messagesEl.scrollHeight;
+  }
+
+  // The poll appends in ARRIVAL order: a just-sent local bubble is already at
+  // the bottom when the history fetch delivers older in-between messages, so
+  // they used to land AFTER it (previous prompts appearing under the current
+  // one). After each load, stable-sort the bubbles by timestamp if any are
+  // out of order.
+  function ensureOrder(){
+    var kids=[].slice.call(messagesEl.querySelectorAll('.msg'));
+    var prev=-1, outOfOrder=false;
+    kids.forEach(function(k){
+      var ms=parseInt(k.getAttribute('data-ms')||'0',10);
+      if(ms<prev) outOfOrder=true;
+      prev=ms;
+    });
+    if(!outOfOrder) return;
+    kids.sort(function(a,b){
+      return parseInt(a.getAttribute('data-ms')||'0',10)-parseInt(b.getAttribute('data-ms')||'0',10);
+    });
+    kids.forEach(function(k){messagesEl.appendChild(k);});
     messagesEl.scrollTop=messagesEl.scrollHeight;
   }
 
@@ -202,6 +232,12 @@
     return false;
   }
 
+  // Mirror of localRenders: bot messages the history poll already rendered.
+  // If chat_send returns a reply the poll already showed (poll won the race
+  // between server persistence and the local render), don't render it again.
+  var serverBotRenders=[];
+  function seenByPoll(text){return serverBotRenders.indexOf(text)!==-1}
+
   async function loadHistory(){
     try{
       var raw=await window.pywebview.api.warden_api('/api/messages?limit=100');
@@ -213,12 +249,21 @@
         if(m.id && renderedIds.has(m.id)) return;
         if(isLocalDuplicate(m)) return;
         if(m.id) renderedIds.add(m.id);
+        if(m.is_bot_message){
+          serverBotRenders.push(m.content);
+          if(serverBotRenders.length>50)serverBotRenders=serverBotRenders.slice(-50);
+        }
         renderMessage(m.is_bot_message?'jarvis':'user', m.content, m.timestamp);
       });
+      ensureOrder();
     }catch(e){}
   }
 
   function addMessage(role,text){
+    if(role==='jarvis'&&seenByPoll(text)){
+      addLocalRender(role,text); // keep dedup state accurate even when skipping
+      return;
+    }
     addLocalRender(role,text);
     renderMessage(role,text,null);
   }

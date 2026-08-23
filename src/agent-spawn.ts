@@ -490,6 +490,24 @@ export const liveStatus = {
   ts: 0,
 };
 
+// Structured per-job snapshot for the dashboard Oversight window. The runner
+// attaches `jobsList` to its ---WARDEN_STATUS--- heartbeats (emitJobsStatus);
+// the latest snapshot is the source of truth — each entry fully replaces it
+// (jobs disappear from the list the moment they finish).
+export interface LiveJob {
+  id: string;        // e.g. "atlas-s4q4"
+  agent: string;     // atlas | artemis | vulkan | …
+  task: string;
+  calls: number;
+  lastAction: string;
+  elapsed: number;   // seconds since job start
+  idle: number;      // seconds since last tool call
+}
+let liveJobs: LiveJob[] = [];
+export function getLiveJobs(): LiveJob[] {
+  return liveJobs;
+}
+
 // Ring buffer of recent progress events for the dashboard's collapsible
 // "Live activity" panel. Each entry is one real status change (an atlas tool
 // call, a council round, a delegation) or a supervisor note from an
@@ -663,6 +681,11 @@ function onPersistentStdoutData(chunk: Buffer) {
         const entry = JSON.parse(json);
         liveStatus.phase = entry.phase || '';
         liveStatus.label = entry.label || '';
+        // Structured job snapshot for the Oversight window — the runner's
+        // heartbeat carries the full running list; replace on every update.
+        if (Array.isArray(entry.jobsList)) {
+          liveJobs = entry.jobsList;
+        }
         liveStatus.tools = Array.isArray(entry.tools) ? entry.tools : [];
         liveStatus.jobs = typeof entry.jobs === 'number' ? entry.jobs : 0;
         liveStatus.ts = entry.ts || Date.now();
@@ -741,6 +764,7 @@ function setupPersistentChild(child: ChildProcess, startedAt: number) {
     }
     logger.info({ exitCode, signal, stderrLen: agentState.stderr.length, stderrTail: agentState.stderr.slice(-2000) }, 'agent-spawn: child exited');
     if (persistentChild === child) { persistentChild = null; currentAgent = null; }
+    liveJobs = []; // runner died — all its background jobs went with it
     const r = agentState.resolve;
     if (r) {
       agentState.resolve = null;
@@ -757,12 +781,41 @@ function setupPersistentChild(child: ChildProcess, startedAt: number) {
   });
   child.on('error', (err) => {
     if (persistentChild === child) { persistentChild = null; currentAgent = null; }
+    liveJobs = []; // runner died — all its background jobs went with it
     const r = agentState.resolve;
     if (r) {
       agentState.resolve = null;
       r({ text: agentState.captured, exitCode: -1, durationMs: Date.now() - startedAt, error: `spawn error: ${err.message}` });
     }
   });
+}
+
+/**
+ * Soft-stop the current turn WITHOUT killing the runner child: writes an
+ * {type:'interrupt'} file to the IPC input dir, which the runner drains once
+ * per tool-loop iteration and then ends its turn (emitting OUTPUT_END, which
+ * resolves the pending promise with userStopped: true via userStoppedAgent).
+ * The warm child — its loaded model, skill/fabric indexes, and MCP connections
+ * — survives, so the next message doesn't pay a full cold boot.
+ *
+ * Caveat: an in-flight HTTP stream from Ollama cannot be aborted this way; the
+ * interrupt lands at the next loop-iteration boundary. Returns false when no
+ * persistent child exists to interrupt (callers should fall back to no-op).
+ */
+export function cancelCurrentTurn(): boolean {
+  const proc = persistentChild && !persistentChild.killed && persistentChild.exitCode === null
+    ? persistentChild
+    : null;
+  if (!proc) return false;
+  try {
+    userStoppedAgent = true;
+    mkdirSync(IPC_INPUT_DIR, { recursive: true });
+    writeFileSync(`${IPC_INPUT_DIR}/interrupt-${Date.now()}.json`, JSON.stringify({ type: 'interrupt' }));
+    return true;
+  } catch (err) {
+    logger.warn({ err }, 'cancelCurrentTurn: failed to write interrupt file');
+    return false;
+  }
 }
 
 /**
@@ -827,6 +880,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             orchestratorModel: input.orchestratorModel,
             model: input.model,
             vulkanModel: input.vulkanModel,
+            supervisorModel: input.supervisorModel,
             byteModel: input.byteModel,
             dexterModel: input.dexterModel,
             irisModel: input.irisModel,
@@ -887,6 +941,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       orchestratorModel: input.orchestratorModel,
       model: input.model,
       vulkanModel: input.vulkanModel,
+      supervisorModel: input.supervisorModel,
       byteModel: input.byteModel,
       dexterModel: input.dexterModel,
       irisModel: input.irisModel,

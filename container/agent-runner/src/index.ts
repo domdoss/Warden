@@ -227,7 +227,7 @@ const STATUS_MARKER = '---WARDEN_STATUS---';
 // check", "I'll verify") but emitting no tool_call. Capped at INTENT_MAX_NUDGES
 // per turn. Triggered only when response is short, has no fenced code, and the
 // regex matches an announcement phrase.
-const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule)\b/i;
+const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|delegate)\b/i;
 const INTENT_MAX_NUDGES = 2;
 
 // Prompt-injection guard markers: wrap external content (tool output, web
@@ -386,6 +386,38 @@ function toolDetailLabel(name, args) {
     }
 }
 /**
+ * Consume ONLY interrupt files from the IPC input dir (sets interruptRequested),
+ * leaving any queued message files on disk for the turn-end/idle drain. Called
+ * once per tool-loop iteration so a host-initiated soft stop (user pressed Stop)
+ * lands mid-turn instead of only while idle — it replaces the old behavior where
+ * stopping hard-killed the whole runner child and the next message paid a full
+ * cold boot.
+ */
+function drainInterruptOnly() {
+    try {
+        const dirExists = fs.existsSync(IPC_INPUT_DIR);
+        if (!dirExists) return;
+        const files = fs.readdirSync(IPC_INPUT_DIR)
+            .filter(f => f.endsWith('.json'))
+            .sort();
+        for (const file of files) {
+            const filePath = path.join(IPC_INPUT_DIR, file);
+            let data;
+            try {
+                data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+            }
+            catch { continue; }
+            if (data && data.type === 'interrupt') {
+                try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+                interruptRequested = true;
+                log('Interrupt signal received via IPC (mid-turn)');
+            }
+        }
+    }
+    catch { /* never break the loop on IPC errors */ }
+}
+
+/**
  * Drain all pending IPC input messages.
  * Returns messages found, or empty array.
  */
@@ -465,6 +497,7 @@ function applySettingsSync(data: any) {
         lastContextClearAt = v;
         CONTEXT_CLEAR_AT = v;
     }
+    if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
@@ -704,11 +737,17 @@ WARDEN ITSELF — Warden's own source lives at \`/opt/warden\` (repo root): \`sr
 
 FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
 
-BROWSER — For web tasks (open URLs, forms, scraping, clicks, YouTube) use the native browser_* tools. Chrome launches automatically on CDP 9222 with the user's real signed-in profile — call \`browser_navigate\` directly as the first browser action, no setup, no Bash checks (never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins). It returns a snapshot with refs like [ref=e12]; pass them to click/type, and take a fresh \`browser_snapshot\` after the page changes (refs go stale). If a fetch is blocked by robots/captcha/empty shell, fall back to browser_navigate + snapshot/evaluate to read the rendered page and continue.
+WEB — Two tools, two jobs. No site-specific rituals — apply the same rule to every site:
+• \`WebFetch\` — READS a page server-side and returns clean Markdown (headings/links/lists/code/tables preserved; nav+footer+ads stripped) WITHOUT launching the browser. It is the DEFAULT for any "find X", "look up", "what does this page say", or "pull up the link for" task. If the ask can be answered from the DOM alone, use \`WebFetch\` and put the answer in your reply — do NOT open the browser.
+• \`browser_*\` — drives the user's REAL signed-in Chrome (CDP 9222) to DISPLAY a page in front of them or to INTERACT (click, type/submit a form, log in, control media). Call \`browser_navigate\` directly as the first action; it returns a snapshot with refs like [ref=e12] for click/type, and take a fresh \`browser_snapshot\` after the page changes (refs go stale). Never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins.
+Route by intent:
+- User just wants to KNOW something → \`WebFetch\`, answer in your reply, no browser.
+- User wants to SEE a page, watch/play media, or DO something (form, login, click) → find the real URL with \`WebFetch\`/\`WebSearch\`, then \`browser_navigate\` straight to that final URL so it opens in front of them. Reuse the shared browser — don't pile up new tabs.
+- User is ALREADY on a page in the shared browser → work THERE. \`browser_current_url\` + \`browser_snapshot\` to see where they are, then act in that page (navigate onward, click, control media) instead of opening a new one.
+- \`WebFetch\` comes back empty/blocked → the page is probably JS-rendered; fall back to \`browser_navigate\` + \`browser_snapshot\` to read it.
+For media playback on any site, drive the page's \`<video>\`/\`<audio>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the site's UI buttons.
 
 NATIVE APPS — For desktop apps that aren't a web page (Stremio, a media player, a settings window), drive them by hand: launch the app with Bash (\`flatpak run …\` or the app command) and wait for it to open, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the pixel coordinates of the control you want, and \`desktop_type\` to type or send keys. Take a fresh \`desktop_screenshot\` after each action so you can see what changed. Don't use xdg-open — it opens things you then can't control.
-
-YOUTUBE — To play a song or video, navigate to YouTube's search results for it (\`https://www.youtube.com/results?search_query=...\`) and click a real result from the snapshot — never guess or type a watch URL; always click an actual result so the video exists. To change to a different song, run a fresh search and click a result that isn't the one currently playing. Drive playback through the \`<video>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the page's UI buttons.
 
 AUDIO & MEDIA — Use the dedicated tools, not Bash amixer/playerctl commands. \`audio_volume\` (action get/set/toggle_mute, level 0-100) for the SPEAKER loudness; \`mic_volume\` for the MIC sensitivity; \`media_control\` (play/pause/play_pause/next/previous/stop) for a running media player (browser YouTube, Spotify, mpv). "Turn it up/down", "mute", "make it louder", "volume to 50" → audio_volume; "mute the mic", "mic too quiet/loud" → mic_volume; "pause/skip/next song" → media_control.
 
@@ -1138,6 +1177,13 @@ let lastContextClearAt = '';
 let COUNCIL_MODEL_SKEPTIC = '';
 let COUNCIL_MODEL_PRAGMATIST = '';
 let COUNCIL_MODEL_SYNTHESIST = '';
+// Supervisor watchdog model override — from the dashboard Supervisor dropdown.
+// Empty = the watchdog call inherits the orchestrator model. Set to a small
+// cloud or local model (e.g. granite4.1:3b) so the 30s watchdog ticks run
+// cheaply and never churn VRAM or tie up the main model. The watchdog call is
+// tool-less and context-free, so a small model is enough. No ctx row:
+// cloud/small models use their native context window.
+let SUPERVISOR_MODEL = '';
 // Live state of the most recent Council deliberation. The background council
 // loop is the only writer; the council_status tool handler only reads, so the
 // orchestrator can peek at an in-flight deliberation without touching it.
@@ -1176,6 +1222,20 @@ const backgroundJobs = new Map<string, BackgroundJob>();
 // progress) and on job start. Without this, the orchestrator's turn ends right
 // after it delegates, the host clears liveStatus, and the dashboard reads
 // "idle" — even though the job is still working in the background.
+// Structured per-job snapshot for the dashboard's oversight window — one row
+// per running job with the fields it needs directly (no label parsing).
+function currentJobsList() {
+    const now = Date.now();
+    return [...backgroundJobs.values()].filter(j => j.status === 'running').map(j => ({
+        id: `${j.agent}-${j.shortId}`,
+        agent: j.agent,
+        task: (j.task || '').slice(0, 140),
+        calls: j.toolCallCount,
+        lastAction: (j.lastAction || '').slice(0, 120),
+        elapsed: Math.round((now - j.startedAt) / 1000),
+        idle: Math.round((now - j.lastActionAt) / 1000),
+    }));
+}
 function emitJobsStatus() {
     const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
     if (running.length === 0) return;
@@ -1185,7 +1245,7 @@ function emitJobsStatus() {
     const label = running.length === 1
         ? `${head.agent}-${head.shortId}: ${head.lastAction} — ${head.toolCallCount} call(s), ${elapsed}s elapsed (last action ${sinceLast}s ago)`
         : `${running.length} jobs running — ${head.agent}-${head.shortId}: ${head.lastAction} (+${running.length - 1} more)`;
-    writeStatus({ phase: head.agent, label, jobs: running.length, ts: Date.now() });
+    writeStatus({ phase: head.agent, label, jobs: running.length, jobsList: currentJobsList(), ts: Date.now() });
 }
 
 // ─── Direct Atlas passthrough ───────────────────────────────────────────
@@ -1197,6 +1257,58 @@ function emitJobsStatus() {
 // Atlas is kicked off as a normal background job with the refined task and
 // the user is dropped back to normal orchestrator chat.
 let atlasDirect: { active: boolean; messages: { role: string; content: string }[] } | null = null;
+
+// ─── Confirmed-failure retry ledger ─────────────────────────────────────
+// The hard cap behind the CONFIRM step in the inbox digest: a task that
+// already ran gets exactly ONE model-initiated automatic retry — a third
+// spontaneous dispatch of the same task is refused outright, so a failure can
+// never become a re-dispatch loop. The ledger is consulted ONLY on spontaneous
+// turns (inbox digest); user-driven turns always dispatch, so
+// the user saying "try it again" can never be blocked by it. In-memory: the
+// ledger shares the runner's lifetime, like the inbox.
+// (Turn-provenance flag lives here at module scope so retryGate can read it;
+// it is reset at the top of each idle-loop pass and set when a digest turn
+// is composed.)
+let turnWasInboxDigest = false;
+interface RetryLedgerEntry { failCount: number; lastAt: number; }
+const retryLedger = new Map<string, RetryLedgerEntry>();
+function taskSig(task: string): string {
+    return task.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+// Check + (on allowance) consume the single retry credit for a spontaneous
+// re-dispatch. Returns null when the delegation may proceed, otherwise the
+// refusal text — which the caller returns as the tool result; no job spawns.
+function retryGate(task: string): string | null {
+    if (!turnWasInboxDigest) return null; // user turn: always allow
+    const sig = taskSig(task);
+    const retryUsed = (retryLedger.get(sig)?.failCount ?? 0) >= 1;
+    const finishedBefore = inbox.all().some(i => taskSig(i.task) === sig);
+    if (!finishedBefore && !retryUsed) return null; // first dispatch of this task
+    if (retryUsed) {
+        log(`[retry-ledger] blocked re-delegation: ${sig}`);
+        return `STOP — this task ("${sig}") already ran and its one automatic retry has been used. Do not dispatch it again. If the deliverable is still missing, tell the user in plain sentences what was tried, what happened, and what you would need to succeed.`;
+    }
+    retryLedger.set(sig, { failCount: 1, lastAt: Date.now() });
+    log(`[retry-ledger] consuming the one automatic retry for: ${sig}`);
+    return null;
+}
+// Advisory record of a confirmed failure (via report_task_failure): the hard
+// cap lives in retryGate; this keeps the failure visible in the journal and
+// steers the model's one allowed retry.
+function recordConfirmedFailure(task: string, reason: string): void {
+    const sig = taskSig(task);
+    const entry = retryLedger.get(sig) ?? { failCount: 0, lastAt: 0 };
+    entry.lastAt = Date.now();
+    retryLedger.set(sig, entry);
+    log(`[retry-ledger] confirmed failure reported: ${sig} — ${reason.slice(0, 160)}`);
+}
+// Ids of results already re-marked unread once after their digest turn errored
+// (read-safety) — a second errored digest must not re-queue them again, or an
+// erroring digest would loop forever. The drained-id list is module-level
+// because the drain happens at the END of one loop iteration while the digest
+// turn (and its error path) runs in the NEXT.
+const digestRequeuedOnce = new Set<string>();
+let drainedDigestJobIds: string[] = [];
 
 // Spawn a background job for an async delegate (atlas or vulkan). Used by
 // the delegate tool handlers and by the "go" exit from direct Atlas
@@ -1214,7 +1326,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
     }
     const activeCount = backgroundJobs.size;
-    writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${task}${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, ts: Date.now() });
+    writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${task}${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, jobsList: currentJobsList(), ts: Date.now() });
     const abortFlag = { aborted: false };
     const jobRecord: BackgroundJob = {
         promise: null as any, startedAt: Date.now(), agent: delegate, task, shortId: jobShortId,
@@ -1245,13 +1357,288 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             // finishes (emitJobsStatus no-ops when nothing is running, so
             // emit an explicit zero here).
             const remaining = [...backgroundJobs.values()].filter(j => j.status === 'running').length;
-            writeStatus({ phase: remaining > 0 ? delegate : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `${def.label} ${jobShortId} complete`, jobs: remaining, ts: Date.now() });
+            writeStatus({ phase: remaining > 0 ? delegate : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `${def.label} ${jobShortId} complete`, jobs: remaining, jobsList: currentJobsList(), ts: Date.now() });
             setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
         });
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
     emitJobsStatus();
     return jobId;
+}
+
+// ── Supervisor watchdog (monitor tick) ───────────────────────────────────
+// A context-free, tool-less watchdog call that fires every MONITOR_TICK_MS
+// while background jobs are active. Unlike the old monitor tick it does NOT
+// ride the orchestrator turn — no 57-skill system prompt, no 27 tool schemas,
+// no conversation history. It sees only: the original user ask, a one-line
+// summary of each running job, and a static roster of delegate-able agents.
+// It returns strict JSON; host code executes the decisions (stop a crashed /
+// off-rails job, re-delegate / chain a next step, or stop all when the overall
+// request is complete). The LLM never calls a tool.
+//
+// Built for a small local model (e.g. granite4.1:3b): a few hundred tokens,
+// temperature 0, Ollama `format` JSON-schema constraining output to valid JSON
+// with exact enums, and a short structured positive-only system prompt (no
+// negative examples — those seed the exact hallucination in Granite). Going
+// fully offline is just a `supervisor:model` DB flip to the Granite model.
+
+const WATCHDOG_KEEP_ALIVE_S = 60;       // keep the small model resident across 30s ticks
+const WATCHDOG_FETCH_TIMEOUT_MS = 15_000;
+const WATCHDOG_MIN_JOB_AGE_S = 120;     // never stop a crashed/off-rails job younger than this
+
+// Agents the watchdog may re-delegate / chain a next step to. Oculus is
+// event-driven and not taskable, so it is excluded.
+// Agents the watchdog may re-delegate / chain a next step to — only the two
+// that run as proper background jobs via spawnBackgroundJob with their own
+// model. byte/dexter/iris run synchronously (one-shot, own models) and never
+// become background jobs; artemis uses a dedicated chat-history-augmented
+// audit path, not spawnBackgroundJob. Routing any of those through
+// spawnBackgroundJob would run them under the Atlas model — wrong.
+const WATCHDOG_DELEGATEABLE = new Set<string>(['atlas', 'vulkan']);
+const WATCHDOG_ROSTER_LINES: string = SUBAGENTS
+    .filter(s => WATCHDOG_DELEGATEABLE.has(s.delegate))
+    .map(s => `- ${s.delegate}: ${s.summary}`)
+    .join('\n');
+
+// JSON schema handed to Ollama `format` to constrain decoding to valid JSON
+// with the exact enums — the single biggest lever for a small local model.
+// Used on the local Ollama path only; the OpenAI-style cloud proxy omits it.
+const WATCHDOG_FORMAT = {
+    type: 'object',
+    properties: {
+        complete: { type: 'boolean' },
+        jobs: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    status: { type: 'string', enum: ['ok', 'crashed', 'off_rails'] },
+                    reason: { type: 'string' },
+                },
+                required: ['id', 'status'],
+            },
+        },
+        delegate: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    agent: { type: 'string', enum: ['atlas', 'vulkan'] },
+                    task: { type: 'string' },
+                },
+                required: ['agent', 'task'],
+            },
+        },
+    },
+    required: ['complete', 'jobs'],
+};
+
+const WATCHDOG_SYSTEM_PROMPT = `You are the Warden supervisor watchdog. You check on running background jobs and decide whether any has crashed, gone off the rails, or finished, and whether the user's overall request is complete.
+
+CAPABILITIES: Judge each running job from its summary alone. Decide if work is healthy, crashed, or off the rails. Decide if the overall request is complete. When work needs redirecting or a next step is due, choose the right agent and write a plain-English task for it.
+
+AGENTS YOU CAN DELEGATE TO:
+${WATCHDOG_ROSTER_LINES}
+
+GUIDELINES:
+- A job under ${WATCHDOG_MIN_JOB_AGE_S}s old with zero tool calls is warming up its model. Mark it ok.
+- A job making progress toward its task — reading, trying, recovering, iterating — is ok.
+- A job repeating the same call with no change for several minutes is crashed.
+- A job working on something unrelated to its task is off_rails.
+- Set complete true only when the user's overall ask is fully achieved by what has run.
+- Use delegate to re-route a veering job's work to the right agent, or to start a follow-up step. Write the task as plain intent: the goal and the facts, never a shell command.
+
+FORMAT: Output one JSON object only.
+{"complete": false, "jobs": [{"id": "atlas-abcd", "status": "ok", "reason": ""}], "delegate": []}`;
+
+interface WatchdogVerdict {
+    complete?: boolean;
+    jobs?: { id?: string; status?: string; reason?: string }[];
+    delegate?: { agent?: string; task?: string }[];
+}
+
+// Tolerant JSON extraction: strip code fences / prose, pull the first balanced
+// object. The local path has Ollama `format` enforcing valid JSON, but the
+// cloud-proxy path does not, so this stays as the safety net.
+function extractJsonObject(text: string): any | null {
+    if (!text) return null;
+    let t = text.trim();
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) t = fence[1].trim();
+    const start = t.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < t.length; i++) {
+        const c = t[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (c === '\\') esc = true;
+            else if (c === '"') inStr = false;
+        } else {
+            if (c === '"') inStr = true;
+            else if (c === '{') depth++;
+            else if (c === '}') {
+                depth--;
+                if (depth === 0) {
+                    try { return JSON.parse(t.slice(start, i + 1)); } catch { return null; }
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function watchdogNote(text: string, toolContext: any): void {
+    try {
+        writeCallback('progress_event', {
+            chatJid: toolContext.chatJid,
+            groupFolder: toolContext.groupFolder,
+            text,
+            timestamp: new Date().toISOString(),
+        });
+    } catch (err: any) {
+        log(`[watchdog] progress_event failed: ${err?.message ?? err}`);
+    }
+}
+
+// One supervisor watchdog tick. `ask` is the original user request (one line),
+// captured by the caller from the conversation. Runs a single tool-less LLM
+// call and executes the JSON verdict against the running jobs.
+async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolContext: any }): Promise<void> {
+    const { tickNum, ask, toolContext } = opts;
+    const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
+    if (running.length === 0) return; // jobs finished during the tick window
+
+    const jobLines = running.map(j => {
+        const elapsed = Math.round((Date.now() - j.startedAt) / 1000);
+        const sinceLast = Math.round((Date.now() - j.lastActionAt) / 1000);
+        const warming = elapsed < WATCHDOG_MIN_JOB_AGE_S && j.toolCallCount === 0 ? ' — WARMING UP (model loading)' : '';
+        return `- ${j.agent}-${j.shortId}: ${elapsed}s elapsed, ${j.toolCallCount} tool call(s), last action ${sinceLast}s ago (${j.lastAction})${warming}. Task: "${j.task.slice(0, 160)}"`;
+    }).join('\n');
+
+    const userMsg =
+        `User request: ${ask.trim().slice(0, 400) || '(not available)'}\n\n` +
+        `Running background jobs (${running.length}):\n${jobLines}\n\n` +
+        `Output the JSON verdict.`;
+
+    const model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
+    if (!model) { log(`[watchdog] tick #${tickNum}: no supervisor/orchestrator model — skipping`); return; }
+
+    const apiProxyUrl = process.env.API_PROXY_URL || '';
+    const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+    const chatUrl = apiProxyUrl ? `${apiProxyUrl}/api/chat` : `${ollamaUrl}/api/chat`;
+    const isLocal = !apiProxyUrl;
+
+    const body: any = {
+        model,
+        messages: [
+            { role: 'system', content: WATCHDOG_SYSTEM_PROMPT },
+            { role: 'user', content: userMsg },
+        ],
+        stream: false,
+        keep_alive: WATCHDOG_KEEP_ALIVE_S,
+        options: { temperature: 0, num_predict: 512 },
+    };
+    if (isLocal) body.format = WATCHDOG_FORMAT;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WATCHDOG_FETCH_TIMEOUT_MS);
+    let verdict: WatchdogVerdict | null = null;
+    let raw = '';
+    try {
+        const resp = await fetch(chatUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+        if (resp.ok) {
+            const data: any = await resp.json();
+            raw = typeof data?.message?.content === 'string' ? data.message.content
+                : typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content
+                : typeof data?.content === 'string' ? data.content : '';
+            verdict = extractJsonObject(raw);
+        } else {
+            log(`[watchdog] tick #${tickNum}: HTTP ${resp.status} ${resp.statusText}`);
+        }
+    } catch (err: any) {
+        log(`[watchdog] tick #${tickNum}: call failed — ${err?.message ?? err}`);
+    } finally {
+        clearTimeout(timer);
+    }
+
+    if (!verdict) {
+        log(`[watchdog] tick #${tickNum}: no JSON verdict (raw: "${raw.slice(0, 120)}") — staying silent`);
+        return;
+    }
+    log(`[watchdog] tick #${tickNum} verdict: complete=${verdict.complete === true}, jobs=${verdict.jobs?.length ?? 0}, delegate=${verdict.delegate?.length ?? 0}`);
+
+    // ── Execute decisions (host code; the model never calls tools) ────────
+    const isComplete = verdict.complete === true;
+
+    if (isComplete) {
+        // Overall request done: stop every running job (no age guard — a
+        // complete request leaves nothing useful to keep running).
+        const stoppedIds: string[] = [];
+        for (const j of running) {
+            const id = `${j.agent}-${j.shortId}`;
+            if (j.status === 'running') {
+                j.abortFlag.aborted = true;
+                j.status = 'aborted';
+                stoppedIds.push(id);
+            }
+        }
+        log(`[watchdog] complete — stopped ${stoppedIds.length} job(s): ${stoppedIds.join(', ') || 'none'}`);
+        watchdogNote(`Supervisor: overall request looks complete — stopped ${stoppedIds.length} running job(s).`, toolContext);
+        emitJobsStatus();
+        return; // request done — ignore any delegate
+    }
+
+    const stopped: string[] = [];
+    for (const jv of verdict.jobs || []) {
+        const id = String(jv.id || '');
+        const status = String(jv.status || '').toLowerCase();
+        const reason = String(jv.reason || '').trim();
+        if (status !== 'crashed' && status !== 'off_rails') continue;
+        const job = backgroundJobs.get(id);
+        if (!job) { log(`[watchdog] stop: no running job "${id}"`); continue; }
+        if (job.status !== 'running') { log(`[watchdog] stop: "${id}" already ${job.status}`); continue; }
+        const age = Math.round((Date.now() - job.startedAt) / 1000);
+        if (age < WATCHDOG_MIN_JOB_AGE_S) {
+            log(`[watchdog] stop: refusing to stop "${id}" — ${age}s old (<${WATCHDOG_MIN_JOB_AGE_S}s, warming up)`);
+            continue;
+        }
+        job.abortFlag.aborted = true;
+        job.status = 'aborted';
+        stopped.push(`${id} — ${reason || status}`);
+        log(`[watchdog] stopped ${id}: ${reason || status}`);
+    }
+
+    let delegated = 0;
+    for (const d of verdict.delegate || []) {
+        const agent = String(d.agent || '').trim();
+        const task = String(d.task || '').trim();
+        if (!agent || !task) continue;
+        if (!WATCHDOG_DELEGATEABLE.has(agent)) { log(`[watchdog] delegate: "${agent}" is not background-spawnable (only atlas/vulkan) — skipping`); continue; }
+        try {
+            spawnBackgroundJob(agent, task, toolContext, false);
+            delegated++;
+            log(`[watchdog] delegated to ${agent}: ${task.slice(0, 120)}`);
+        } catch (err: any) {
+            log(`[watchdog] delegate to ${agent} failed: ${err?.message ?? err}`);
+        }
+    }
+
+    if (stopped.length > 0) {
+        watchdogNote(`Supervisor: stopped ${stopped.length} job(s) — ${stopped.join('; ')}.`, toolContext);
+    } else if (delegated > 0) {
+        watchdogNote(`Supervisor: started ${delegated} follow-up job(s).`, toolContext);
+    } else {
+        const allOk = (verdict.jobs || []).every(j => String(j.status || '').toLowerCase() === 'ok');
+        if (allOk) watchdogNote(`Supervisor check — ${running.length} job${running.length > 1 ? 's' : ''} running, all on track.`, toolContext);
+    }
+    emitJobsStatus();
 }
 
 // Models that ALWAYS reason internally and cannot reliably honor think:false.
@@ -1645,6 +2032,7 @@ async function runSubAgent(
         { role: 'user', content: task }
     ];
     let lastContent = '';
+    let transientRetries = 0;  // transient provider errors get retries-with-backoff, not instant job death
     const toolsRun: string[] = [];  // tools the sub-agent actually executed (fallback summary if it goes silent)
 
     log(`[${agentName}] Starting sub-agent: model=${model}, tools=${tools.length}, maxIter=${maxIterations > 0 ? maxIterations : '∞ (ceiling ' + HARD_CEILING + ')'}, task="${task.slice(0, 80)}"`);
@@ -1678,6 +2066,8 @@ async function runSubAgent(
             log(`[${agentName}] Wall-clock limit (${WALL_CLOCK_MS / 60000}m) reached after ${i} iteration(s) — stopping`);
             break;
         }
+        // Pick up interrupts written mid-turn (host soft-stop), then check.
+        drainInterruptOnly();
         // Check for interrupt signal
         if (interruptRequested) {
             log(`[${agentName}] Interrupt requested — stopping sub-agent`);
@@ -1687,7 +2077,15 @@ async function runSubAgent(
         // Per-job abort (set by stop_agent / orchestrator monitor)
         if (abortFlag?.aborted) {
             log(`[${agentName}] Per-job abort requested — stopping sub-agent after ${i} iteration(s)`);
-            break;
+            // Report the abort for what it is. Falling through to the
+            // iteration-ceiling tail below would tell the orchestrator the job
+            // "stopped at safety limit / task may be too large" — a fabricated
+            // failure that triggers a stop→re-delegate→stop churn loop.
+            const partial = lastContent ? ` Partial output before cancellation: "${lastContent.slice(0, 200)}".` : '';
+            return {
+                content: `${agentName} was CANCELLED externally (stop_agent) after ${i} iteration(s) — no failure, no limit hit.${partial} Tell the user it was cancelled. Retry at most once, only with a concrete fix.`,
+                modifiedFiles: [...modifiedFiles],
+            };
         }
         writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — thinking`, ts: Date.now() });
         try {
@@ -1800,8 +2198,22 @@ async function runSubAgent(
                 return { content, modifiedFiles: [...modifiedFiles] };
             }
         } catch (err: any) {
-            log(`[${agentName}] Error on iteration ${i + 1}: ${err.message}`);
-            return { content: `${agentName} error: ${err.message}\n\n(System note: tell the user in plain language that this step failed and what you'll try instead — do not paste this raw error into your reply.)`, modifiedFiles: [] };
+            const errMsg = err?.message || String(err);
+            // Transient provider failures (ollama mid-restart, the model still
+            // loading into VRAM, a socket blip) must NOT kill the job on contact
+            // — one 500 during a qwen reload cost a whole job plus ~2 min of
+            // orchestrator failure-report/re-delegate churn (2026-08-21). Retry
+            // the same iteration with backoff instead.
+            const transient = /overloaded|rate.?limit|Service Unavailable|HTTP 5\d\d|\b50[023]\b|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout|Stream silent|terminated|abort/i.test(errMsg);
+            if (transient && transientRetries < 3) {
+                transientRetries++;
+                const backoffS = [8, 20, 40][transientRetries - 1];
+                log(`[${agentName}] Transient provider error on iteration ${i + 1} (${errMsg.slice(0, 120)}) — retry ${transientRetries}/3 in ${backoffS}s`);
+                await new Promise((r) => setTimeout(r, backoffS * 1000));
+                i--; continue;  // retry the same iteration
+            }
+            log(`[${agentName}] Error on iteration ${i + 1}: ${errMsg}`);
+            return { content: `${agentName} error: ${errMsg}\n\n(System note: if this error names a fixable cause, re-delegate once with the fix; otherwise tell the user it failed, in plain words. Never paste the raw error.)`, modifiedFiles: [] };
         }
     }
     // Hit the iteration ceiling or the wall-clock deadline without a clean finish.
@@ -1839,6 +2251,7 @@ interface ContainerInput {
     councilSkepticModel?: string;
     councilPragmatistModel?: string;
     councilSynthesistModel?: string;
+    supervisorModel?: string;
     userId?: string;
     userKeyId?: string;
     verbose?: boolean;
@@ -1894,6 +2307,21 @@ async function runNativeOllama(input: ContainerInput) {
             },
         },
     };
+    const REPORT_TASK_FAILURE_TOOL_DEF = {
+        type: 'function',
+        function: {
+            name: 'report_task_failure',
+            description: 'Record that a finished background job PROVEN failed — its result shows the deliverable is wrong or missing (not merely that success is hard to see). Call this before re-delegating; the runner allows the task exactly one automatic retry, consumed on the next dispatch, then refuses further retries.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    task: { type: 'string', description: 'The failed task, as it was delegated.' },
+                    reason: { type: 'string', description: 'What proved it failed — the evidence from the result.' },
+                },
+                required: ['task', 'reason'],
+            },
+        },
+    };
     const ATLAS_DIRECT_TOOL_DEF = {
         type: 'function',
         function: {
@@ -1914,6 +2342,7 @@ async function runNativeOllama(input: ContainerInput) {
         ATLAS_BACKGROUND_TOOL_DEF,
         ATLAS_DIRECT_TOOL_DEF,
         READ_JOB_RESULT_TOOL_DEF,
+        REPORT_TASK_FAILURE_TOOL_DEF,
     ]);
     // RAG-style dynamic tool selection: each turn, extract keywords from the
     // conversation and rank the non-core tools by relevance, surfacing only the
@@ -1928,6 +2357,7 @@ async function runNativeOllama(input: ContainerInput) {
         'atlas_background',
         'atlas_direct',
         'read_job_result',
+        'report_task_failure',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request', 'list_api_keys',
         // Vision captures are orchestrator-only (sub-agents can't see images —
@@ -2077,7 +2507,7 @@ try {
 // driving force changes HOW the orchestrator thinks, not WHO it delegates to.
 const DEFAULT_PREAMBLE = `# ROLE
 
-You are ${input.assistantName || 'Warden'} — the orchestrator at the top of a multi-model system. You don't do the hands-on work yourself; you understand what the user wants, hand a clean brief to the right specialist, and relay the result back in plain speech. You have no shell, no browser, no filesystem — you route, the specialists execute. So never reach for a tool you don't have, and never tell the user "I can't" when a specialist could do it — delegate.`;
+You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain. The captain gives orders; you run the ship. Your job is a loop: understand what the captain actually wants (voice input rambles — extract the intent, hold the goal, anticipate the obvious next need), decompose it into clean briefs for the crew below, watch their work while it runs, and report back only what matters. You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".`;
 
 const ROUTING_CORE = `# THE ROSTER
 
@@ -2092,6 +2522,16 @@ Each specialist is a separate model with its own tools and its own context — i
 - **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **oculus** — background security and situational awareness. AWARENESS events are piped to Oculus in code; you don't see them. Delegate only if the user explicitly asks for a security status check. For "who's / what's in the room", call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
 
+# THE BRIDGE LOOP
+
+UNDERSTAND — when the captain speaks, pin the intent and the done-condition before anything else. What result, where, by when. Voice input rambles; the goal rarely does.
+
+DECOMPOSE — a message carrying several asks becomes one delegate call per ask, all in the same turn, in parallel unless one feeds the next. Each specialist gets a clean brief for its own seat. Splitting the work is your job; doing it is theirs.
+
+MONITOR — background jobs get silently steered while they run; the dashboard shows their progress. Stay quiet, never narrate the watching to the captain, and never announce a job as "in progress" more than once.
+
+CONFIRM + REPORT — when a job's result lands, read it against the original ask before speaking. A "done" status means the job did not crash, not that it got it right. Say the deliverable, name the failure plainly if it failed, or state what you'd need to succeed — nothing else. Until a job's result lands in your inbox you know nothing about its outcome — never say it is playing, done, opened, or fixed. Report completion once, from the result.
+
 # ROUTING
 
 Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts you already know, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user actually wants something done or looked up. When work is needed, route by what they want, not the verb — the roster above is the map, the cue words below just point intent at the right seat, and the recurring gotchas below that are the ones that actually trip routing. When in doubt, delegate to atlas — except coding, building, and heavy scripting, which go to vulkan.
@@ -2099,7 +2539,7 @@ Answer directly, no tools, for plain conversation — advice, definitions, trans
 Cue words:
 - "read/check my emails", "any new emails", "what's in my inbox", "show me my emails/inbox" → **iris** (it reads email with read_emails). Email lives in iris's tools, not on the screen — never take a screenshot or webcam photo for an email request; delegate to iris.
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file or feature and the goal as plain English intent, never a shell command or step list.
-- "play X on youtube", "youtube X", "put on X", "play that song", "change/skip the song/video" → **atlas** with the song/artist as plain English intent (e.g. "Play chillstep on YouTube"), never a shell command — atlas finds it on YouTube and sets playback.
+- "play X on youtube", "youtube X", "put on X", "play that song", "change/skip the song/video" → **atlas** with the song/artist as plain English intent (e.g. "Play chillstep on YouTube"), never a shell command — atlas finds it on YouTube and sets playback. Vague media requests delegate to atlas immediately — pick something reasonable yourself and act; never pause to ask the user what they mean first. Media jobs take about a minute to reach playback. Delegate once, end your turn, wait for the result. Never poll or stop a running media job.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
 - Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **byte**. Delegate in one call with the item's title and required fields, then report the result.
 - "did you get that right", "double-check what we did" → **artemis**.
@@ -2127,21 +2567,23 @@ Good brief: "In classroom/public/index.html the login form refreshes instead of 
 
 When a result comes back wrong, re-delegate by naming the GAP — what they wanted vs what you got — never the fix. Let the specialist work out how to correct it; don't hand it steps or tell it which tool to retry.
 
-Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. You can watch your agents with \`list_running_agents\`, \`agent_logs\`, and \`read_job_result\`; when you need to know whether a job succeeded or what it changed, read its log — don't re-delegate the same work to double-check a success.
+Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. You can watch your agents with \`list_running_agents\`, \`agent_logs\`, and \`read_job_result\`. When the result arrives, judge it by reading it against the original ask — the status "done" only means it didn't crash. If the result itself proves the deliverable wrong or missing, call \`report_task_failure\` with the reason, then re-delegate once naming what they wanted vs what came back. If success can only be judged by screen or system state the result text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
 # WHAT THE USER HEARS
 
 Only your final reply and a brief delegation announcement are shown to the user. The raw \`{task}\` string you pass to a delegate is only for the specialist — do NOT echo it verbatim to the user. You may say one short line like "I'll look that up" or "I've asked Atlas; I'll report back when it's done," but do not paste the task prompt itself. Think silently, speak the result.
 
+The specialist's result is INVISIBLE to the user — they see only your reply, nothing of what the specialist returned. So your reply must carry the actual answer they asked for: the number, the name, the contents, the yes/no, the finding, the verdict. Not "done", not "I've sent it", not "it's handled", not a vague summary that drops the substance. If they asked a question, the answer is in your reply or it is nowhere. A delegate that returns an answer you never pass on is a wasted call — the user never got it.
+
 # OUTPUT
 
-Voice-first plain speech. No markdown — no asterisks, bullets, backticks, bold, or headers — those get read aloud and sound wrong. One to three sentences; yes/no first when asked yes/no. Relay the spoken answer from specialists, not raw output, paths, or JSON.
+Voice-first plain speech. No markdown — no asterisks, bullets, backticks, bold, or headers — those get read aloud and sound wrong. One to three sentences; yes/no first when asked yes/no. Relay the specialist's answer in full substance — convert raw output, paths, and JSON into plain speech, but keep every fact the user asked for. The user cannot see the specialist's output at all, so anything you leave out of your reply is lost to them.
 
 Don't announce work before its result is in. "I've started it" while a job is still running is a false claim — wait until the result comes back, then report what happened in plain speech: the file written and where, the price found, the song now playing, the error that occurred. One short line is enough.
 
 # FINISHING
 
-You decide when the job is done — not a timer or a tool cap. **Done**: the ask is achieved — write the answer with no tool calls. **Blocked**: you genuinely can't proceed — say what's blocking you in a sentence and stop. **Keep going**: take the next useful step. A sub-agent's success result is final — relay its evidence, don't re-delegate to verify it, one clean confirmation and you're done. A failed tool isn't a stopping point: retry with a fix, or say plainly what didn't work and offer an alternative.
+You decide when the job is done — not a timer or a tool cap. **Done**: the ask is achieved — write the answer with no tool calls. **Blocked**: you genuinely can't proceed — say what's blocking you in a sentence and stop. **Keep going**: take the next useful step. A background job's result is confirmed by reading it against the ask, not by re-dispatching — "done" means it didn't crash, so check its output actually satisfies the request before reporting; if it doesn't, call \`report_task_failure\` and re-delegate once with the gap named (the runner hard-caps one automatic retry — if it refuses, tell the user plainly what failed and why, and stop). A failed tool isn't a stopping point: retry with a fix, or say plainly what didn't work and offer an alternative.
 
 # COUNCIL
 
@@ -2153,7 +2595,7 @@ Arch Linux, KDE Plasma on Wayland. System packages via \`sudo pacman -S <pkg>\` 
 
 # MEMORY
 
-MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or setup), delegate to atlas to append one line to MEMORY.md — append only, never rewrite. Read JOURNAL.md or NOTES.md only if you need deeper history; if the user references an earlier conversation, check mercury_summary / mercury_context / chat_history first, and if it's not there delegate to artemis with the question and time range.
+MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or setup), append one line to MEMORY.md yourself with your own file tools — append only, never rewrite, never delegate the write. Read JOURNAL.md or NOTES.md only if you need deeper history; if the user references an earlier conversation, check mercury_summary / mercury_context / chat_history first, and if it's not there delegate to artemis with the question and time range.
 ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 
 `;
@@ -2226,6 +2668,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     ORCHESTRATOR_MODEL = model;
     ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
     VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
+    SUPERVISOR_MODEL = (input.supervisorModel || '').replace(/^local:/, '');
     BYTE_MODEL = (input.byteModel || '').replace(/^local:/, '');
     DEXTER_MODEL = (input.dexterModel || '').replace(/^local:/, '');
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
@@ -2256,19 +2699,16 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     // Main idle loop
     let isFirstUserTurn = true;
     // True when the current turn was triggered by the inbox draining a finished
-    // background job (a "digest turn"), as opposed to a real user message or a
-    // monitor tick. Digest turns are spontaneous — no host turn is pending when
+    // background job (a "digest turn"), as opposed to a real user message.
+    // Digest turns are spontaneous — no host turn is pending when
     // they emit their OUTPUT — so the host's turn-output resolution can't
     // deliver the reply. We route the reply through send_message instead (the
     // same path the Council verdict uses), so the report-back actually reaches
     // the user.
-    let turnWasInboxDigest = false;
-    // True when the current turn was triggered by a monitor-tick (the periodic
-    // supervision check that fires while background jobs run). Like digest
-    // turns, tick turns are spontaneous — no host turn is pending when they
-    // emit OUTPUT, so the reply must be routed through send_message to reach
-    // the user (otherwise the host drops it). Empty replies send nothing.
-    let turnWasMonitorTick = false;
+    // turnWasInboxDigest is module-level (see the retry ledger block) — a
+    // digest turn is spontaneous: no host turn is pending when it emits
+    // OUTPUT, so the reply must be routed through send_message to reach the
+    // user (otherwise the host drops it). Empty replies send nothing.
     while (true) {
         // Context clear (driving-force switch, or the clear_context tool): drop
         // the in-memory conversation and rebuild the system prompt so the new
@@ -2285,6 +2725,9 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // applySettingsSync() keeps fresh on every IPC message. Without this the
         // local `model` stays pinned to the first turn's value and dashboard model
         // changes never reach the actual LLM call (the "settings didn't apply" bug).
+        // The supervisor watchdog runs its own dedicated tool-less call outside
+        // the turn loop (see runSupervisorWatchdog), so every orchestrator turn
+        // uses the orchestrator model directly.
         model = ORCHESTRATOR_MODEL;
         // Warm/refresh the native-ctx cache for this turn's model so getNumCtx can
         // cap the dashboard override at the model's real window (and serve it as
@@ -2347,6 +2790,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         let errorOutputWritten = false;  // set when the retryable-error path already wrote output — prevents double writeOutput and keeps the persistent child alive (was: `return`, which killed the child)
         // === Per-turn state for defensive loop patterns ============================
         let intentNudgesUsed = 0;          // #2: intent-without-action nudge cap
+        let delegatedThisTurn = false;     // #2: a delegate ran this turn — closing prose after a hand-off is a completion announcement, not unfulfilled intent (nudging it re-dispatches the same job)
         let circlingUselessRounds = 0;     // #3: consecutive useless rounds
         let forceToolFreeRound = false;    // #3: set by breaker → next round runs with NO tools
         const recentCallSigs: string[] = []; // #3: deque of last RECENT_CALL_SIG_DEPTH sigs
@@ -2363,6 +2807,9 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             toolIteration++;
             log(`Tool iteration ${toolIteration}`);
 
+            // Pick up interrupts written mid-turn (host soft-stop). Message
+            // files are left on disk for the turn-end drain.
+            drainInterruptOnly();
             // Check for interrupt signal
             if (interruptRequested) {
                 log('Interrupt requested — stopping tool loop');
@@ -2377,7 +2824,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             if (urgentItems.length > 0) {
                 for (const item of urgentItems) inbox.markRead(item.jobId);
                 const body = urgentItems.map(i => `${i.jobId} (${i.status}) — task: "${i.task.slice(0, 160)}"\nResult:\n${i.fullResult.slice(0, 4000)}`).join('\n\n---\n\n');
-                messages.push({ role: 'user', content: `[Inbox — urgent background result${urgentItems.length > 1 ? 's' : ''}, delivered mid-task as requested. Fold this into what you are doing, or tell the user what matters. Do not paste raw output verbatim.]\n\n${body}` });
+                messages.push({ role: 'user', content: `[Inbox — urgent background result${urgentItems.length > 1 ? 's' : ''}, delivered mid-task as requested. Confirm each against the original ask first: relay confirmed results in a sentence or fold them into what you are doing; if a result proves its deliverable wrong or missing, call report_task_failure and re-delegate once naming the gap (the runner caps automatic retries); if success can only be judged by screen state, trust it. Do not paste raw output verbatim.]\n\n${body}` });
                 log(`[inbox] injected ${urgentItems.length} urgent item(s) mid-turn`);
             }
             if (!outputStarted) {
@@ -2709,6 +3156,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         recentCallSigs.push(sig);
                         if (recentCallSigs.length > RECENT_CALL_SIG_DEPTH) recentCallSigs.shift();
                         callFreq[sig] = (callFreq[sig] || 0) + 1;
+                        if (SUBAGENT_BY_DELEGATE.has(name)) delegatedThisTurn = true;
                         if (VERIFIER_EFFECTFUL_TOOLS.has(name)) {
                             const resultPreview = (toolResults[k]?.content || '').slice(0, 300).replace(/\n/g, ' ');
                             verifierActions.push(`${name}(${JSON.stringify(args).slice(0, 200)}) → ${resultPreview}`);
@@ -2757,16 +3205,25 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // like"), advice about the user's own actions, or a reply that
                 // ends by asking the user something. Those are legitimate final
                 // answers — nudging them manufactures tool calls nobody wanted.
-                const conversationalReply = /\b(?:if you(?:'d| would)?(?: like| want)?|want me to|would you like|shall i|just say|let me know|whenever you|later|tomorrow|tonight|you should|you could|you can|you're|you are|you'll|you will)\b/i.test(historyContent)
-                    || historyContent.trim().endsWith('?');
-                if (intentNudgesUsed < INTENT_MAX_NUDGES && historyContent.length < 400 && !/```/.test(historyContent) && !conversationalReply) {
+                // Hallucinated hand-off: the model CLAIMS it already delegated
+                // ("I've asked Atlas to…") but no delegate call happened this turn.
+                // That is never a conversational reply — polite tail phrases like
+                // "I'll let you know" must not suppress the nudge (2026-08-21: a
+                // claimed YouTube delegation passed exactly that way, no job ran).
+                const claimedDelegation = !delegatedThisTurn
+                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|byte|dexter|vulkan|artemis)\b/i.test(historyContent);
+                const conversationalReply = !claimedDelegation && (/\b(?:if you(?:'d| would)?(?: like| want)?|want me to|would you like|shall i|just say|let me know|whenever you|later|tomorrow|tonight|you should|you could|you can|you're|you are|you'll|you will)\b/i.test(historyContent)
+                    || historyContent.trim().endsWith('?'));
+                if (intentNudgesUsed < INTENT_MAX_NUDGES && historyContent.length < 400 && !/```/.test(historyContent) && !conversationalReply && !delegatedThisTurn) {
                     const intentMatch = historyContent.match(INTENT_RE);
-                    if (intentMatch) {
+                    if (intentMatch || claimedDelegation) {
                         intentNudgesUsed++;
-                        const announcement = intentMatch[0].slice(0, 120);
+                        const announcement = (intentMatch ? intentMatch[0] : historyContent).slice(0, 120);
                         log(`Intent nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool_call: "${announcement}"`);
                         appendStatus({ phase: 'thinking', label: `Nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool call — pushing back` });
-                        messages.push({ role: 'user', content: `You wrote "${announcement}" but did not emit a tool call. Stop announcing — act now. Delegate to the right sub-agent (atlas, iris, dexter, byte) with a {task}, or use Read/get_chat_history for a quick lookup. Do not write another sentence describing what you will do — do it.` });
+                        messages.push({ role: 'user', content: claimedDelegation
+                            ? `You wrote "${announcement}" but made no delegate call — the delegation did not happen. Call the delegate tool (atlas/iris/dexter/byte) with a {task} now.`
+                            : `You wrote "${announcement}" but emitted no tool call. Act now: delegate to the right sub-agent (atlas/iris/dexter/byte) with a {task}, or use Read/get_chat_history for a quick lookup.` });
                         continue;
                     }
                 }
@@ -2830,7 +3287,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             }
             catch (err) {
                 const errMsg = err.message || String(err);
-                const isRetryable = errMsg.includes('overloaded') || errMsg.includes('rate_limit') || errMsg.includes('Rate limit') || errMsg.includes('Service Unavailable') || errMsg.includes('502') || errMsg.includes('503') || errMsg.includes('ECONNRESET') || errMsg.includes('ECONNREFUSED') || errMsg.includes('timeout') || errMsg.includes('Stream silent') || errMsg.includes('terminated') || errMsg.includes('aborted') || errMsg.includes('AbortError');
+                const isRetryable = errMsg.includes('overloaded') || errMsg.includes('rate_limit') || errMsg.includes('Rate limit') || errMsg.includes('Service Unavailable') || errMsg.includes('500') || errMsg.includes('502') || errMsg.includes('503') || errMsg.includes('fetch failed') || errMsg.includes('ECONNRESET') || errMsg.includes('ECONNREFUSED') || errMsg.includes('timeout') || errMsg.includes('Stream silent') || errMsg.includes('terminated') || errMsg.includes('aborted') || errMsg.includes('AbortError');
                 log(`Ollama error: ${errMsg} (retryable: ${isRetryable})`);
                 if (isRetryable && toolIteration < MAX_TOOL_ITERATIONS) {
                     const MAX_RETRIES = 5;
@@ -2941,6 +3398,14 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 }
                 writeOutput({ status: 'error', result: null, error: `Ollama error: ${errMsg}` });
                 errorOutputWritten = true;
+                // Digest read-safety: the digest drained (marked read) these results
+                // before the turn ran; if the digest turn errored, re-queue each ONCE
+                // so the result isn't silently lost — the Set caps re-digest loops.
+                if (turnWasInboxDigest && drainedDigestJobIds.length > 0) {
+                    const requeue = drainedDigestJobIds.filter(id => !digestRequeuedOnce.has(id));
+                    for (const id of requeue) { digestRequeuedOnce.add(id); inbox.markUnread(id); }
+                    if (requeue.length > 0) log(`[inbox] digest turn errored — re-queued ${requeue.length} result(s) for one re-digest`);
+                }
                 break; // exit the tool loop — fall through to end-of-turn flow (waitForIpc) so the persistent child stays alive for the next message
             }
         }
@@ -3035,11 +3500,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             return '';
         }).replace(/<\/?(?:think|reasoning)>/g, '').trim();
         // If the model gave no text response (only thinking, or thinking + tools), generate a fallback.
-        // Skip the fallback on monitor-tick supervision turns: a silent tick means
-        // "work is going fine, nothing to report" — fabricating a reply from
-        // thinking would spam the user with a non-update. Let it stay empty so the
-        // send_message routing below sends nothing.
-        if (!outputContent && !turnWasMonitorTick) {
+        if (!outputContent) {
             if (toolIteration > 1 && modifiedFiles.size > 0) {
                 outputContent = `Done — modified ${[...modifiedFiles].join(', ')}.`;
             }
@@ -3078,32 +3539,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             log(`WARNING: degenerate word-mash output suppressed (${outputContent.length} chars, model=${ORCHESTRATOR_MODEL}). First 200 chars: ${outputContent.slice(0, 200)}`);
             outputContent = 'Something went wrong generating my answer on this turn — the model produced garbled output. Please send that request again.';
         }
-        // Placeholder/no-op detector: the model sometimes emits markers like
-        // "<empty></empty>" or "Empty response." when told to reply with nothing.
-        // On monitor ticks, replace that with a simple, human status note so the
-        // supervisor actually says something instead of looking broken.
-        const isPlaceholderOutput = (text: string): boolean => {
-            const t = (text || '').trim().toLowerCase().replace(/\s+/g, ' ');
-            if (!t) return true;
-            const placeholders = [
-                '<empty></empty>',
-                'empty response.',
-                'empty response requested by system for on-track jobs.',
-                'no response.',
-                'nothing to report.',
-                '---',
-                '...',
-                '–',
-            ];
-            return placeholders.includes(t) || /^[.\-_\s–]+$/.test(t);
-        };
-        if (turnWasMonitorTick && isPlaceholderOutput(outputContent)) {
-            const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
-            outputContent = running.length > 0
-                ? `Supervisor check — everything is looking good (${running.length} job${running.length > 1 ? 's' : ''} running).`
-                : '';
-            if (outputContent) log(`[orchestrator-monitor] placeholder replaced with default status note`);
-        }
         log(`About to writeOutput. outputContent: "${(outputContent || '').slice(0, 100)}"`)
         if (!errorOutputWritten) {
             writeOutput({ status: 'success', result: outputContent || null });
@@ -3111,22 +3546,17 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         } else {
             log('skipping success writeOutput — error output already written this turn');
         }
-        // Spontaneous turns (inbox digest of a finished job, or a monitor-tick
-        // supervision check) have no host turn pending when they emit OUTPUT, so
-        // the reply above is dropped by the host. Route them so they reach the
-        // user/dashboard:
-        //  - Inbox digest  → send_message to the CHAT (this is the completed-task
-        //    report the user actually wants to hear).
-        //  - Monitor tick   → progress_event to the DASHBOARD progress panel.
-        //    The tick's supervision prose ("Atlas is on track…") is canned filler;
-        //    it belongs in the dashboard's collapsible activity panel, NOT the
-        //    chat. The chat only carries completed-task reports and interventions.
+        // A digest turn (inbox draining a finished job) has no host turn pending
+        // when it emits OUTPUT, so the reply above is dropped by the host. Route
+        // it through send_message so it reaches the user — this is the
+        // completed-task report the user actually wants to hear.
         // Skip when the orchestrator chose to say nothing (empty reply — work is
         // going fine, or media playback success), and skip errored turns (the
         // error path already spoke). A reply that is only punctuation/whitespace
         // ("---", "...", "–") is the model's way of saying "nothing to report" —
         // treat it as silence and send/drop nothing, otherwise the user gets a
-        // blank message.
+        // blank message. (Supervisor watchdog notes go via progress_event in
+        // runSupervisorWatchdog, not here.)
         const substantiveReply = !!(outputContent && /[A-Za-z0-9]/.test(outputContent));
         if (turnWasInboxDigest && !errorOutputWritten && substantiveReply) {
             try {
@@ -3141,20 +3571,8 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             } catch (err: any) {
                 log(`[spontaneous-turn] failed to deliver digest reply via send_message: ${err?.message ?? err}`);
             }
-        } else if (turnWasMonitorTick && !errorOutputWritten && substantiveReply) {
-            try {
-                writeCallback('progress_event', {
-                    chatJid: toolContext.chatJid,
-                    groupFolder: toolContext.groupFolder,
-                    text: outputContent,
-                    timestamp: new Date().toISOString(),
-                });
-                log(`[spontaneous-turn] monitor-tick report routed to dashboard progress panel (${outputContent.length} chars)`);
-            } catch (err: any) {
-                log(`[spontaneous-turn] failed to route monitor-tick report: ${err?.message ?? err}`);
-            }
-        } else if ((turnWasInboxDigest || turnWasMonitorTick) && !errorOutputWritten) {
-            log(`[spontaneous-turn] ${turnWasMonitorTick ? 'monitor tick' : 'inbox digest'} produced no substantive reply — staying silent`);
+        } else if (turnWasInboxDigest && !errorOutputWritten) {
+            log(`[spontaneous-turn] inbox digest produced no substantive reply — staying silent`);
         }
         // Auto-send any files that were modified during tool execution but not attached
         const unsent = [...modifiedFiles].filter(f => !attachedFiles.has(f));
@@ -3202,10 +3620,10 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // messages.length = 0;
         // messages.push(...collapsed);
         // Persistent mode: wait for the next message via IPC instead of exiting.
-        // While Atlas background jobs are running, race the IPC wait against a
-        // recurring monitor tick. On each tick the orchestrator gets a synthetic
-        // user message summarizing running jobs so it can stop, redirect, or
-        // let them continue — without any user input.
+        // While background jobs are running, race the IPC wait against a
+        // recurring monitor tick. On each tick a context-free watchdog call
+        // (runSupervisorWatchdog) judges the running jobs and returns strict JSON
+        // the host executes — it never produces an orchestrator turn.
         log('Query complete — waiting for next message via IPC...');
         const MONITOR_TICK_MS = 30_000;
         let monitorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3213,7 +3631,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         let nextInput: string | null = null;
         while (nextInput === null) {
             turnWasInboxDigest = false;
-            turnWasMonitorTick = false;
             // Direct Atlas passthrough: while active, route the user's messages
             // straight to Atlas until they exit or say go. Handled in the idle
             // loop (not the orchestrator turn) so the orchestrator is untouched.
@@ -3301,12 +3718,19 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             if (unreadItems.length > 0) {
                 turnWasInboxDigest = true;
                 for (const item of unreadItems) inbox.markRead(item.jobId);
-                const lines = unreadItems.map(i => inbox.summaryLine(i)).join('\n');
-                const hasFailures = unreadItems.some(i => i.status === 'errored' || i.status === 'aborted');
-                const failureInstr = hasFailures
-                    ? `\n\nOne or more jobs are marked [ERRORED] or [ABORTED]. For each: read its full output with read_job_result, work out why it failed, and retry it yourself by calling atlas with a reworked task prompt that addresses the failure (different approach, missing detail, corrected URL/path — whatever the output shows was wrong). Do not ask me first. EXCEPTION: if your recent context shows the same task has already failed twice, stop retrying and tell me what failed and why.`
-                    : '';
-                nextInput = `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} arrived:\n${lines}\n\nFull outputs are available via read_job_result {job_id}. Digest these in your own voice: tell the user what matters (or nothing, if it only feeds later work), and start any follow-up tasks the results call for. Do not paste raw output verbatim.${failureInstr}\n\nCONTINUING A CHAINED TASK: if this result is one step of a larger task the user asked for, DO NOT stop and wait for the user to prompt you. Immediately take the next step yourself — delegate the next sub-task to the right agent, or read_job_result for the full output if you need more detail first. The user should not have to say "and?" or "continue" to keep work moving. Only stop when the whole task is actually done or you are genuinely blocked.`;
+                drainedDigestJobIds = unreadItems.map(i => i.jobId); // for one-shot requeue if this digest turn errors out
+                // Inline each result body (capped) — the orchestrator cannot
+                // confirm what it cannot see. Longer results stay reachable via
+                // read_job_result.
+                const body = unreadItems.map(i =>
+                    `- ${i.jobId} (${i.agent}, ${i.status}) — task: "${i.task.slice(0, 160)}"\nResult:\n${i.fullResult.slice(0, 2000)}${i.fullResult.length > 2000 ? `\n(result truncated — read_job_result {job_id: "${i.jobId}"} has the full text)` : ''}`
+                ).join('\n\n');
+                nextInput = `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
+                    `For each result, run the CONFIRM step before anything else: compare it against what the user originally asked for — that ask is in your context.\n` +
+                    `1. CONFIRMED — the deliverable the user asked for is present and right. Relay it in one or two plain sentences, or stay silent if the user can already see or hear it (media playing, a window opened, volume changed) or it only feeds a chained next step.\n` +
+                    `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted). A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call browser_snapshot and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
+                    `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, check the state (browser_snapshot) or treat it as PROVEN-FAILED.\n` +
+                    `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.`;
                 log(`[inbox] draining ${unreadItems.length} item(s) into a digest turn`);
                 break;
             }
@@ -3360,21 +3784,18 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     // Jobs finished during the tick window — fall through to IPC wait.
                     continue;
                 }
-                const jobLines = stillRunning.map(j => {
-                    const elapsed = Math.round((Date.now() - j.startedAt) / 1000);
-                    const sinceLast = Math.round((Date.now() - j.lastActionAt) / 1000);
-                    return `- ${j.agent}-${j.shortId}: ${elapsed}s elapsed, ${j.toolCallCount} tool call(s), last action ${sinceLast}s ago (${j.lastAction}). Task: "${j.task.slice(0, 160)}"`;
-                }).join('\n');
-                const synthetic = `[Orchestrator supervision check #${tickNum}] Your job is to ORCHESTRATE — actively supervise the background work and steer it, do not just wait for it to finish. ${stillRunning.length} background job(s) running:\n${jobLines}\n\nCheck up on the work. The summary above shows each job's last action; call \`agent_logs {job_id}\` for any job whose progress you can't judge from the summary, and \`read_job_result\` only for finished jobs. Then decide:\n` +
-                    `1. COMPLETE? If the user's overall request is fully achieved by what has run so far, stop calling tools and reply with nothing (empty) — say no more.\n` +
-                    `2. ON TRACK? If a job is making real progress toward the user's request — reading files, trying approaches, recovering from errors, iterating on a search is PROGRESS — leave it alone. Reply with nothing, OR give the user a one-line progress report. Do not interfere with work that is going well, and do not stop a job just because a path looks strange or a step seems roundabout.\n` +
-                    `3. VEERING / WRONG / STALLED? If a job is going in the wrong direction, doing the wrong thing, repeating the same call with no change, or making no tool calls for a long stretch — intervene: call \`stop_agent\` for that job and re-delegate to the right agent with a corrected task that spells out what was wrong and what you actually want. Do not let work veer off just because it is still running.\n` +
-                    `4. CHAIN NEXT STEP? If a job has finished and the user's request has a next step that has not been taken (e.g. a plan exists but the council has not deliberated, a verdict is in but the work has not revised), take that next step YOURSELF now — do not wait for the user to say "continue".\n` +
-                    `When there is nothing to report or do, reply with a completely EMPTY response — no text at all, no placeholders like "<empty></empty>", "Empty response.", "---", "...", "ok", or any other token. Placeholders look like a broken supervisor to the user. Any reply that contains actual words is delivered to the user as a short message, so only speak when you have a real update, a needed course-correction, or a next step to announce.`;
-                log(`[orchestrator-monitor] tick #${tickNum} fired with ${stillRunning.length} running job(s)`);
-                turnWasMonitorTick = true;
-                nextInput = synthetic;
-                break;
+                // Context-free watchdog: a tiny tool-less LLM call that judges
+                // only the running jobs and returns strict JSON the host
+                // executes (stop crashed/off-rails, re-delegate / chain a next
+                // step, stop all when complete). It does NOT ride the
+                // orchestrator turn — no system prompt, tool schemas, or
+                // conversation history — so it runs cheaply on a small local
+                // model. The tick never produces a turn; loop back to the race.
+                const askMsg = [...messages].reverse().find(m => m?.role === 'user' && typeof m?.content === 'string' && m.content.trim());
+                const ask = askMsg ? (askMsg.content as string).replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim() : '';
+                log(`[orchestrator-monitor] tick #${tickNum} fired — running watchdog (${stillRunning.length} running job(s))`);
+                await runSupervisorWatchdog({ tickNum, ask, toolContext });
+                continue;
             } else {
                 // IPC won the race (or returned null on timeout/close).
                 monitorTimer && clearTimeout(monitorTimer);
@@ -3548,6 +3969,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         // atlas), return immediately, result lands in the inbox.
         const def = SUBAGENT_BY_DELEGATE.get('artemis')!;
         const focus = ((args.task as string) || '').trim();
+        const gateMsg = retryGate(focus || 'audit the conversation');
+        if (gateMsg) { result = gateMsg; } else {
         const jobShortId = Math.random().toString(36).slice(2, 6);
         const jobId = `artemis-${jobShortId}`;
         const urgent = args.urgent === true;
@@ -3618,6 +4041,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         backgroundJobs.set(jobId, jobRecord);
         emitJobsStatus();
         result = `Artemis ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the audit result will arrive in your inbox. (job id: ${jobId})`;
+        } // retryGate else
     } else if (toolName === 'council') {
         const task = ((args.task as string) || '').trim();
         const maxRounds = Math.min(Math.max(Number(args.max_rounds ?? 4), 1), 15);
@@ -3759,6 +4183,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         const urgent = args.urgent === true;
         if (!task) {
             result = 'Error: task is required';
+        } else if (retryGate(task)) {
+            result = retryGate(task); // second call never consumes — refusal text is stable
         } else {
             const jobId = spawnBackgroundJob('atlas', task, context, urgent);
             const jobShortId = jobId.slice('atlas-'.length);
@@ -3771,6 +4197,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         const urgent = args.urgent === true;
         if (!task) {
             result = 'Error: task is required';
+        } else if (retryGate(task)) {
+            result = retryGate(task);
         } else {
             const jobId = spawnBackgroundJob('vulkan', task, context, urgent);
             const jobShortId = jobId.slice('vulkan-'.length);
@@ -3791,6 +4219,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
         let task = args.task as string;
         if (!task) result = 'Error: task is required';
+        else if (retryGate(task)) result = retryGate(task);
         else {
             if (toolName === 'dexter') {
                 // Resolve the real local timezone, not UTC. The dockbox service
@@ -3828,6 +4257,13 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         }
     } else if (toolName === 'activate_skill' || toolName === 'deactivate_skill' || toolName === 'list_skills') {
         result = handleSkillMetaTool(toolName, args, opts);
+    } else if (toolName === 'report_task_failure') {
+        const task = String(args.task || '').trim();
+        const reason = String(args.reason || '').trim();
+        recordConfirmedFailure(task, reason);
+        result = reason
+            ? `Noted — this task's failure is on record. You may delegate it once more, and only with a corrected approach that addresses the reason: ${reason.slice(0, 300)}`
+            : `Noted — this task's failure is on record. You may delegate it once more, and only with a corrected approach.`;
     } else if (toolName === 'read_job_result') {
         const jobId = String(args.job_id || '').trim();
         if (!jobId) {

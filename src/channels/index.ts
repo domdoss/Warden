@@ -12,7 +12,7 @@
 // import './slack.js';
 
 // telegram
-// import './telegram.js';
+import './telegram.js';
 
 // whatsapp
 // import './whatsapp.js';

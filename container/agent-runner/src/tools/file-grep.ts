@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { registry } from '../tool-registry.js';
+import { resolveUserPath } from '../ipc-helpers.js';
 
 registry.register({
     name: 'Grep',
@@ -18,7 +19,7 @@ registry.register({
             try { fs.writeFileSync('/workspace/ipc/status.json', JSON.stringify({ phase: 'tool', tool: 'Grep', label: `Grepping: ${args.pattern}`, ts: Date.now() })); } catch {}
             try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Grep', label: `Grepping: ${args.pattern}`, ts: Date.now() }) + '\n'); } catch {}
             const { execSync } = await import('child_process');
-            const searchPath = args.path || process.cwd();
+            const searchPath = args.path ? resolveUserPath(args.path) : process.cwd();
             const globPattern = args.glob ? `--include="${args.glob}"` : '';
             const cmd = `grep -rn ${globPattern} "${args.pattern}" "${searchPath}" 2>/dev/null || true`;
             const result = execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });

@@ -979,8 +979,8 @@
       <div class="setting-card">
         <h3>Servers</h3>
         <div class="hint">Role URLs used by the Warden backend. Ollama servers below are referenced by per-agent dropdowns in Model Configuration.</div>
-        <div class="setting-row"><label>Audio / Transcription server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://192.168.0.163:8766"></div>
-        <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://192.168.0.163:8765"></div>
+        <div class="setting-row"><label>Audio / Transcription server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://localhost:8766"></div>
+        <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://localhost:8765"></div>
         <div class="setting-row"><label>Satellite (remote mic/speaker)</label><input class="input" id="sSatelliteUrl" value="${escAttr(d.satelliteUrl || '')}" placeholder="http://192.168.0.160:8766"></div>
         <div class="setting-row"><label>Whisper API fallback</label><input class="input" id="sTranscriptionApiUrl" value="${escAttr(d.transcriptionApiUrl || '')}" placeholder="https://api.groq.com/openai (Groq, autofilled)"></div>
         <div style="margin-bottom:6px"><span class="dim" style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:0.04em">Ollama servers</span>

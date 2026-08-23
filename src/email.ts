@@ -277,6 +277,35 @@ export async function sendEmail(
     return { success: false, error: msg };
   }
 
+  // Outbound guard: per-account spam-accident lockout. If enabled, restrict
+  // recipients to an allowlist and/or cap how many a single send can address.
+  // Either knob alone prevents a runaway prompt from emailing thousands.
+  if (account.outbound_guard) {
+    const recipients = (to.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
+      .map((a: string) => a.toLowerCase());
+    if (recipients.length === 0) {
+      const msg = 'No valid recipient address found';
+      logger.warn({ accountId, to }, `Email send blocked: ${msg}`);
+      return { success: false, error: msg };
+    }
+    const allow = (account.outbound_allowlist || '')
+      .split(/[\s,;]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+    if (allow.length > 0) {
+      const blocked = recipients.filter((r: string) => !allow.includes(r));
+      if (blocked.length > 0) {
+        const msg = `This account can only email: ${allow.join(', ')}. Not allowed: ${blocked.join(', ')}.`;
+        logger.warn({ accountId, to, blocked }, 'Email send blocked: recipient not on allowlist');
+        return { success: false, error: msg };
+      }
+    }
+    const max = account.outbound_max_recipients || 0;
+    if (max > 0 && recipients.length > max) {
+      const msg = `This account can't email more than ${max} recipient${max === 1 ? '' : 's'} at once (${recipients.length} requested).`;
+      logger.warn({ accountId, to, count: recipients.length, max }, 'Email send blocked: max recipients exceeded');
+      return { success: false, error: msg };
+    }
+  }
+
   // OAuth path: delegate to provider API if linked to an OAuth account
   if (account.oauth_account_id) {
     try {

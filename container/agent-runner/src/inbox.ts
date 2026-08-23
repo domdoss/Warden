@@ -45,6 +45,19 @@ export function markRead(jobId: string): void {
     if (item) item.read = true;
 }
 
+/** Re-queue a result after it was drained but its digest turn errored — used
+ * once per item (guarded by the caller) so an erroring digest can re-run
+ * instead of losing the result, without risking a re-digest loop. */
+export function markUnread(jobId: string): void {
+    const item = items.get(jobId);
+    if (item) {
+        item.read = false;
+        const toWake = waiters;
+        waiters = [];
+        for (const wake of toWake) wake();
+    }
+}
+
 export function get(jobId: string): InboxItem | undefined {
     return items.get(jobId);
 }

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { registry } from '../tool-registry.js';
-import { cleanFilePath } from '../ipc-helpers.js';
+import { cleanFilePath, resolveUserPath } from '../ipc-helpers.js';
 
 registry.register({
     name: 'Write',
@@ -19,7 +19,7 @@ registry.register({
         if (cleaned.startsWith('attachments/') || cleaned === 'attachments') {
             return `Error: attachments/ is read-only input. Copy the file first: Bash("cp attachments/${path.basename(cleaned)} myproject/")`;
         }
-        const filePath = path.join(process.cwd(), cleaned);
+        const filePath = resolveUserPath(args.file_path);
         if (args.file_path.endsWith('.md') && (!args.content || args.content.trim() === '')) {
             return `Error: Cannot delete or clear .md files. Protected file: ${args.file_path}`;
         }
@@ -28,7 +28,10 @@ registry.register({
             try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Write', label: `Writing: ${args.file_path}`, ts: Date.now() }) + '\n'); } catch {}
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(filePath, args.content);
-            return `File written: ${args.file_path}`;
+            // Report the RESOLVED absolute path — the orchestrator's digest
+            // confirm step checks claimed paths against the ask, which only
+            // works if the claim is real ('~/Desktop/x' resolved, not literal).
+            return `File written: ${filePath}`;
         } catch (err: any) {
             return `Error writing file: ${err.message}`;
         }

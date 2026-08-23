@@ -293,14 +293,7 @@
   }
   window.__localSwitchView = switchView;
 
-  // ============================================================= Status / verbose bar
-  // Last known global busy state + latest progress label, updated by
-  // pollStatus. Used by syncThinkingBar to keep the always-on thinking bar
-  // consistent with the progress panel beside it (background jobs, other
-  // containers, etc. — not just the current session's waitingForReply).
-  let lastBusy = false;
-  let lastProgressLabel = '';
-
+  // ============================================================= Status
   // Dashboard typing indicator state
   let waitingForReply = false;
   let typingWords = [];
@@ -349,18 +342,11 @@
       const active = groups.some(g => g.active && !g.idle);
       dot.className = 'dot' + (active ? ' busy' : '');
 
-      // live activity panel (grouped collapsible progress history) — replaces
-      // the old static verbose bar; its collapsed summary line is the live
-      // status, and expanding it shows the history. Keep it populated even
-      // when idle so the user can always click the thinking bar to review
-      // what just ran (tool/agent activity history). Background jobs
-      // (atlas/artemis) bump runningJobs without marking a foreground group
-      // active, so the `active`-only check would blank the panel mid-work.
-      const busy = active || (typeof d.runningJobs === 'number' && d.runningJobs > 0);
+      // Oversight window — structured per-agent/agent-job view of what is
+      // happening right now. Populated from d.jobs (background jobs), d.groups
+      // (foreground), and the latest supervisor note in d.progress.
       const progress = d.progress || [];
-      lastBusy = busy;
-      lastProgressLabel = progress.length ? (progress[progress.length - 1].label || progress[progress.length - 1].phase || '') : '';
-      renderProgressPanel(progress, busy);
+      renderOversight(d);
       syncThinkingBar();
 
       // stop button enable/disable
@@ -370,55 +356,56 @@
     }
   }
 
-  // ── Live activity panel (grouped, collapsible progress history) ──
-  // Progress lives here instead of as a stream of canned chat bubbles. The
-  // orchestrator's monitor-tick reports route to the dashboard (progress_event)
-  // and surface as 'supervisor' entries; real atlas/council status changes
-  // surface as 'status' entries. Collapsed = one summary line; expanded = the
-  // recent history.
-  function renderProgressPanel(events, busy) {
-    const panel = $('progressPanel');
-    const summary = $('progressSummary');
-    const countEl = $('progressCount');
-    const list = $('progressList');
-    if (!panel) return;
-    const evs = Array.isArray(events) ? events : [];
-    if (!evs.length) {
-      panel.classList.add('empty');
-      summary.textContent = 'No live activity';
-      countEl.textContent = '';
-      list.innerHTML = '';
-      return;
-    }
-    panel.classList.remove('empty');
-    const latest = evs[evs.length - 1];
-    // While idle, prefix the summary so it's clear nothing is currently
-    // running — the last event label is still shown as a hint to history.
-    summary.textContent = busy
-      ? (latest.label || latest.phase || 'Working…')
-      : ('Idle — last: ' + (latest.label || latest.phase || '—'));
-    countEl.textContent = `${evs.length} update${evs.length > 1 ? 's' : ''}`;
-    // Render newest-first inside the expanded body.
-    const rows = evs.slice().reverse().map((e) => {
-      const kind = e.kind || 'status';
-      const tag = kind === 'supervisor' ? 'supervisor'
-        : kind === 'done' ? 'done'
-        : kind === 'error' ? 'error'
-        : 'status';
-      const label = kind === 'supervisor' ? '▸ ' + esc(e.label || '')
-        : esc(e.label || e.phase || '');
-      return `<li><span class="ts">${fmtTime(e.ts)}</span><span class="kind ${tag}">${tag}</span><span class="label">${label}</span></li>`;
-    }).join('');
-    list.innerHTML = rows;
+  // ── Oversight window ──
+  // Structured view of what is happening right now — one row per running
+  // background job (from /api/status.jobs, emitted by the runner's
+  // emitJobsStatus heartbeat), one row for the foreground orchestrator while
+  // a user turn runs, and the supervisor's latest note. Nothing spews raw
+  // "iteration N — thinking" events; when nothing runs it's a single quiet
+  // line. Poll-driven (pollStatus every 5s).
+  function ovRow(agent, main, action, meta, kind, taskTitle) {
+    return `<div class="ov-row ${kind || ''}" data-agent="${esc(agent)}"${taskTitle ? ` title="${esc(taskTitle)}"` : ''}>` +
+      `<span class="ov-name">${esc(agent)}</span>` +
+      (main ? `<span class="ov-task">${esc(main)}</span>` : '') +
+      `<span class="ov-action">${esc(action)}</span>` +
+      (meta ? `<span class="ov-meta">${esc(meta)}</span>` : '') +
+      `</div>`;
   }
-
-  function toggleProgressPanel() {
-    const panel = $('progressPanel');
-    if (!panel) return;
-    const collapsed = panel.classList.toggle('collapsed');
-    const header = $('progressPanelHeader');
-    if (header) header.setAttribute('aria-expanded', String(!collapsed));
-    try { localStorage.setItem('warden-progress-expanded', collapsed ? '0' : '1'); } catch {}
+  function ovDur(s) {
+    if (s == null) return '';
+    s = Math.max(0, Math.round(Number(s) || 0));
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60); return `${m}m${s % 60 ? ' ' + (s % 60) + 's' : ''}`;
+  }
+  function renderOversight(d) {
+    const panel = $('oversight'), rowsEl = $('oversightRows'),
+      dot = $('oversightDot'), countEl = $('oversightCount');
+    if (!panel || !rowsEl) return;
+    const rows = [];
+    // Foreground: the orchestrator working on a user message right now.
+    const fg = (d.groups || []).find(g => g.active && !g.idle);
+    if (fg) {
+      const label = (fg.liveLabel || fg.livePhase || 'working on your message').replace(/^Warden is (generating|thinking)[.…]*$/i, 'composing a reply…');
+      rows.push(ovRow('warden', '', label, '', 'fg'));
+    }
+    // One row per running background job — structured, no label parsing.
+    for (const j of d.jobs || []) {
+      const meta = [j.calls + ' call' + (j.calls === 1 ? '' : 's'), ovDur(j.elapsed), j.idle > 30 ? 'stalled ' + ovDur(j.idle) : ''].filter(Boolean).join(' · ');
+      rows.push(ovRow(j.agent, j.task, j.lastAction || 'starting…', meta, 'job', j.task));
+    }
+    // Supervisor's latest monitor-tick note (prose, routed here instead of chat).
+    const sups = (d.progress || []).filter(e => e.kind === 'supervisor' && e.label);
+    const sup = sups[sups.length - 1];
+    if (sup && Date.now() - sup.ts < 2 * 60 * 60 * 1000) {
+      rows.push(ovRow('supervisor', '', sup.label, fmtTime(sup.ts), 'sup'));
+    }
+    // Busy state: a foreground turn or any running job.
+    const jobCount = (d.jobs || []).length;
+    panel.classList.toggle('busy', !!fg || jobCount > 0);
+    countEl.textContent = jobCount
+      ? `${jobCount} job${jobCount > 1 ? 's' : ''}${fg ? ' · reply in progress' : ''}`
+      : (fg ? 'reply in progress' : '');
+    rowsEl.innerHTML = rows.length ? rows.join('') : ovRow('quiet', '', 'nothing running right now', '', 'quiet');
   }
 
   function startStatusPolling() {
@@ -836,7 +823,7 @@
     }).join('');
   }
   function buildCtxOptions(currentValue) {
-    const common = ['', '2048', '4096', '8192', '16384', '32768', '65536', '128000'];
+    const common = ['', '2048', '4096', '8192', '16384', '32768', '65536', '128000', '262144', '524288', '1048576'];
     const cur = String(currentValue || '');
     if (cur && !common.includes(cur)) common.push(cur);
     common.sort((a, b) => {
@@ -894,7 +881,7 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint">Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Byte, Dexter, Iris, Mercury, and Oculus share one <b>Toolcall model</b> — the fast local tool-call agents.</div>
+        <div class="hint">Orchestrator replies to you. Supervisor runs the periodic checks on background jobs (small/cloud model recommended). Atlas does browser/research/review. Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Byte, Dexter, and Iris share one <b>Toolcall model</b> — the fast local tool-call agents. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
         <div class="setting-row"><label>Orchestrator</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
         </div>
@@ -912,6 +899,10 @@
         <div class="setting-row"><label>Driving force</label>
           <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
           <span class="dim mono" style="font-size:10px">orchestrator persona; switching clears context</span>
+        </div>
+        <div class="setting-row"><label>Supervisor</label>
+          <select class="select" id="sSupervisorModel">${orchHtml}</select>
+          <span class="dim mono" style="font-size:10px">monitor-tick model while jobs run; first boot inherits Orchestrator</span>
         </div>
         <div class="setting-row"><label>Atlas</label>
           <select class="select" id="sAtlas">${orchHtml}</select>
@@ -957,7 +948,7 @@
           <label>Toolcall model</label>
           <div style="flex:1">
             <select class="select" id="sToolcallModel">${orchHtml}</select>
-            <div class="dim mono" style="font-size:10px;margin-top:2px">Shared by Byte, Dexter, Iris, Mercury, Oculus — the fast local tool-call agents.</div>
+            <div class="dim mono" style="font-size:10px;margin-top:2px">Shared by Byte, Dexter, and Iris — the fast local tool-call agents.</div>
             <div class="setting-row" style="margin-top:6px"><label>ctx</label>
               <select class="select small" id="sToolcallCtx">${buildCtxOptions(d.subagentCtx)}</select>
               <span class="dim mono" style="font-size:10px">blank = model default</span>
@@ -967,6 +958,13 @@
         </div>
         <div class="setting-row"><label>Ollama URL</label><input class="input" id="sOllamaUrl" value="${escAttr(d.ollamaUrl || '')}" placeholder="http://127.0.0.1:11434"></div>
         <div class="setting-row"><label>Mercury</label>
+          <select class="select" id="sMercuryModel">${orchHtml}</select>
+        </div>
+        <div class="setting-row"><label>Mercury ctx</label>
+          <select class="select small" id="sMercuryCtx">${buildCtxOptions(d.mercuryCtx)}</select>
+          <span class="dim mono" style="font-size:10px">blank = inherits Toolcall ctx</span>
+        </div>
+        <div class="setting-row"><label>Mercury mode</label>
           <select class="select" id="sMercury">
             <option value="off">Off — no automatic context</option>
             <option value="rag">RAG — inject relevant older turns</option>
@@ -974,9 +972,16 @@
             <option value="full">Full — summary + RAG</option>
           </select>
         </div>
+        <div class="setting-row"><label>Oculus</label>
+          <select class="select" id="sOculusModel">${orchHtml}</select>
+        </div>
+        <div class="setting-row"><label>Oculus ctx</label>
+          <select class="select small" id="sOculusCtx">${buildCtxOptions(d.oculusCtx)}</select>
+          <span class="dim mono" style="font-size:10px">blank = inherits Toolcall ctx</span>
+        </div>
         <div class="setting-row"><label>Oculus Ollama</label>
           <select class="select" id="sOculusOllamaServer"></select>
-          <span class="dim mono" style="font-size:10px">Oculus runs on the Toolcall model; blank = default server</span>
+          <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
         <div class="setting-row"><label>Thinking</label>
           <select class="select" id="sThinking">
@@ -997,14 +1002,35 @@
           </select>
           <span class="dim mono" style="font-size:10px">clear context if the last user message was older than this</span>
         </div>
+        <div class="setting-row"><label>Mercury interval</label>
+          <select class="select small" id="sMercuryInterval">
+            <option value="0">Off</option>
+            <option value="5">5 min</option>
+            <option value="10">10 min</option>
+            <option value="15">15 min</option>
+            <option value="30">30 min</option>
+            <option value="60">1 h</option>
+          </select>
+          <span class="dim mono" style="font-size:10px">compact the conversation at least this often (0 = only on downtime)</span>
+        </div>
+        <div class="setting-row"><label>Mercury downtime</label>
+          <select class="select small" id="sMercuryDowntime">
+            <option value="0">Off</option>
+            <option value="3">3 min</option>
+            <option value="5">5 min</option>
+            <option value="10">10 min</option>
+            <option value="15">15 min</option>
+          </select>
+          <span class="dim mono" style="font-size:10px">also compact after this long with no activity (0 = interval only)</span>
+        </div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveModels">Save</button><span class="status" id="modelStatus"></span></div>
       </div>
 
       <div class="setting-card">
         <h3>Servers</h3>
         <div class="hint">Role URLs used by the Warden backend. Ollama servers below are referenced by per-agent dropdowns in Model Configuration.</div>
-        <div class="setting-row"><label>Audio / Transcription server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://192.168.0.163:8766"></div>
-        <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://192.168.0.163:8765"></div>
+        <div class="setting-row"><label>Audio / Transcription server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://localhost:8766"></div>
+        <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://localhost:8765"></div>
         <div class="setting-row"><label>Satellite (remote mic/speaker)</label><input class="input" id="sSatelliteUrl" value="${escAttr(d.satelliteUrl || '')}" placeholder="http://192.168.0.160:8766"></div>
         <div class="setting-row"><label>Whisper API fallback</label><input class="input" id="sTranscriptionApiUrl" value="${escAttr(d.transcriptionApiUrl || '')}" placeholder="https://api.groq.com/openai (Groq, autofilled)"></div>
         <div style="margin-bottom:6px"><span class="dim" style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:0.04em">Ollama servers</span>
@@ -1068,18 +1094,32 @@
       if (!sel) return;
       const v = (val || '').replace(/^local:/, '');
       const opt = Array.from(sel.options).find(o => o.value === val || o.value === v);
-      if (opt) sel.value = opt.value;
+      if (opt) { sel.value = opt.value; return; }
+      // Saved model isn't in the cached Ollama list (e.g. a :cloud tag the
+      // local server doesn't report) — append it so the dropdown shows the
+      // actually-configured model instead of silently falling back to the
+      // first option, which the next Save would then write over it.
+      if (v) {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        sel.appendChild(o);
+        sel.value = v;
+      }
     };
     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
     setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
+    setSelect('sSupervisorModel', (d.supervisorModel || '').replace(/^local:/, ''));
     setSelect('sToolcallModel', (d.ollamaChatModel || '').replace(/^local:/, ''));
     setSelect('sToolcallCtx', d.subagentCtx || '');
     setSelect('sDrivingForce', d.drivingForce || '');
     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
     setSelect('sSynthesist', (d.councilSynthesistModel || '').replace(/^local:/, ''));
+    setSelect('sMercuryModel', (d.mercuryModel || '').replace(/^local:/, ''));
+    setSelect('sMercuryCtx', d.mercuryCtx || '');
+    setSelect('sOculusModel', (d.oculusModel || '').replace(/^local:/, ''));
     setSelect('sMercury', d.mercuryMode || 'full');
     setSelect('sThinking', d.thinking || 'true');
     // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
@@ -1087,6 +1127,8 @@
     $('sAtlasKeepAlive').checked = d.atlasKeepAlive === '-1';
     $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
     setSelect('sContextIdleClear', d.contextIdleClearMinutes || '30');
+    setSelect('sMercuryInterval', d.mercuryIntervalMinutes || '30');
+    setSelect('sMercuryDowntime', d.mercuryDowntimeMinutes || '5');
     // Timezone dropdown: select the saved zone, appending it as an extra
     // option if it isn't in the curated list (preserves custom values).
     (function () {
@@ -1240,14 +1282,21 @@
         atlasModel: stripLocal($('sAtlas').value),
         artemisModel: stripLocal($('sArtemis').value),
         vulkanModel: stripLocal($('sVulkan').value),
+        supervisorModel: stripLocal($('sSupervisorModel').value),
         ollamaChatModel: stripLocal($('sToolcallModel').value),
         drivingForce: $('sDrivingForce').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
         councilPragmatistModel: stripLocal($('sPragmatist').value),
         councilSynthesistModel: stripLocal($('sSynthesist').value),
+        mercuryModel: stripLocal($('sMercuryModel').value),
+        mercuryCtx: $('sMercuryCtx').value,
+        oculusModel: stripLocal($('sOculusModel').value),
+        oculusCtx: $('sOculusCtx').value,
         mercuryMode: $('sMercury').value,
         thinking: $('sThinking').value,
         contextIdleClearMinutes: $('sContextIdleClear').value,
+        mercuryIntervalMinutes: $('sMercuryInterval').value,
+        mercuryDowntimeMinutes: $('sMercuryDowntime').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
         artemisCtx: $('sArtemisCtx').value,
@@ -1669,7 +1718,7 @@
       imapList.innerHTML = '<div class="account-empty">No IMAP/SMTP accounts.</div>';
     } else {
       imapList.innerHTML = ACCOUNTS.imap.map(a => {
-        return '<div class="account-card" data-imap-id="' + escAttr(a.id) + '" data-readonly="' + (a.read_only ? 'true' : 'false') + '" data-name="' + escAttr(a.name) + '" data-email="' + escAttr(a.email) + '" data-imap-host="' + escAttr(a.imap_host) + '" data-imap-port="' + escAttr(a.imap_port || '') + '" data-smtp-host="' + escAttr(a.smtp_host) + '" data-smtp-port="' + escAttr(a.smtp_port || '') + '" data-username="' + escAttr(a.username) + '" data-use-tls="' + (a.use_tls ? 'true' : 'false') + '" data-enabled="' + (a.enabled ? 'true' : 'false') + '" data-password="">' +
+        return '<div class="account-card" data-imap-id="' + escAttr(a.id) + '" data-readonly="' + (a.read_only ? 'true' : 'false') + '" data-name="' + escAttr(a.name) + '" data-email="' + escAttr(a.email) + '" data-imap-host="' + escAttr(a.imap_host) + '" data-imap-port="' + escAttr(a.imap_port || '') + '" data-smtp-host="' + escAttr(a.smtp_host) + '" data-smtp-port="' + escAttr(a.smtp_port || '') + '" data-username="' + escAttr(a.username) + '" data-use-tls="' + (a.use_tls ? 'true' : 'false') + '" data-enabled="' + (a.enabled ? 'true' : 'false') + '" data-outbound-guard="' + (a.outbound_guard ? 'true' : 'false') + '" data-outbound-allowlist="' + escAttr(a.outbound_allowlist || '') + '" data-outbound-max-recipients="' + escAttr(String(a.outbound_max_recipients || 0)) + '" data-password="">' +
           '<span class="badge">@</span>' +
           '<div class="info"><div class="line">' + esc(a.name || a.email) + '</div>' +
           '<div class="meta">' + esc(a.email) + ' · IMAP ' + esc(a.imap_host) + ' · ' + (a.read_only ? 'Read only' : 'Send enabled') + '</div></div>' +
@@ -1710,7 +1759,8 @@
       html = '<div class="drawer-form">' +
         '<p class="dim" style="font-size:11px;margin-bottom:10px">1. Message @BotFather on Telegram, send /newbot, and copy the API token. 2. Paste it below and click Connect. 3. Send /start to your bot on Telegram to pair.</p>' +
         '<label>Bot token</label><input type="password" class="input" id="chToken" value="" placeholder="123456:ABC...">' +
-        (ch?.chatId ? '<p class="dim" style="font-size:11px;margin:4px 0">Paired chat: <code>' + esc(ch.chatId) + '</code></p>' : '<p class="dim" style="font-size:11px;margin:4px 0">Not paired yet — send /start to your bot on Telegram</p>') +
+        '<label>Chat ID</label><input class="input" id="chChatId" value="' + escAttr(ch?.chatId || '') + '" placeholder="e.g. 6579797280">' +
+        '<p class="dim" style="font-size:11px;margin:4px 0">The chat the bot listens on. Add the bot to a group and /start there — it replies with that chat\'s id to paste here. Leave the token blank to keep the current one.</p>' +
         '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><button class="btn btn-primary btn-sm" id="btnSaveChannel">Connect</button></div>' +
       '</div>';
     } else if (type === 'slack') {
@@ -1736,13 +1786,17 @@
 
   async function saveChannel(type) {
     const token = $('chToken').value.trim();
-    if (!token) { toast('Token required', 'warn'); return; }
-    const body = { token };
+    const body = {};
+    if (token) body.token = token;
     if (type === 'telegram') {
       const chatId = $('chChatId')?.value?.trim();
       if (chatId) body.chatId = chatId;
     }
     if (type === 'slack') body.channelId = $('chChannelId').value.trim();
+    // Telegram: allow editing just the Chat ID without re-entering the bot token.
+    if (!body.token && !(type === 'telegram' && body.chatId)) {
+      toast('Token required', 'warn'); return;
+    }
     try {
       const d = await postJson('/api/channels/' + type, body);
       if (d.ok) { toast(type + ' connected', 'success'); closeDrawer(); await refreshAccounts(); }
@@ -1805,6 +1859,7 @@
     const d = dataset || {};
     const title = isNew ? 'Add IMAP/SMTP Account' : 'Edit Account';
     const html = '<div class="drawer-form">' +
+      '<div style="margin-bottom:10px"><button class="btn btn-ghost btn-sm" id="btnGmailPreset" type="button">⭐ Pre-fill for Gmail</button></div>' +
       '<label>Name</label><input class="input" id="imapName" value="' + escAttr(d.name || '') + '" placeholder="My Email">' +
       '<label>Email</label><input class="input" id="imapEmail" value="' + escAttr(d.email || '') + '" placeholder="me@example.com">' +
       '<label>IMAP host</label><input class="input" id="imapHost" value="' + escAttr(d.imapHost || '') + '" placeholder="imap.example.com">' +
@@ -1815,6 +1870,9 @@
       (isNew ? '<label>Password</label><input type="password" class="input" id="imapPassword" placeholder="Required for new account">' : '<label>New password (leave blank to keep)</label><input type="password" class="input" id="imapPassword" placeholder="">') +
       '<label><input type="checkbox" id="imapUseTls" ' + (d.useTls !== 'false' ? 'checked' : '') + '> Use TLS</label>' +
       '<label><input type="checkbox" id="imapReadOnly" ' + (d.readOnly !== 'false' ? 'checked' : '') + '> Read only</label>' +
+      '<label style="margin-top:8px"><input type="checkbox" id="imapOutboundGuard" ' + (d.outboundGuard === 'true' ? 'checked' : '') + '> Limit who this account can email</label>' +
+      '<label>Allowed recipients (one per line)</label><textarea class="input" id="imapAllowlist" rows="3" placeholder="daughter@example.com&#10;doctor@example.com">' + escAttr(d.outboundAllowlist || '') + '</textarea>' +
+      '<label>Max recipients per message (0 = no cap)</label><input class="input" id="imapMaxRecipients" value="' + escAttr(d.outboundMaxRecipients || '0') + '" placeholder="0">' +
       '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">' +
         (isNew ? '' : '<button class="btn btn-ghost btn-sm" id="btnTestImap">Test</button>') +
         '<button class="btn btn-primary btn-sm" id="btnSaveImap">Save</button>' +
@@ -1824,6 +1882,19 @@
     openDrawer(title, html);
     $('btnSaveImap').addEventListener('click', () => saveImapAccount(id));
     if (!isNew) $('btnTestImap').addEventListener('click', () => testImapAccount(id));
+    const gmailBtn = $('btnGmailPreset');
+    if (gmailBtn) gmailBtn.addEventListener('click', () => {
+      if (!$('imapName').value.trim()) $('imapName').value = 'Gmail';
+      $('imapHost').value = 'imap.gmail.com';
+      $('imapPort').value = '993';
+      $('imapSmtpHost').value = 'smtp.gmail.com';
+      $('imapSmtpPort').value = '465';
+      const em = $('imapEmail').value.trim();
+      if (em) $('imapUsername').value = em;
+      $('imapUseTls').checked = true;
+      $('imapReadOnly').checked = false;
+      toast('Gmail filled in — paste your app password', 'info');
+    });
   }
 
   async function saveImapAccount(id) {
@@ -1837,9 +1908,12 @@
     const password = $('imapPassword').value;
     const use_tls = $('imapUseTls').checked;
     const read_only = $('imapReadOnly').checked;
+    const outbound_guard = $('imapOutboundGuard').checked;
+    const outbound_allowlist = $('imapAllowlist').value.trim();
+    const outbound_max_recipients = parseInt($('imapMaxRecipients').value, 10) || 0;
     if (!name || !email || !imap_host || !smtp_host || !username) { toast('Fill required fields', 'warn'); return; }
     if (!id && !password) { toast('Password required', 'warn'); return; }
-    const body = { name, email, imap_host, imap_port, smtp_host, smtp_port, username, use_tls, read_only, user_id: 'owner' };
+    const body = { name, email, imap_host, imap_port, smtp_host, smtp_port, username, use_tls, read_only, outbound_guard, outbound_allowlist, outbound_max_recipients, user_id: 'owner' };
     if (password) body.password = password;
     try {
       if (id) { await putJson('/api/email/accounts/' + encodeURIComponent(id), body); toast('Account updated', 'success'); }
@@ -2536,18 +2610,6 @@
       ta.style.height = 'auto';
       ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
     });
-
-    // Live activity panel — collapse toggle (persisted)
-    const ppHeader = $('progressPanelHeader');
-    if (ppHeader) {
-      ppHeader.addEventListener('click', toggleProgressPanel);
-      try {
-        if (localStorage.getItem('warden-progress-expanded') === '1') {
-          const panel = $('progressPanel');
-          if (panel) { panel.classList.remove('collapsed'); ppHeader.setAttribute('aria-expanded', 'true'); }
-        }
-      } catch {}
-    }
 
     // Tasks
     $('btnNewTask').addEventListener('click', showTaskForm);

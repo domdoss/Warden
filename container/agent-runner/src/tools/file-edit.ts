@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { registry } from '../tool-registry.js';
-import { cleanFilePath } from '../ipc-helpers.js';
+import { cleanFilePath, resolveUserPath } from '../ipc-helpers.js';
 
 registry.register({
     name: 'Edit',
@@ -20,7 +20,7 @@ registry.register({
         if (cleaned.startsWith('attachments/') || cleaned === 'attachments') {
             return `Error: attachments/ is read-only input. Copy the file first: Bash("cp attachments/${path.basename(cleaned)} myproject/")`;
         }
-        const filePath = path.join(process.cwd(), cleaned);
+        const filePath = resolveUserPath(args.file_path);
         try {
             if (!fs.existsSync(filePath)) {
                 return `Error: File not found: ${args.file_path}`;

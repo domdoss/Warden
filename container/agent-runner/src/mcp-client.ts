@@ -92,7 +92,18 @@ export class ExternalMcpClient {
       const transport = new StdioClientTransport({
         command: this.config.command,
         args: this.config.args,
-        env: this.config.env ?? process.env,
+        // Merge so an entry's `env` block augments rather than wipes the
+        // ambient environment, and guarantee $HOME/.local/bin is on PATH so
+        // user-installed uv/uvx is found when systemd strips it (systemd's
+        // default PATH lacks per-user bins).
+        env: (() => {
+          const merged: Record<string, string | undefined> = { ...process.env, ...this.config.env };
+          const homeLocal = `${process.env.HOME || ''}/.local/bin`;
+          const paths = (merged.PATH || '').split(':').filter(Boolean);
+          if (homeLocal !== '/.local/bin' && !paths.includes(homeLocal)) paths.unshift(homeLocal);
+          merged.PATH = paths.join(':');
+          return merged as Record<string, string>;
+        })(),
         stderr: 'pipe',
       });
       this.transport = transport;

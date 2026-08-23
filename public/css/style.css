@@ -399,50 +399,54 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
 .verbose-bar.idle { color: var(--text-faint); }
 .verbose-bar.idle .live-dot { background: var(--text-faint); box-shadow: none; }
 
-/* Live activity panel — grouped, collapsible history of what the orchestrator
-   and its background jobs have been doing. Progress lives here instead of as a
-   stream of canned chat bubbles. Collapsed = one summary line; expanded = the
-   recent real status history + supervisor notes. */
-.progress-panel {
+/* Oversight window — a per-agent table of what is actually happening: one row
+   per foreground task and per running background job (structured data from
+   /api/status.jobs), plus the supervisor's latest note. Always visible; a
+   single "quiet" line when nothing runs. No raw event spew. */
+.oversight {
   border-top: 1px solid var(--border);
   background: var(--bg-sunken);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
 }
-.progress-panel.empty { display: none; }
-.progress-panel-header {
+.oversight-head {
   display: flex; align-items: center; gap: 8px;
-  width: 100%; padding: 5px 14px;
-  background: transparent; border: none; cursor: pointer;
-  text-align: left; color: inherit; font: inherit;
-  white-space: nowrap; overflow: hidden;
+  padding: 4px 14px 0;
 }
-.progress-panel-header:hover { background: rgba(127,127,127,0.08); }
-.progress-panel-header .live-dot {
+.oversight-head .live-dot {
   width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-  background: var(--text-faint);
+  background: var(--text-faint); transition: background .2s;
 }
-.progress-panel:not(.empty) .progress-panel-header .live-dot {
-  background: var(--accent); box-shadow: 0 0 6px var(--accent);
+.oversight.busy .live-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.oversight-title { font-weight: 600; color: var(--text-dim); letter-spacing: .04em; text-transform: uppercase; font-size: 10px; }
+.oversight-count { color: var(--text-faint); margin-left: auto; }
+.oversight-rows { padding: 2px 14px 7px; display: flex; flex-direction: column; gap: 3px; }
+.ov-row {
+  display: flex; align-items: baseline; gap: 8px;
+  line-height: 1.5; min-width: 0;
 }
-.progress-summary { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; flex: 1; }
-.progress-count { color: var(--text-faint); flex-shrink: 0; }
-.progress-chevron { color: var(--text-faint); flex-shrink: 0; transition: transform .15s; }
-.progress-panel:not(.collapsed) .progress-chevron { transform: rotate(180deg); }
-.progress-panel-body { display: none; max-height: 220px; overflow-y: auto; padding: 0 14px 8px; }
-.progress-panel:not(.collapsed) .progress-panel-body { display: block; }
-.progress-list { list-style: none; margin: 0; padding: 0; }
-.progress-list li {
-  display: flex; gap: 8px; padding: 3px 0;
-  border-top: 1px solid rgba(127,127,127,0.08);
-  line-height: 1.4;
+.ov-row .ov-name {
+  flex-shrink: 0; font-weight: 700; font-size: 10px;
+  padding: 1px 6px; border-radius: 4px;
+  background: rgba(127,127,127,0.12);
 }
-.progress-list li:first-child { border-top: none; }
-.progress-list .ts { color: var(--text-faint); flex-shrink: 0; }
-.progress-list .kind { flex-shrink: 0; font-weight: 600; }
-.progress-list .kind.status { color: var(--accent); }
-.progress-list .kind.supervisor { color: #d9a44e; }
+.ov-row .ov-task { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-row .ov-action { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-row .ov-meta { flex-shrink: 0; color: var(--text-faint); margin-left: auto; }
+.ov-row.sup .ov-action { color: #d9a44e; white-space: normal; }
+.ov-row.quiet .ov-action { color: var(--text-faint); font-style: italic; }
+/* Per-agent chip colors */
+.ov-row[data-agent="warden"]  .ov-name { color: var(--accent); }
+.ov-row[data-agent="atlas"]   .ov-name { color: #6ea8fe; }
+.ov-row[data-agent="artemis"] .ov-name { color: #c586d6; }
+.ov-row[data-agent="byte"]    .ov-name { color: #4ec9b0; }
+.ov-row[data-agent="dexter"]  .ov-name { color: #4ec9b0; }
+.ov-row[data-agent="iris"]    .ov-name { color: #4ec9b0; }
+.ov-row[data-agent="vulkan"]  .ov-name { color: #ee8c6e; }
+.ov-row[data-agent="mercury"] .ov-name { color: #d9a44e; }
+.ov-row[data-agent="oculus"]  .ov-name { color: #d9a44e; }
+.ov-row[data-agent="supervisor"] .ov-name { color: #d9a44e; }
 .progress-list .kind.done { color: #5fa04e; }
 .progress-list .kind.error { color: var(--danger, #e5484d); }
 .progress-list .label { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
