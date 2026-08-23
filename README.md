@@ -109,7 +109,7 @@ Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercur
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
 | **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the desktop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
 
-> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Oculus share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=2`, the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on) stay resident in VRAM; Atlas keep-alive can be enabled separately. Any third model evicts the least-recently-used resident.
+> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Oculus share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Byte/Dexter/Iris/Mercury/Oculus, so Mercury rides along here) stay resident in VRAM, with room for a third resident model — the cloud **supervisor** (a second orchestrator tier) or a separately-enabled model — whose keep-alive can be turned on. Any fourth model evicts the least-recently-used resident.
 
 ![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
 
@@ -140,7 +140,7 @@ The orchestrator owns the intent; Dexter owns the timing. When something needs t
 
 The schedule-value format is where scheduling breaks in every system that has one, so Dexter is built to be obsessive about it: it validates the cron expression, rejects malformed intervals and timestamps, refuses timezone suffixes on `once`, and double-checks its own offset math. The point is that the entry is correct the first time, every time, on a model that costs nothing to run.
 
-> 🪨 **Dexter and Iris are prompted specifically for `granite4.1:8b`.** Their system prompts are tuned to that 8B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing either prompt, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:8b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 8B local one.
+> 🪨 **The toolcall agents (Byte, Dexter, Iris, Mercury, Oculus) are prompted for a small local model — `granite4.1:3b` (the 8B `granite4.1:8b` works too, but the prompts are tuned to the 3B).** Their system prompts are tuned to that small model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the small local one.
 
 ### Persistent Runner
 
@@ -632,6 +632,48 @@ systemctl --user restart warden
 journalctl --user -u warden -f
 tail -f logs/warden.log
 ```
+
+### Tuning the Ollama daemon
+
+Warden drives Ollama as its local model runtime — the orchestrator, the shared Toolcall model (Byte/Dexter/Iris/Mercury/Oculus), and any resident cloud models all live there. The daemon's defaults are tuned for a generic single-user chat client, not an agent loop that fires many short requests across several models, so it's worth overriding them. Create a systemd drop-in for the `ollama` system service:
+
+```bash
+sudo systemctl edit ollama
+```
+
+Add these to the override (the `[Service]` section is where `Environment=` lines belong):
+
+```ini
+[Service]
+Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_MAX_LOADED_MODELS=3"
+Environment="OLLAMA_KEEP_ALIVE=30m"
+Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+```
+
+Then reload and restart so they take effect:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+Verify they landed (`systemctl show ollama -p Environment` prints the merged environment, including your drop-in):
+
+```bash
+systemctl show ollama -p Environment
+```
+
+What each line does and why it's here:
+
+| Setting | What it controls | Why this value |
+|---|---|---|
+| `OLLAMA_NUM_PARALLEL=1` | How many inference requests Ollama will run **concurrently**. The default scales with your CPU count, inviting parallelism. | Warden's orchestrator runs **one conversation at a time** and dispatches one sub-agent at a time. There is no benefit to concurrent inference here — only downside: two models racing for VRAM, evicting each other, or OOMing. Pinning this to `1` serializes requests so a model finishes and frees memory before the next one loads. |
+| `OLLAMA_MAX_LOADED_MODELS=3` | The max number of models Ollama will keep **resident in VRAM at once**. Beyond this, the least-recently-used resident model is evicted. | Room for the three things that matter to Warden: the **orchestrator** (kept alive always), the shared **Toolcall model** (Byte/Dexter/Iris/Mercury/Oculus — so Mercury rides along here), and a third resident model — the cloud **supervisor** (a second orchestrator tier) or another model whose keep-alive you've enabled. A fourth request simply evicts the LRU rather than OOMing. (Raise or lower this to match your VRAM; the dashboard's keep-alive checkboxes decide *which* models are candidates for these slots.) |
+| `OLLAMA_KEEP_ALIVE=30m` | How long a model stays loaded in VRAM **after its last request** before Ollama unloads it. Default is `5m`. | The agent loop issues many short, bursty requests separated by seconds-to-minutes of thinking. At `5m` a model often unloads between turns and you pay the multi-second reload latency on the next call. `30m` keeps models hot across a typical work session so repeated calls hit resident weights. Lower it if you're tight on VRAM and want idle models to release memory sooner. |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | Quantizes the **KV cache** (the per-token attention state that grows with context length) to 8-bit instead of fp16. | Long agent contexts eat VRAM fast, and the KV cache is where it goes. `q8_0` roughly halves that cache footprint at a negligible quality cost, which is what lets you run longer contexts and keep more models resident (see `OLLAMA_MAX_LOADED_MODELS`) on the same GPU. Leave it fp16 only if you have VRAM to spare and want the last bit of fidelity. |
+
+These are the levers that actually matter for an agent workload: serialize the work, keep the right models hot, and spend VRAM on cache cheaply. Everything else in the Ollama config is either automatic or not worth touching for Warden.
 
 ### Modular audio pipeline (`run.sh`)
 
