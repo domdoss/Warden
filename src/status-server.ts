@@ -8,7 +8,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
-import { killCurrentAgent, getLiveStatus, getProgressHistory } from './agent-spawn.js';
+import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { spawnOculusBackground, syncAgentCtxEnv } from './index.js';
 import {
   ASSISTANT_NAME,
@@ -553,64 +553,9 @@ function serveStatic(res: http.ServerResponse, urlPath: string): void {
   });
 }
 
-// --- Password helpers ---
-
-function hashPassword(password: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const salt = crypto.randomBytes(16).toString('hex');
-    crypto.scrypt(password, salt, 64, (err, derived) => {
-      if (err) reject(err);
-      resolve(salt + ':' + derived.toString('hex'));
-    });
-  });
-}
-
-function verifyPassword(password: string, stored: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const [salt, hash] = stored.split(':');
-    crypto.scrypt(password, salt, 64, (err, derived) => {
-      if (err) reject(err);
-      resolve(crypto.timingSafeEqual(Buffer.from(hash, 'hex'), derived));
-    });
-  });
-}
-
-function generateSessionToken(): string {
-  return crypto.randomBytes(32).toString('hex');
-}
-
-const TURNSTILE_SECRET =
-  process.env.TURNSTILE_SECRET
-  || readEnvFile(['TURNSTILE_SECRET']).TURNSTILE_SECRET
-  || '0x4AAAAAADNaYWXE5XoK-cCLbFyp0DJEPYs';
-if (TURNSTILE_SECRET === '0x4AAAAAADNaYWXE5XoK-cCLbFyp0DJEPYs') {
-  logger.warn(
-    'SECURITY: TURNSTILE_SECRET is not set (env var or env file) — falling back to the hardcoded default secret, which is compromised. Set TURNSTILE_SECRET in data/env/env.',
-  );
-}
-
-async function verifyTurnstile(token: string | undefined): Promise<boolean> {
-  if (!token) return false;
-  try {
-    const resp = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: TURNSTILE_SECRET, response: token }),
-    });
-    const data = await resp.json() as any;
-    return data.success === true;
-  } catch {
-    return false;
-  }
-}
-
-function validatePasswordStrength(pw: string): string | null {
-  if (pw.length < 6) return 'Must be at least 6 characters';
-  if (!/[A-Z]/.test(pw)) return 'Must contain an uppercase letter';
-  if (!/[0-9]/.test(pw)) return 'Must contain a number';
-  if (!/[^A-Za-z0-9]/.test(pw)) return 'Must contain a special character';
-  return null;
-}
+// (The multi-user password/Turnstile/session helpers were removed with the
+// admin route tree — single-user Warden has no auth gate. The old block lived
+// here; its only remains is a stale snapshot under Notes/, not live code.)
 
 // --- Route handlers ---
 
@@ -827,11 +772,14 @@ function getStatusData() {
     activeContainers: Math.max(queueStatus.activeCount, queueStatus.groups.filter((g: any) => g.active).length),
     scheduledTasks: deps.getAllTasks().length,
     runningJobs: getLiveStatus().jobs || 0,
+    // Structured per-job snapshot for the Oversight window (replaces the old
+    // parse-the-label-string approach).
+    jobs: getLiveJobs(),
     progress: getProgressHistory(),
     groups: groupList,
     timestamp: new Date().toISOString(),
     ollamaChatModel: process.env.OLLAMA_CHAT_MODEL || OLLAMA_CHAT_MODEL,
-    ollamaUrl: OLLAMA_URL,
+    ollamaUrl: process.env.OLLAMA_URL || OLLAMA_URL,
     defaultModelMode: DEFAULT_MODEL_MODE,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     system: getSystemMetrics(),
@@ -1481,7 +1429,7 @@ function handleSettings(res: http.ServerResponse): void {
     'CALENDAR_TOKEN',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     'MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET',
-    'TZ',
+    'TZ', 'OLLAMA_URL',
   ]);
   const googleId = process.env.GOOGLE_CLIENT_ID || envVals.GOOGLE_CLIENT_ID || '';
   const googleSecret = process.env.GOOGLE_CLIENT_SECRET || envVals.GOOGLE_CLIENT_SECRET || '';
@@ -1493,10 +1441,11 @@ function handleSettings(res: http.ServerResponse): void {
     if (fs.existsSync(oculusMdPath)) oculusMd = fs.readFileSync(oculusMdPath, 'utf8');
   } catch { /* ignore */ }
   const drivingForces = listDrivingForces();
-  // The five toolcall agents (Byte, Dexter, Iris, Oculus, Mercury) share one
-  // model + ctx — surfaced from the legacy local:subagent_model/_ctx wire that
-  // the dashboard "Toolcall model" row writes. Mirror it into the per-agent
-  // fields too so the voice Agents panel popover still displays a value.
+  // Byte, Dexter, and Iris share one model + ctx — surfaced from the
+  // local:subagent_model/_ctx wire that the dashboard "Toolcall model" row
+  // writes. Mercury and Oculus have their OWN model + ctx rows and keys
+  // (mercury:model / oculus:model / local:mercury_ctx / local:oculus_ctx),
+  // mirrored into the same fields below.
   const toolcallModel = getRouterState('local:subagent_model') || '';
   const toolcallCtx = getRouterState('local:subagent_ctx') || '';
   json(res, {
@@ -1508,15 +1457,22 @@ function handleSettings(res: http.ServerResponse): void {
     idleTimeout: IDLE_TIMEOUT,
     maxConcurrentContainers: 1,
     groupsDir: GROUPS_DIR,
-    ollamaUrl: OLLAMA_URL,
+    // Read OLLAMA_URL live (process.env, updated by the save handler, then the
+    // .env file) rather than the boot-cached config constant — otherwise the
+    // field keeps showing the value captured at startup and a saved change
+    // appears to revert until a restart.
+    ollamaUrl: process.env.OLLAMA_URL || envVals.OLLAMA_URL || OLLAMA_URL,
     ollamaModel: process.env.OLLAMA_MODEL || '',
     ollamaChatModel: process.env.OLLAMA_CHAT_MODEL || OLLAMA_CHAT_MODEL,
     defaultModelMode: DEFAULT_MODEL_MODE,
     orchestratorModel: getRouterState('orchestrator:model') || '',
     atlasModel: getRouterState('atlas:model') || '',
     vulkanModel: getRouterState('vulkan:model') || '',
+    // Supervisor = the orchestrator's monitor-tick (background-job watchdog)
+    // turns. Blank = ticks run the orchestrator model.
+    supervisorModel: getRouterState('supervisor:model') || '',
     // Per-agent models — each agent has its own concrete model (no blank/inherit).
-    // The five toolcall agents share one model (the dashboard "Toolcall model" row).
+    // Byte, Dexter, and Iris share one model (the dashboard "Toolcall model" row).
     byteModel: toolcallModel,
     dexterModel: toolcallModel,
     irisModel: toolcallModel,
@@ -1526,7 +1482,9 @@ function handleSettings(res: http.ServerResponse): void {
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
     councilPragmatistModel: getRouterState('council:pragmatist_model') || '',
     councilSynthesistModel: getRouterState('council:synthesist_model') || '',
-    oculusModel: toolcallModel,
+    // Oculus has its own model (oculus:model) — report the real configured
+    // value, not the shared toolcall wire.
+    oculusModel: getRouterState('oculus:model') || '',
     securitySatelliteIp: getSatelliteIp(),
     // ── Consolidated role URLs (Servers card) ───────────────────────────────
     wardenUrl: getRouterState('warden:url') || '',
@@ -1556,16 +1514,20 @@ function handleSettings(res: http.ServerResponse): void {
     atlasCtx: getRouterState('local:atlas_ctx') || '',
     toolsCtx: getRouterState('local:tools_ctx') || '',
     // Per-agent num_ctx overrides — blank means the model's native window.
-    // The five toolcall agents share one ctx (the dashboard "Toolcall model" row).
+    // Byte, Dexter, and Iris share one ctx (the dashboard "Toolcall model" row).
     byteCtx: toolcallCtx,
     dexterCtx: toolcallCtx,
     irisCtx: toolcallCtx,
     artemisCtx: getRouterState('local:artemis_ctx') || '',
     vulkanCtx: getRouterState('local:vulkan_ctx') || '',
-    oculusCtx: toolcallCtx,
+    // Mercury and Oculus ctx: real per-agent key, falling back to the shared
+    // toolcall ctx for display so the dropdown shows the effective value (the
+    // runner falls back the same way until a per-agent ctx is saved).
+    oculusCtx: getRouterState('local:oculus_ctx') || toolcallCtx,
     mercuryMode: getRouterState('mercury:mode') || 'full',
-    mercuryModel: toolcallModel,
-    mercuryCtx: toolcallCtx,
+    // Mercury has its own model (mercury:model) — report the real value.
+    mercuryModel: getRouterState('mercury:model') || '',
+    mercuryCtx: getRouterState('local:mercury_ctx') || toolcallCtx,
     // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min). Set by the
     // dashboard "Keep alive" checkboxes on the Orchestrator/Atlas/Toolcall rows.
     orchestratorKeepAlive: getRouterState('local:orch_keep_alive') || '',
@@ -1577,6 +1539,11 @@ function handleSettings(res: http.ServerResponse): void {
     // Minutes of user-message idle before the orchestrator context auto-clears.
     // 0 = never. Default 30. Set by the Model Configuration card.
     contextIdleClearMinutes: getRouterState('orchestrator:context_idle_clear_minutes') || '30',
+    // Mercury compaction schedule (runs on the 2s poll loop, idle-gated).
+    // interval: compact at least this often (default 30, 0 = off).
+    // downtime: also compact after this long with no user activity (default 5, 0 = off).
+    mercuryIntervalMinutes: getRouterState('mercury:interval_minutes') || '30',
+    mercuryDowntimeMinutes: getRouterState('mercury:downtime_minutes') || '5',
   });
 }
 
@@ -1620,6 +1587,9 @@ async function handleSettingsSave(
   if (body.vulkanModel !== undefined) {
     setRouterState('vulkan:model', String(body.vulkanModel || ''));
   }
+  if (body.supervisorModel !== undefined) {
+    setRouterState('supervisor:model', String(body.supervisorModel || ''));
+  }
   // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
   if (body.byteModel !== undefined) {
     setRouterState('byte:model', String(body.byteModel || ''));
@@ -1650,6 +1620,12 @@ async function handleSettingsSave(
   }
   if (body.contextIdleClearMinutes !== undefined) {
     setRouterState('orchestrator:context_idle_clear_minutes', String(body.contextIdleClearMinutes));
+  }
+  if (body.mercuryIntervalMinutes !== undefined) {
+    setRouterState('mercury:interval_minutes', String(body.mercuryIntervalMinutes));
+  }
+  if (body.mercuryDowntimeMinutes !== undefined) {
+    setRouterState('mercury:downtime_minutes', String(body.mercuryDowntimeMinutes));
   }
   if (body.councilSkepticModel !== undefined) {
     setRouterState('council:skeptic_model', String(body.councilSkepticModel));
@@ -1799,7 +1775,7 @@ async function handleSettingsSave(
   // Track whether any router-state settings were saved
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
-    body.atlasModel !== undefined || body.vulkanModel !== undefined || body.drivingForce !== undefined ||
+    body.atlasModel !== undefined || body.vulkanModel !== undefined || body.supervisorModel !== undefined || body.drivingForce !== undefined ||
     body.byteModel !== undefined || body.dexterModel !== undefined ||
     body.irisModel !== undefined || body.artemisModel !== undefined ||
     body.byteCtx !== undefined || body.dexterCtx !== undefined ||
@@ -1810,6 +1786,7 @@ async function handleSettingsSave(
     body.oculusModel !== undefined ||
     body.securitySatelliteIp !== undefined || body.mercuryMode !== undefined ||
     body.contextIdleClearMinutes !== undefined ||
+    body.mercuryIntervalMinutes !== undefined || body.mercuryDowntimeMinutes !== undefined ||
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
     body.thinking !== undefined ||
     body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
@@ -2630,9 +2607,19 @@ async function handleChatStop(
   }
   // Multi-user scope check removed; single-user Warden has no per-user gates.
   void scopeUserId;
-  // For the single-user backend, also kill the in-process agent directly.
+  // For the single-user backend, also stop the in-process agent directly.
   // body.hard = true → immediate SIGKILL (the "stop" panic word).
-  const killed = killCurrentAgent(!!body.hard);
+  // Non-hard stops now soft-INTERRUPT the current turn instead of killing the
+  // runner child: the warm child (model, indexes, MCP connections) survives, so
+  // the next message doesn't pay a multi-second cold boot. If no persistent
+  // child exists to interrupt, fall back to the legacy kill.
+  let killed: boolean;
+  if (body.hard) {
+    killed = killCurrentAgent(true);
+  } else {
+    killed = cancelCurrentTurn();
+    if (!killed) killed = killCurrentAgent(false);
+  }
   if (body.soft) {
     // Soft stop: queue is a stub now; no-op.
     deps.queue.closeStdin(jid);
@@ -2983,6 +2970,9 @@ export function startStatusServer(d: StatusDeps): void {
         read_only: data.read_only !== false,
         enabled: data.enabled,
         user_id: scopeUserId ?? (data.user_id || null),
+        outbound_guard: data.outbound_guard ? true : false,
+        outbound_allowlist: data.outbound_allowlist || null,
+        outbound_max_recipients: data.outbound_max_recipients || 0,
       });
       return json(res, { ok: true, account: { ...account, password: '***' } }, 201);
     }
@@ -3013,6 +3003,9 @@ export function startStatusServer(d: StatusDeps): void {
       if (data.enabled !== undefined) updates.enabled = data.enabled ? 1 : 0;
       // Scoped users cannot reassign account ownership
       if (data.user_id !== undefined && !scopeUserId) updates.user_id = data.user_id;
+      if (data.outbound_guard !== undefined) updates.outbound_guard = data.outbound_guard ? 1 : 0;
+      if (data.outbound_allowlist !== undefined) updates.outbound_allowlist = data.outbound_allowlist;
+      if (data.outbound_max_recipients !== undefined) updates.outbound_max_recipients = data.outbound_max_recipients || 0;
 
       const updated = updateEmailAccount(id, updates);
       if (!updated) return error(res, 'Account not found', 404);
@@ -3670,15 +3663,17 @@ export function startStatusServer(d: StatusDeps): void {
   ): Promise<void> {
     // GET /api/channels — list channel status
     if (req.method === 'GET' && pathname === '/api/channels') {
-      const envVals = readEnvFile(['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'SLACK_BOT_TOKEN', 'SLACK_CHANNEL_ID']);
+      const envVals = readEnvFile(['TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_ID', 'SLACK_BOT_TOKEN', 'SLACK_CHANNEL_ID']);
       const channelStatus: Array<{ type: string; configured: boolean; connected: boolean; chatId?: string; channelId?: string; tokenHint?: string }> = [];
       if (envVals.TELEGRAM_BOT_TOKEN) {
         const ch = deps.channels.find((c) => c.name === 'telegram');
+        // The chat the bot listens on: env TELEGRAM_OWNER_ID (set from the
+        // dashboard) falling back to the auto-claimed router_state owner.
         channelStatus.push({
           type: 'telegram',
           configured: true,
           connected: ch?.isConnected?.() || false,
-          chatId: envVals.TELEGRAM_CHAT_ID || '',
+          chatId: envVals.TELEGRAM_OWNER_ID || getRouterState('telegram:owner_id') || '',
           tokenHint: envVals.TELEGRAM_BOT_TOKEN.slice(-4),
         });
       }
@@ -3713,16 +3708,23 @@ export function startStatusServer(d: StatusDeps): void {
       return json(res, status);
     }
 
-    // POST /api/channels/telegram — save token + chat id and reconnect
+    // POST /api/channels/telegram — save token and/or owner chat id and reconnect
     if (req.method === 'POST' && pathname === '/api/channels/telegram') {
       const body = parseJson(await parseBody(req)) as any;
-      if (!body.token) return error(res, 'token required');
+      if (!body.token && !body.chatId) return error(res, 'token or chatId required');
       const { writeEnvVars } = await import('./env.js');
-      const vars: Record<string, string> = { TELEGRAM_BOT_TOKEN: body.token };
-      if (body.chatId) vars.TELEGRAM_CHAT_ID = String(body.chatId);
-      writeEnvVars(vars);
-      process.env.TELEGRAM_BOT_TOKEN = body.token;
-      if (body.chatId) process.env.TELEGRAM_CHAT_ID = String(body.chatId);
+      const vars: Record<string, string> = {};
+      if (body.token) vars.TELEGRAM_BOT_TOKEN = body.token;
+      // chatId is the single chat the bot listens on (TELEGRAM_OWNER_ID).
+      // Written to env + router_state; the channel reads it on reconnect.
+      if (body.chatId) {
+        const id = String(body.chatId).trim();
+        vars.TELEGRAM_OWNER_ID = id;
+        setRouterState('telegram:owner_id', id);
+      }
+      writeEnvVars(vars); // only touches provided keys; existing token preserved on chat-id-only edits
+      if (body.token) process.env.TELEGRAM_BOT_TOKEN = body.token;
+      if (body.chatId) process.env.TELEGRAM_OWNER_ID = String(body.chatId).trim();
       const success = deps.reconnectChannel ? await deps.reconnectChannel('telegram') : false;
       return json(res, { ok: success });
     }

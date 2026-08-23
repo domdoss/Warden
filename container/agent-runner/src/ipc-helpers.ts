@@ -58,3 +58,20 @@ export function cleanFilePath(p: string): string {
     return String(p)
         .replace(/^(?:\/workspace\/project\/groups\/[^/]+\/|\/workspace\/group\/|workspace\/group\/|\/workspace\/|workspace\/|group\/)+/, '');
 }
+
+/**
+ * Resolve a model-supplied file path the way a shell would: bare `~` and a
+ * leading `~/` are the user's home, absolute paths stay absolute, and only
+ * genuine relatives land under the runner cwd (WORKSPACE_ROOT). Without this,
+ * Write('~/Desktop/x') silently creates a literal "~" directory inside the
+ * workspace and still reports success — the file never reaches where the user
+ * asked, and the digest then parrots a false "it's on your desktop".
+ */
+export function resolveUserPath(p: string, cwd: string = process.cwd()): string {
+    const cleaned = cleanFilePath(p);
+    const home = os.homedir();
+    const expanded = cleaned === '~' ? home
+        : cleaned.startsWith('~/') ? path.join(home, cleaned.slice(2))
+        : cleaned;
+    return path.isAbsolute(expanded) ? path.normalize(expanded) : path.join(cwd, expanded);
+}

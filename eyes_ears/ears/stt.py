@@ -66,6 +66,11 @@ class STT:
             self._model = whisper.load_model(self.model_name, device=self.device)
         return self._model
 
+    def warmup(self) -> None:
+        """Load the Whisper model up front. Called at boot (so the "online"
+        greeting isn't a lie and the first real turn doesn't stall on load)."""
+        self._load_model()
+
     def transcribe(self, audio_data: bytes, language: Optional[str] = None) -> str:
         """Transcribe audio bytes to text using local Whisper.
 

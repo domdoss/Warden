@@ -113,6 +113,26 @@ function createSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    -- User-facing board tasks (byte's create_work_task, dashboard Ops view).
+    -- This table survived from the pre-desktop schema — its CREATE was never
+    -- carried into createSchema, so a fresh/migrated desktop DB was missing it
+    -- entirely ("no such table: user_work_tasks" on any board view or byte call).
+    CREATE TABLE IF NOT EXISTS user_work_tasks (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      status TEXT DEFAULT 'pending',
+      priority TEXT DEFAULT 'medium',
+      assigned_to TEXT,
+      created_by TEXT,
+      due_date TEXT,
+      project_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      confirmed INTEGER DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS project_priorities (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -183,6 +203,9 @@ function createSchema(database: Database.Database): void {
       read_only INTEGER DEFAULT 1,
       enabled INTEGER DEFAULT 1,
       oauth_account_id TEXT,
+      outbound_allowlist TEXT,
+      outbound_max_recipients INTEGER DEFAULT 0,
+      outbound_guard INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS email_drafts (
@@ -357,6 +380,9 @@ export function initDatabase(): void {
   // columns here. ALTER fails harmlessly if the column already exists.
   for (const [table, col, def] of [
     ['email_accounts', 'oauth_account_id', 'TEXT'],
+    ['email_accounts', 'outbound_allowlist', 'TEXT'],
+    ['email_accounts', 'outbound_max_recipients', 'INTEGER DEFAULT 0'],
+    ['email_accounts', 'outbound_guard', 'INTEGER DEFAULT 0'],
     ['oauth_accounts', 'hidden_calendars', "TEXT DEFAULT '[]'"],
     // Actionable-scanner items land directly in the real stores now (no queue
     // file). `confirmed` flags scanned rows that the user hasn't green-checked
@@ -1708,6 +1734,9 @@ export interface EmailAccount {
   enabled: number;
   created_at: string;
   oauth_account_id?: string | null;
+  outbound_allowlist?: string | null;
+  outbound_max_recipients?: number;
+  outbound_guard?: number;
 }
 
 export function createEmailAccount(account: {
@@ -1723,12 +1752,15 @@ export function createEmailAccount(account: {
   read_only?: boolean;
   enabled?: boolean;
   user_id?: string | null;
+  outbound_guard?: boolean;
+  outbound_allowlist?: string | null;
+  outbound_max_recipients?: number;
 }): EmailAccount {
   const id = `email-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO email_accounts (id, user_id, name, email, imap_host, imap_port, smtp_host, smtp_port, username, password, use_tls, read_only, enabled, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO email_accounts (id, user_id, name, email, imap_host, imap_port, smtp_host, smtp_port, username, password, use_tls, read_only, enabled, outbound_guard, outbound_allowlist, outbound_max_recipients, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     account.user_id ?? null,
@@ -1743,6 +1775,9 @@ export function createEmailAccount(account: {
     account.use_tls === false ? 0 : 1,
     account.read_only === false ? 0 : 1, // DEFAULT READ ONLY
     account.enabled === false ? 0 : 1,
+    account.outbound_guard ? 1 : 0,
+    account.outbound_allowlist ?? null,
+    account.outbound_max_recipients ?? 0,
     now,
   );
   return getEmailAccount(id)!;
@@ -1787,6 +1822,9 @@ export function updateEmailAccount(
   if (updates.enabled !== undefined) { fields.push('enabled = ?'); values.push(updates.enabled); }
   if (updates.user_id !== undefined) { fields.push('user_id = ?'); values.push(updates.user_id); }
   if (updates.oauth_account_id !== undefined) { fields.push('oauth_account_id = ?'); values.push(updates.oauth_account_id); }
+  if (updates.outbound_guard !== undefined) { fields.push('outbound_guard = ?'); values.push(updates.outbound_guard); }
+  if (updates.outbound_allowlist !== undefined) { fields.push('outbound_allowlist = ?'); values.push(updates.outbound_allowlist); }
+  if (updates.outbound_max_recipients !== undefined) { fields.push('outbound_max_recipients = ?'); values.push(updates.outbound_max_recipients); }
 
   if (fields.length === 0) return existing;
 

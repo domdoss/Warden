@@ -86,14 +86,28 @@ async function postTranscription(
 
     const body = Buffer.concat(parts);
 
-    const resp = await fetch(`${baseUrl}/v1/audio/transcriptions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body,
-    });
+    // Bounded timeout so a hung endpoint (Groq network stall, silent drop)
+    // can't block the turn forever — detect the failure and let the caller
+    // fall back. Cloud (Groq, authed) gets a tight timeout since it normally
+    // replies in 1–3s; the local Pi whisper server legitimately takes ~11s
+    // and gets a looser one. 429/non-ok responses already return immediately.
+    const timeoutMs = apiKey ? 20000 : 60000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let resp: Response;
+    try {
+      resp = await fetch(`${baseUrl}/v1/audio/transcriptions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!resp.ok) {
       console.error(
@@ -121,21 +135,22 @@ export async function transcribeLocal(
   audioBuffer: Buffer,
   fmt: 'ogg' | 'wav' = 'ogg',
 ): Promise<string | null> {
-  // Primary endpoint — the local whisper server. No auth.
-  const primaryUrl = getWhisperUrl();
-  let result = await postTranscription(primaryUrl, audioBuffer, fmt, '');
-  if (result !== null) return result;
-
-  // Fallback to the API (Groq, autofilled) if configured and different from
-  // the primary. Authed with the Groq key. This keeps STT working when the
-  // local server is down, as long as an API key / URL is configured.
+  // Groq API is primary (fast, ~1s) when a key is configured; the local
+  // whisper server is the offline fallback (~11s on the Pi) used when Groq
+  // is unreachable, rate-limited, or unconfigured. With no key, apiUrl is
+  // empty and we go straight to local — preserving the local-only behavior.
   const apiUrl = getWhisperApiUrl();
-  const norm = (u: string) => u.trim().replace(/\/+$/, '');
-  if (apiUrl && norm(apiUrl) !== norm(primaryUrl)) {
-    console.log(`Whisper local (${primaryUrl}) failed — falling back to API ${apiUrl}`);
-    result = await postTranscription(apiUrl, audioBuffer, fmt, GROQ_API_KEY);
+  if (apiUrl) {
+    const result = await postTranscription(apiUrl, audioBuffer, fmt, GROQ_API_KEY);
+    if (result !== null) return result;
+    const fallbackUrl = getWhisperUrl();
+    console.log(`Whisper API (${apiUrl}) failed — falling back to local ${fallbackUrl}`);
+    return await postTranscription(fallbackUrl, audioBuffer, fmt, '');
   }
-  return result;
+
+  // No API configured — local whisper server only.
+  const primaryUrl = getWhisperUrl();
+  return await postTranscription(primaryUrl, audioBuffer, fmt, '');
 }
 
 export async function transcribeAudioMessage(

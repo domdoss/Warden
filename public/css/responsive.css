@@ -148,13 +148,15 @@
  *    if either grows tall it can squeeze out the input bar on a short window.
  *    Cap them so messages + composer always win the space. ── */
 @media (max-height: 700px) {
-  .progress-panel-body { max-height: 120px; }
+  /* Short windows: the oversight rows sit between messages and the composer —
+   * cap them so messages + composer always win the space. */
+  .oversight-rows { max-height: 100px; overflow-y: auto; }
   .thinking-bar { max-height: 60px; overflow-y: auto; }
 }
 @media (max-height: 520px) {
-  /* Very short: collapse the progress panel header out of the flow entirely
-   * so only chat-meta + messages + composer remain. */
-  .progress-panel:not(.expanded) { display: none; }
+  /* Very short: hide the oversight window entirely so only chat-meta +
+   * messages + composer remain. */
+  .oversight { display: none; }
 }
 
 /* ============================================================= ≤720: Mobile modals + settings sheet

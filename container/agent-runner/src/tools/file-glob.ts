@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { registry } from '../tool-registry.js';
+import { resolveUserPath } from '../ipc-helpers.js';
 
 registry.register({
     name: 'Glob',
@@ -17,7 +18,7 @@ registry.register({
             try { fs.writeFileSync('/workspace/ipc/status.json', JSON.stringify({ phase: 'tool', tool: 'Glob', label: `Searching: ${args.pattern}`, ts: Date.now() })); } catch {}
             try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Glob', label: `Searching: ${args.pattern}`, ts: Date.now() }) + '\n'); } catch {}
             const globModule = await import('glob');
-            const searchPath = args.path || process.cwd();
+            const searchPath = args.path ? resolveUserPath(args.path) : process.cwd();
             const globFn = (globModule as any).glob || (globModule as any).default || globModule;
             const files: string[] = await globFn(args.pattern, { cwd: searchPath, absolute: false } as any);
             return files.join('\n') || 'No files found.';

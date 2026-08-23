@@ -59,13 +59,14 @@ function resolveMemoryModel(): string {
   return FALLBACK_MODEL;
 }
 
-// Memory writeback uses the Mercury (toolcall) model — the same granite4.1:8b
-// Iris/scan/digest keep resident at 16384 ctx / keep_alive -1. A bare /api/chat
-// with no num_ctx/keep_alive loads a SECOND copy at Ollama's native 2048 ctx /
-// 300s default, which evicts the resident Iris instance. Mirror the runner's
-// toolcall ctx + keep_alive so writeback reuses the loaded model instead.
+// Memory writeback has its own model + ctx rows in Settings (mercury:model /
+// local:mercury_ctx). A bare /api/chat with no num_ctx/keep_alive loads a
+// SECOND copy of the model at Ollama's native 2048 ctx / 300s default, which
+// can evict an instance the user keeps resident. Until a per-agent Mercury ctx
+// is saved it inherits the shared toolcall ctx so effective behavior is
+// unchanged; keep_alive still follows the toolcall setting.
 function resolveMemoryCtx(): number | undefined {
-  const raw = (getRouterState('local:subagent_ctx') || '').trim();
+  const raw = (getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '').trim();
   if (!raw) return undefined;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : undefined;

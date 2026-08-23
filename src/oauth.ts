@@ -416,10 +416,29 @@ export async function ensureFreshToken(accountId: string): Promise<string> {
   try {
     freshTokens = await providerInstance.refreshAccessToken(refreshToken);
   } catch (err) {
-    // Refresh failed — disable the account
+    // Only credential-fatal failures (refresh token revoked/expired) disable the
+    // account. Transient failures — network down at boot, DNS hiccup, 5xx from
+    // Google — must NOT disable it: a user service starts before the network is
+    // reliably up, and hard-disabling on those forces a full Google re-auth
+    // (with 2FA) after every unlucky restart.
+    const msg = String((err as any)?.message ?? err);
+    const credentialFatal =
+      /invalid_grant|invalid_client|unauthorized_client|token has been expired or revoked/i.test(msg)
+      || /refresh failed \(4(00|01|03)\)/.test(msg);
+    if (!credentialFatal) {
+      logger.warn(
+        { err, accountId, provider },
+        'OAuth token refresh failed transiently — keeping account enabled, will retry on next use',
+      );
+      throw new Error(
+        `Token refresh for ${provider} account ${accountId} temporarily unavailable: ${msg.slice(0, 200)}`,
+      );
+    }
+    // Refresh token is dead (revoked, or 7-day expiry of a "Testing"-status
+    // Google OAuth app) — disable the account so the UI offers reconnect.
     logger.error(
       { err, accountId, provider },
-      'OAuth token refresh failed, disabling account',
+      'OAuth refresh token rejected (credential-fatal), disabling account',
     );
     await updateOAuthAccount(accountId, {
       enabled: 0,

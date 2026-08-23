@@ -5,6 +5,12 @@ import { getPage, listPages, setActivePage, snapshot, refLocator } from '../brow
 
 const ACTION_TIMEOUT = 10000;
 
+// Same-URL re-navigation guard: when CDP hiccups, agents retry the identical
+// navigate in a loop and every retry can open another tab in the user's
+// browser. If the same URL was requested moments ago, reuse the page.
+let lastNavUrl = '';
+let lastNavAt = 0;
+
 registry.register({
     name: 'browser_navigate',
     description: 'Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type.',
@@ -21,6 +27,11 @@ registry.register({
             if (!url) return 'Error: url is required.';
             if (!/^https?:\/\//i.test(url)) return 'Error: url must start with http:// or https://';
             const page = await getPage();
+            if (url === lastNavUrl && Date.now() - lastNavAt < 15_000 && page.url() === url) {
+                return await snapshot(page); // already there — don't reload/window again
+            }
+            lastNavUrl = url;
+            lastNavAt = Date.now();
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
             return await snapshot(page);
         } catch (err: any) {
@@ -91,10 +102,14 @@ registry.register({
         try {
             const page = await getPage();
             const loc = refLocator(page, String(args.ref));
+            const urlBefore = page.url();
             await loc.fill(String(args.text), { timeout: ACTION_TIMEOUT });
             if (args.submit) {
                 await loc.press('Enter', { timeout: ACTION_TIMEOUT });
                 await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+                if (page.url() === urlBefore) {
+                    return `Typed into ${args.ref} and pressed Enter, but the page did NOT navigate (still on ${urlBefore}). Do not retry Enter — take a browser_snapshot, find the form's submit/search button, and browser_click it instead.`;
+                }
             }
             return `Typed into ${args.ref}${args.submit ? ' and pressed Enter' : ''}. Call browser_snapshot to read the updated page.`;
         } catch (err: any) {
@@ -107,19 +122,26 @@ registry.register({
 
 registry.register({
     name: 'browser_press_key',
-    description: 'Press a keyboard key in the browser page, e.g. "Enter", "Escape", "ArrowDown", "Control+a", "k" (YouTube play/pause).',
+    description: 'Press a keyboard key in the browser page, e.g. "Enter", "Escape", "ArrowDown", "Control+a", "k" (YouTube play/pause). Pass ref to press the key ON a specific element (focuses it first) — without a ref the key goes to whatever happens to be focused, which may be nothing.',
     schema: {
         type: 'object',
         properties: {
             key: { type: 'string', description: 'Key or combo in Playwright syntax, e.g. "Enter", "Control+a".' },
+            ref: { type: 'string', description: 'Optional element ref from the snapshot to focus and press on, e.g. "e12".' },
         },
         required: ['key'],
     },
     handler: async (args) => {
         try {
             const page = await getPage();
-            await page.keyboard.press(String(args.key));
-            return `Pressed ${args.key}.`;
+            const key = String(args.key);
+            if (args.ref) {
+                const loc = refLocator(page, String(args.ref));
+                await loc.press(key, { timeout: ACTION_TIMEOUT });
+            } else {
+                await page.keyboard.press(key);
+            }
+            return `Pressed ${key}${args.ref ? ` on ${args.ref}` : ''}.`;
         } catch (err: any) {
             return `Error pressing ${args.key}: ${err.message}`;
         }
