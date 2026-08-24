@@ -20,6 +20,10 @@ export interface InboxItem {
     read: boolean;
     finishedAt: number;
     activityLog?: { t: number; tool: string; args: string; result?: string }[];
+    // Supervisor completion verdict stamped before push (see runCompletionVerdict
+    // in index.ts). Absent when the verdict call was skipped or errored.
+    verdict?: 'confirmed' | 'failed' | 'unverifiable';
+    verdictReason?: string;
 }
 
 const items = new Map<string, InboxItem>();

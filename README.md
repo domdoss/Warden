@@ -71,13 +71,19 @@ You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (
 
 This is the counterintuitive part: the orchestrator is the cheapest model in the stack, and that's by design. Its job isn't generation, it's **classification and composition**. Every turn it answers a small set of questions: *what does the user want, which specialist owns it, what does that specialist need to know to start cold, and is anything I'm currently babysitting going sideways?* None of that needs a frontier model. An e4b nails it — locally, in well under a second per turn, on hardware you already own — so the thing you talk to most carries no per-turn cloud cost.
 
-**e4b works; 31B cloud is recommended.** The e4b is the floor, and the whole point is that the bar for "good enough to supervise" is low — it routes and composes briefs, it doesn't generate. But supervision has a failure mode the e4b will hit eventually: when a sub-agent returns narration that *looks* like a result (a timestamp computation written as prose, an "I'll do that" with no tool call), an e4b orchestrator will sometimes take it at face value and relay it to you as done. A 31B cloud orchestrator reads the same non-result and notices nothing was actually produced. So: run the e4b if you want it all local and free; run the 31B cloud if you want the babysitting to actually catch sub-agents that bluff.
+**e4b works; 31B cloud is recommended.** The e4b is the floor, and the whole point is that the bar for "good enough to supervise" is low — it routes and composes briefs, it doesn't generate. But supervision has a failure mode the e4b will hit eventually: when a sub-agent returns narration that *looks* like a result (a timestamp computation written as prose, an "I'll do that" with no tool call), an e4b orchestrator will sometimes take it at face value and relay it to you as done. A 31B cloud orchestrator reads the same non-result and notices nothing was actually produced. (Loop-killing is the one supervision job that doesn't depend on the orchestrator's smarts at all — a deterministic churn detector handles it regardless of model size; see [Babysitting the sub-agents](#babysitting-the-sub-agents).) So: run the e4b if you want it all local and free; run the 31B cloud if you want the babysitting to actually catch sub-agents that bluff.
 
 The expensive generation lives one layer down, in the specialists. Atlas, Vulkan, and Artemis default to a large cloud model; the three Council seats each run their own model. The orchestrator stays out of that. It states **what** needs to happen and stops — it never prescribes **how** (no URLs, no search queries, no "go to X then click Y"), because it can't even see the specialists' tools. That discipline is exactly what lets a small model supervise a frontier one without getting in the way: it can't micromanage what it can't see, so it doesn't try.
 
 #### Babysitting the sub-agents
 
-Delegation is not fire-and-forget. When the orchestrator hands work to Atlas, Atlas runs **in the background** — the orchestrator gets a job ID back immediately and stays free to handle your next message. While those jobs run, the orchestrator supervises them on a fixed **30-second monitor tick**. On every tick it checks up on each running job — reads the synthetic status line (elapsed time, tool-call count, what the job last did and how many seconds ago) and decides whether the work is **on track**, **veering off / doing the wrong thing**, or **stuck and looping**. On track, it leaves the job alone; veering or stuck, it calls `stop_agent` and re-delegates with a corrected brief. When a job **finishes**, the result lands in an **inbox**.
+Delegation is not fire-and-forget. When the orchestrator hands work to Atlas, Atlas runs **in the background** — the orchestrator gets a job ID back immediately and stays free to handle your next message. While those jobs run, supervision happens on a fixed **30-second monitor tick**, in two layers:
+
+**An advisory LLM check.** On each tick a small *supervisor* model (distinct from the orchestrator — by default the local toolcall model) reads a one-line snapshot per running job — elapsed time, tool-call count, what it last did and how long ago — and tags it **on track**, **off-rails**, or **crashed**. This verdict is **advisory only by design**: a one-line snapshot can't safely tell a dead job from a cloud-API stall (90–120s of silence while waiting on a model response), so aborting on the LLM's call would kill good work. On track, the job is left alone; off-rails or crashed only raises a dashboard warning for you to review. The LLM never calls `stop_agent` on its own.
+
+**A deterministic churn detector.** The thing that actually stops a looping job is in code, not the LLM. The runner counts consecutive **read-only calls** (Read, Grep, Glob, Bash, WebSearch, …) with no deliverable produced. At 12 in a row it injects a *commit nudge* into the agent's next turn — "you have enough context, stop searching, write the deliverable now." If the agent keeps searching after the nudge — 10 more read-only calls — the runner aborts the job itself. Crucially, the post-nudge count is **decoupled from writes**: a single `Edit` in a sea of reads no longer resets the abort clock, so "churn punctuated by an occasional token write" can't dodge the kill. When an **Atlas** job is stopped this way it **auto-escalates to Vulkan** on the same task (and burns the one retry credit so the orchestrator can't double-dispatch on top of it). Artemis and Oculus are exempt — they're read-only by design, so "lots of reads" is their job, not a loop. (Full mechanics: [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)
+
+When a job **finishes**, the result lands in an **inbox**.
 
 Crucially, that supervision runs **silently**. The tick's prose ("Atlas is on track…") is canned filler — it doesn't go to your chat. Progress lives in the dashboard instead: the real status line each job emits on every tool call streams into a **grouped, collapsible Live Activity panel** (one summary line when collapsed, the recent history when expanded), so you watch what's actually happening without a parade of chat bubbles. The chat only carries **completed-task reports** (and interventions) — you ask once, the orchestrator drives the whole chain end to end, and you hear from it when there's something finished to tell you.
 
@@ -194,6 +200,10 @@ The tool loop has multiple circuit breakers to prevent common failure modes:
 - **Circling detection** — consecutive useless rounds (no tool calls, no output) trigger a forced no-tools round to extract an answer
 - **Degenerate output filter** — word-mash / garbled output from misconfigured models is detected and suppressed
 - **Verifier sub-agent** — after effectful work (file writes, edits), a verifier pass confirms the changes
+- **Deterministic churn detection** — N consecutive read-only calls (Read/Grep/Glob/Bash/WebSearch — the `RESEARCH` set) with no deliverable produced → inject a "stop searching, write now" commit nudge; 10 more read-only calls after the nudge → the runner aborts the job itself (12/10 thresholds; artemis and oculus exempt). The post-nudge count ignores writes, so churn punctuated by an occasional `Edit` can't evade the abort. A stopped **Atlas** auto-escalates to **Vulkan** on the same task. *(See [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)*
+- **One-atlas-at-a-time gate** — a new Atlas dispatch aborts any already-running Atlas (the new task supersedes) before spawning, so the orchestrator can't double-launch Atlas on the same file and clobber edits. Vulkan is exempt (the churn-escalation spawns it while Atlas winds down).
+- **Atlas first-turn thinking** — Atlas thinks on its first iteration only (plan what it needs, then act), paired with a **READ ONCE** prompt rule (read each named file once; don't re-Read it to find the next edit target — that re-reading *is* the loop). Later iterations keep thinking off to preserve context.
+- **Advisory-only watchdog** — the 30s LLM supervisor flags off-rails/crashed jobs but never kills them (a one-line snapshot can't tell a stall from a crash); the deterministic churn detector is what actually stops loops.
 
 ### 📝 Memory System
 
@@ -235,6 +245,7 @@ Every model selection in the dashboard is per-role:
 | Role | Recommended | Why |
 |------|-------------|-----|
 | **Orchestrator** | e4b local works; **31B cloud recommended** | Fast, cheap routing + supervision. e4b is the floor; 31B cloud catches sub-agents that bluff a result. Keep-alive is on by default. |
+| **Supervisor (watchdog)** | Small local (e.g. granite4.1:3b) | Runs the 30s advisory tick + completion verdict — tool-less, a few hundred tokens per call. A small local model keeps it resident without churning VRAM. Falls back to the orchestrator model if unset. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
 | **Vulkan** | Cloud (default) | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
 | **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Oculus share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
@@ -242,6 +253,8 @@ Every model selection in the dashboard is per-role:
 | **Council seats** | Cloud ×3 (different models) | Diverse perspectives for deliberation. |
 
 Every role can be flipped to local or cloud from the dashboard — same pipeline, no code change — so the column above is a recommendation, not a constraint.
+
+> ⚠️ **Kimi is not recommended right now.** Kimi loops on read-heavy / long-running subagent tasks (atlas, vulkan, artemis) — it re-issues the same read-only call repeatedly instead of converging, and it leaks its chain-of-thought as untagged text when thinking is disabled (which is why any `/^kimi/i` model is forced to `think:true` every request). The deterministic churn detector still catches read-only-call loops on kimi, but **artemis is churn-exempt**, so a looping kimi-artemis runs to the iteration cap unchecked. The currently-tested fleet is **atlas = a local thinking model, the rest = glm, no kimi**. Use glm (or a local thinking model for atlas) for subagent work; save kimi for the orchestrator if you use it at all.
 
 All of this is configured from the dashboard's Settings panel — assistant name, model per role, Ollama URL, and keep-alive toggles:
 
@@ -264,6 +277,8 @@ The agent-runner speaks Ollama's native HTTP API and talks to Ollama directly �
 ![Servers menu: manage local and cloud Ollama endpoints](docs/screenshots/menu-servers.png)
 
 **Optional — piping in Claude:** `src/credential-proxy.ts` (port 3001) is in the codebase but **not wired in by default**. It exists for one case: routing to Anthropic's Claude. It translates Ollama-native requests ↔ Anthropic format and injects the Claude API key so the agent-runner never sees it. If you want Claude, wire the proxy in and point the agent-runner at it; otherwise everything stays on native Ollama.
+
+**Supervisor model & per-iteration thinking.** The 30s watchdog tick and the completion verdict run on a separate `SUPERVISOR_MODEL` (falls back to the orchestrator model) — a small, tool-less call, so a local model is ideal. Sub-agents think on a per-iteration rule: **Atlas thinks on its first turn only** (plan, then act — paired with the READ-ONCE prompt rule against the re-reading loop); **kimi thinks every turn** (it leaks reasoning as untagged text when thinking is off, so `/^kimi/i` models are forced on); every other sub-agent iteration is `think:false`. The orchestrator has its own dashboard `thinkingMode` (`max` = every turn, `true` = first turn, off otherwise) and thinks on turn 1 by default. Never send `think:true` to a Granite model — Ollama rejects it, so the Granite toolcall agents (byte/dexter/iris) stay on `think:false`.
 
 ---
 
@@ -508,7 +523,7 @@ The Telegram bot is **single-owner by design** — it only talks to one chat. Th
 | Desktop | xdotool + spectacle — coordinate input, screenshots |
 | Terminal | Live PTY shell (tmux `warden-shell`) |
 | LLM | Ollama (local + cloud) |
-| LLM Routing | Credential proxy with format translation for cloud endpoints |
+| LLM Routing | Native Ollama HTTP by default; optional credential proxy (`src/credential-proxy.ts`) for Anthropic format translation |
 | Messaging | grammy (Telegram), Baileys (WhatsApp), Slack SDK |
 | Email | IMAP via imapflow, SMTP via nodemailer |
 | Calendar/Contacts | CalDAV/CardDAV via Radicale, synced with KDE Kontact |
@@ -1067,7 +1082,7 @@ The main config file is `data/env/env`. It is created by `install.sh` if it does
 ```bash
 # Identity
 ASSISTANT_NAME=Warden
-LOCAL_ASSISTANT_NAME=Kimi
+LOCAL_ASSISTANT_NAME=Kimi   # display name for local/offline mode (a persona), NOT a model — model picks live in the dashboard
 
 # Server
 STATUS_PORT=3200               # dashboard / API port

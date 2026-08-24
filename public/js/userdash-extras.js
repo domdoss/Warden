@@ -3139,6 +3139,69 @@ window.UserDash = (() => {
         const data = await r.json();
         renderAlarms(data.alarms || []);
       } catch (e) { console.error('loadAlarms', e); }
+      // Reminders: poll the user's calendar for upcoming events, nearest first.
+      refreshAlarmCalendar();
+      startAlarmCalPoll();
+    }
+
+    let alarmCalPoll = null;
+    function startAlarmCalPoll() {
+      if (alarmCalPoll) return;
+      // Refresh the calendar-derived reminder list every 60s, but only while
+      // the Alarms (reminders) view is the active tab — no idle churn.
+      alarmCalPoll = setInterval(() => {
+        const v = document.getElementById('view-alarms');
+        if (v && v.classList.contains('active')) refreshAlarmCalendar();
+      }, 60000);
+    }
+
+    async function refreshAlarmCalendar() {
+      try {
+        // Use the start of today in local time as the lower bound. The DB stores
+        // start_time as a local datetime string (e.g. 2026-08-24T15:00:00), so
+        // comparing against a UTC ISO string like 2026-08-24T19:53:00.000Z would
+        // incorrectly filter out afternoon events. A local-midnight bound keeps
+        // all of today's events plus the next 60 days.
+        const now = new Date();
+        const start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T00:00:00`;
+        const end = new Date(Date.now() + 60 * 24 * 3600 * 1000).toISOString();
+        const r = await fetch('/api/calendar/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end));
+        if (!r.ok) throw new Error('calendar fetch failed');
+        const data = await r.json();
+        const events = (data.events || [])
+          .filter(e => e && e.start_time)
+          .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+        renderAlarmCalendar(events);
+      } catch (e) { console.error('refreshAlarmCalendar', e); }
+    }
+
+    function fmtEvWhen(iso, allDay) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return String(iso);
+      const now = new Date();
+      const time = allDay ? 'all day' : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      if (d.toDateString() === now.toDateString()) return 'Today ' + time;
+      const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+      if (d.toDateString() === tomorrow.toDateString()) return 'Tomorrow ' + time;
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
+    }
+
+    function renderAlarmCalendar(events) {
+      const el = document.getElementById('alarm-calendar-list');
+      if (!el) return;
+      if (!events.length) { el.innerHTML = '<p class="alarm-cal-empty">Nothing upcoming on the calendar.</p>'; return; }
+      el.innerHTML = events.map(ev => {
+        const when = fmtEvWhen(ev.start_time, ev.all_day);
+        const loc = ev.location ? '<span class="alarm-cal-loc"> &middot; ' + esc(ev.location) + '</span>' : '';
+        return '<div class="alarm-cal-item">' +
+          '<div class="alarm-cal-when">' + esc(when) + '</div>' +
+          '<div class="alarm-cal-text">' +
+            '<div class="alarm-cal-title-row">' + esc(ev.title || '(untitled)') + '</div>' +
+            '<div class="alarm-cal-sub">' + loc + '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
     }
 
     function renderAlarms(alarms) {

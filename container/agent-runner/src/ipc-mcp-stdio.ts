@@ -1284,25 +1284,6 @@ For images, use type "image" and they'll be displayed inline. For other files, u
   },
 );
 
-server.tool(
-  'ping_user',
-  'Send a notification ping to a user. The user will see a browser notification with your message. Check available_users.json for user IDs.',
-  {
-    user_id: z.string().describe('User ID to ping'),
-    message: z.string().describe('Notification message'),
-  },
-  async (args) => {
-    writeCallback('ipc', {
-      type: 'ping_user',
-      userId: args.user_id,
-      message: args.message,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    });
-    return { content: [{ type: 'text' as const, text: `Ping sent to ${args.user_id}.` }] };
-  },
-);
-
 // --- Time Tracking ---
 
 server.tool(

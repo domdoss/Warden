@@ -20,6 +20,19 @@ registry.register({
         if (/\brm\b.*-[a-zA-Z]*[rf].*(\s+\*|\s+\.\/\*|\s+\/\s*$)/.test(cmd)) {
             return 'Error: Cannot rm -rf the entire filesystem root. Delete specific files by name.';
         }
+        // Ban multi-line shell input: this covers heredocs (cat <<EOF ... EOF),
+        // multi-line inline scripts (python3 -c "import re\n..."), and
+        // multi-line pipe chains. Those bypass the Write/Edit tools, so the file
+        // change never appears in modifiedFiles / the activity log / the audit
+        // trail — observed 2026-08-24: an audit job edited week2.html in place
+        // with a python re.sub inline script, untracked. Single-line commands
+        // (incl. `python3 -c "import x; do()"` and `echo 'a\nb' > f`) stay valid;
+        // the newline test keys on a literal newline in the command string.
+        // Bonus: it also protects the tmux send-keys path below, where an
+        // embedded newline would act as Enter and execute a partial command.
+        if (cmd.includes('\n') || cmd.includes('\r')) {
+            return 'Error: Multi-line commands and heredocs are not allowed. To change file contents, use the Write or Edit tool instead so the change is tracked. To run a longer operation, split it into separate single-line commands.';
+        }
 
         const { execSync, spawnSync } = await import('child_process');
         const label = `Running: ${cmd.slice(0, 80)}`;

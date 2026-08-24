@@ -13,7 +13,7 @@ let lastNavAt = 0;
 
 registry.register({
     name: 'browser_navigate',
-    description: 'Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type.',
+    description: 'Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type. Only http(s) URLs are accepted; to show the user a local file (HTML, PDF, image), use open_app with xdg-open and the absolute path instead.',
     schema: {
         type: 'object',
         properties: {

@@ -83,7 +83,7 @@ body.dark {
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+html, body { height: 100%; overflow: hidden; }
 body {
   margin: 0;
   background: var(--bg);
@@ -110,7 +110,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
   display: grid;
   grid-template-columns: var(--rail-w) 1fr;
   height: 100vh;
-  width: 100vw;
+  width: 100%;
 }
 
 .rail {
@@ -246,7 +246,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
 
 /* ============================================================= Content */
 .content { position: relative; min-height: 0; min-width: 0; overflow: hidden; }
-.view { display: none; height: 100%; min-height: 0; flex-direction: column; }
+.view { display: none; height: 100%; min-height: 0; min-width: 0; flex-direction: column; }
 .view.active { display: flex; }
 
 /* ---------- Chat view ---------- */
@@ -255,6 +255,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
   grid-template-rows: auto 1fr auto;
   height: 100%;
   min-height: 0;
+  min-width: 0;
 }
 .chat-meta-row {
   display: flex; align-items: center; gap: 8px;
@@ -409,6 +410,8 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
+  min-width: 0;
+  overflow-x: hidden;
 }
 .oversight-head {
   display: flex; align-items: center; gap: 8px;
@@ -421,19 +424,20 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
 .oversight.busy .live-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .oversight-title { font-weight: 600; color: var(--text-dim); letter-spacing: .04em; text-transform: uppercase; font-size: 10px; }
 .oversight-count { color: var(--text-faint); margin-left: auto; }
-.oversight-rows { padding: 2px 14px 7px; display: flex; flex-direction: column; gap: 3px; }
+.oversight-rows { padding: 2px 14px 7px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ov-row {
   display: flex; align-items: baseline; gap: 8px;
-  line-height: 1.5; min-width: 0;
+  line-height: 1.5; min-width: 0; max-width: 100%;
 }
 .ov-row .ov-name {
   flex-shrink: 0; font-weight: 700; font-size: 10px;
   padding: 1px 6px; border-radius: 4px;
   background: rgba(127,127,127,0.12);
 }
-.ov-row .ov-task { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ov-row .ov-action { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ov-row .ov-meta { flex-shrink: 0; color: var(--text-faint); margin-left: auto; }
+.ov-row .ov-task { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ov-row .ov-action { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ov-row .ov-meta { flex: 0 1 auto; min-width: 0; color: var(--text-faint); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+.ov-row .ov-meta.stalled { color: var(--danger); }
 .ov-row.sup .ov-action { color: #d9a44e; white-space: normal; }
 .ov-row.quiet .ov-action { color: var(--text-faint); font-style: italic; }
 /* Per-agent chip colors */
@@ -1570,3 +1574,23 @@ body.help-page {
 /* Notes layout fix (so .notes-layout fills the view column) */
 #view-notes.active { display:flex; flex-direction:column; height:100%; }
 #view-notes .view-header { flex:0 0 auto; }
+
+/* ===== Calendar-derived reminders (Alarms / reminders view) =====
+ * The "Upcoming from your calendar" list polls /api/calendar/events and
+ * renders upcoming events nearest-first. Kept narrow so a long title wraps
+ * instead of pushing the row off-screen. */
+.alarm-cal-section { margin-bottom: 6px; }
+.alarm-cal-heading { font-size: 11px; font-weight: 700; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; }
+.alarm-cal-list { display: flex; flex-direction: column; gap: 6px; }
+.alarm-cal-item { display: flex; gap: 12px; align-items: flex-start;
+  padding: 10px 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; min-width: 0; }
+.alarm-cal-when { flex-shrink: 0; font-family: var(--font-mono); font-size: 11px;
+  color: var(--accent); white-space: nowrap; }
+.alarm-cal-text { min-width: 0; flex: 1; }
+.alarm-cal-title-row { font-size: 13px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alarm-cal-sub { font-size: 11px; color: var(--text-faint); }
+.alarm-cal-loc { color: var(--text-faint); }
+.alarm-cal-empty { color: var(--text-secondary); padding: 6px 0; font-size: 12px; }

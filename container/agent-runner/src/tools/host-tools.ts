@@ -8,7 +8,7 @@ function writeCallback(tool: string, args: unknown): void {
 
 registry.register({
     name: 'open_app',
-    description: 'Launch a desktop application on the host machine display. Use for GUI apps that need a real graphical environment. The app launches detached and immediately returns.',
+    description: 'Launch a desktop application on the host machine display. Use for GUI apps that need a real graphical environment. The app launches detached and immediately returns. For example, to show the user a local file use app \'xdg-open\' with the absolute path — it opens in their default browser/viewer on the host display.',
     schema: {
         type: 'object',
         properties: {

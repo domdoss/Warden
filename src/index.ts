@@ -2031,6 +2031,7 @@ async function processOwnerMessages(): Promise<void> {
   // Agent-runner emits JSON: {"status":"success","result":"..."} — extract the text.
   // If result is null/empty/non-string, the agent produced no user-facing reply — drop it
   // rather than forwarding the raw envelope (e.g. '{"status":"success","result":null}') to the chat.
+  let spontaneousDigest = false;
   try {
     const parsed = JSON.parse(rawText);
     if (parsed && typeof parsed === 'object') {
@@ -2039,9 +2040,18 @@ async function processOwnerMessages(): Promise<void> {
       } else {
         rawText = '';
       }
+      // Digest turns (inbox draining — no user message prompted them) deliver
+      // through the runner's send_message path. If a user message arrived
+      // concurrently and left a resolve pending, this OUTPUT would ALSO be
+      // delivered below — the double report observed 2026-08-24. Suppress here.
+      if (parsed.spontaneous === true) spontaneousDigest = true;
     }
   } catch { /* not JSON, use as-is */ }
   const text = rawText;
+  if (spontaneousDigest) {
+    logger.info('spontaneous (digest) OUTPUT suppressed — send_message path owns digest delivery');
+    return;
+  }
   if (!text) {
     if (output.error) {
       logger.warn(

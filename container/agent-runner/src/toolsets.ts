@@ -7,7 +7,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
                                              'browser_press_key', 'browser_select_option', 'browser_hover',
                                              'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
                                              'browser_tabs', 'browser_back', 'browser_current_url'], tier: 'public' },
-    terminal:  { name: 'terminal',  tools: ['Bash', 'desktop_click', 'desktop_type'], tier: 'public' },
+    terminal:  { name: 'terminal',  tools: ['Bash', 'open_app', 'desktop_click', 'desktop_type'], tier: 'public' },
     // Desktop vision — desktop_screenshot is the one capture sub-agents need, so
     // they can SEE the screen while driving native apps with desktop_click/type.
     // runSubAgent drains _pendingImages into the next iteration (mirroring the
@@ -31,7 +31,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
                                              'update_calendar_event','delete_calendar_event'], tier: 'private' },
     alarms:    { name: 'alarms',    tools: ['create_alarm','list_alarms','update_alarm','delete_alarm'], tier: 'private' },
     sms:       { name: 'sms',       tools: ['send_sms','read_sms'], tier: 'private' },
-    chat:      { name: 'chat',      tools: ['get_chat_history','ping_user','attach_file','set_user_email','tell_oculus'], tier: 'both' },
+    chat:      { name: 'chat',      tools: ['get_chat_history','attach_file','set_user_email','tell_oculus'], tier: 'both' },
     // admin tools must be listed explicitly — resolveToolset() only walks the
     // `tools` array + `includes`, NOT the `toolset` property tools are
     // registered with. post_summary was registered with toolset:'admin' but
@@ -62,22 +62,27 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // Byte — work management. `email` is included so Byte can read the inbox
     // and turn actionable messages into real projects/work tasks when the
     // user asks in chat.
-    'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin','email'] },
+    'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','email'] },
     'dexter-core':   { name: 'dexter-core',   includes: ['tasks','calendar'] },
-    // Media (speaker/mic volume + playback) — atlas/vulkan drive the hardware.
+    // Media (speaker/mic volume + playback) — atlas drives the hardware.
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin','desktop-vision','media'] },
-    // Vulkan — the coding specialist. Like atlas-core but adds `file`
-    // (Read/Write/Edit/Glob/Grep) so it can edit source, plus browser +
-    // desktop-vision for webapp/UI testing. Both Atlas and Vulkan merge
-    // active skill tools at spawn, so the data/skills/ library is inherited.
-    'vulkan-core': { name: 'vulkan-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','desktop-vision','media'] },
+    // Vulkan — the coding specialist, coding-only. Read/Write/Edit/Glob/Grep
+    // to edit source, Bash to run builds/tests/git. NO browser, NO desktop,
+    // NO screenshot, NO open_app — vulkan edits code and reports done; seeing
+    // the result (opening a page, launching an app, showing a file) is atlas's
+    // job, routed by the orchestrator. Giving vulkan browser/desktop tools let
+    // it "verify" its own subjective edits by screenshot-looping, hitting the
+    // file://-open wall and spinning on http.server workarounds. With those
+    // tools absent the spiral is physically impossible. Both Atlas and Vulkan
+    // merge active skill tools at spawn, so the data/skills/ library is inherited.
+    'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris (digest compiler) — email (IMAP read_emails, works) + admin
     // (post_summary, list_api_keys, api_request). Contacts/todos toolsets were
     // removed entirely (no DB backend, were Radicale-only). Calendar + tasks
     // come from buildDigestContext (DB) in INPUT (above), not from tools.
-    'iris-core':     { name: 'iris-core',     includes: ['email','admin','calendar'] },
+    'iris-core':     { name: 'iris-core',     includes: ['email','admin'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };
 
