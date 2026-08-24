@@ -363,12 +363,12 @@
   // a user turn runs, and the supervisor's latest note. Nothing spews raw
   // "iteration N — thinking" events; when nothing runs it's a single quiet
   // line. Poll-driven (pollStatus every 5s).
-  function ovRow(agent, main, action, meta, kind, taskTitle) {
+  function ovRow(agent, main, action, meta, kind, taskTitle, metaClass) {
     return `<div class="ov-row ${kind || ''}" data-agent="${esc(agent)}"${taskTitle ? ` title="${esc(taskTitle)}"` : ''}>` +
       `<span class="ov-name">${esc(agent)}</span>` +
       (main ? `<span class="ov-task">${esc(main)}</span>` : '') +
       `<span class="ov-action">${esc(action)}</span>` +
-      (meta ? `<span class="ov-meta">${esc(meta)}</span>` : '') +
+      (meta ? `<span class="ov-meta ${metaClass || ''}">${esc(meta)}</span>` : '') +
       `</div>`;
   }
   function ovDur(s) {
@@ -388,10 +388,16 @@
       const label = (fg.liveLabel || fg.livePhase || 'working on your message').replace(/^Warden is (generating|thinking)[.…]*$/i, 'composing a reply…');
       rows.push(ovRow('warden', '', label, '', 'fg'));
     }
-    // One row per running background job — structured, no label parsing.
+    // One row per running background job — factual reporting only. The only
+    // reliable signals are calls, elapsed time, and seconds since the last tool
+    // call. Avoid invented categories like "stalled" or "waiting on model"; just
+    // state the idle duration and let the user interpret it.
     for (const j of d.jobs || []) {
-      const meta = [j.calls + ' call' + (j.calls === 1 ? '' : 's'), ovDur(j.elapsed), j.idle > 30 ? 'stalled ' + ovDur(j.idle) : ''].filter(Boolean).join(' · ');
-      rows.push(ovRow(j.agent, j.task, j.lastAction || 'starting…', meta, 'job', j.task));
+      const idle = Number(j.idle) || 0;
+      const elapsed = Number(j.elapsed) || 0;
+      const calls = Number(j.calls) || 0;
+      const meta = [calls + ' call' + (calls === 1 ? '' : 's'), ovDur(elapsed), idle > 0 ? 'idle ' + ovDur(idle) : ''].filter(Boolean).join(' · ');
+      rows.push(ovRow(j.agent, j.task, j.lastAction || 'starting…', meta, 'job', j.task, idle > 300 ? 'stalled' : ''));
     }
     // Supervisor's latest monitor-tick note (prose, routed here instead of chat).
     const sups = (d.progress || []).filter(e => e.kind === 'supervisor' && e.label);

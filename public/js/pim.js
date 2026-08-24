@@ -50,9 +50,16 @@
   let calSelected = null; // yyyy-mm-dd
   let calEditing = null;
 
+  function toLocalIso(d) {
+    // Return a local datetime string (yyyy-mm-ddTHH:mm:ss) for the given Date.
+    // The DB stores start_time in local time, so bounds must be in the same
+    // timezone to avoid UTC offset mismatches when filtering.
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  }
+
   async function refreshCalendar() {
-    const start = new Date(calYear, calMonth, 1).toISOString();
-    const end = new Date(calYear, calMonth + 1, 0, 23, 59, 59).toISOString();
+    const start = toLocalIso(new Date(calYear, calMonth, 1, 0, 0, 0));
+    const end = toLocalIso(new Date(calYear, calMonth + 1, 0, 23, 59, 59));
     const r = await api('/api/calendar/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end));
     calEvents = (r.data && r.data.events) || [];
     renderCalendar();

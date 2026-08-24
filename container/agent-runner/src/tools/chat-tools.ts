@@ -35,25 +35,6 @@ registry.register({
 });
 
 registry.register({
-    name: 'ping_user',
-    description: 'Send a notification ping to a user.',
-    schema: {
-        type: 'object',
-        properties: {
-            user_id: { type: 'string' },
-            message: { type: 'string' },
-        },
-        required: ['user_id', 'message'],
-    },
-    handler: async (args, _context) => {
-        writeIpcFile(TASKS_DIR, { type: 'ping_user', userId: args.user_id, message: args.message, timestamp: new Date().toISOString() });
-        return `Ping sent to ${args.user_id}.`;
-    },
-    toolset: 'chat',
-    tier: 'both',
-});
-
-registry.register({
     name: 'attach_file',
     description: 'Send a file to the chat as a downloadable attachment.',
     schema: {
