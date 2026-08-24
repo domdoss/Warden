@@ -1267,9 +1267,24 @@ function currentJobsList() {
         idle: Math.round((now - j.lastActionAt) / 1000),
     }));
 }
+// The dashboard's Oversight window replaces its job list ONLY when a status
+// entry carries `jobsList`. If the last job finishes without anyone emitting a
+// zero-count entry, the finished job's row (and the "N job(s)" counter) stays
+// on the dashboard forever — false "still running" reporting. Track the last
+// emitted running-count so the transition to zero emits exactly one clearing
+// update here, instead of relying on every completion path to remember (the
+// artemis path forgot once; a stale `artemis-…` row sat on the dashboard).
+let lastEmittedRunningJobs = 0;
 function emitJobsStatus() {
     const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
-    if (running.length === 0) return;
+    if (running.length === 0) {
+        if (lastEmittedRunningJobs > 0) {
+            lastEmittedRunningJobs = 0;
+            writeStatus({ phase: 'idle', label: 'all background jobs complete', jobs: 0, jobsList: [], ts: Date.now() });
+        }
+        return;
+    }
+    lastEmittedRunningJobs = running.length;
     const head = running[0];
     const elapsed = Math.round((Date.now() - head.startedAt) / 1000);
     const sinceLast = Math.round((Date.now() - head.lastActionAt) / 1000);
@@ -1594,11 +1609,9 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         .finally(() => {
             if (jobRecord.status === 'running') jobRecord.status = 'done';
             // Refresh the jobs indicator: shows remaining running jobs, or
-            // emits a 0-count status so the dashboard clears when the last job
-            // finishes (emitJobsStatus no-ops when nothing is running, so
-            // emit an explicit zero here).
-            const remaining = [...backgroundJobs.values()].filter(j => j.status === 'running').length;
-            writeStatus({ phase: remaining > 0 ? delegate : 'idle', label: remaining > 0 ? `${remaining} job(s) still running` : `${def.label} ${jobShortId} complete`, jobs: remaining, jobsList: currentJobsList(), ts: Date.now() });
+            // emits the zero-count clearing line when this was the last job
+            // (emitJobsStatus handles the transition-to-zero itself).
+            emitJobsStatus();
             setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
         });
     jobRecord.promise = job;
@@ -4551,6 +4564,11 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             })
             .finally(() => {
                 if (jobRecord.status === 'running') jobRecord.status = 'done';
+                // Clear the finished job off the dashboard's Oversight window —
+                // emitJobsStatus emits the zero-count clearing line on the
+                // transition to no running jobs. Without this the completed
+                // artemis row (and the "N job(s)" counter) stayed up forever.
+                emitJobsStatus();
                 setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
             });
         jobRecord.promise = job;
