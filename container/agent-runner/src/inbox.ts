@@ -24,6 +24,13 @@ export interface InboxItem {
     // in index.ts). Absent when the verdict call was skipped or errored.
     verdict?: 'confirmed' | 'failed' | 'unverifiable';
     verdictReason?: string;
+    // Discriminates the item's purpose. 'result' (default) = a finished
+    // background job's output the orchestrator must confirm. 'supervisor_flag'
+    // = the watchdog is flagging a STILL-RUNNING job for the orchestrator to
+    // judge: steer it (nudge_agent), kill it (stop_agent), or let it run. The
+    // flag's prepared message is carried in fullResult; the drain/urgent
+    // formatters branch on this so a flag never reads as a completed result.
+    kind?: 'result' | 'supervisor_flag';
 }
 
 const items = new Map<string, InboxItem>();

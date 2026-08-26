@@ -26,6 +26,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "basic-ftp": "^5.2.0",
     "better-sqlite3": "^12.11.1",
+    "claude": "^0.1.1",
     "cron-parser": "^5.5.0",
     "glob": "^10.5.0",
     "grammy": "^1.39.3",

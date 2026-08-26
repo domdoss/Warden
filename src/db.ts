@@ -298,6 +298,11 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_cal_start ON calendar_events(start_time);
     CREATE INDEX IF NOT EXISTS idx_cal_user ON calendar_events(assigned_to);
 
+    CREATE TABLE IF NOT EXISTS calendar_reminders (
+      event_id TEXT PRIMARY KEY,
+      fired_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS user_alarms (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -2314,6 +2319,29 @@ export function listCalendarEvents(filter?: {
 
   const where = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
   return db.prepare(`SELECT * FROM calendar_events${where} ORDER BY start_time ASC`).all(...values) as CalendarEvent[];
+}
+
+// --- Calendar Reminders (local at-event-time firing) ---
+// Idempotent dedup: one row per event that has already been reminded, so the
+// reminder loop fires exactly once per event and survives restarts. start_time
+// is stored naive-local for locally-created events and may be UTC for pulled
+// Google events — the loop parses with `new Date()` (local for naive, UTC for
+// Z-suffixed) so both compare correctly against wall-clock now.
+
+export function getFiredCalendarReminderIds(): Set<string> {
+  const rows = db.prepare('SELECT event_id FROM calendar_reminders').all() as { event_id: string }[];
+  return new Set(rows.map((r) => r.event_id));
+}
+
+export function markCalendarReminderFired(eventId: string): void {
+  db.prepare('INSERT OR IGNORE INTO calendar_reminders (event_id, fired_at) VALUES (?, ?)').run(
+    eventId,
+    new Date().toISOString(),
+  );
+}
+
+export function clearCalendarReminder(eventId: string): void {
+  db.prepare('DELETE FROM calendar_reminders WHERE event_id = ?').run(eventId);
 }
 
 export function createCalendarEvent(event: {

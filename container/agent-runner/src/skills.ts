@@ -140,6 +140,22 @@ export function buildAlwaysOnTools(): Tool[] {
     {
       type: 'function',
       function: {
+        name: 'nudge_agent',
+        description:
+          'Steer a running background job without killing it: inject a short instruction into its next turn naming what it should commit to, based on what it is actually doing wrong. Use this when the supervisor flags a job as off-track (grinding, off-task, or repeating failing calls) and redirecting it is better than stopping it. For a job that should be killed, use stop_agent instead. The job keeps running and sees your message on its next iteration.',
+        parameters: {
+          type: 'object',
+          properties: {
+            job_id: { type: 'string', description: 'The atlas-XXXX / vulkan-XXXX job id to steer (from list_running_agents or a supervisor flag).' },
+            message: { type: 'string', description: 'A short, specific instruction naming what the job should commit to on its next turn, based on what it is doing wrong and what the task actually needs.' },
+          },
+          required: ['job_id', 'message'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'agent_logs',
         description:
           "Read a background agent's step-by-step activity log — every tool call it made, with a preview of each call's result. Works on a running job (live progress) or a finished one (what it actually did, in order). Use this when you need to know what an agent actually did — whether it succeeded, what it changed, where it looked — instead of asking it to re-run or re-check. Pass the job id (e.g. atlas-abcd); omit it to get a one-line list of recent jobs.",

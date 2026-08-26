@@ -69,6 +69,8 @@ import {
   getCalendarEvent,
   getCalendarEventByIcalUid,
   listCalendarEvents,
+  getFiredCalendarReminderIds,
+  markCalendarReminderFired,
   getTaskById,
   getSatelliteIp,
 } from './db.js';
@@ -345,6 +347,47 @@ async function deliverReply(text: string): Promise<void> {
       ),
     ),
   );
+}
+
+/**
+ * Local calendar reminder loop. Fires one automated chat message per event at
+ * (or just after) its start_time, regardless of Google sync. Idempotent via the
+ * calendar_reminders table — survives restarts, fires exactly once per event.
+ */
+function startCalendarReminderLoop(): void {
+  const TICK_MS = 30_000;
+  // Look back 2h on each tick so a restart (or a service down period) doesn't
+  // silently swallow a reminder whose start_time already passed.
+  const LOOKBACK_MS = 2 * 60 * 60 * 1000;
+
+  const tick = () => {
+    try {
+      const fired = getFiredCalendarReminderIds();
+      const now = Date.now();
+      const events = listCalendarEvents();
+      for (const e of events) {
+        if (fired.has(e.id) || !e.start_time) continue;
+        const startMs = new Date(e.start_time).getTime();
+        if (Number.isNaN(startMs)) continue;
+        if (startMs <= now && startMs >= now - LOOKBACK_MS) {
+          const loc = e.location ? ` @ ${e.location}` : '';
+          const desc = e.description ? `\n${e.description}` : '';
+          const text = `⏰ Calendar: "${e.title}" starts now (${e.start_time})${loc}${desc}`;
+          deliverReply(text).catch((err) =>
+            logger.warn({ err, eventId: e.id }, 'calendar reminder delivery failed'),
+          );
+          markCalendarReminderFired(e.id);
+          logger.info({ eventId: e.id, title: e.title, start_time: e.start_time }, 'calendar reminder fired');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'calendar reminder tick failed');
+    }
+    setTimeout(tick, TICK_MS);
+  };
+
+  tick();
+  logger.info('calendar reminder loop started');
 }
 
 /**
@@ -3172,6 +3215,7 @@ async function main(): Promise<void> {
   seedPersonalProject(OWNER_JID);
 
   startCalendarSyncPoller();
+  startCalendarReminderLoop();
 
   // Cap warden.log at ~5 MB in-process (trim the head, keep the tail) so the
   // log file can't fill the disk — or, on a ramdisk, eat RAM. See log-rotator.
