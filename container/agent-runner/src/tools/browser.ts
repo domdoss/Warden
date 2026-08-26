@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import { pathToFileURL } from 'url';
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
 import { getPage, listPages, setActivePage, snapshot, refLocator } from '../browser.js';
@@ -13,19 +15,30 @@ let lastNavAt = 0;
 
 registry.register({
     name: 'browser_navigate',
-    description: 'Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type. Only http(s) URLs are accepted; to show the user a local file (HTML, PDF, image), use open_app with xdg-open and the absolute path instead.',
+    description: 'Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type. Accepts http(s):// URLs, file:// URLs, or a bare local path (e.g. /home/dominic/Warden/baben-sushi.html, ~/site/index.html, ./page.html) — a bare path is resolved to a file:// URL and opened IN the Warden Chrome itself (its persistent profile, no fresh "Welcome to Chrome" session), and the page is snapshotted so you can verify it. This is the right way to show the user a local HTML/PDF/image. Do NOT spawn a separate chrome/google-chrome-stable via Bash to open a local file — that creates a throwaway profile and a "sign in / welcome" screen. Only use open_app (xdg-open) for a local file you specifically want in its OS-default app rather than the browser.',
     schema: {
         type: 'object',
         properties: {
-            url: { type: 'string', description: 'Full URL to open (e.g. https://youtube.com).' },
+            url: { type: 'string', description: 'Full URL (https://youtube.com) or a local path (/abs/file.html, ~/rel.html, ./rel.html) — local paths open as file:// in the Warden Chrome.' },
         },
         required: ['url'],
     },
     handler: async (args) => {
         try {
-            const url = String(args.url || '').trim();
+            let url = String(args.url || '').trim();
             if (!url) return 'Error: url is required.';
-            if (!/^https?:\/\//i.test(url)) return 'Error: url must start with http:// or https://';
+            // Resolve a bare local path → file:// URL so local files open in the
+            // Warden Chrome (persistent profile) instead of a fresh chrome
+            // session launched via Bash/google-chrome-stable.
+            if (/^https?:\/\//i.test(url) || /^file:\/\//i.test(url)) {
+                // already a URL — use as-is
+            } else {
+                let p = url;
+                if (p === '~') p = process.env.HOME || '~';
+                else if (p.startsWith('~/')) p = (process.env.HOME || '') + p.slice(1);
+                const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+                url = pathToFileURL(abs).href;
+            }
             const page = await getPage();
             if (url === lastNavUrl && Date.now() - lastNavAt < 15_000 && page.url() === url) {
                 return await snapshot(page); // already there — don't reload/window again
