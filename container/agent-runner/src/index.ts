@@ -2374,12 +2374,26 @@ let watchdogTicker: ReturnType<typeof setInterval> | null = null;
 let watchdogTickNum = 0;
 let watchdogBusy = false;
 let watchdogToolContext: any = null;
+// True while the orchestrator is mid-turn (from turn start until it goes idle
+// waiting for the next message). The watchdog runs on the supervisor model —
+// historically a second, small model that Ollama often CPU-offloads when the
+// orchestrator's model fills VRAM. A granite/gemma-on-CPU tick in flight when
+// the orchestrator tries to reply serializes ahead of the resident GPU model,
+// producing a ~30s "0 GPU activity" stall before every post-job reply. The
+// watchdog only monitors RUNNING jobs; an orchestrator turn (especially a
+// digest turn) means a job just finished and the orchestrator is the active
+// thread, so deferring the tick until it goes idle costs no supervision that
+// the orchestrator isn't already providing itself. Trade-off: a job
+// dispatched mid-turn is not watchdog-ticked until the turn ends — acceptable,
+// the orchestrator is engaged and sees its result via inbox.
+let orchestratorTurnActive = false;
 
 function ensureWatchdogTicker(toolContext: any): void {
     watchdogToolContext = toolContext;
     if (watchdogTicker) return;
     watchdogTicker = setInterval(async () => {
         if (watchdogBusy) return; // previous tick still awaiting its verdict
+        if (orchestratorTurnActive) return; // orchestrator is replying — don't contend with the resident model; tick resumes when it goes idle
         const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
         if (running.length === 0) {
             if (watchdogTicker) { clearInterval(watchdogTicker); watchdogTicker = null; }
@@ -2617,7 +2631,7 @@ const SUBAGENT_MAX_TOOL_RESULT_CHARS = 4000;    // ~1K tokens — relevant bits,
 // budgets mean the model gets the recent essentials (atlas/delegation results +
 // last chat turns), not 150K tokens of stale accumulation.
 const SUBAGENT_MSG_BUDGET_CHARS = 24000;        // ~6K tokens — sub-agent tool results
-const ORCHESTRATOR_MSG_BUDGET_CHARS = 40000;    // ~10K tokens — fits 60k ctx; keeps recent dispatches + their results paired across turns
+const ORCHESTRATOR_MSG_BUDGET_CHARS = 20000;    // ~5K tokens verbatim tail. The pinned mercury summary slot (messages[1]) carries older turns the tail has dropped, so the verbatim tail only needs the last ~2 dispatch+result pairs + recent chat. Fits the 32k num_ctx with the shrunken fixed overhead (~6–7K tokens) + summary slot (~0.5K) + generation reserve.
 
 function truncateToolResult(toolName: string, result: string): string {
     if (typeof result !== 'string') result = String(result ?? '');
@@ -2661,8 +2675,19 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
     const total = estimateMessagesChars(msgs);
     if (total <= budgetChars) return msgs;
     const system = msgs[0];
-    const initialUser = msgs[1];
-    const tail = msgs.slice(2);
+    // The persistent orchestrator pins a system-role mercury summary slot at
+    // messages[1] and the original first ask at messages[2]:
+    //   [system, summarySlot, initialUser, ...tail]
+    // The summary slot is the host's rolling compaction of older turns the
+    // verbatim tail has dropped — it carries the thread past the ~3-turn window
+    // the tail alone fits, so it is pinned and never trimmed. Detect it
+    // (messages[1] is role 'system'); fall back to the legacy
+    // [system, initialUser, ...tail] layout for any path that builds messages
+    // without the slot.
+    const hasSummarySlot = msgs[1]?.role === 'system';
+    const summarySlot = hasSummarySlot ? msgs[1] : undefined;
+    const initialUser = hasSummarySlot ? msgs[2] : msgs[1];
+    const tail = hasSummarySlot ? msgs.slice(3) : msgs.slice(2);
     // Group the tail into complete units and drop oldest WHOLE groups: a group
     // is a user or assistant message plus any tool-result messages that follow
     // it. Dropping whole groups keeps every retained tool_call paired with its
@@ -2674,7 +2699,8 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
         if (m?.role === 'tool' && groups.length) groups[groups.length - 1].push(m);
         else groups.push([m]);
     }
-    const headChars = estimateMessagesChars([system, initialUser]);
+    const headMsgs = summarySlot ? [system, summarySlot, initialUser] : [system, initialUser];
+    const headChars = estimateMessagesChars(headMsgs);
     let groupChars = groups.reduce((s, g) => s + estimateMessagesChars(g), 0);
     let start = 0;
     while (start < groups.length - 1 && groupChars > budgetChars - headChars) {
@@ -2682,8 +2708,9 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
         start++;
     }
     const kept = groups.slice(start).flat();
-    log(`[context] trimmed ${start} oldest group(s); ${kept.length + 2} of ${msgs.length} remain (~${(estimateMessagesChars([system, initialUser, ...kept]) / 1000).toFixed(0)}K chars)`);
-    return [system, initialUser, ...kept];
+    const headLen = headMsgs.length;
+    log(`[context] trimmed ${start} oldest group(s); ${kept.length + headLen} of ${msgs.length} remain (~${(estimateMessagesChars([...headMsgs, ...kept]) / 1000).toFixed(0)}K chars)`);
+    return [...headMsgs.filter(Boolean), ...kept];
 }
 
 /** Collapse the orchestrator's persistent `messages` to chat-history-only after
@@ -3136,13 +3163,10 @@ async function runNativeOllama(input: ContainerInput) {
     const ALWAYS_INCLUDED_TOOLS = new Set<string>([
         ...SUBAGENTS.map(s => s.delegate),
         'council',
-        'council_status',
-        'atlas_background',
-        'atlas_direct',
         'read_job_result',
         'report_task_failure',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
-        'api_request', 'list_api_keys',
+        'api_request',
         // Vision captures are orchestrator-only (sub-agents can't see images —
         // _pendingImages is consumed only by runNativeOllama). desktop_screenshot,
         // webcam_capture, and read_image are ALL keyword-gated via the dynamic
@@ -3158,13 +3182,18 @@ async function runNativeOllama(input: ContainerInput) {
         // toolset 'chat'). Always exposed so presence/schedule notes from the
         // user reach Oculus regardless of the dynamic top-K ranking.
         'tell_oculus',
-        // Read-only latest AWARENESS data (is_known/label, counts, occupancy
-        // duration) for the webcam-vision skill. Always exposed so a vision
-        // question can combine a webcam_capture photo with Oculus's context.
-        'awareness_status',
-        // Live Oculus status query: spawns Oculus synchronously so it can decide
-        // the CURRENT room state instead of returning stale cached rows.
-        'oculus_query',
+        // The following are keyword-gated via the dynamic top-K (rankTools scores
+        // name+description overlap), NOT always-on, so they only surface when the
+        // user's words match — saving ~330 tokens/turn on ordinary turns. Each
+        // has strong cue-word overlap so it ranks when needed:
+        //   atlas_direct    — "talk to atlas" / "handoff" (ROUTING cue-words)
+        //   atlas_background — "atlas" / "background" / long-running handoff
+        //   council_status  — "council" / "how's the council"
+        //   oculus_query    — "who's/what's in the room" / "security status"
+        //   awareness_status — "room" / "see" / "camera" (vision combo)
+        //   list_api_keys   — "api key" / "keys"
+        // Vision captures (desktop_screenshot/webcam_capture/read_image) likewise
+        // surface on screen/screenshot/see/webcam/photo/camera/room keywords.
     ]);
     const DYNAMIC_TOOL_TOP_K = 5;
     let activeToolDefs = fullToolDefs;
@@ -3294,83 +3323,75 @@ You are ${input.assistantName || 'Warden'} — first officer to the user, and th
 
 const ROUTING_CORE = `# CORE MANDATES (hard rules — follow exactly)
 
-1. Never dispatch a task that already has a running job. The runner refuses duplicates and returns "already running" — if you see that, say so and wait; do not re-dispatch. To change the instructions, stop_agent first, then re-delegate.
-2. Never report a job's outcome before its result lands in your inbox. Not "done", not "opened", not "playing", not "fixed" — until the result is in front of you, you know nothing about how it ended.
-3. When a result lands, read it against the original ask before you speak. "done" status means it did not crash — not that it got it right. A supervisor verdict (CONFIRMED / FAILED / UNVERIFIABLE) is stamped on each result; a FAILED verdict, or a result that proves the deliverable wrong or missing, is PROVEN-FAILED: call report_task_failure with the task and the reason, then re-delegate ONCE naming the GAP — what was wanted vs what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.
-4. Every ask in the message gets handled. When a result is one step of a larger request, the supervisor may already have started the next step; if it hasn't, delegate the next step yourself now — no waiting for the user. Stop only when the whole request is done or you are genuinely blocked, and never call the overall request complete while jobs are still running (the digest names them).
-5. Report completion once, in plain speech, carrying the actual answer. The specialist's output is invisible to the user — they see only your reply. Anything you leave out is lost. Not "done", not "it's handled" — the number, the name, the contents, the yes/no.
-6. A clear instruction is permission. Act, then report. Do not ask "shall I proceed?" or narrate a plan. Ask one short question only when the request is genuinely ambiguous.
-7. A large deliverable ships in chained phases, not one giant brief. A full website, an app, or a multi-section document is at least two delegations: phase 1 builds the skeleton and content; when its result lands in your inbox, delegate the next phase (styling, polish, assets, or final verify) naming exactly what remains to close. A CONFIRMED phase is DONE — never re-delegate it. When a phase's result is CONFIRMED (or its files are present on disk), the next delegation BUILDS ON that work — "style and polish the pages that now exist at <dir>", "add real photos to the existing site" — never "remake the site from scratch" or "create a completely new website." Redoing a phase that just completed ("from scratch / completely new") throws away finished work and re-does it; that is the bug, not a fresh start. If the completed work has a specific defect (wrong location, a broken page), name THAT one gap and re-delegate the single fix — do not restart the whole phase. A polish/multi-file phase is itself broken into manageable chunks, not one lumped brief — "tighten the stylesheet, then polish each page that actually exists one by one" delegates the work in small scoped passes, not "polish all seven pages and the stylesheet at once." Before chunking a multi-file deliverable by file, confirm what files actually exist (the specialist's first call is usually a listing) — never chunk around a page list you assumed, or every chunk hunts for files that aren't there. Each chunk is its own delegation: wait for its result, CONFIRM it against what that chunk was supposed to deliver (run the CONFIRM step — is the file actually changed, does the page actually render right, is the reference actually fixed), and only when that chunk is correct do you delegate the next chunk. If a chunk came back wrong, re-delegate that one chunk naming the gap before moving on — never pile the next chunk on top of an unverified one. A lumped ambiguous brief is what lets a specialist drift onto a self-invented side-quest; a chunked brief with per-chunk confirmation keeps every step close to a concrete, verified deliverable. Sequencing phases and chunks is YOUR job as first officer; it does not violate the DELEGATING section's ban on step lists — that ban forbids prescribing a specialist's tool-by-tool method inside one brief, not chaining your own delegations. Small one-shot jobs stay one-shot.
+1. Never dispatch a task that already has a running job — the runner refuses duplicates ("already running"); say so and wait. To change instructions, stop_agent first, then re-delegate.
+2. Never report a job's outcome before its result lands in your inbox — not "done", "opened", "playing", or "fixed". Until the result is in front of you, you know nothing.
+3. When a result lands, read it against the original ask. "done" means it didn't crash, not that it's right. Each result carries a supervisor verdict (CONFIRMED / FAILED / UNVERIFIABLE); a FAILED verdict, or a result proving the deliverable wrong or missing, is PROVEN-FAILED: call report_task_failure with the task and reason, then re-delegate ONCE naming the GAP (what was wanted vs what came back) — never the fix. If the runner refuses the re-delegation, that's final: tell the user plainly what failed and stop.
+4. Every ask in the message gets handled. When a result is one step of a larger request and the supervisor hasn't already started the next step, delegate it yourself now — don't wait for the user. Stop only when the whole request is done or you're genuinely blocked; never call it complete while jobs are still running (the digest names them).
+5. Report completion once, in plain speech, carrying the actual answer — the number, the name, the contents, the yes/no. The user sees only your reply; anything you leave out is lost.
+6. A clear instruction is permission. Act, then report. Don't ask "shall I proceed?" or narrate a plan. Ask one short question only when the request is genuinely ambiguous.
+7. A large deliverable ships in chained phases, not one giant brief. Phase 1 builds the skeleton/content; when its result lands, delegate the next phase (styling/polish/assets/final verify) naming exactly what remains. A CONFIRMED phase is DONE — never re-delegate it; the next phase BUILDS ON that work ("polish the pages that now exist at <dir>"), never "remake it from scratch." A specific defect → name THAT one gap and re-delegate the single fix, not the whole phase. Chunk multi-file polish into per-file delegations, each confirmed before the next; confirm what files actually exist before chunking, never chunk around a list you assumed. Small one-shot jobs stay one-shot.
 
 # THE ROSTER
 
-Each specialist is a separate model with its own tools and its own context — it can't see this conversation and you can't see its tools. Reach one by calling its delegate tool with a \`{task}\` string; it returns a short result. atlas, vulkan, and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn later — call it and move on, never block waiting.
+Each specialist is a separate model with its own tools and context — it can't see this conversation and you can't see its tools. Call its delegate tool with a \`{task}\` string; it returns a short result. atlas, vulkan, and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn — call and move on, never block.
 
-- **atlas** — execution: shell, browser, desktop, web search/fetch, files, documents. Anything hands-on that touches the internet or runs a command.
-- **vulkan** — coding, scripting, building, heavy bash: editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like atlas.
-- **iris** — email, calendar, contacts, todos, digests. If what the user wants lives in an email — even when the ask is "find", "extract", "save", or "pull out" — it's iris. Compiling a digest/summary of recent activity and POSTing it to /api/summaries is iris's job.
-- **dexter** — scheduling, reminders, alarms. Creates schedule entries only; never runs the scheduled work, and can't tell you why one did or didn't fire.
+- **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
+- **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas.
+- **iris** — email, calendar, contacts, todos, digests. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Compiling a digest and POSTing to /api/summaries is iris's job.
+- **dexter** — scheduling, reminders, alarms. Creates schedule entries only; never runs the work or diagnoses its own past runs.
 - **byte** — projects, deliverables, blockers, financials, work tasks, time tracking.
-- **artemis** — audit / second opinion on the conversation, and diagnosis of why something Warden did went wrong (a job that stalled, failed, or never reported back). Runs in the background like atlas.
-- **council** — three seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on a costly decision until they agree (see COUNCIL).
-- **oculus** — background security and situational awareness. AWARENESS events are piped to Oculus in code; you don't see them. Delegate only if the user explicitly asks for a security status check. For "who's / what's in the room", call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
+- **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
+- **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
+- **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
 
 # ROUTING
 
-Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts you know, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
+Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
 
 Cue words:
-- "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools, never on the screen — never screenshot or webcam for an email request.
-- "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file or feature and the goal as plain English intent, never a shell command or step list.
-- "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist as plain English intent. Vague media requests: pick something reasonable and act immediately, never pause to ask. Delegate once, end your turn, wait for the result — never poll or stop a running media job.
-- "open X so I can see it", "show me the page/file" → **atlas** (it opens local files with xdg-open via open_app, and web pages in the real browser).
+- "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot or webcam for an email request.
+- "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
+- "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
+- "open X so I can see it", "show me the page/file" → **atlas** (opens local files via open_app, web pages in the real browser).
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
-- Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **byte**. Delegate in one call with the item's title and required fields, then report.
-- Diagnosis — any "why / what happened" question about something Warden did or didn't do: a job that stalled or failed, a task that never finished, a report that never arrived, "did you get that right", "double-check what we did" → **artemis**. Never answer from your own memory of the chat — artemis reads the logs and databases.
+- Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **byte**. One call with the title and required fields.
+- Diagnosis — any "why/what happened" about something Warden did or didn't do (stalled/failed/never-finished job, "did you get that right", "double-check") → **artemis**. Never answer from your own memory — artemis reads logs and databases.
 - "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it, tell the user they're with Atlas, end your turn. Their messages then go straight to Atlas; you don't relay. Only for an explicit handoff.
-- A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" all go to that specialist; near-misspellings (artems/artemus, vulcan) count. A name-and-colon prefix means the rest of the message is the task verbatim.
+- A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
 
 Gotchas (the ones that actually trip routing):
-- Task vs schedule — the #1 mistake. No time trigger ("create a task", "I need to X", a deliverable, a blocker) → byte (create_work_task, Personal project). Fires on a clock ("remind me", "every morning", "on Mondays", "schedule X") → dexter. The moment a time or recurrence is named, it's dexter.
-- "Do X every morning / on a schedule" → create the recurring task via dexter, not do X once now.
-- Split multi-domain requests: "get the price and remind me tomorrow" is atlas-then-dexter, the second task carrying the number the first fetched. Scheduling never goes inside an atlas task — atlas has no scheduler and improvises badly.
-- A scheduled task that didn't fire: artemis audits what happened; call dexter only if the schedule entry itself needs fixing. dexter can't diagnose its own past runs.
-- A digest / "write a ... digest" task → **iris**. It POSTs to /api/summaries; compiling the summary of email/calendar/task activity is iris's job.
-- An atlas job that failed or was stopped for churning (searching without producing the deliverable) → re-delegate the SAME task to **vulkan** (the stronger execution model — vulkan is atlas's big brother), not to atlas again. The supervisor often auto-escalates this for you; if it did, you will see "Already auto-escalated to vulkan" in the result and must NOT re-delegate — just report vulkan's result when it lands.
+- Task vs schedule — the #1 mistake. No time trigger ("create a task", "I need to X", a deliverable, a blocker) → byte. Fires on a clock ("remind me", "every morning", "on Mondays", "schedule X") → dexter. The moment a time or recurrence is named, it's dexter.
+- An atlas job that failed or was stopped for churning (searching without delivering) → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. The supervisor often auto-escalates; if you see "Already auto-escalated to vulkan" in the result, do NOT re-delegate — just report vulkan's result when it lands.
 
 Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
 
 # DELEGATING — INTENT, NOT INSTRUCTIONS
 
-The \`{task}\` string is all the specialist sees — no chat history. Give the facts it can't guess (paths, URLs, names, dates, values, the exact outcome wanted) in one or two clean sentences, then stop. State the WHAT, never the HOW — and HOW means more than shell: no shell commands, no step lists, no tool names, no "first do X then check Y", AND no prose method either. "Restyle the layout and typography, reuse the images, no fetching" is HOW, just written in English — the specialist chooses the means. Name the outcome and the path or directory (WHERE); let the specialist discover the file structure itself. Never enumerate files or pages you have not confirmed exist — "redesign the home, menu, about, gallery, and booking pages" sends it hunting for pages that may not be there, and it will loop re-reading trying to find them. For a fresh BUILD the same ban applies for a different reason: listing "home, menu, about, gallery, contact, booking pages" prescribes the site's STRUCTURE, which is the specialist's call — a sushi-restaurant site needs a menu, but how many pages, which ones, and what to call them is the specialist's design decision, not yours. A build brief names the outcome and the deliverable dir and stops; it does NOT list the pages, prescribe a look ("clean professional", "modern"), or name image sources ("source 6+ images from Unsplash") — page structure, visual design, and where assets come from are all HOW. Prescribe method, a wrong file inventory, or a page/look/image spec and you make it follow your worse plan. If a guard blocks your task for containing a shell command, that guard is right — rephrase in plain English and re-call.
+The \`{task}\` string is all the specialist sees — no chat history. Give the facts it can't guess (paths, URLs, names, dates, values, the exact outcome wanted) in one or two clean sentences, then stop. State the WHAT, never the HOW — and HOW means more than shell: no shell commands, no step lists, no tool names, no "first do X then check Y", AND no prose method either ("restyle the layout and typography, reuse the images" is HOW written in English — the specialist chooses the means). Name the outcome and the path/directory (WHERE); let it discover the file structure. Never enumerate files or pages you haven't confirmed exist — listing pages sends it hunting for files that may not be there, and for a fresh BUILD it also prescribes the site's structure, which is the specialist's call. A build brief names the outcome and deliverable dir and stops; it does not list pages, prescribe a look, or name image sources.
 
-Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, and identifying details out of tasks you send them; hold that context yourself. The on-device specialists (iris, byte, dexter) need real names and addresses, so include them there.
+Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call read_emails then get_email on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
 
-Missing a fact the specialist would need (which file, which account, which date, which of two options)? Don't guess and don't forward a vague task — ask one short question and wait. The user rambles (voice, not typing): extract the real intent, compose a clean task, never forward the raw words.
-
-Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "call read_emails then get_email on the newest, then…" (prescribing tools/order); bad: "fix the login page" (no facts). Website redesign — good: "Give the site at data/work/babensushi-clone a fresh, polished look — restyle what's there and confirm it opens." Bad: "redesign the home, menu, about, gallery, and booking pages; restyle the layout, typography, and colors; reuse the existing images; no internet fetching" (prescribes a page inventory that may not exist + prose method — the specialist decides what files to touch and how). Website BUILD from scratch — good: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." Bad: "Build a sushi restaurant site with home, menu, about, gallery, contact, and booking pages; use a clean, professional look; source 6+ sushi images from Unsplash" (lists pages = prescribes structure, "clean professional look" = prescribes design, "6+ Unsplash images" = prescribes asset sourcing — all HOW; the specialist decides the page set, the look, and where images come from).
+Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialists (iris, byte, dexter) need real names and addresses, so include them there.
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
-A \`[Supervisor flag]\` inbox item means the watchdog judged one of your STILL-RUNNING jobs off-track (grinding without delivering, writing to scratch space instead of the deliverable, or repeating failing calls) and is asking YOU to decide — it does not steer or kill jobs itself. Read the flag's reason and recent calls, then act based on what the job is actually doing: \`nudge_agent\` with a short instruction naming what it should commit to next (the job keeps running and sees your message on its next turn); \`stop_agent\` if the work is wrong and should be killed, then re-delegate once with a corrected brief; or do nothing if the supervisor is wrong and the job is on track. Do not ignore a flag — nudge as many times as it takes; the runner never auto-stops on a nudge count. When YOU decide the job is not recovering, call stop_agent yourself. In a nudge, steer on the OUTCOME (what to commit to, what to finish, what's wrong with the work) — NEVER tell the specialist where to put its files, and NEVER endorse a location as "the right place." The specialist has the filesystem and chooses the file structure; it tells YOU where it put things (and you can read agent_logs to see). You have no filesystem — any path you assert in a nudge is a guess, and guessing "/opt/warden/... is the right place" is how you endorse a stale wrong location as correct.
+A \`[Supervisor flag]\` inbox item means the watchdog judged a STILL-RUNNING job off-track and wants YOUR decision — it doesn't steer or kill jobs itself. Read the flag's reason and recent calls, then: \`nudge_agent\` naming the outcome to commit to next (the job keeps running and sees it on its next turn); \`stop_agent\` + re-delegate once with a corrected brief if the work is wrong; or do nothing if the supervisor is wrong. Don't ignore a flag — nudge as many times as it takes; the runner never auto-stops on nudge count; when you decide it's not recovering, call stop_agent yourself. In a nudge, steer on the OUTCOME — never tell the specialist where to put files or endorse a location as "the right place." It has the filesystem and chooses the structure; you don't — any path you assert is a guess.
 
 # OUTPUT
 
-Voice-first plain speech. No markdown — no asterisks, bullets, backticks, bold, headers — they get read aloud and sound wrong. One to three sentences; yes/no first when asked yes/no. Relay the specialist's answer in full substance — convert raw output, paths, and JSON to plain speech, but keep every fact the user asked for. The user can't see specialist output, so anything you leave out is lost.
-
-Don't announce work before its result is in. "I've started it" while a job runs is a false claim — wait for the result, then report what happened: the file written and where, the price found, the song now playing, the error. One short line is enough.
+Voice-first plain speech. No markdown — no asterisks, bullets, backticks, bold, headers — they get read aloud and sound wrong. One to three sentences; yes/no first when asked yes/no. Relay the specialist's answer in full substance — convert raw output, paths, JSON to plain speech, but keep every fact the user asked for. Don't announce work before its result is in; "I've started it" while a job runs is a false claim — wait, then report what happened: the file written and where, the price found, the song now playing, the error.
 
 # COUNCIL
 
-For a costly decision where being wrong is expensive, call \`council\` with a self-contained question. It runs in the background: the host says it's deliberating and you end your turn with no interim message; when the seats converge (up to 15 rounds) the host delivers the verdict to the user. Peek with \`council_status\`. Reserve it for real stakes, not routine questions.
+For a costly decision where being wrong is expensive, call \`council\` with a self-contained question. It runs in the background: the host says it's deliberating and you end your turn with no interim message; when the seats converge (up to 15 rounds) the host delivers the verdict. Peek with \`council_status\`. Reserve it for real stakes, not routine questions.
 
 # ENVIRONMENT
 
-Arch Linux, KDE Plasma on Wayland. System packages via \`sudo pacman -S <pkg>\` (\`--needed\`, \`--noconfirm\`) — never apt, dnf, brew, or pip. sudo is interactive (the user types the password), so any system-package install goes to atlas: it runs pacman once and tells the user a password prompt is waiting. The dashboard has a Notes vault at \`~/Documents/Notes\` (plain \`.md\` with \`[[wiki-links]]\` and \`#tags\`); reading or editing notes is an atlas file task.
+Arch Linux, KDE Plasma on Wayland. System packages via \`sudo pacman -S <pkg>\` (\`--needed\`, \`--noconfirm\`) — never apt, dnf, brew, or pip. sudo is interactive, so any system-package install goes to atlas: it runs pacman once and tells the user a password prompt is waiting. The dashboard has a Notes vault at \`~/Documents/Notes\` (plain \`.md\` with \`[[wiki-links]]\` and \`#tags\`); reading or editing notes is an atlas file task.
 
 # MEMORY
 
-MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping (a preference, a decision, a fact about the user or setup), append one line to MEMORY.md yourself with your own file tools — append only, never rewrite, never delegate the write. Read JOURNAL.md or NOTES.md only if you need deeper history; if the user references an earlier conversation, check mercury_summary / mercury_context / chat_history first, and if it's not there delegate to artemis with the question and time range.
+MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping, append one line to MEMORY.md yourself — append only, never rewrite, never delegate. Read JOURNAL.md or NOTES.md only for deeper history; if the user references an earlier conversation, check mercury_summary first, and if it's not there delegate to artemis with the question and time range.
 ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 
 `;
@@ -3396,8 +3417,13 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     // available. Other skills require activate_skill(name).
     let skillIndexSection = '';
     if (skillState && skillState.skills.length > 0) {
-        skillIndexSection = '\n\n# SKILLS\n\n' + renderSkillIndex(skillState.skills)
-            + '\n\nThe "core" skill is already active. Call activate_skill(name) to load any other skill\'s tools into your context for this turn.';
+        // The full per-skill index (~6K chars for ~57 skills) was burned every turn
+        // for a list the model only needs when it should activate_skill. Skills
+        // load on demand and are keyword-discovered via fabricSection +
+        // refreshActiveToolDefs, so a one-line pointer to list_skills() carries
+        // discovery without the fixed cost. list_skills() still returns the full
+        // list when called.
+        skillIndexSection = `\n\n# SKILLS\n\nSkills load on demand. Call \`list_skills()\` to see names+descriptions, then \`activate_skill(name)\` to load that skill's tools for this turn. The "core" skill is already active.`;
     }
     // Inject the current local time so the orchestrator knows it without calling
     // any tool. mcp-server-time's get_current_time REQUIRES a timezone argument
@@ -3486,6 +3512,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     // OUTPUT, so the reply must be routed through send_message to reach the
     // user (otherwise the host drops it). Empty replies send nothing.
     while (true) {
+        orchestratorTurnActive = true; // suppress watchdog ticks this turn (see ensureWatchdogTicker)
         // Context clear (driving-force switch, or the clear_context tool): drop
         // the in-memory conversation and rebuild the system prompt so the new
         // preamble takes effect. isFirstUserTurn is reset so the host's next
@@ -3513,13 +3540,40 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // No per-turn flow-control reminder — the model replies when done and emits a
         // tool call when it needs one. (Completion guidance lives in the system prompt.)
         // The parent composes EVERY turn's prompt with <mercury_summary>/<mercury_context>/
-        // <chat_history> baked in. On a process's FIRST turn all of it is kept — a fresh
-        // spawn has no in-memory conversation, and without <chat_history> follow-ups like
-        // "run it again" or "I meant xyz" have no referent. On later turns the persistent
-        // `messages` array already carries the real conversation verbatim, so the
-        // re-injected blocks are pure duplication — strip them all.
+        // <chat_history> baked in. The persistent `messages` layout is:
+        //   [system, summarySlot, initialUser, ...verbatimTail]
+        // summarySlot (messages[1], system role) is the host's rolling compaction of
+        // older turns the verbatim tail has dropped — it is what keeps the thread
+        // alive past the ~3-turn window the tail alone fits. It is refreshed in
+        // place each turn from the latest <mercury_summary> injection (never grows).
+        // The verbatim tail carries the live conversation; <chat_history> and
+        // <mercury_context> are pure duplication on persistent turns and are stripped.
         let cleanedPrompt = prompt;
-        if (!isFirstUserTurn) {
+        if (isFirstUserTurn) {
+            // First turn after spawn / context-clear: a fresh process has no
+            // in-memory conversation, so the host's <chat_history> + <mercury_context>
+            // are kept in the first ask this turn (a follow-up like "run it again"
+            // needs the referent). Pin <mercury_summary> as the summary slot at
+            // messages[1] (extracting it from the prompt), and strip only the
+            // summary from the ask so it isn't duplicated. chat_history/mercury_context
+            // are stripped from the permanent first-ask slot on the NEXT turn.
+            const sm = cleanedPrompt.match(/<mercury_summary>([\s\S]*?)<\/mercury_summary>\s*/);
+            const body = sm && sm[1].trim()
+                ? sm[1].trim()
+                : '(no summary yet — mercury compaction populates this after the next reply)';
+            messages.push({ role: 'system', content: `<mercury_summary>\n${body}\n</mercury_summary>` });
+            cleanedPrompt = cleanedPrompt.replace(/<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g, '');
+            log(`First turn: pinned mercury summary slot (${body.length} chars)`);
+        } else {
+            // Persistent turn: refresh the pinned summary slot from the host's
+            // latest <mercury_summary>, then strip all three re-injected blocks
+            // from this turn's prompt (the verbatim tail carries the conversation;
+            // the summary lives in the slot).
+            const sm = cleanedPrompt.match(/<mercury_summary>([\s\S]*?)<\/mercury_summary>\s*/);
+            if (sm && sm[1].trim() && messages[1] && messages[1].role === 'system') {
+                messages[1].content = `<mercury_summary>\n${sm[1].trim()}\n</mercury_summary>`;
+                log(`Persistent turn: refreshed mercury summary slot (${sm[1].trim().length} chars)`);
+            }
             const before = cleanedPrompt.length;
             cleanedPrompt = cleanedPrompt
                 .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
@@ -3528,24 +3582,19 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             if (cleanedPrompt.length !== before) {
                 log(`Persistent turn: stripped ${before - cleanedPrompt.length} chars of re-injected context`);
             }
+            // The first ask (messages[2]) kept <chat_history>/<mercury_context> on
+            // turn 1 for follow-up referents. Now that the verbatim tail carries the
+            // live conversation, strip them once so the permanent first-ask slot is
+            // just the ask (the summary lives in its own pinned slot, never here).
+            const m2 = messages[2];
+            if (m2 && typeof m2?.content === 'string' && /<(chat_history|mercury_context)/.test(m2.content)) {
+                m2.content = m2.content
+                    .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
+                    .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '')
+                    .trim();
+            }
         }
         isFirstUserTurn = false;
-        // messages[1] baked in the full turn-1 prompt (mercury summary + up to
-        // 12K of <chat_history> + <mercury_context>) and trim keeps it forever.
-        // Strip the stale re-injected blocks once so the permanent slot is just
-        // the mercury summary + the original ask — reclaiming that budget for the
-        // recent essentials.
-        const m1 = messages[1];
-        if (m1 && typeof m1?.content === 'string' && /<(chat_history|mercury_summary|mercury_context)/.test(m1.content)) {
-            // Mercury is pinned — strip its summary too, leaving just the first
-            // ask. The orchestrator keeps its own bounded chat history (see
-            // collapseToChatHistory) instead of relying on mercury.
-            m1.content = m1.content
-                .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
-                .replace(/<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g, '')
-                .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '')
-                .trim();
-        }
         const userMsg: any = { role: 'user', content: cleanedPrompt.trim() };
         // Attach any pending images from Read tool (vision)
         if ((globalThis as any)._pendingImages && (globalThis as any)._pendingImages.length > 0) {
@@ -4458,8 +4507,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // we rely on trimMessagesToBudget(ORCHESTRATOR_MSG_BUDGET_CHARS), which
         // runs before each chat call and trims oldest WHOLE groups (dispatch +
         // its result paired) to keep the window under budget — so recent
-        // dispatches and their results survive across turns. The budget is sized
-        // for the 60k num_ctx the orchestrator now runs at.
+        // dispatches and their results survive across turns. The verbatim budget
+        // is 20K chars (~5K tokens); older turns the tail drops are carried by
+        // the pinned mercury summary slot (messages[1], refreshed each turn), so
+        // the thread survives past the ~3-turn verbatim window without raising
+        // num_ctx.
         // const collapsed = collapseToChatHistory(messages);
         // messages.length = 0;
         // messages.push(...collapsed);
@@ -4469,6 +4521,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // path) — it no longer rides this idle loop, so jobs dispatched mid-turn
         // are supervised too. This loop just waits for the next user message or
         // an inbox item (a finished job triggering a digest turn).
+        orchestratorTurnActive = false; // going idle — watchdog may tick again to monitor running jobs
         log('Query complete — waiting for next message via IPC...');
         let nextInput: string | null = null;
         while (nextInput === null) {
