@@ -44,6 +44,17 @@ export const SENDER_ALLOWLIST_PATH = path.join(
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
+// Canonical messages DB path. Propagated into process.env here so every spawned
+// child (agent-runner, MCP servers) inherits it via spawn's `...process.env`.
+// Without this the agent-runner's get_chat_history tool fell back to a stale
+// ~/dockbox/store/messages.db path that doesn't exist → the orchestrator's only
+// history-recovery tool returned "directory does not exist" and it lost the
+// thread across turns (e.g. confirming an offer it had no memory of making).
+export const MESSAGES_DB_PATH = path.join(STORE_DIR, 'messages.db');
+if (process.env.MESSAGES_DB_PATH === undefined) {
+  process.env.MESSAGES_DB_PATH = MESSAGES_DB_PATH;
+}
+
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'dockbox-agent:latest';
 export const AGENT_TIMEOUT = parseInt(

@@ -13,7 +13,17 @@ registry.register({
     },
     handler: async (args, context) => {
         try {
-            const dbPath = process.env.MESSAGES_DB_PATH || path.join(process.env.WARDEN_ROOT || path.join(process.env.HOME || '~', 'dockbox'), 'store', 'messages.db');
+            // The host sets MESSAGES_DB_PATH in its process.env at startup
+            // (src/config.ts → STORE_DIR), and spawns this child with
+            // `...process.env`, so the canonical DB path is inherited. WARDEN_ROOT
+            // is a legacy fallback. Never fall back to a hard-coded ~/dockbox path
+            // — that directory doesn't exist on this host and the silent failure
+            // starves the orchestrator of history across turns.
+            const dbPath = process.env.MESSAGES_DB_PATH
+                || (process.env.WARDEN_ROOT ? path.join(process.env.WARDEN_ROOT, 'store', 'messages.db') : '');
+            if (!dbPath) {
+                return 'Error reading chat history: MESSAGES_DB_PATH is not set (the host did not propagate the DB path to this child).';
+            }
             const Database = (await import('better-sqlite3')).default;
             const db = new Database(dbPath, { readonly: true });
             const limit = Math.min(args.limit || 50, 200);
