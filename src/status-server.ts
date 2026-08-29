@@ -1540,8 +1540,10 @@ function handleSettings(res: http.ServerResponse): void {
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
     // Minutes of user-message idle before the orchestrator context auto-clears.
-    // 0 = never. Default 30. Set by the Model Configuration card.
-    contextIdleClearMinutes: getRouterState('orchestrator:context_idle_clear_minutes') || '30',
+    // 0 = never. Default 0 (off) — see src/index.ts idle-context-clear block for
+    // why a desktop assistant must not auto-clear on idle. Set by the Model
+    // Configuration card.
+    contextIdleClearMinutes: getRouterState('orchestrator:context_idle_clear_minutes') || '0',
     // Mercury compaction schedule (runs on the 2s poll loop, idle-gated).
     // interval: compact at least this often (default 30, 0 = off).
     // downtime: also compact after this long with no user activity (default 5, 0 = off).
