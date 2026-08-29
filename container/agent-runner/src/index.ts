@@ -1705,6 +1705,33 @@ function looksLikeError(result?: string): boolean {
         || /exited with non-zero status/i.test(result);
 }
 
+// Format an activity-log entry's age (its `t` timestamp) as a short "Nm/Ns ago"
+// tag, shown on each recent-call line the supervisor sees. This gives the
+// supervisor TIMING: a slow read of one large file shows calls spread minutes
+// apart (progress), while a true loop shows the same call bunched within a few
+// seconds. Without it, paginated or verified re-reads of one file render as
+// identical `Read(...)` lines and look like a verbatim-repeat loop.
+function fmtCallAge(t: number, now: number): string {
+    const s = Math.max(0, Math.round((now - t) / 1000));
+    return s >= 60 ? `${Math.round(s / 60)}m ago` : `${s}s ago`;
+}
+
+// Compress a tool-call args string for the supervisor's recent-calls list.
+// A plain head-truncate (.slice(0,60)) is dangerous: when calls share a long
+// prefix (e.g. `cd /home/.../seasonal-boat-leasing && sed -n '40,150p' index.html`),
+// the head is eaten entirely by the path and the only differing part — the line
+// range or target — is cut off, so distinct calls render as identical and the
+// supervisor misreads a page-through as a verbatim-repeat loop. Keep both the
+// head (tool context) and the tail (where the distinguishing arg usually sits),
+// eliding only the middle.
+function shortArgs(args: string, max = 90): string {
+    const a = (args || '').replace(/\s+/g, ' ').trim();
+    if (a.length <= max) return a;
+    const head = Math.floor(max * 0.5);
+    const tail = max - head - 1;
+    return a.slice(0, head) + '…' + a.slice(a.length - tail);
+}
+
 // Pull a file_path out of a Write/Edit args JSON string (best-effort; the args
 // summary for those tools is the file path itself, but JSON.parse handles both
 // the summary and the raw shape).
@@ -1827,6 +1854,8 @@ Each job shows its task, runtime, and recent tool calls. Decide each job's statu
 
 Reading is normal, not a problem. These jobs run large local models where one task takes 10 to 30 minutes, mostly reading. Reading many files, re-reading a file, a long read streak with no write yet, high call counts, long elapsed time, and idle gaps between calls are all normal progress. The only read pattern that is a problem is a verbatim repeat of the SAME call with the SAME arguments many times in a row, with no new file and no write between the repeats. Never flag a job for being slow or for reading.
 
+Each recent-call line ends with its age, e.g. · 3m ago. Use it to tell progress from a loop: the same-looking call spread minutes apart is a slow read in progress, not a loop. A true loop is the same call bunched within a few seconds.
+
 crashed and off_rails are advisory; the job keeps running.
 
 Two actions, both keeping the job running:
@@ -1915,7 +1944,7 @@ function watchdogNote(text: string, toolContext: any): void {
 // keys on.
 function flagJobForOrchestrator(job: BackgroundJob, id: string, reason: string, suggested: string, toolContext: any): void {
     const recent = job.activityLog.slice(-8)
-        .map(a => `  • ${a.tool}(${(a.args || '').slice(0, 60)})${looksLikeError(a.result) ? ' → ERROR' : ''}`)
+        .map(a => `  • ${a.tool}(${shortArgs(a.args)})${looksLikeError(a.result) ? ' → ERROR' : ''} · ${fmtCallAge(a.t, Date.now())}`)
         .join('\n');
     const age = Math.round((Date.now() - job.startedAt) / 1000);
     const msg =
@@ -1969,15 +1998,16 @@ async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolC
     // code-enforced stop is the wall-clock safety net.
 
     const jobLines = running.map(j => {
-        const elapsed = Math.round((Date.now() - j.startedAt) / 1000);
-        const sinceLast = Math.round((Date.now() - j.lastActionAt) / 1000);
+        const now = Date.now();
+        const elapsed = Math.round((now - j.startedAt) / 1000);
+        const sinceLast = Math.round((now - j.lastActionAt) / 1000);
         const warming = elapsed < WATCHDOG_MIN_JOB_AGE_S && j.toolCallCount === 0 ? ' — WARMING UP (model loading)' : '';
         // Recent tool-call sequence so the supervisor can judge PROGRESS across
         // turns — wasted turns = repeating the same lookup, circling, or
         // searching/reading with no action toward the deliverable. The last
         // action alone can't show this; the sequence can.
         const recent = j.activityLog.slice(-8)
-            .map(a => `  • ${a.tool}(${(a.args || '').slice(0, 60)})${looksLikeError(a.result) ? ' → ERROR' : ''}`)
+            .map(a => `  • ${a.tool}(${shortArgs(a.args)})${looksLikeError(a.result) ? ' → ERROR' : ''} · ${fmtCallAge(a.t, now)}`)
             .join('\n');
         // OFF-TASK SIGNAL (label only): among recent calls, count Write/Edit
         // calls whose file_path lands in a THROWAWAY/scratch location (/tmp,
