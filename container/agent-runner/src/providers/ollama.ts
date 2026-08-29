@@ -9,7 +9,15 @@ export class OllamaProvider implements ChatProvider {
 
     async chat(request: ChatRequest): Promise<ChatResult> {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 min hard timeout
+        // Hard backstop on a stuck fetch. This is non-streaming (stream:false),
+        // so Ollama buffers the whole response before replying — a 27b local
+        // model composing a large file in one turn legitimately runs well past
+        // 5 min, and aborting it mid-generation threw away the whole turn and
+        // triggered a retry loop. 20 min covers any realistic single turn while
+        // still catching a genuinely hung socket (without this, a stuck fetch
+        // would hang the sub-agent until the 3h wall-clock — nothing else
+        // interrupts an in-flight provider.chat).
+        const timeout = setTimeout(() => controller.abort(), 20 * 60 * 1000); // 20 min hard timeout
         try {
             const resp = await fetch(`${this.baseUrl}/api/chat`, {
                 method: 'POST',
