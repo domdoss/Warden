@@ -851,18 +851,6 @@
     // Cloud tags end in :cloud; everything else is local. No hardcoded cloud list.
     const orchHtml = buildModelOptions(models, fn, m => m);
     const anyModelHtml = buildModelOptions(models, fn, m => m, { inherit: true });
-    // Supervisor self-audit cadence options (ms). The current value is always
-    // present (prepended if it's not one of the presets) so a saved custom
-    // interval never silently snaps to the first preset.
-    const supervisorIntervals = [
-      [300000, '5 min'], [600000, '10 min'], [900000, '15 min'],
-      [1200000, '20 min'], [1800000, '30 min'], [3600000, '1 hour'], [7200000, '2 hours'],
-    ];
-    const curInterval = parseInt(d.supervisorIntervalMs, 10) || 600000;
-    const intervalInList = supervisorIntervals.some(([v]) => v === curInterval);
-    const supervisorIntervalHtml =
-      (intervalInList ? '' : modelOption(String(curInterval), Math.round(curInterval / 60000) + ' min', true)) +
-      supervisorIntervals.map(([v, l]) => modelOption(String(v), l, v === curInterval)).join('');
     // Driving-force presets (orchestrator preamble) — from data/driving-forces/.
     // '' = Warden default (the built-in preamble, preserves the dynamic name).
     const drivingForceHtml = '<option value="">Warden (default)</option>' +
@@ -917,12 +905,6 @@
         <div class="setting-row"><label>Driving force</label>
           <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
           <span class="dim mono" style="font-size:10px">orchestrator persona; switching clears context</span>
-        </div>
-        <div class="setting-row"><label>Supervisor</label>
-          <select class="select" id="sSupervisorModel">${orchHtml}</select>
-          <label class="check"><input type="checkbox" id="sSupervisorEnabled" checked> enabled</label>
-          <select class="select small" id="sSupervisorInterval">${supervisorIntervalHtml}</select>
-          <span class="dim mono" style="font-size:10px">self-audit every N min while jobs run; blank model = inherit Orchestrator</span>
         </div>
         <div class="setting-row"><label>Atlas</label>
           <select class="select" id="sAtlas">${orchHtml}</select>
@@ -1130,9 +1112,6 @@
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
     setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
-    setSelect('sSupervisorModel', (d.supervisorModel || '').replace(/^local:/, ''));
-    $('sSupervisorEnabled').checked = d.supervisorEnabled !== false;
-    setSelect('sSupervisorInterval', String(parseInt(d.supervisorIntervalMs, 10) || 600000));
     setSelect('sToolcallModel', (d.ollamaChatModel || '').replace(/^local:/, ''));
     setSelect('sToolcallCtx', d.subagentCtx || '');
     setSelect('sDrivingForce', d.drivingForce || '');
@@ -1304,9 +1283,6 @@
         atlasModel: stripLocal($('sAtlas').value),
         artemisModel: stripLocal($('sArtemis').value),
         vulkanModel: stripLocal($('sVulkan').value),
-        supervisorModel: stripLocal($('sSupervisorModel').value),
-        supervisorEnabled: $('sSupervisorEnabled').checked,
-        supervisorIntervalMs: parseInt($('sSupervisorInterval').value, 10) || 600000,
         ollamaChatModel: stripLocal($('sToolcallModel').value),
         drivingForce: $('sDrivingForce').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
