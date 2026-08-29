@@ -1648,6 +1648,13 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
 }
 
 // ── Supervisor watchdog (monitor tick) ───────────────────────────────────
+// FIXME LATER — FULL SUPERVISOR REMOVAL DEFERRED 2026-08-29. The ticker is no-op'd
+// (ensureWatchdogTicker/runSupervisorWatchdog return early) and the orchestrator
+// prompt no longer mentions [Supervisor flag], so nothing fires and the
+// orchestrator no longer role-plays flags. The machinery below (flagJobForOrchestrator,
+// the drain flagsBlock at the turn-end drain, nudge/stuck/churn steering, WATCHDOG_*
+// constants, SUPERVISOR_* state, dashboard plumbing) is left dormant, not deleted —
+// rip it all out in a dedicated pass once the replacement supervision approach is decided.
 // A context-free, tool-less watchdog call that fires every MONITOR_TICK_MS
 // while background jobs are active. Unlike the old monitor tick it does NOT
 // ride the orchestrator turn — no 57-skill system prompt, no 27 tool schemas,
@@ -3406,7 +3413,16 @@ Keep personal info local. Atlas and Vulkan may run on a cloud model — keep nam
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
-A \`[Supervisor flag]\` inbox item means the watchdog judged a STILL-RUNNING job off-track and wants YOUR decision — it doesn't steer or kill jobs itself. Read the flag's reason and recent calls, then: \`nudge_agent\` naming the outcome to commit to next (the job keeps running and sees it on its next turn); \`stop_agent\` + re-delegate once with a corrected brief if the work is wrong; or do nothing if the supervisor is wrong. Don't ignore a flag — nudge as many times as it takes; the runner never auto-stops on nudge count; when you decide it's not recovering, call stop_agent yourself. In a nudge, steer on the OUTCOME — never tell the specialist where to put files or endorse a location as "the right place." It has the filesystem and chooses the structure; you don't — any path you assert is a guess.
+${'' /* SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction.
+   The watchdog ticker was already no-op'd (ensureWatchdogTicker/runSupervisorWatchdog
+   return early; zero ticks fire), but this prompt paragraph still taught the
+   orchestrator about [Supervisor flag] inbox items, so the orchestrator ROLE-PLAYED
+   a supervisor flag about its own read-only delegation (atlas-czix, a file check it
+   itself requested) and then stopped the re-delegation. With this gone the
+   orchestrator no longer emits or acts on supervisor flags. FULL supervisor removal
+   (flagJobForOrchestrator, the drain flagsBlock, nudge/stuck machinery, the
+   WATCHDOG_* constants, dashboard plumbing) is deferred for later — marked but
+   left dormant. Original text is in git history. */}
 
 # OUTPUT
 

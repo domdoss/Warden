@@ -1127,7 +1127,7 @@
     $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
     $('sAtlasKeepAlive').checked = d.atlasKeepAlive === '-1';
     $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
-    setSelect('sContextIdleClear', d.contextIdleClearMinutes || '30');
+    setSelect('sContextIdleClear', d.contextIdleClearMinutes || '0');
     setSelect('sMercuryInterval', d.mercuryIntervalMinutes || '30');
     setSelect('sMercuryDowntime', d.mercuryDowntimeMinutes || '5');
     // Timezone dropdown: select the saved zone, appending it as an extra

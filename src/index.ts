@@ -1859,16 +1859,25 @@ async function processOwnerMessages(): Promise<void> {
 
   // ── Idle context clear ──────────────────────────────────────────────────
   // If the user's last message was older than the configured threshold (Model
-  // Configuration → Idle clear; default 30 min), drop the orchestrator's
+  // Configuration → Idle clear; default OFF), drop the orchestrator's
   // accumulated context before this turn so testing chatter can't bloat the
   // working window. Setting orchestrator:context_clear_at to the latest pending
   // timestamp makes the agent-runner reset its in-memory conversation (it
   // resets when the marker changes) and gates <chat_history> to messages after
-  // it. 0 = disabled. We also remember this message's time so the next idle
-  // check measures from here.
+  // it. 0 = disabled.
+  //
+  // DEFAULT IS OFF (0). This is a single-user desktop assistant, not a testbed:
+  // the normal pattern is to walk away for an hour and come back with "yes" to a
+  // pending question. A 30-min idle auto-clear ate exactly that — it gated
+  // <chat_history> to after the "yes", so the question the "yes" was answering
+  // vanished and the orchestrator replied "I don't see a pending question in
+  // front of me" (2026-08-29). Context bloat is already handled by Mercury
+  // compaction (mercury:interval_minutes), so this idle-clear is redundant for
+  // bloat and harmful for continuity. The dashboard dropdown still lets the
+  // user opt back in (15/30/60/120/240 min) if they ever want it.
   const latestUserTs = pending[pending.length - 1]!.timestamp;
   const idleRaw = getRouterState('orchestrator:context_idle_clear_minutes') || '';
-  const idleMin = idleRaw === '' ? 30 : (parseInt(idleRaw, 10) || 0);
+  const idleMin = idleRaw === '' ? 0 : (parseInt(idleRaw, 10) || 0);
   const prevUserTs = getRouterState('orchestrator:last_user_message_at') || '';
   if (idleMin > 0 && prevUserTs) {
     const gapMin = (Date.parse(latestUserTs) - Date.parse(prevUserTs)) / 60000;
