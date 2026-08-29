@@ -1642,7 +1642,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         });
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
-    ensureWatchdogTicker(context);
+    // ensureWatchdogTicker(context); // SUPERVISOR DISABLED 2026-08-29: false off-track flags killed healthy atlas read/idle phases (atlas-p7th). Commented out at every arming site; reinstated only when the supervisor is rebuilt to actually distinguish progress from veering.
     emitJobsStatus();
     return jobId;
 }
@@ -1976,6 +1976,11 @@ function flagJobForOrchestrator(job: BackgroundJob, id: string, reason: string, 
 // captured by the caller from the conversation. Runs a single tool-less LLM
 // call and executes the JSON verdict against the running jobs.
 async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolContext: any }): Promise<void> {
+    // SUPERVISOR DISABLED 2026-08-29 — hard no-op. A tick should never fire
+    // (ensureWatchdogTicker is no-op'd); this guarantees no flag is ever raised
+    // to the orchestrator even if a stale ticker somehow persists. The `opts`
+    // destructure is left unreached on purpose.
+    return;
     const { tickNum, ask, toolContext } = opts;
     if (!SUPERVISOR_ENABLED) return; // supervisor Off — no self-audit
     const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
@@ -2403,6 +2408,9 @@ let watchdogToolContext: any = null;
 let orchestratorTurnActive = false;
 
 function ensureWatchdogTicker(toolContext: any): void {
+    // SUPERVISOR DISABLED 2026-08-29 — see the arming-site note. Hard no-op so
+    // the ticker can never arm or tick even if a future call site is added.
+    return;
     watchdogToolContext = toolContext;
     if (!SUPERVISOR_ENABLED) return; // supervisor Off — never arm
     if (watchdogTicker) return;
@@ -4951,7 +4959,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             });
         jobRecord.promise = job;
         backgroundJobs.set(jobId, jobRecord);
-        ensureWatchdogTicker(context);
+        // ensureWatchdogTicker(context); // SUPERVISOR DISABLED 2026-08-29: false off-track flags killed healthy atlas read/idle phases (atlas-p7th). Commented out at every arming site; reinstated only when the supervisor is rebuilt to actually distinguish progress from veering.
         emitJobsStatus();
         result = `Artemis ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the audit result will arrive in your inbox. (job id: ${jobId})`;
         } // retryGate else
