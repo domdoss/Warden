@@ -2028,6 +2028,9 @@ async function processOwnerMessages(): Promise<void> {
     // Supervisor (monitor-tick) model — blank inherits the orchestrator model in
     // the runner. No ctx row: cloud/small models use their native window.
     supervisorModel: (getRouterState('supervisor:model') || '').replace(/^local:/, '') || undefined,
+    // Supervisor self-audit on/off + cadence (dashboard "Supervisor" row).
+    supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
+    supervisorIntervalMs: parseInt(getRouterState('supervisor:interval_ms') || '600000', 10) || 600000,
     // byte/dexter/iris share the Toolcall model (dashboard "Toolcall model" row,
     // persisted as local:subagent_model). The host feeds the same value into each
     // per-agent IPC field so the runner's dispatch is unchanged.
@@ -2939,6 +2942,11 @@ function seedPerAgentModelSettings(): void {
   // no blank anywhere: every dashboard model dropdown always shows a concrete
   // model. The user picks a small/cloud one afterward if they want.
   seed('supervisor:model', orch);
+  // Supervisor self-audit: on by default, 10-min cadence. Large local models
+  // routinely spend 10-30 min on one task; a faster cadence flags healthy slow
+  // work as stuck. The user can toggle it off or change the interval in settings.
+  seed('supervisor:enabled', 'true');
+  seed('supervisor:interval_ms', '600000');
   // ctx — preserve each agent's current effective value.
   seed('local:byte_ctx', toolsCtx);
   seed('local:dexter_ctx', toolsCtx);

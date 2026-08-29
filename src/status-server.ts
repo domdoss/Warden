@@ -1469,8 +1469,11 @@ function handleSettings(res: http.ServerResponse): void {
     atlasModel: getRouterState('atlas:model') || '',
     vulkanModel: getRouterState('vulkan:model') || '',
     // Supervisor = the orchestrator's monitor-tick (background-job watchdog)
-    // turns. Blank = ticks run the orchestrator model.
+    // turns. Blank = ticks run the orchestrator model. supervisorEnabled toggles
+    // the self-audit on/off; supervisorIntervalMs is its cadence (default 10 min).
     supervisorModel: getRouterState('supervisor:model') || '',
+    supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
+    supervisorIntervalMs: parseInt(getRouterState('supervisor:interval_ms') || '600000', 10) || 600000,
     // Per-agent models — each agent has its own concrete model (no blank/inherit).
     // Byte, Dexter, and Iris share one model (the dashboard "Toolcall model" row).
     byteModel: toolcallModel,
@@ -1589,6 +1592,13 @@ async function handleSettingsSave(
   }
   if (body.supervisorModel !== undefined) {
     setRouterState('supervisor:model', String(body.supervisorModel || ''));
+  }
+  if (body.supervisorEnabled !== undefined) {
+    setRouterState('supervisor:enabled', body.supervisorEnabled ? 'true' : 'false');
+  }
+  if (body.supervisorIntervalMs !== undefined) {
+    const ms = Math.max(60_000, Math.floor(Number(body.supervisorIntervalMs)) || 600000);
+    setRouterState('supervisor:interval_ms', String(ms));
   }
   // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
   if (body.byteModel !== undefined) {

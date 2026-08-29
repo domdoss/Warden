@@ -499,6 +499,11 @@ function applySettingsSync(data: any) {
         CONTEXT_CLEAR_AT = v;
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
+    if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
+    if (data.supervisorIntervalMs !== undefined) {
+        const ms = Math.floor(Number(data.supervisorIntervalMs)) || 0;
+        SUPERVISOR_INTERVAL_MS = ms > 0 ? ms : 0; // 0 = use DEFAULT_WATCHDOG_TICK_MS
+    }
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
@@ -1183,11 +1188,18 @@ let COUNCIL_MODEL_PRAGMATIST = '';
 let COUNCIL_MODEL_SYNTHESIST = '';
 // Supervisor watchdog model override — from the dashboard Supervisor dropdown.
 // Empty = the watchdog call inherits the orchestrator model. Set to a small
-// cloud or local model (e.g. granite4.1:3b) so the 30s watchdog ticks run
-// cheaply and never churn VRAM or tie up the main model. The watchdog call is
-// tool-less and context-free, so a small model is enough. No ctx row:
-// cloud/small models use their native context window.
+// cloud or local model (e.g. granite4.1:3b) so the self-audit ticks run cheaply
+// and never churn VRAM or tie up the main model. The watchdog call is tool-less
+// and context-free, so a small model is enough. No ctx row: cloud/small models
+// use their native context window.
 let SUPERVISOR_MODEL = '';
+// Supervisor on/off + cadence — dashboard "Supervisor" row toggle + interval
+// select. SUPERVISOR_ENABLED false = the watchdog never arms (the "Off" setting
+// the user can pick). SUPERVISOR_INTERVAL_MS is the self-audit cadence in ms;
+// 0 = use DEFAULT_WATCHDOG_TICK_MS (10 min). Large local models routinely spend
+// 10-30 min on one task, so a short cadence flags healthy slow work as stuck.
+let SUPERVISOR_ENABLED = true;
+let SUPERVISOR_INTERVAL_MS = 0;
 // Live state of the most recent Council deliberation. The background council
 // loop is the only writer; the council_status tool handler only reads, so the
 // orchestrator can peek at an in-flight deliberation without touching it.
@@ -1651,10 +1663,10 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
 // negative examples — those seed the exact hallucination in Granite). Going
 // fully offline is just a `supervisor:model` DB flip to the Granite model.
 
-const WATCHDOG_KEEP_ALIVE_S = 60;       // keep the small model resident across 30s ticks
+const WATCHDOG_KEEP_ALIVE_S = 60;       // keep the small model resident briefly; at a 10-min cadence it unloads between ticks (no VRAM pinning)
 const WATCHDOG_FETCH_TIMEOUT_MS = 15_000;
-const WATCHDOG_MIN_JOB_AGE_S = 120;     // never stop a crashed/off-rails job younger than this
-const WATCHDOG_TICK_MS = 30_000;        // always-on ticker interval (Step 4)
+const WATCHDOG_MIN_JOB_AGE_S = 300;     // never flag a job younger than this — slow local-model warmup (zero calls / idle) reads as "stuck" otherwise
+const DEFAULT_WATCHDOG_TICK_MS = 600_000; // default self-audit cadence (10 min). The live interval is the dashboard `supervisor:interval_ms` setting (SUPERVISOR_INTERVAL_MS); this is the fallback.
 
 // Churn steering is the SUPERVISOR LLM's judgment, not a host-code counter.
 // There is no RESEARCH_TOOLS call-count detector: a fixed threshold cannot
@@ -1668,17 +1680,12 @@ const WATCHDOG_TICK_MS = 30_000;        // always-on ticker interval (Step 4)
 // only code-enforced stop is the 3h wall-clock (WALL_CLOCK_MS), a last resort.
 // The decision to steer or stop is always the orchestrator's; code only ticks.
 const CHURN_EXEMPT_AGENTS = new Set(['artemis','oculus']); // read-only by design — supervisor is told not to flag them for reading
-const WATCHDOG_NUDGE_COOLDOWN_S = 120; // min seconds between supervisor flags on the same job
-// Read-only tool names, used ONLY to render the READ-HEAVY label in the
-// supervisor tick prompt (a "worth a judgment" signal for the model). Nothing
-// in host code keys an action off this set — no counters, no thresholds.
-const READ_ONLY_TOOLS = new Set(['Read','Grep','Glob','Bash','WebSearch','WebFetch','read_file','list_file','get_chat_history','list_running_agents','read_job_result','agent_logs']);
-const READ_HEAVY_LABEL_AFTER = 6; // trailing read-only streak length that earns the label
+const WATCHDOG_NUDGE_COOLDOWN_S = 1200; // min seconds between supervisor flags on the same job (20 min — at a 10-min cadence the old 120s was always satisfied, so a flagged job was re-flagged on the next tick before the orchestrator could act)
 
 // Write/edit tools whose `args` carry a file_path — used to render the OFF-TASK
 // label (writes landing outside the task's deliverable directory, e.g. throwaway
-// /tmp solver scripts). Like READ_ONLY_TOOLS, this only feeds a prompt label;
-// no host action keys off it.
+// /tmp solver scripts while the real deliverable goes untouched). This only
+// feeds a prompt label; no host action keys off it.
 const WRITE_PATH_TOOLS = new Set(['Write', 'write_file', 'Edit', 'edit_file']);
 
 // Does a stored activityLog `result` preview look like a failure? The result
@@ -1811,32 +1818,30 @@ const WATCHDOG_FORMAT = {
 // guide: plain direct prose, explicit output constraint, no invented section
 // scaffolding. (The chat template itself is applied by Ollama; the JSON shape
 // is additionally enforced by the `format` schema on the local path.)
-const WATCHDOG_SYSTEM_PROMPT = `You are the Warden supervisor watchdog. You observe running background jobs and decide whether each is healthy, whether any needs steering, and whether the user's overall request is complete. You sense and flag problems for the orchestrator; you never start jobs yourself.
+const WATCHDOG_SYSTEM_PROMPT = `You are the Warden supervisor watchdog. You audit running background jobs about every 10 minutes and flag only obvious loops or veering for the orchestrator. You never start jobs.
 
-Each job is described by its task, runtime, and a list of its most recent tool calls. Judge every job from that information and decide its status:
+Each job shows its task, runtime, and recent tool calls. Decide each job's status:
+- ok: healthy or making progress. Mark ok when uncertain.
+- crashed: repeating the same failing call (a call line ending in → ERROR) with no change in approach.
+- off_rails: recent calls serve a goal unrelated to the task.
 
-- ok: the job is healthy. This covers a job under ${WATCHDOG_MIN_JOB_AGE_S}s old with zero tool calls (its model is still loading), a job making visible progress, and a job briefly idle after progress (a slow model response is in flight). When you are uncertain between two judgments, mark the job ok.
-- crashed: the job repeats the same failing call with no change for several minutes.
-- off_rails: the job's calls serve a goal unrelated to its task.
+Reading is normal, not a problem. These jobs run large local models where one task takes 10 to 30 minutes, mostly reading. Reading many files, re-reading a file, a long read streak with no write yet, high call counts, long elapsed time, and idle gaps between calls are all normal progress. The only read pattern that is a problem is a verbatim repeat of the SAME call with the SAME arguments many times in a row, with no new file and no write between the repeats. Never flag a job for being slow or for reading.
 
-crashed and off_rails are advisory warnings; the job keeps running either way.
+crashed and off_rails are advisory; the job keeps running.
 
-Beyond status, you have two actions:
+Two actions, both keeping the job running:
+- nudge: one short instruction naming what to commit to next. Example: "Write the file now with the photo URLs you already have."
+- stuck: flag an obvious loop — the same lookup or file repeated verbatim many times with no progress.
 
-- nudge: redirect a job that grinds without delivering. Write one short, specific instruction naming what it should commit to on its next turn, based on what its recent calls show it doing. Example: "Stop searching for images — write the file now with the photo URLs you already have." The direction is injected into the job's next turn; the job keeps running.
-- stuck: warn and steer the job when its recent calls show repeated circling — the same lookup, the same file, or the same search reworded. The job keeps running.
+Do not start new jobs or follow-up steps — that is the orchestrator's role.
 
-Do not propose starting new jobs or follow-up steps — starting jobs is the orchestrator's role, not yours. If you think more work is needed, mark the running job's status and let the orchestrator decide.
+OFF-TASK on a job line means recent writes went to scratch (/tmp) and none to the deliverable — a side-quest. Flag it and name the deliverable to return to. A Write that builds the deliverable never earns this label.
 
-A job line marked READ-HEAVY reports a count and a duration of read-only calls (Read, Grep, Glob, WebSearch, Bash, and similar) with no write action since. Treat it as research when the calls cover different files the task needs. Treat it as waste when the calls repeat, or when the streak has run many minutes with no write even though the context looks gathered. A longer streak is a stronger case for waste. Bash counts as read-only even when it downloads assets the task needs.
+→ ERROR on a call line means that call failed. Several on the same action mean the job is stuck retrying — flag it.
 
-A job line marked OFF-TASK reports that several recent Write/Edit calls landed in scratch space (/tmp and similar) and none landed in the workspace/deliverable. Throwaway solver scripts in /tmp while the real deliverable goes untouched are a strong sign the job has wandered onto a side-quest — flag it with nudge or stuck and name the deliverable it should return to. A Write that builds the deliverable itself never earns this label.
+Set complete true when the user's whole ask is achieved.
 
-A recent-call line ending in → ERROR means that tool call's result was an error or crash (a Python traceback, a missing file, a failed command). Several ERRORs in a row, especially on freshly written scripts, mean the job is repeatedly trying something that fails — flag it even when the calls look varied.
-
-Set complete true when the user's overall ask is fully achieved by what has run.
-
-Your response should only include the JSON verdict object. Do not provide any further explanation.
+Output the JSON verdict object only.
 {"complete": false, "jobs": [{"id": "atlas-abcd", "status": "ok", "reason": ""}], "nudge": [], "stuck": []}`;
 
 interface WatchdogVerdict {
@@ -1943,6 +1948,7 @@ function flagJobForOrchestrator(job: BackgroundJob, id: string, reason: string, 
 // call and executes the JSON verdict against the running jobs.
 async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolContext: any }): Promise<void> {
     const { tickNum, ask, toolContext } = opts;
+    if (!SUPERVISOR_ENABLED) return; // supervisor Off — no self-audit
     const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
     if (running.length === 0) return; // jobs finished during the tick window
 
@@ -1973,39 +1979,17 @@ async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolC
         const recent = j.activityLog.slice(-8)
             .map(a => `  • ${a.tool}(${(a.args || '').slice(0, 60)})${looksLikeError(a.result) ? ' → ERROR' : ''}`)
             .join('\n');
-        // Read-heavy SIGNAL for the supervisor (label only — never acted on by
-        // host code). Count the trailing run of read-only calls since the last
-        // write/action tool, derived fresh from the activity log each tick; no
-        // per-job counter is stored. It only flags "worth a judgment" to the
-        // supervisor LLM — whether it's legitimate research or waste, and what
-        // re-instruction to send, is entirely the model's call.
-        // Streak count + DURATION: the supervisor model is stateless per tick
-        // and cannot infer how long a read streak has run — "32 reads" reads
-        // the same at 60s and at 20 min. Give it the elapsed span of the
-        // trailing read-only run (timestamp of the first read after the last
-        // write/action) so duration is part of what it judges. Label text
-        // only; nothing keys an action off it.
-        let readsSinceWrite = 0;
-        let readStreakStart: number | null = null;
-        for (let i = j.activityLog.length - 1; i >= 0; i--) {
-            if (READ_ONLY_TOOLS.has(j.activityLog[i].tool)) { readsSinceWrite++; readStreakStart = j.activityLog[i].t; } else break;
-        }
-        const readStreakS = readStreakStart ? Math.round((Date.now() - readStreakStart) / 1000) : 0;
-        const readHeavy = readsSinceWrite >= READ_HEAVY_LABEL_AFTER
-            ? ` — READ-HEAVY: ${readsSinceWrite} read-only call(s) over the last ${Math.round(readStreakS / 60)} min with no write/action`
-            : '';
         // OFF-TASK SIGNAL (label only): among recent calls, count Write/Edit
         // calls whose file_path lands in a THROWAWAY/scratch location (/tmp,
         // /var/tmp, /dev/shm) versus a real workspace path. The canonical case
         // is a job that writes several /tmp solver scripts while the deliverable
-        // sits untouched — that reads as "busy committing" without this, because
-        // writes reset the READ-HEAVY streak. We classify by scratch-vs-workspace
-        // rather than "inside the group folder" because groupFolder is a logical
-        // name ('owner'), not an absolute path, and the agent's deliverable path
-        // can be any absolute workspace path. The label fires only when the
-        // recent writes are ALL scratch with none in the workspace — a job
-        // writing its real deliverable never earns it. Like READ-HEAVY this is a
-        // fact the model judges; no host action keys off it.
+        // sits untouched — that reads as "busy committing" without this. We
+        // classify by scratch-vs-workspace rather than "inside the group folder"
+        // because groupFolder is a logical name ('owner'), not an absolute path,
+        // and the agent's deliverable path can be any absolute workspace path.
+        // The label fires only when the recent writes are ALL scratch with none
+        // in the workspace — a job writing its real deliverable never earns it.
+        // This is a fact the model judges; no host action keys off it.
         const tail = j.activityLog.slice(-12);
         let scratchWrites = 0;
         let workspaceWrites = 0;
@@ -2024,7 +2008,7 @@ async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolC
         const offTask = (scratchWrites >= 2 && workspaceWrites === 0)
             ? ` — OFF-TASK: ${scratchWrites} recent write(s) to scratch (/tmp) over the last ${Math.round(scratchS / 60)} min, none to the workspace/deliverable`
             : '';
-        return `- ${j.agent}-${j.shortId}: ${elapsed}s elapsed, ${j.toolCallCount} tool call(s), last action ${sinceLast}s ago (${j.lastAction})${warming}${readHeavy}${offTask}. Task: "${j.task.slice(0, 160)}"\n  recent calls:\n${recent || '  • (none yet)'}`;
+        return `- ${j.agent}-${j.shortId}: ${elapsed}s elapsed, ${j.toolCallCount} tool call(s), last action ${sinceLast}s ago (${j.lastAction})${warming}${offTask}. Task: "${j.task.slice(0, 160)}"\n  recent calls:\n${recent || '  • (none yet)'}`;
     }).join('\n');
 
     const userMsg =
@@ -2390,8 +2374,15 @@ let orchestratorTurnActive = false;
 
 function ensureWatchdogTicker(toolContext: any): void {
     watchdogToolContext = toolContext;
+    if (!SUPERVISOR_ENABLED) return; // supervisor Off — never arm
     if (watchdogTicker) return;
+    const interval = SUPERVISOR_INTERVAL_MS || DEFAULT_WATCHDOG_TICK_MS;
     watchdogTicker = setInterval(async () => {
+        if (!SUPERVISOR_ENABLED) { // toggled Off mid-run via settings — stop the ticker
+            if (watchdogTicker) { clearInterval(watchdogTicker); watchdogTicker = null; }
+            log('[watchdog] disabled via settings — ticker stopped');
+            return;
+        }
         if (watchdogBusy) return; // previous tick still awaiting its verdict
         if (orchestratorTurnActive) return; // orchestrator is replying — don't contend with the resident model; tick resumes when it goes idle
         const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
@@ -2407,9 +2398,9 @@ function ensureWatchdogTicker(toolContext: any): void {
         } finally {
             watchdogBusy = false;
         }
-    }, WATCHDOG_TICK_MS);
+    }, interval);
     watchdogTicker.unref?.();
-    log('[watchdog] ticker armed');
+    log(`[watchdog] ticker armed (${Math.round(interval / 1000)}s interval)`);
 }
 
 // kimi-k2.6:cloud is the known offender: when a request is sent with think:false
@@ -3062,6 +3053,8 @@ interface ContainerInput {
     councilPragmatistModel?: string;
     councilSynthesistModel?: string;
     supervisorModel?: string;
+    supervisorEnabled?: boolean;
+    supervisorIntervalMs?: number;
     userId?: string;
     userKeyId?: string;
     verbose?: boolean;
@@ -3471,6 +3464,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
     VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
     SUPERVISOR_MODEL = (input.supervisorModel || '').replace(/^local:/, '');
+    SUPERVISOR_ENABLED = input.supervisorEnabled !== false;
+    {
+        const ms = Math.floor(Number(input.supervisorIntervalMs)) || 0;
+        SUPERVISOR_INTERVAL_MS = ms > 0 ? ms : 0; // 0 = use DEFAULT_WATCHDOG_TICK_MS
+    }
     BYTE_MODEL = (input.byteModel || '').replace(/^local:/, '');
     DEXTER_MODEL = (input.dexterModel || '').replace(/^local:/, '');
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
