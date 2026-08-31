@@ -22,7 +22,11 @@ export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
 export const POLL_INTERVAL = 2000;
-export const SCHEDULER_POLL_INTERVAL = 60000;
+// 15s, not 60s: this poll is the hard latency floor for "in N minutes"
+// reminders (a "1 minute" reminder landed at ~2.5-3min under 60s). Cheap —
+// getDueTasks is a single indexed SELECT. Dexter's ~1min tool-call time is
+// model inference speed and unaffected by this.
+export const SCHEDULER_POLL_INTERVAL = 15000;
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();

@@ -719,6 +719,8 @@ schedule_value forms (for schedule_task):
 
 The schedule_task prompt runs later in a turn with no memory of this conversation; write it as a complete instruction with all needed context.
 
+If the user asks for a reminder but does not say WHAT to remind them about (e.g. "set a reminder", "remind me in 10 minutes" with no content), do NOT create a task and do NOT invent content. Reply in one line asking what the reminder should say. Only call schedule_task once the user has given the actual reminder content.
+
 A plain to-do with no time trigger belongs to Byte; name it in one line.
 
 Call each tool once with all required args filled.
