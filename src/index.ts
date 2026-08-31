@@ -648,6 +648,27 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         if (args?.schedule_type) updates.schedule_type = args.schedule_type;
         if (args?.schedule_value) updates.schedule_value = args.schedule_value;
         updateTask(id, updates);
+
+        // If the schedule changed, recompute next_run so the task actually
+        // fires at the new time. Without this, editing schedule_value left the
+        // old next_run in place and the reschedule silently didn't take. Skip
+        // for once tasks that already ran (last_run set → computeNextRun
+        // correctly returns null, meaning "done"); and skip when only the
+        // prompt was edited (no timing change).
+        const scheduleChanged = !!(args?.schedule_type || args?.schedule_value);
+        if (scheduleChanged) {
+          const current = getTaskById(id);
+          if (current && current.status === 'active' && !current.last_run) {
+            const nextRun = computeNextRun(current);
+            if (!nextRun) {
+              return {
+                ok: false,
+                error: `could not compute a fire time from schedule_value "${current.schedule_value}". For a relative once task use an ISO-8601 duration (e.g. "PT2M", "PT1H30M"); for an absolute time use a LOCAL timestamp "YYYY-MM-DDTHH:MM:SS" (no Z suffix).`,
+              };
+            }
+            updateTask(id, { next_run: nextRun });
+          }
+        }
         return { ok: true };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };

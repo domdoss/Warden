@@ -16,23 +16,12 @@ registry.register({
         },
         required: ['prompt', 'schedule_type', 'schedule_value'],
     },
+    // NOTE: schedule_task calls are intercepted by the agent-runner
+    // (index.ts) and shipped to the host callback, which validates
+    // schedule_value and computes next_run. This handler is a fallback only;
+    // validation lives in the host (src/index.ts schedule_task callback), not
+    // here — do not duplicate it.
     handler: async (args, context) => {
-        if (args.schedule_type === 'once') {
-            const sv = String(args.schedule_value || '');
-            const isDuration = /^P(?!$)(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?$/.test(sv)
-                || /^\+\d+$/.test(sv);
-            if (!sv) {
-                return `Error: schedule_value is required for once. Use an ISO-8601 duration like "PT2M" (in 2 minutes) or an absolute local timestamp like "2026-05-27T14:30:00" (no "Z"/timezone suffix).`;
-            }
-            if (!isDuration && isNaN(new Date(sv).getTime())) {
-                return `Error: schedule_value "${sv}" is not a valid duration or timestamp. Use "PT2M" (in 2 minutes), "PT1H30M", etc., or an absolute local time like "2026-05-27T14:30:00" (no "Z"/timezone suffix).`;
-            }
-        } else if (args.schedule_type === 'interval') {
-            const ms = parseInt(args.schedule_value, 10);
-            if (isNaN(ms) || ms <= 0) {
-                return `Error: interval schedule_value must be a positive number of milliseconds (e.g. "300000" for 5 minutes).`;
-            }
-        }
         writeIpcFile(TASKS_DIR, {
             type: 'schedule_task', prompt: args.prompt, schedule_type: args.schedule_type,
             schedule_value: args.schedule_value, context_mode: args.context_mode || 'group',
