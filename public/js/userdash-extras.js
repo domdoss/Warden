@@ -3284,17 +3284,19 @@ window.UserDash = (() => {
       } catch (e) { console.error('loadAlarms', e); }
       // Reminders: poll the user's calendar for upcoming events, nearest first.
       refreshAlarmCalendar();
+      refreshScheduledReminders();
       startAlarmCalPoll();
     }
 
     let alarmCalPoll = null;
     function startAlarmCalPoll() {
       if (alarmCalPoll) return;
-      // Refresh the calendar-derived reminder list every 60s, but only while
-      // the Alarms (reminders) view is the active tab — no idle churn.
+      // Refresh the calendar-derived reminder list + scheduled reminders every
+      // 60s, but only while the Alarms (reminders) view is the active tab — no
+      // idle churn.
       alarmCalPoll = setInterval(() => {
         const v = document.getElementById('view-alarms');
-        if (v && v.classList.contains('active')) refreshAlarmCalendar();
+        if (v && v.classList.contains('active')) { refreshAlarmCalendar(); refreshScheduledReminders(); }
       }, 60000);
     }
 
@@ -3361,6 +3363,75 @@ window.UserDash = (() => {
           '<button class="btn btn-sm" onclick="UserDash.editAlarm(\'' + escAttr(a.id) + '\')">Edit</button>' +
           '<button class="btn btn-sm btn-danger" onclick="UserDash.deleteAlarm(\'' + escAttr(a.id) + '\')">Delete</button>' +
           '</div></div>';
+      }).join('');
+    }
+
+    // ── Scheduled reminders (dexter-created tasks: once/cron/interval) ──
+    // Shows every reminder the user has chambered, including fired once/timer
+    // ones (which persist as 'completed' instead of auto-deleting). System
+    // automations (heartbeat-, iris-digest-) are excluded — they're not
+    // reminders. The prompt shown IS the chamber content that fires into chat.
+    async function refreshScheduledReminders() {
+      const el = document.getElementById('alarm-reminders-list');
+      if (!el) return;
+      try {
+        const r = await fetch('/api/tasks', { headers: { 'X-User-Session': userSession() } });
+        if (!r.ok) throw new Error('tasks fetch failed');
+        const data = await r.json();
+        const all = (data.tasks || []).filter(t => {
+          const id = String(t.id || '');
+          return !id.startsWith('heartbeat-') && !id.startsWith('iris-digest-');
+        });
+        renderScheduledReminders(all);
+      } catch (e) { console.error('refreshScheduledReminders', e); }
+    }
+
+    function reminderTypeLabel(t) {
+      if (t.schedule_type === 'cron') return 'cron ' + esc(String(t.schedule_value || ''));
+      if (t.schedule_type === 'interval') {
+        const mins = Math.round((parseInt(t.schedule_value, 10) || 0) / 60000);
+        return mins >= 60 ? 'every ' + (mins / 60) + 'h' : 'every ' + mins + 'm';
+      }
+      return 'once';
+    }
+
+    function fmtReminderWhen(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return String(iso);
+      const now = new Date();
+      const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      if (d.toDateString() === now.toDateString()) return 'Today ' + time;
+      const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+      if (d.toDateString() === tomorrow.toDateString()) return 'Tomorrow ' + time;
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
+    }
+
+    function renderScheduledReminders(tasks) {
+      const el = document.getElementById('alarm-reminders-list');
+      if (!el) return;
+      if (!tasks.length) { el.innerHTML = '<p class="alarm-cal-empty">No reminders set. Ask me to remind you of something.</p>'; return; }
+      // Pending (active/paused) first by next_run asc, then fired (completed) by last_run desc.
+      const pending = tasks.filter(t => t.status !== 'completed')
+        .sort((a, b) => (a.next_run || '9999').localeCompare(b.next_run || '9999'));
+      const done = tasks.filter(t => t.status === 'completed')
+        .sort((a, b) => (b.last_run || '').localeCompare(a.last_run || ''));
+      const ordered = pending.concat(done);
+      el.innerHTML = ordered.map(t => {
+        const isDone = t.status === 'completed';
+        const when = isDone
+          ? (t.last_run ? 'fired ' + fmtReminderWhen(t.last_run) : 'fired')
+          : (t.next_run ? fmtReminderWhen(t.next_run) : '—');
+        const statusColor = t.status === 'active' ? '#10b981' : isDone ? '#6b7280' : '#f59e0b';
+        const statusText = isDone ? 'fired' : esc(t.status);
+        return '<div class="alarm-cal-item' + (isDone ? ' disabled' : '') + '">' +
+          '<div class="alarm-cal-when">' + esc(when) + '</div>' +
+          '<div class="alarm-cal-text">' +
+            '<div class="alarm-cal-title-row">' + esc(t.prompt || '(no prompt)') + '</div>' +
+            '<div class="alarm-cal-sub"><span class="badge ' + esc(t.schedule_type) + '">' + reminderTypeLabel(t) + '</span>' +
+            ' <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;background:' + statusColor + '18;color:' + statusColor + '">' + statusText + '</span></div>' +
+          '</div>' +
+        '</div>';
       }).join('');
     }
 

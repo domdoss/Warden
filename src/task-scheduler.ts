@@ -4,7 +4,6 @@ import path from 'path';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN, WORKSPACE_ROOT } from './config.js';
 import {
-  deleteTask,
   getDueTasks,
   getTaskById,
   getWorkTasks,
@@ -289,69 +288,98 @@ async function runTask(
     }
   }
 
-  // A schedule is just a prompt on a crontab. Inject it into the chat as a
-  // regular message attributed to Automation; the normal message pipeline picks
-  // it up, so the orchestrator and the user both see it — indistinguishable
-  // from the user typing the prompt. Prefix the trigger word only when the
-  // group requires one. The model is whatever the orchestrator is already
-  // configured to use — tasks don't carry their own.
-  const group = Object.values(deps.registeredGroups()).find(
-    (g) => g.folder === (task.group_folder || 'owner'),
-  );
-  const content =
-    group?.requiresTrigger && !TRIGGER_PATTERN.test(prompt)
-      ? `@${ASSISTANT_NAME} ${prompt}`
-      : prompt;
+  // Two firing modes:
+  //
+  // 1. REMINDERS (every non-heartbeat task): the chamber prompt — set by dexter
+  //    at creation time — fires directly into chat as a visible notification.
+  //    No orchestrator turn, no model reply. The message is stored with
+  //    is_bot_message=true + idea='' so getMessagesForDashboard shows it but
+  //    getNewMessages/getMessagesSince (which filter is_bot_message=0) skip it,
+  //    so the message loop never routes it to the orchestrator. The user sees
+  //    exactly what was chambered, the moment it's due — no rephrasing, no
+  //    duplicate, no model latency.
+  //
+  // 2. HEARTBEAT (id 'heartbeat-*'): a system automation that EXECUTES the
+  //    group's HEARTBEAT.md instructions, not a display notification. It keeps
+  //    the inject-and-poke path: idea='scheduled' (hidden from the chat view)
+  //    + enqueueMessageCheck so processOwnerMessages → getMessagesSince picks
+  //    it up and the orchestrator runs the instructions. Iris digests are
+  //    already skipped in the scheduler loop (fired by checkDigestsDue).
+  const isAutomation = task.id.startsWith('heartbeat-');
 
-  // is_from_me:true marks it owner-side; is_bot_message:false (the default) so
-  // the message loop's pending query — which filters is_bot_message = 0 — picks
-  // it up. The agent's reply then lands in the chat like any other response.
-  try {
-    storeMessage({
-      id: `automation-${task.id}-${Date.now()}`,
-      chat_jid: task.chat_jid,
-      sender: 'automation',
-      sender_name: 'Automation',
-      content,
-      timestamp: new Date().toISOString(),
-      is_from_me: true,
-      is_bot_message: false,
-      // The injected prompt is an internal instruction to the orchestrator, NOT
-      // a message the user needs to see in the Direct Line chat — the
-      // orchestrator's reply is the visible notification. So tag every injected
-      // prompt with idea='scheduled', which getMessagesForDashboard excludes
-      // (keeps the raw prompt out of the chat view). processOwnerMessages picks
-      // the prompt up via getMessagesSince, whose default filter includes
-      // idea='scheduled' (see db.ts) — that inclusion is what makes the
-      // reminder actually run. (The old comment here claimed getNewMessages
-      // surfaced these; it doesn't — getMessagesSince is the real pickup path.)
-      idea: 'scheduled',
-    });
-  } catch (err) {
-    logger.warn({ taskId: task.id, err }, 'Failed to store Automation chat message');
+  if (isAutomation) {
+    const group = Object.values(deps.registeredGroups()).find(
+      (g) => g.folder === (task.group_folder || 'owner'),
+    );
+    const content =
+      group?.requiresTrigger && !TRIGGER_PATTERN.test(prompt)
+        ? `@${ASSISTANT_NAME} ${prompt}`
+        : prompt;
+    try {
+      storeMessage({
+        id: `automation-${task.id}-${Date.now()}`,
+        chat_jid: task.chat_jid,
+        sender: 'automation',
+        sender_name: 'Automation',
+        content,
+        timestamp: new Date().toISOString(),
+        is_from_me: true,
+        is_bot_message: false,
+        // Hidden from the chat view (getMessagesForDashboard excludes non-empty
+        // idea); processOwnerMessages picks it up via getMessagesSince, whose
+        // default filter includes idea='scheduled' (see db.ts).
+        idea: 'scheduled',
+      });
+    } catch (err) {
+      logger.warn({ taskId: task.id, err }, 'Failed to store Automation chat message');
+    }
+    // Poke the message queue so the orchestrator runs the instructions now.
+    deps.queue.enqueueMessageCheck(task.chat_jid);
+  } else {
+    try {
+      storeMessage({
+        id: `automation-${task.id}-${Date.now()}`,
+        chat_jid: task.chat_jid,
+        sender: 'automation',
+        sender_name: '⏰ Reminder',
+        content: `⏰ ${prompt}`,
+        timestamp: new Date().toISOString(),
+        is_from_me: false,
+        // is_bot_message=true so the message loop (getNewMessages /
+        // getMessagesSince, both filter is_bot_message=0) NEVER routes this to
+        // the orchestrator — it's a display-only notification, not an
+        // instruction to execute.
+        is_bot_message: true,
+        // idea='' so getMessagesForDashboard shows it in the chat view.
+        idea: '',
+      });
+      logger.info({ taskId: task.id }, 'Reminder fired directly into chat');
+    } catch (err) {
+      logger.warn({ taskId: task.id, err }, 'Failed to store reminder chat message');
+    }
+    // No enqueueMessageCheck — the message is the notification, not a prompt
+    // for the orchestrator. is_bot_message=true keeps the loop off it.
   }
-
-  // Poke the normal message queue so the injected prompt is processed now
-  // rather than on the next poll tick.
-  deps.queue.enqueueMessageCheck(task.chat_jid);
 
   logTaskRun({
     task_id: task.id,
     run_at: new Date().toISOString(),
     duration_ms: Date.now() - startTime,
     status: 'success',
-    result: 'Prompt injected into chat',
+    result: isAutomation ? 'Prompt injected into chat' : 'Reminder fired into chat',
     error: null,
   });
 
   const nextRun = computeNextRun(task);
 
-  // One-time tasks auto-delete after firing; recurring tasks get next_run recomputed.
+  // One-time tasks persist as 'completed' (next_run=null → updateTaskAfterRun
+  // sets status='completed') so fired timer reminders stay visible in the
+  // reminders list instead of vanishing. Recurring tasks recompute next_run.
   if (task.schedule_type === 'once') {
-    deleteTask(task.id);
-    logger.info({ taskId: task.id }, 'One-time task auto-deleted after firing');
+    updateTaskAfterRun(task.id, null, 'Reminder fired into chat');
+    logger.info({ taskId: task.id }, 'One-time reminder fired and marked completed');
   } else {
-    updateTaskAfterRun(task.id, nextRun, 'Prompt injected into chat');
+    updateTaskAfterRun(task.id, nextRun, 'Reminder fired into chat');
   }
 }
 
