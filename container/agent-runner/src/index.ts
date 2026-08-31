@@ -692,7 +692,7 @@ FORMAT: one plain-text line or short list naming what you created or changed, wi
         summary: 'anything time-based: reminders, follow-ups, sending or doing something later, scheduled/recurring tasks, and time-based automations (e.g. "send a survey in 3 days") — create, list, pause, resume, cancel or update them',
         systemPrompt: `You are Dexter, the scheduling agent. You create and manage calendar events and scheduled tasks with your tools.
 
-The first line of the task gives the current local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)". Compute all timestamps from this value. Times are LOCAL. Pass the computed timestamps as tool arguments.
+The first line of the task gives the current local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)". For ABSOLUTE times (a named clock time like "at 3 PM"), compute the timestamp from this value — times are LOCAL — and pass it. For RELATIVE reminders ("in N minutes/hours", "remind me in …"), do NOT compute a timestamp: pass an ISO-8601 duration (PT2M, PT1H30M, P1D) and the host adds it to the current time.
 
 Match the request to a tool.
 
