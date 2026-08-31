@@ -1337,6 +1337,55 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
 </div>
 
 <!-- ==== ported modal: projectItemModal ==== -->
+<!-- Project create/edit modal (restored from index-old-root; the userdash refactor
+     removed this modal, leaving the New/Edit Project buttons pointing at nothing) -->
+<div class="modal-overlay hidden" id="projectModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal" role="dialog" aria-modal="true" style="max-width:520px">
+    <div class="modal-header">
+      <span class="modal-title" id="projectModalTitle">New Project</span>
+      <button class="modal-close" aria-label="Close dialog" onclick="UserDash.closeModal('projectModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="projectEditId">
+      <div class="wt-field" id="projectGroupField">
+        <label class="wt-field-label">Group</label>
+        <select class="input" id="projectGroupJid" style="width:100%"></select>
+      </div>
+      <div class="wt-field">
+        <label class="wt-field-label">Name</label>
+        <input type="text" class="input" id="projectName" placeholder="Project name..." style="width:100%">
+      </div>
+      <div class="wt-field">
+        <label class="wt-field-label">Description</label>
+        <textarea class="input" id="projectDescription" placeholder="Project description..." style="width:100%;min-height:70px"></textarea>
+      </div>
+      <div class="wt-field-row" style="display:flex;gap:12px;flex-wrap:wrap">
+        <div class="wt-field" style="flex:1;min-width:120px">
+          <label class="wt-field-label">Project Code</label>
+          <input type="text" class="input" id="projectCode" placeholder="e.g. PRJ-001" style="width:100%">
+        </div>
+        <div class="wt-field" style="flex:1;min-width:120px">
+          <label class="wt-field-label">Status</label>
+          <select class="input" id="projectStatus" style="width:100%">
+            <option value="On Track">On Track</option>
+            <option value="At Risk">At Risk</option>
+            <option value="Blocked">Blocked</option>
+          </select>
+        </div>
+        <div class="wt-field" style="flex:1;min-width:120px">
+          <label class="wt-field-label">Due Date</label>
+          <input type="date" class="input" id="projectDueDate" style="width:100%">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer wt-modal-footer">
+      <button class="btn btn-ghost" onclick="UserDash.closeModal('projectModal')">Cancel</button>
+      <button class="btn btn-accent" id="btnSaveProject">Save Project</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="projectItemModal">
   <div class="modal-backdrop"></div>
   <div class="modal" role="dialog" aria-modal="true" style="max-width:420px">

@@ -1398,20 +1398,13 @@ window.UserDash = (() => {
       var prioClass = t.priority === 'urgent' ? 'urgent' : t.priority === 'high' ? 'high' : t.priority === 'low' ? 'low' : 'medium';
       var dueStr = t.due_date ? new Date(t.due_date + 'T00:00:00').toLocaleDateString() : '';
       var overdue = t.due_date && t.status !== 'done' && t.due_date < new Date().toISOString().split('T')[0];
-      var assignOpts = '<option value="">Unassigned</option>';
-      projectGroupMembers.forEach(function(m) {
-        assignOpts += '<option value="' + escAttr(m.id) + '"' + (t.assigned_to === m.id ? ' selected' : '') + '>' + esc(m.name) + '</option>';
-      });
       return '<div class="wt-card" draggable="true" data-taskid="' + escAttr(t.id) + '" data-status="' + escAttr(t.status) + '">'
         + '<div class="wt-card-top">'
         + '<span class="wt-card-title">' + esc(t.title) + '</span>'
         + '<span class="wt-prio-badge prio-' + prioClass + '">' + esc(t.priority) + '</span>'
         + '</div>'
         + (t.description ? '<div class="wt-card-desc">' + esc(t.description).substring(0, 80) + '</div>' : '')
-        + '<div class="wt-card-meta">'
-        + '<select class="wt-assign-select" onchange="UserDash.assignProjectWorkTask(\'' + escAttr(t.id) + '\', this.value)" style="font-size:.72rem;padding:2px 4px;border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-secondary,#1a1a2e);color:var(--text-primary,#e0e0e0);max-width:120px">' + assignOpts + '</select>'
-        + (dueStr ? '<span class="wt-due' + (overdue ? ' overdue' : '') + '" style="margin-left:auto;' + (overdue ? 'color:var(--danger,#ef4444);font-weight:600' : '') + '">' + esc(dueStr) + '</span>' : '')
-        + '</div>'
+        + (dueStr ? '<div class="wt-card-meta"><span class="wt-due' + (overdue ? ' overdue' : '') + '" style="margin-left:auto;' + (overdue ? 'color:var(--danger,#ef4444);font-weight:600' : '') + '">' + esc(dueStr) + '</span></div>' : '')
         + '<div class="wt-card-actions">'
         + '<button class="btn btn-danger btn-sm" onclick="UserDash.deleteProjectWorkTask(\'' + escAttr(t.id) + '\')" style="padding:2px 6px;font-size:.7rem">&times;</button>'
         + '</div></div>';
@@ -1528,6 +1521,21 @@ window.UserDash = (() => {
     } catch { toast('Failed to assign task', 'error'); }
   }
 
+  async function addProjectWorkTask() {
+    if (!currentProjectId) return;
+    var title = prompt('Task title:');
+    if (!title) return;
+    try {
+      await fetch('/api/projects/' + encodeURIComponent(currentProjectId) + '/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() },
+        body: JSON.stringify({ title: title, created_by: currentUser.id })
+      });
+      toast('Task added', 'success');
+      openProject(currentProjectId);
+    } catch { toast('Failed to add task', 'error'); }
+  }
+
   async function deleteProjectWorkTask(taskId) {
     if (!confirm('Delete this task?')) return;
     try {
@@ -1538,6 +1546,141 @@ window.UserDash = (() => {
       toast('Task deleted', 'info');
       openProject(currentProjectId);
     } catch { toast('Failed to delete task', 'error'); }
+  }
+
+  function backToProjectList() {
+    currentProjectId = null;
+    currentProjectData = null;
+    document.getElementById('projectDetailView')?.classList.add('hidden');
+    document.getElementById('projectListView')?.classList.remove('hidden');
+  }
+
+  async function openProjectModal(projectId) {
+    document.getElementById('projectEditId').value = projectId || '';
+    document.getElementById('projectName').value = '';
+    document.getElementById('projectDescription').value = '';
+    document.getElementById('projectCode').value = '';
+    document.getElementById('projectStatus').value = 'On Track';
+    document.getElementById('projectDueDate').value = '';
+    var gSel = document.getElementById('projectGroupJid');
+    if (gSel) {
+      gSel.innerHTML = projectGroupsCache.map(function(g) {
+        return '<option value="' + escAttr(g.jid) + '">' + esc(g.name || g.jid) + '</option>';
+      }).join('');
+    }
+    if (projectId) {
+      document.getElementById('projectModalTitle').textContent = 'Edit Project';
+      const p = currentProjectData || (projectsCache || []).find(p => p.id === projectId);
+      if (p) {
+        document.getElementById('projectName').value = p.name || '';
+        document.getElementById('projectDescription').value = p.description || '';
+        document.getElementById('projectCode').value = p.project_code || '';
+        document.getElementById('projectStatus').value = p.status || 'On Track';
+        document.getElementById('projectDueDate').value = p.due_date || '';
+        if (gSel) gSel.value = p.group_jid || '';
+      }
+      if (gSel) gSel.parentElement.style.display = 'none';
+    } else {
+      document.getElementById('projectModalTitle').textContent = 'New Project';
+      if (gSel) {
+        gSel.parentElement.style.display = '';
+        if (currentProjectGroupFilter) gSel.value = currentProjectGroupFilter;
+      }
+    }
+    document.getElementById('projectModal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('projectName')?.focus(), 100);
+  }
+
+  async function saveProject() {
+    const editId = document.getElementById('projectEditId').value;
+    const name = document.getElementById('projectName').value.trim();
+    if (!name) { toast('Name is required', 'warning'); return; }
+    const body = {
+      name,
+      description: document.getElementById('projectDescription').value.trim(),
+      project_code: document.getElementById('projectCode').value.trim(),
+      status: document.getElementById('projectStatus').value,
+      due_date: document.getElementById('projectDueDate').value || null,
+    };
+    if (!editId) {
+      var gSel = document.getElementById('projectGroupJid');
+      body.group_jid = gSel ? gSel.value : '';
+      if (!body.group_jid) { toast('Please select a group', 'warning'); return; }
+    }
+    try {
+      if (editId) {
+        await fetch('/api/projects/' + encodeURIComponent(editId), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() }, body: JSON.stringify(body) });
+        toast('Project updated', 'success');
+        openProject(editId);
+      } else {
+        await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-user-session': userSession() }, body: JSON.stringify(body) });
+        toast('Project created', 'success');
+      }
+      document.getElementById('projectModal').classList.add('hidden');
+      loadProjects();
+    } catch { toast('Failed to save project', 'error'); }
+  }
+
+  async function doDeleteProject() {
+    if (!currentProjectId || !confirm('Delete this project? This cannot be undone.')) return;
+    try {
+      await fetch('/api/projects/' + encodeURIComponent(currentProjectId), { method: 'DELETE', headers: { 'x-user-session': userSession() } });
+      toast('Project deleted', 'info');
+      backToProjectList();
+      loadProjects();
+    } catch { toast('Failed to delete', 'error'); }
+  }
+
+  async function doCompleteProject() {
+    if (!currentProjectId || !confirm('Mark this project as completed?')) return;
+    try {
+      await fetch('/api/projects/' + encodeURIComponent(currentProjectId) + '/complete', { method: 'POST', headers: { 'x-user-session': userSession() } });
+      toast('Project completed', 'success');
+      backToProjectList();
+      loadProjects();
+    } catch { toast('Failed to complete', 'error'); }
+  }
+
+  async function doArchiveProject() {
+    if (!currentProjectId) return;
+    if (!confirm('Archive this project?')) return;
+    try {
+      await fetch('/api/projects/' + encodeURIComponent(currentProjectId), { method: 'DELETE', headers: { 'x-user-session': userSession() } });
+      toast('Project archived', 'info');
+      backToProjectList();
+      loadProjects();
+    } catch { toast('Failed to archive', 'error'); }
+  }
+
+  async function showProjectArchive() {
+    const el = document.getElementById('projectArchiveList');
+    if (!el) return;
+    el.classList.toggle('hidden');
+    if (!el.classList.contains('hidden')) {
+      try {
+        const r = await fetch('/api/projects/archive', { headers: { 'x-user-session': userSession() } });
+        const d = await r.json();
+        const archived = d.projects || [];
+        if (!archived.length) { el.innerHTML = '<div class="empty-state"><p class="empty-desc">No archived projects</p></div>'; return; }
+        el.innerHTML = '<h3 style="margin:16px 0 8px;font-size:0.9rem;color:var(--text-secondary)">Archived Projects</h3>'
+          + archived.map(p =>
+            '<div class="project-card archived">'
+            + '<div class="project-card-top"><span class="project-card-name">' + esc(p.name) + '</span>'
+            + '<button class="btn btn-accent btn-sm" onclick="event.stopPropagation();UserDash.restoreProject(\'' + escAttr(p.id) + '\')">Restore</button></div>'
+            + '<div class="project-card-meta">' + (p.completed_at ? 'Completed ' + new Date(p.completed_at).toLocaleDateString() : p.archived_at ? 'Archived ' + new Date(p.archived_at).toLocaleDateString() : '') + '</div>'
+            + '</div>'
+          ).join('');
+      } catch { el.innerHTML = '<div class="empty-state"><p>Failed to load archive</p></div>'; }
+    }
+  }
+
+  async function restoreProjectById(projectId) {
+    try {
+      await fetch('/api/projects/' + encodeURIComponent(projectId) + '/restore', { method: 'POST', headers: { 'x-user-session': userSession() } });
+      toast('Project restored', 'success');
+      showProjectArchive();
+      loadProjects();
+    } catch { toast('Failed to restore', 'error'); }
   }
 
   function renderDeliverables() {
@@ -3673,6 +3816,31 @@ window.UserDash = (() => {
   document.getElementById('gwBtnAddApiKey')?.addEventListener('click', addApiKey);
   document.getElementById('btnSaveHeartbeat')?.addEventListener('click', saveHeartbeat);
 
+  // Project detail tabs + per-tab "Add" buttons. These handlers were left behind
+  // in app-old.js (which the dashboard no longer loads), so the tabs did nothing
+  // when clicked. Re-wire them here against the functions that already live in
+  // this module. Delegated on document so it survives any project re-render.
+  document.addEventListener('click', function (e) {
+    const tab = e.target.closest('.project-tab');
+    if (tab && tab.dataset.ptab) { switchProjectTab(tab.dataset.ptab); return; }
+  });
+  document.getElementById('btnAddWorkTask')?.addEventListener('click', addProjectWorkTask);
+  document.getElementById('btnAddDeliverable')?.addEventListener('click', () => openProjectItemModal('deliverable'));
+  document.getElementById('btnAddPriority')?.addEventListener('click', () => openProjectItemModal('priority'));
+  document.getElementById('btnAddBlocker')?.addEventListener('click', () => openProjectItemModal('blocker'));
+  document.getElementById('btnAddTimeEntry')?.addEventListener('click', () => openProjectItemModal('time'));
+  // Project-level buttons (also left behind in app-old.js). Back / New / Edit /
+  // Save / Delete / Complete / Archive / archive-list + the group filter dropdown.
+  document.getElementById('btnBackToProjects')?.addEventListener('click', () => { backToProjectList(); loadProjects(); });
+  document.getElementById('btnNewProject')?.addEventListener('click', () => openProjectModal());
+  document.getElementById('btnSaveProject')?.addEventListener('click', saveProject);
+  document.getElementById('btnEditProject')?.addEventListener('click', () => openProjectModal(currentProjectId));
+  document.getElementById('btnDeleteProject')?.addEventListener('click', doDeleteProject);
+  document.getElementById('btnCompleteProject')?.addEventListener('click', doCompleteProject);
+  document.getElementById('btnArchiveProject')?.addEventListener('click', doArchiveProject);
+  document.getElementById('btnProjectArchive')?.addEventListener('click', showProjectArchive);
+  document.getElementById('projectGroupFilter')?.addEventListener('change', function() { currentProjectGroupFilter = this.value; renderProjectList(); });
+
   async function deleteFile(p) {
     if (!confirm('Delete ' + p.split('/').pop() + '?')) return;
     try {
@@ -3813,6 +3981,7 @@ window.UserDash = (() => {
     togglePromptFile,
     sendPrompt,
     closeModal: function(id) { document.getElementById(id)?.classList.add('hidden'); },
+    restoreProject: restoreProjectById,
     toggleAlarm,
     editAlarm,
     deleteAlarm,

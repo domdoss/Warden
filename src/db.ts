@@ -765,9 +765,15 @@ export function getMessagesSince(
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
   // Subquery takes the N most recent, outer query re-sorts chronologically.
+  // Default (no idea arg): include untagged messages AND idea='scheduled'
+  // (injected scheduled-task prompts). Without the 'scheduled' clause the
+  // orchestrator's pickup (processOwnerMessages → getMessagesSince) never saw
+  // fired reminders — they were stored with idea='scheduled' and silently
+  // dropped here, so no reminder ever ran. Other non-empty idea tags (e.g.
+  // body.idea from a channel) stay excluded, matching getMessagesForDashboard.
   const ideaFilter = idea !== undefined && idea !== ''
     ? `AND idea = ?`
-    : `AND (idea = '' OR idea IS NULL)`;
+    : `AND (idea = '' OR idea IS NULL OR idea = 'scheduled')`;
   const jids = [OWNER_JID];
   const placeholders = jids.map(() => '?').join(',');
   const sql = `

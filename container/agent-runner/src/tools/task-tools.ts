@@ -5,21 +5,27 @@ import { writeIpcFile, waitForResult, TASKS_DIR, IPC_DIR } from '../ipc-helpers.
 
 registry.register({
     name: 'schedule_task',
-    description: 'Create a recurring or one-time automated task. All times are LOCAL; compute schedule_value from the current local time given in your context.',
+    description: 'Create a recurring or one-time automated task. For a relative "in N minutes/hours" once task, pass an ISO-8601 duration (e.g. "PT2M") and the host computes the fire time — do NOT do timestamp arithmetic yourself. For an absolute "at a specific time" once task, pass a LOCAL timestamp and compute it from the current local time given in your context.',
     schema: {
         type: 'object',
         properties: {
             prompt: { type: 'string' },
-            schedule_type: { type: 'string', enum: ['cron', 'interval', 'once'], description: 'cron=recurring at set times, interval=every N milliseconds, once=single run at a specific time' },
-            schedule_value: { type: 'string', description: 'cron: a cron expression like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min) | interval: milliseconds like "300000" (5 min) | once: an ABSOLUTE local timestamp like "2026-05-27T09:25:00" (no "Z" or timezone suffix). NEVER pass natural language such as "in 5 minutes" or "tomorrow" — convert it to an absolute timestamp using the current local time from your context.' },
+            schedule_type: { type: 'string', enum: ['cron', 'interval', 'once'], description: 'cron=recurring at set times, interval=every N milliseconds, once=single run at a specific time or after a delay' },
+            schedule_value: { type: 'string', description: 'cron: a cron expression like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min) | interval: milliseconds like "300000" (5 min) | once: either an ISO-8601 DURATION like "PT2M" (in 2 minutes), "PT1H30M", "P1D" — the host adds this to now, so prefer this for any "in …"/"N from now" request and do NOT compute a timestamp yourself — OR an ABSOLUTE local timestamp like "2026-05-27T09:25:00" (no "Z"/timezone suffix) for a named clock time. NEVER pass natural language such as "in 5 minutes" or "tomorrow".' },
             context_mode: { type: 'string', enum: ['group', 'isolated'] },
         },
         required: ['prompt', 'schedule_type', 'schedule_value'],
     },
     handler: async (args, context) => {
         if (args.schedule_type === 'once') {
-            if (!args.schedule_value || isNaN(new Date(args.schedule_value).getTime())) {
-                return `Error: schedule_value "${args.schedule_value}" is not a valid timestamp. Pass an absolute local time like "2026-05-27T14:30:00" (no "Z"/timezone suffix), computed from the current local time you were given. Do NOT pass phrases like "in 5 minutes".`;
+            const sv = String(args.schedule_value || '');
+            const isDuration = /^P(?!$)(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?$/.test(sv)
+                || /^\+\d+$/.test(sv);
+            if (!sv) {
+                return `Error: schedule_value is required for once. Use an ISO-8601 duration like "PT2M" (in 2 minutes) or an absolute local timestamp like "2026-05-27T14:30:00" (no "Z"/timezone suffix).`;
+            }
+            if (!isDuration && isNaN(new Date(sv).getTime())) {
+                return `Error: schedule_value "${sv}" is not a valid duration or timestamp. Use "PT2M" (in 2 minutes), "PT1H30M", etc., or an absolute local time like "2026-05-27T14:30:00" (no "Z"/timezone suffix).`;
             }
         } else if (args.schedule_type === 'interval') {
             const ms = parseInt(args.schedule_value, 10);
@@ -148,7 +154,7 @@ registry.register({
         properties: {
             task_id: { type: 'string' }, prompt: { type: 'string' },
             schedule_type: { type: 'string', enum: ['cron', 'interval', 'once'] },
-            schedule_value: { type: 'string', description: 'Same format as schedule_task: cron expression | milliseconds | absolute local timestamp "2026-05-27T09:25:00" (no Z suffix). Never natural language.' },
+            schedule_value: { type: 'string', description: 'Same format as schedule_task: cron expression | milliseconds | ISO-8601 duration "PT2M" (for a once delay) | absolute local timestamp "2026-05-27T09:25:00" (no Z suffix). Never natural language.' },
         },
         required: ['task_id'],
     },
