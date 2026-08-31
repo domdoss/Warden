@@ -586,6 +586,9 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           created_at: now,
         };
         task.next_run = computeNextRun(task);
+        if (!task.next_run) {
+          return { ok: false, error: `could not compute a fire time from schedule_value "${scheduleValue}". For a relative once task use an ISO-8601 duration (e.g. "PT2M", "PT1H30M"); for an absolute time use a LOCAL timestamp "YYYY-MM-DDTHH:MM:SS" (no Z suffix).` };
+        }
         createTask(task);
         logger.info({ taskId, scheduleType, scheduleValue }, 'schedule_task callback: task created');
         return { ok: true, taskId };
