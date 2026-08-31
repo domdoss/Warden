@@ -10,6 +10,7 @@ import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { spawnOculusBackground, syncAgentCtxEnv } from './index.js';
+import { parseRelativeDuration } from './task-scheduler.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -2375,9 +2376,14 @@ async function handleTasksCrud(
       if (isNaN(ms) || ms <= 0) return error(res, 'Invalid interval');
       nextRun = new Date(Date.now() + ms).toISOString();
     } else if (scheduleType === 'once') {
-      const d = new Date(body.schedule_value);
-      if (isNaN(d.getTime())) return error(res, 'Invalid timestamp');
-      nextRun = d.toISOString();
+      const relMs = parseRelativeDuration(body.schedule_value);
+      if (relMs !== null) {
+        nextRun = new Date(Date.now() + relMs).toISOString();
+      } else {
+        const d = new Date(body.schedule_value);
+        if (isNaN(d.getTime())) return error(res, 'Invalid timestamp');
+        nextRun = d.toISOString();
+      }
     }
     const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     createTask({

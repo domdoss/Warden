@@ -65,6 +65,7 @@ export class OllamaProvider implements ChatProvider {
                 ...(request.keep_alive !== undefined ? { keep_alive: request.keep_alive } : {}),
                 ...(request.think !== undefined ? { think: request.think } : {}),
             }),
+            ...(request.signal ? { signal: request.signal } : {}),
         });
         if (!resp.ok) {
             throw new Error(`Ollama stream error: ${resp.status} ${resp.statusText}`);
@@ -86,8 +87,18 @@ export class OllamaProvider implements ChatProvider {
                         if (chunk.message.content) {
                             finalMessage.content = (finalMessage.content || '') + chunk.message.content;
                         }
+                        // Accumulate thinking (thinking-capable models emit it in
+                        // a separate field per chunk). Surfaced live in Oversight.
+                        if (chunk.message.thinking) {
+                            finalMessage.thinking = (finalMessage.thinking || '') + chunk.message.thinking;
+                        }
                         if (chunk.message.tool_calls) {
-                            finalMessage.tool_calls = chunk.message.tool_calls;
+                            // Accumulate (push), not replace — Ollama can stream
+                            // tool calls across chunks, and replacing would keep only
+                            // the last chunk's calls. Mirrors the orchestrator's own
+                            // streaming parser (index.ts collectedToolCalls.push).
+                            if (!finalMessage.tool_calls) finalMessage.tool_calls = [];
+                            for (const tc of chunk.message.tool_calls) finalMessage.tool_calls.push(tc);
                         }
                         onChunk({
                             message: chunk.message,

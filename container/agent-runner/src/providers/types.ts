@@ -16,12 +16,18 @@ export interface ChatRequest {
     /** Ollama structured-outputs JSON schema (passed as the `format` field).
      *  When set, the model's output is grammar-constrained to this schema. */
     format?: Record<string, any>;
+    /** Optional caller-supplied abort signal (e.g. a silence watchdog for a
+     *  streaming request). Passed through to the underlying fetch. */
+    signal?: AbortSignal;
 }
 
 export interface ChatResult {
     message: {
         role: string;
         content: string | null;
+        /** Thinking/chain-of-thought text (thinking-capable models). Surfaced
+         *  live in Oversight and used by sub-agents that plan before acting. */
+        thinking?: string;
         tool_calls?: Array<{
             id?: string;
             type?: string;

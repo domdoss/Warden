@@ -70,6 +70,7 @@ export class OpenAIProvider implements ChatProvider {
                 stream: true,
                 ...(request.options || {}),
             }),
+            ...(request.signal ? { signal: request.signal } : {}),
         });
         if (!resp.ok) {
             throw new Error(`OpenAI stream error: ${resp.status} ${resp.statusText}`);
@@ -78,6 +79,7 @@ export class OpenAIProvider implements ChatProvider {
         if (!reader) throw new Error('No response body');
         const decoder = new TextDecoder();
         let finalContent = '';
+        let finalThinking = '';
         const toolCalls: Map<number, any> = new Map();
 
         while (true) {
@@ -96,6 +98,12 @@ export class OpenAIProvider implements ChatProvider {
                     if (delta.content) {
                         finalContent += delta.content;
                     }
+                    // Some OpenAI-compatible providers stream thinking via a
+                    // `reasoning_content` delta field (e.g. DeepSeek, GLM thinking
+                    // mode). Accumulate it so Oversight can surface the chain.
+                    if (delta.reasoning_content) {
+                        finalThinking += delta.reasoning_content;
+                    }
                     if (delta.tool_calls) {
                         for (const tc of delta.tool_calls) {
                             const idx = tc.index ?? 0;
@@ -109,7 +117,7 @@ export class OpenAIProvider implements ChatProvider {
                         }
                     }
                     onChunk({
-                        message: { role: 'assistant', content: delta.content || null },
+                        message: { role: 'assistant', content: delta.content || null, thinking: delta.reasoning_content || undefined },
                         done: chunk.choices?.[0]?.finish_reason === 'stop',
                     });
                 } catch {}
@@ -128,6 +136,7 @@ export class OpenAIProvider implements ChatProvider {
             message: {
                 role: 'assistant',
                 content: finalContent || null,
+                thinking: finalThinking || undefined,
                 tool_calls: parsedToolCalls.length > 0 ? parsedToolCalls : undefined,
             },
             done: true,

@@ -2029,7 +2029,15 @@ async function processOwnerMessages(): Promise<void> {
     sessionId: 'owner',
     workspaceRoot: WORKSPACE_ROOT,
     history: pending,
-    timeoutMs: 10 * 60 * 1000, // orchestrator turns must be short: Atlas is always async; a stuck model/tool call recovers in 10 min
+    // Host-side backstop for an owner-chat turn. Aligned just past the runner's
+    // own 3h WALL_CLOCK_MS (container/agent-runner/src/index.ts) so long legitimate
+    // work — e.g. a complex on-device install that runs inline — completes instead
+    // of being SIGTERM'd at 10 min. The runner's wall-clock is the primary cap and
+    // exits cleanly; this host timer only reaps a persistent child that hangs past
+    // 3h05m. Stuck *model* calls are reaped far earlier by provider-level timeouts
+    // (120s cloud fetch + retries, 20min Ollama), so the old 10-min turn cap only
+    // killed real work. Cleared on normal completion (agent-spawn turnTimeout clear).
+    timeoutMs: 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
     memoryContext,
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,

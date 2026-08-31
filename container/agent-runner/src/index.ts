@@ -712,15 +712,14 @@ Manage (call list_tasks or list_calendar_events first to get the id, then use th
 - update_calendar_event — reschedule or edit a calendar event. Arg: id.
 
 schedule_value forms (for schedule_task):
-- once → absolute local timestamp "YYYY-MM-DDTHH:MM:SS"
+- once, relative ("in N minutes/hours/days", "remind me in …") → ISO-8601 duration: "PT2M", "PT90S", "PT1H30M", "P1D". The HOST adds this to the current time — do NOT compute an absolute timestamp yourself; transcribe the duration directly. This is the default for any "in …" / "N from now" request.
+- once, absolute ("at 3 PM", "at 5:00 tomorrow", a named clock time) → local timestamp "YYYY-MM-DDTHH:MM:SS". Check the computed time with the time tool before calling schedule_task.
 - interval → milliseconds as a string (N minutes = N×60000, N hours = N×3600000, N days = N×86400000)
 - cron → 5-field cron expression in local time
 
 The schedule_task prompt runs later in a turn with no memory of this conversation; write it as a complete instruction with all needed context.
 
 A plain to-do with no time trigger belongs to Byte; name it in one line.
-
-For a "once" time, check the computed time with the time tool before calling schedule_task.
 
 Call each tool once with all required args filled.
 
@@ -1259,6 +1258,12 @@ interface BackgroundJob {
     // other. Drained on completion: a follow-up runs only after this job
     // finishes (any terminal status — the file is freed either way).
     pendingFollowups: { delegate: string; task: string; urgent: boolean }[];
+    // Capped live streaming transcript for the Oversight window: recent
+    // thinking/content text and the last few tool calls. Optional — only
+    // assigned on streaming background jobs; readers default to ''.
+    streamThinking?: string;
+    streamContent?: string;
+    streamTools?: { name: string; args: string; t: number }[];
 }
 const backgroundJobs = new Map<string, BackgroundJob>();
 // Emit a live verbose-status line summarizing the background jobs currently
@@ -2797,6 +2802,8 @@ async function runSubAgent(
     onToolCall?: (toolName: string, argsSummary: string, resultPreview?: string) => void,
     temperature = 1,
     format?: Record<string, any>,
+    jobId?: string,
+    job?: BackgroundJob,
 ): Promise<{ content: string; modifiedFiles: string[] }> {
     const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
     // No hardcoded fallback: if this agent's model is empty (a manually-cleared
@@ -2926,6 +2933,54 @@ async function runSubAgent(
             log(`[${agentName}] injected ${drained.length} orchestrator nudge(s)`);
         }
         writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — thinking`, ts: Date.now() });
+
+        // ── Streaming ── Sub-agents stream (stream:true) like the orchestrator
+        // so a long file-write generation keeps bytes flowing — the connection
+        // is self-evidently alive and never brushes a fixed-duration wall. The
+        // old non-streaming provider.chat carried a 20-min hard abort that
+        // killed legitimate ~5-min generations (see memory atlas-fetch-failed-5min).
+        // A silence watchdog replaces the hard abort: each chunk resets a 120s
+        // timer; a genuinely stuck/silent socket aborts at 120s and the transient
+        // retry below handles it. An active generation (chunks every ~25ms)
+        // resets the timer forever and never aborts. Declared outside the try so
+        // the catch can clear the timer on error (no dangling 120s timer).
+        const silenceController = new AbortController();
+        const SILENCE_MS = 120_000;
+        let silenceTimer: any;
+        const resetSilence = () => {
+            if (silenceTimer) clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(() => {
+                log(`[${agentName}] Stream silent for ${SILENCE_MS / 1000}s — aborting fetch`);
+                try { silenceController.abort(); } catch { /* already aborted */ }
+            }, SILENCE_MS);
+        };
+        // Throttle the per-iteration progress status so a fast stream (~40 t/s)
+        // doesn't emit a status line per token; emit every ~400ms while generating.
+        let lastStatusAt = 0;
+        const onChunk = (chunk: any) => {
+            resetSilence();
+            const m = chunk?.message;
+            if (!m) return;
+            // Accumulate a capped streaming transcript on the job record so
+            // Oversight can show the live output / thinking / tool calls.
+            if (job) {
+                if (m.thinking) job.streamThinking = ((job.streamThinking || '') + m.thinking).slice(-800);
+                if (m.content) job.streamContent = ((job.streamContent || '') + m.content).slice(-1200);
+                if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+                    job.streamTools = m.tool_calls.map((t: any) => ({
+                        name: t.function?.name || '?',
+                        args: shortArgs(t.function?.arguments),
+                        t: Date.now(),
+                    })).slice(-12);
+                }
+            }
+            const now = Date.now();
+            if (now - lastStatusAt > 400) {
+                lastStatusAt = now;
+                const preview = String(m.content || m.thinking || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+                if (preview) writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — ${m.thinking ? 'thinking' : 'generating'} ${preview}`, ts: now });
+            }
+        };
         try {
             const provider = getProvider();
             // Trim history to fit context budget before each chat call — budget
@@ -2935,23 +2990,40 @@ async function runSubAgent(
             const toolChars = JSON.stringify(tools).length;
             const trimmed = trimMessagesToBudget(messages, subAgentMsgBudgetChars(model, ctxOverride, sysChars, toolChars));
             if (trimmed.length !== messages.length) messages.length = 0, messages.push(...trimmed);
-            const chatResult = await provider.chat({
+            resetSilence();
+            const chatResult = await provider.chatStream({
                 model,
                 messages,
                 tools,
                 options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride) },
                 keep_alive: subAgentKeepAlive(agentName),
-                // First iteration lets atlas think/plan before acting — it runs a
-                // smaller model, and a planning step up front stops it diving into
-                // a read-edit-read-edit re-reading loop (it decides what it needs
-                // once, then reads each file a single time). Later iterations keep
-                // think off to preserve context for the visible answer. kimi and
-                // other leak-when-disabled models keep think on every request.
-                think: (agentName === 'atlas' && i === 0) || modelRequiresThink(model),
+                // First iteration lets atlas/vulkan think/plan before acting — a
+                // planning step up front stops it diving into a read-edit-read-edit
+                // re-reading loop (it decides what it needs once, then reads each
+                // file a single time). Later iterations keep think off to preserve
+                // context for the visible answer. kimi and other leak-when-disabled
+                // models keep think on every request.
+                think: ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model),
                 ...(format !== undefined ? { format } : {}),
-            });
+                signal: silenceController.signal,
+            }, onChunk);
+            clearTimeout(silenceTimer);
 
             const data = { message: chatResult.message, usage: chatResult.usage } as any;
+
+            // Surface the sub-agent's thinking as a thinking phase in the Live
+            // Activity panel. provider.chat() is non-streaming, so the whole chain
+            // arrives at once in data.message.thinking — but it was being discarded,
+            // so atlas/vulkan's first-turn plan was invisible (the orchestrator
+            // streams its own thinking live via appendStatus({phase:'thinking'});
+            // sub-agents didn't). Show it the same way: a thinking status line with
+            // a cleaned preview of the chain.
+            const subThinking = String(data.message?.thinking ?? '').trim();
+            if (subThinking) {
+                const preview = subThinking.replace(/\s+/g, ' ').trim().slice(0, 280);
+                writeStatus({ phase: 'thinking', label: `${agentName} thinking: ${preview}`, ts: Date.now() });
+                log(`[${agentName}] thinking (${subThinking.length} chars): ${preview}`);
+            }
 
             if (data.message?.tool_calls?.length) {
                 // Capture any text emitted alongside tool calls, for a useful partial
@@ -3044,6 +3116,7 @@ async function runSubAgent(
                 return { content, modifiedFiles: [...modifiedFiles] };
             }
         } catch (err: any) {
+            clearTimeout(silenceTimer);  // release the silence watchdog on any throw
             const errMsg = err?.message || String(err);
             // Transient provider failures (ollama mid-restart, the model still
             // loading into VRAM, a socket blip) must NOT kill the job on contact

@@ -25,15 +25,54 @@ import { ScheduledTask } from './types.js';
  *
  * Co-authored-by: @community-pr-601
  */
+/**
+ * Parse a relative-duration schedule_value the HOST computes against now, so
+ * the model never does timestamp arithmetic. Granite (dexter) was shifting
+ * digits between hour and minute — "2 minutes" from 11:10 → 13:12, not
+ * 11:12 — and its "time-tool check" was a no-op (same source/target TZ) that
+ * rubber-stamped the wrong value. With a duration, the model just transcribes
+ * "2 minutes" → "PT2M"; the host adds it to Date.now().
+ *
+ * Accepted forms:
+ *   - ISO-8601 duration: "PT2M", "PT1H30M", "P1D", "PT45S" (and combinations)
+ *   - "+<ms>": "+120000" (same convention as the `interval` type)
+ * Returns the duration in ms, or null if `value` is an absolute timestamp.
+ */
+export function parseRelativeDuration(value: string): number | null {
+  const v = String(value ?? '').trim();
+  if (v.startsWith('+')) {
+    const ms = parseInt(v.slice(1), 10);
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  }
+  const m =
+    /^P(?!$)(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(v);
+  if (!m) return null;
+  const [, Y, Mo, W, D, H, Mi, S] = m;
+  const ms =
+    (Y ? parseInt(Y, 10) * 365 * 86_400_000 : 0) +
+    (Mo ? parseInt(Mo, 10) * 30 * 86_400_000 : 0) +
+    (W ? parseInt(W, 10) * 7 * 86_400_000 : 0) +
+    (D ? parseInt(D, 10) * 86_400_000 : 0) +
+    (H ? parseInt(H, 10) * 3_600_000 : 0) +
+    (Mi ? parseInt(Mi, 10) * 60_000 : 0) +
+    (S ? parseInt(S, 10) * 1_000 : 0);
+  return ms > 0 ? ms : null;
+}
+
 export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'once') {
     // After the task has run at least once, there is no next run — return null
     // so updateTaskAfterRun marks it completed. On the initial creation call
-    // (task.last_run is null), convert the local schedule_value timestamp to a
-    // UTC ISO string so getDueTasks' `next_run <= now` comparison (which uses
-    // new Date().toISOString() = UTC) works correctly.
+    // (task.last_run is null), compute next_run. For a relative duration
+    // (PT2M / +120000) the host adds it to now; for an absolute local
+    // timestamp it converts to a UTC ISO string so getDueTasks' `next_run <=
+    // now` comparison (which uses new Date().toISOString() = UTC) works.
     if (task.last_run) return null;
     if (!task.schedule_value) return null;
+    const relMs = parseRelativeDuration(task.schedule_value);
+    if (relMs !== null) {
+      return new Date(Date.now() + relMs).toISOString();
+    }
     const d = new Date(task.schedule_value);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
@@ -277,10 +316,15 @@ async function runTask(
       timestamp: new Date().toISOString(),
       is_from_me: true,
       is_bot_message: false,
-      // Tag as a scheduled/automation message so getMessagesForDashboard (which
-      // excludes non-empty `idea`) keeps it out of /api/messages → the Direct
-      // Line chat. getNewMessages doesn't filter on `idea`, so the orchestrator
-      // still picks the prompt up and runs the task (e.g. Iris digests).
+      // The injected prompt is an internal instruction to the orchestrator, NOT
+      // a message the user needs to see in the Direct Line chat — the
+      // orchestrator's reply is the visible notification. So tag every injected
+      // prompt with idea='scheduled', which getMessagesForDashboard excludes
+      // (keeps the raw prompt out of the chat view). processOwnerMessages picks
+      // the prompt up via getMessagesSince, whose default filter includes
+      // idea='scheduled' (see db.ts) — that inclusion is what makes the
+      // reminder actually run. (The old comment here claimed getNewMessages
+      // surfaced these; it doesn't — getMessagesSince is the real pickup path.)
       idea: 'scheduled',
     });
   } catch (err) {
