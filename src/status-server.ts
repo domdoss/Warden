@@ -2388,7 +2388,7 @@ async function handleTasksCrud(
     const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     createTask({
       id: taskId,
-      chat_jid: body.chat_jid || 'web:dashboard',
+      chat_jid: body.chat_jid || OWNER_JID,
       prompt: body.prompt,
       schedule_type: scheduleType,
       schedule_value: body.schedule_value,
