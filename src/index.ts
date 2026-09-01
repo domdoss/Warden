@@ -2868,11 +2868,7 @@ function spawnChrome(): void {
   // headless.
   const hasWayland = !!(displayEnv.WAYLAND_DISPLAY && displayEnv.XDG_RUNTIME_DIR);
   const hasX = !!displayEnv.DISPLAY;
-  // BROWSER_HEADLESS=1 forces headless regardless of display detection — for
-  // headless hosts (the Pi) where a stale display env might leak in via
-  // import-environment. Without this, Chrome could spawn headed on a box with
-  // no actual display and abort.
-  const headless = process.env.BROWSER_HEADLESS === '1' || (!hasWayland && !hasX);
+  const headless = !hasWayland && !hasX;
   const chromeArgs = [
     `--remote-debugging-port=${CHROME_CDP_PORT}`,
     `--user-data-dir=${WARDEN_CHROME_PROFILE}`,
