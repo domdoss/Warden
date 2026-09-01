@@ -19,7 +19,6 @@ import {
 } from './anthropic-translate.js';
 import { logger } from './logger.js';
 import { getUserApiKeys } from './db.js';
-import { DEFAULT_CLOUD_MODEL } from './config.js';
 
 export type LLMProvider = 'ollama' | 'anthropic' | 'openai';
 
@@ -70,12 +69,13 @@ export async function getLLMConfig(userId?: string): Promise<LLMConfig> {
   // Anthropic/OpenAI keys can be added via settings and will be stored
   // in router_state or a separate table with proper encryption
 
-  // Default to Ollama if available
+  // Default to Ollama if available. No hardcoded model — the caller must pass
+  // the model from Settings (router_state). An empty model means "not set".
   const ollamaAvailable = await ollamaIsAvailable();
   if (ollamaAvailable) {
     return {
       provider: 'ollama',
-      model: DEFAULT_CLOUD_MODEL,
+      model: '',
     };
   }
 
@@ -104,7 +104,7 @@ export async function llmChat(
   if (provider.provider === 'ollama') {
     return ollamaChat(
       {
-        model: request.model || provider.model || DEFAULT_CLOUD_MODEL,
+        model: request.model || provider.model,
         messages: request.messages,
         tools: request.tools,
         options: {
@@ -122,7 +122,7 @@ export async function llmChat(
     }
     const result = await anthropicChat(
       {
-        model: request.model || provider.model || 'claude-sonnet-4-6',
+        model: request.model || provider.model,
         messages: request.messages,
         tools: request.tools,
         options: {
@@ -156,7 +156,7 @@ export async function llmChatStream(
   if (provider.provider === 'ollama') {
     return ollamaChatStream(
       {
-        model: request.model || provider.model || DEFAULT_CLOUD_MODEL,
+        model: request.model || provider.model,
         messages: request.messages,
         tools: request.tools,
         options: {
@@ -175,7 +175,7 @@ export async function llmChatStream(
     }
     return anthropicChatStream(
       {
-        model: request.model || provider.model || 'claude-sonnet-4-6',
+        model: request.model || provider.model,
         messages: request.messages,
         tools: request.tools,
         options: {

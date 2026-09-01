@@ -34,29 +34,20 @@ const JOURNAL_COMPACT_THRESHOLD = 20_000; // chars — compact JOURNAL.md beyond
 const JOURNAL_COMPACT_TARGET = 8_000;
 const JOURNAL_HARD_CAP_ENTRIES = 120;   // fallback ceiling: never keep more than this many session entries
 const REQUEST_TIMEOUT_MS = 120_000;
-// Last-resort default — a model that exists on the Pi's ollama. Normally
-// overridden by WARDEN_MEMORY_MODEL env or the dashboard's mercury/orchestrator
-// model (see resolveMemoryModel).
-const FALLBACK_MODEL = 'glm-5.2:cloud';
 
 const lastWriteback: Record<string, { ts: number; lastMessageTs: string }> = {};
 
 /**
- * Resolve the distill model. Priority: WARDEN_MEMORY_MODEL env (explicit
- * override) → dashboard `mercury:model` → dashboard `orchestrator:model`
- * (same convention Mercury's compaction uses) → FALLBACK_MODEL. This must
- * resolve to a model the ollama endpoint actually serves — the Pi has no
- * local models, only `:cloud` ones, so a bare `gemma4:latest` default would
- * 404 and writeback would silently no-op.
+ * Resolve the distill model. The dashboard Settings rows are the ONLY source
+ * of model selection — no env override, no hardcoded fallback. Falls back from
+ * the Mercury row to the Orchestrator row (both are user-set settings), and if
+ * both are blank writeback no-ops rather than silently distilling on a model
+ * the user never chose.
  */
 function resolveMemoryModel(): string {
-  const env = process.env.WARDEN_MEMORY_MODEL;
-  if (env) return env.replace(/^local:/, '');
-  const fromDashboard = (getRouterState('mercury:model') || getRouterState('orchestrator:model') || '')
+  return (getRouterState('mercury:model') || getRouterState('orchestrator:model') || '')
     .replace(/^local:/, '')
     .trim();
-  if (fromDashboard) return fromDashboard;
-  return FALLBACK_MODEL;
 }
 
 // Memory writeback has its own model + ctx rows in Settings (mercury:model /
@@ -231,6 +222,7 @@ export async function runMemoryWriteback(chatJid: string): Promise<void> {
     lastWriteback[chatJid] = { ts: Date.now(), lastMessageTs: newest };
 
     const model = resolveMemoryModel();
+    if (!model) return; // no Mercury/Orchestrator model set in Settings — never fall back to a hardcoded model
     const memoryPath = path.join(WORKSPACE_ROOT, 'MEMORY.md');
     const journalPath = path.join(WORKSPACE_ROOT, 'JOURNAL.md');
     const existingMemory = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, 'utf-8') : '';
