@@ -72,6 +72,10 @@ import {
   markCalendarReminderFired,
   getTaskById,
   getSatelliteIp,
+  createAlarm,
+  getUserAlarms,
+  updateAlarm,
+  deleteAlarm as deleteAlarmDb,
 } from './db.js';
 import { decryptApiKey } from './encryption.js';
 import { fetchEmails, sendEmail, getEmailById } from './email.js';
@@ -1681,6 +1685,61 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
             logger.warn({ span, err }, 'ipc post_summary: failed');
             return { ok: false, error: String(err?.message ?? err) };
           }
+        }
+
+        // Alarm IPC — the agent-runner's `alarms` toolset (create/list/update/
+        // delete_alarm) used to write these as task files into an IPC dir the
+        // host no longer watches, so alarms were accepted ("Alarm created.")
+        // but never persisted and never fired. Handle them in-process instead.
+        // Single-user: all alarms belong to OWNER_JID.
+        if (type === 'create_alarm') {
+          const label = String(args.label || '').trim();
+          const rawTime = String(args.alarm_time || '').trim();
+          if (!label || !/^\d{1,2}:\d{2}$/.test(rawTime)) {
+            return { ok: false, error: 'create_alarm requires label and alarm_time (HH:MM)' };
+          }
+          // Normalize to HH:MM and default a one-time alarm to today — the
+          // model should never have to compute today's date.
+          const [h, m] = rawTime.split(':');
+          const hhmm = `${String(h).padStart(2, '0')}:${m}`;
+          const now = new Date();
+          const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+          let repeatType = String(args.repeat_type || 'once');
+          if (repeatType === 'none') repeatType = 'once';
+          const alarmDate = repeatType === 'once' ? (args.alarm_date || today) : (args.alarm_date || null);
+          const alarm = createAlarm(OWNER_JID, {
+            label, alarm_time: hhmm, alarm_date: alarmDate || undefined,
+            repeat_type: repeatType, repeat_days: args.repeat_days, sound: args.sound,
+          });
+          pushNotification(OWNER_JID, { type: 'alarm_created', message: `Alarm "${label}" set for ${hhmm}`, taskId: alarm?.id });
+          logger.info({ label: alarm.label, time: alarm.alarm_time, date: alarm.alarm_date, repeat: alarm.repeat_type }, 'Alarm created via ipc callback');
+          return { ok: true, alarm };
+        }
+
+        if (type === 'list_alarms') {
+          return { ok: true, alarms: getUserAlarms(OWNER_JID) };
+        }
+
+        if (type === 'update_alarm') {
+          const alarmId = String(args.alarm_id || '');
+          if (!alarmId) return { ok: false, error: 'update_alarm requires alarm_id' };
+          const updates: Record<string, unknown> = {};
+          if (typeof args.label === 'string') updates.label = args.label;
+          if (typeof args.alarm_time === 'string') updates.alarm_time = args.alarm_time;
+          if (args.alarm_date === null || typeof args.alarm_date === 'string') updates.alarm_date = args.alarm_date;
+          if (typeof args.repeat_type === 'string') updates.repeat_type = args.repeat_type === 'none' ? 'once' : args.repeat_type;
+          if (typeof args.repeat_days === 'string') updates.repeat_days = args.repeat_days;
+          if (typeof args.enabled === 'boolean') updates.enabled = args.enabled ? 1 : 0;
+          if (typeof args.sound === 'string') updates.sound = args.sound;
+          const updated = updateAlarm(alarmId, updates);
+          if (!updated) return { ok: false, error: 'alarm not found' };
+          return { ok: true, alarm: updated };
+        }
+
+        if (type === 'delete_alarm') {
+          const alarmId = String(args.alarm_id || '');
+          if (!alarmId) return { ok: false, error: 'delete_alarm requires alarm_id' };
+          return { ok: deleteAlarmDb(alarmId) };
         }
 
         return { ok: false, error: `unknown ipc type: ${type}` };
