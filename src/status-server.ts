@@ -5208,9 +5208,29 @@ export function startStatusServer(d: StatusDeps): void {
         message: alarm.label,
         taskId: alarm.id,
       });
-      // Multi-user chat-session relay removed; single-user Warden delivers
-      // alarms via pushNotification only.
-      logger.info({ alarmId: alarm.id, userId: alarm.user_id, label: alarm.label }, 'Alarm fired');
+      // The Pi is headless — no desktop, no notify-send, no notification center.
+      // Fire the alarm DIRECTLY into chat as a visible bot message (the same
+      // path reminders use in task-scheduler.ts) so the voice app speaks it.
+      // is_bot_message=true + idea='' → shown in the chat view but never routed
+      // to the orchestrator (getNewMessages/getMessagesSince filter
+      // is_bot_message=0), so there's no model reply, no duplicate, no latency —
+      // the user hears the alarm label the moment it's due.
+      try {
+        deps.storeMessage({
+          id: `alarm-${alarm.id}-${Date.now()}`,
+          chat_jid: OWNER_JID,
+          sender: 'automation',
+          sender_name: '⏰ Alarm',
+          content: `⏰ ${alarm.label}`,
+          timestamp: new Date().toISOString(),
+          is_from_me: false,
+          is_bot_message: true,
+          idea: '',
+        });
+      } catch (err: any) {
+        logger.warn({ alarmId: alarm.id, err }, 'Failed to store alarm chat message');
+      }
+      logger.info({ alarmId: alarm.id, userId: alarm.user_id, label: alarm.label }, 'Alarm fired into chat');
     }
   }, 30000);
 }
