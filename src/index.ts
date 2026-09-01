@@ -9,7 +9,6 @@ import {
   AGENT_TIMEOUT,
   ASSISTANT_NAME,
   DATA_DIR,
-  OLLAMA_CHAT_MODEL,
   OLLAMA_URL,
   POLL_INTERVAL,
   TIMEZONE,
@@ -1792,15 +1791,13 @@ async function updateMercurySummary(): Promise<void> {
       `Do NOT include the most recent ${MERCURY_RECENT_MESSAGES} turns; they are kept verbatim. ` +
       `Write in short bullet/paragraph form so the main agent can scan it quickly.\n\n${olderLines}\n\nMercury summary:`;
 
-    // Mercury respects the dashboard Mercury rows (mercury:model /
-    // local:mercury_ctx) — the same rows the memory writeback resolves. A bare
-    // /api/chat goes straight to the endpoint with the model and ctx the
-    // dashboard actually shows, instead of spawning through the agent loop on
-    // the shared Toolcall row. Explicit env override still wins.
-    const model = (process.env.WARDEN_MEMORY_MODEL
-      || getRouterState('mercury:model')
-      || getRouterState('local:subagent_model')
-      || '').replace(/^local:/, '').trim();
+    // Mercury's model comes ONLY from the dashboard Mercury row (mercury:model)
+    // — no env override, no fallback to the shared Toolcall row. Settings is
+    // the single source of model selection; a blank Mercury row means
+    // compaction no-ops rather than silently distilling on a model the user
+    // never chose.
+    const model = (getRouterState('mercury:model') || '')
+      .replace(/^local:/, '').trim();
     if (!model) return;
     // num_ctx and keep_alive must travel with the call — a bare request without
     // them loads a second copy of the model at Ollama's native 2048 ctx / 300s

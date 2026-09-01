@@ -1974,7 +1974,7 @@ async function handleOllamaTest(res: http.ServerResponse): Promise<void> {
   const { readEnvFile } = await import('./env.js');
   const envVars = readEnvFile(['OLLAMA_URL', 'OLLAMA_MODEL']);
   const ollamaUrl = process.env.OLLAMA_URL || envVars.OLLAMA_URL || 'http://127.0.0.1:11434';
-  const ollamaModel = process.env.OLLAMA_MODEL || envVars.OLLAMA_MODEL || 'granite4:latest';
+  const ollamaModel = process.env.OLLAMA_MODEL || envVars.OLLAMA_MODEL || '';
   const friendlyNames = readOllamaFriendlyNames();
   try {
     const resp = await fetch(`${ollamaUrl}/api/tags`);

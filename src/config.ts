@@ -104,19 +104,22 @@ export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // Cloud models exposed in the dashboard dropdown. The first entry is the
-// default used when no model is explicitly selected.
+// default selected when the dropdown has no blank option (defaults live in
+// Settings, never hardcoded as a runtime fallback).
 export const CLOUD_MODELS = [
   { id: 'glm-5.2:cloud', label: 'GLM 5.2 (cloud)', provider: 'glm' },
   { id: 'kimi-k2.6:cloud', label: 'Kimi K2.6 (cloud)', provider: 'kimi' },
   { id: 'kimi-k2.5:cloud', label: 'Kimi K2.5 (cloud)', provider: 'kimi' },
 ];
-export const DEFAULT_CLOUD_MODEL = 'glm-5.2:cloud';
 
 // Ollama configuration
 export const OLLAMA_URL =
   process.env.OLLAMA_URL || envConfig.OLLAMA_URL || 'http://127.0.0.1:11434';
+// No hardcoded model fallback here — the dashboard Settings rows (router_state,
+// seeded on first boot) are the only source of model selection. Empty string
+// means "not set"; callers must read the live router_state value, not this.
 export const OLLAMA_CHAT_MODEL =
-  process.env.OLLAMA_CHAT_MODEL || envConfig.OLLAMA_CHAT_MODEL || DEFAULT_CLOUD_MODEL;
+  process.env.OLLAMA_CHAT_MODEL || envConfig.OLLAMA_CHAT_MODEL || '';
 export const LOCAL_ASSISTANT_NAME =
   process.env.LOCAL_ASSISTANT_NAME || envConfig.LOCAL_ASSISTANT_NAME || 'Kimi';
 // Model routing mode: "" (Claude only), "local", "hybrid"
