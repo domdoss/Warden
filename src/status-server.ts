@@ -4488,9 +4488,51 @@ export function startStatusServer(d: StatusDeps): void {
         return json(res, { ok: true, enabled: cfg.enabled });
       }
       if (pathname === '/api/alarms' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ alarms: [] }));
-        return;
+        return json(res, { alarms: getUserAlarms(OWNER_JID) });
+      }
+      if (pathname === '/api/alarms' && req.method === 'POST') {
+        const body = parseJson(await parseBody(req)) as {
+          label?: string; alarm_time?: string; alarm_date?: string;
+          repeat_type?: string; repeat_days?: string; sound?: string;
+        };
+        if (!body.label || typeof body.label !== 'string') return error(res, 'label is required');
+        if (!body.alarm_time || typeof body.alarm_time !== 'string') return error(res, 'alarm_time is required');
+        const created = createAlarm(OWNER_JID, {
+          label: body.label,
+          alarm_time: body.alarm_time,
+          alarm_date: body.alarm_date,
+          repeat_type: body.repeat_type,
+          repeat_days: body.repeat_days,
+          sound: body.sound,
+        });
+        return json(res, { alarm: created }, 201);
+      }
+      const alarmIdMatch = pathname.match(/^\/api\/alarms\/(.+)$/);
+      if (alarmIdMatch && req.method === 'PUT') {
+        const id = alarmIdMatch[1];
+        const body = parseJson(await parseBody(req)) as Partial<{
+          label: string; alarm_time: string; alarm_date: string | null;
+          repeat_type: string; repeat_days: string; enabled: boolean;
+          snooze_until: string | null; sound: string;
+        }>;
+        const updates: Record<string, unknown> = {};
+        if (typeof body.label === 'string') updates.label = body.label;
+        if (typeof body.alarm_time === 'string') updates.alarm_time = body.alarm_time;
+        if (body.alarm_date === null || typeof body.alarm_date === 'string') updates.alarm_date = body.alarm_date;
+        if (typeof body.repeat_type === 'string') updates.repeat_type = body.repeat_type;
+        if (typeof body.repeat_days === 'string') updates.repeat_days = body.repeat_days;
+        if (typeof body.enabled === 'boolean') updates.enabled = body.enabled ? 1 : 0;
+        if (body.snooze_until === null || typeof body.snooze_until === 'string') updates.snooze_until = body.snooze_until;
+        if (typeof body.sound === 'string') updates.sound = body.sound;
+        const updated = updateAlarm(id, updates);
+        if (!updated) return error(res, 'Alarm not found', 404);
+        return json(res, { alarm: updated });
+      }
+      if (alarmIdMatch && req.method === 'DELETE') {
+        const id = alarmIdMatch[1];
+        const ok = deleteAlarmDb(id);
+        if (!ok) return error(res, 'Alarm not found', 404);
+        return json(res, { ok: true });
       }
       if (pathname === '/api/timers' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
