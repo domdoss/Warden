@@ -807,7 +807,10 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
     {
         delegate: 'iris',
         label: 'Iris',
-        maxIterations: 100,
+        // Single-shot: one tool call, then the output is handed straight back
+        // to the orchestrator. Iris doesn't loop on follow-up calls — if the
+        // one shot wasn't right, the orchestrator sends a fresh request.
+        maxIterations: 1,
         summary: 'email + digest compiler — read/send/compile email, and compile grounded hourly/daily/weekly digests from context handed to you in the task. Use for inbox tasks and the scheduled digest prompts.',
         systemPrompt: `You are Iris, the personal information + digest agent: email and digests.
 
@@ -3035,6 +3038,7 @@ async function runSubAgent(
                 messages.push(data.message);
 
                 // Execute each tool call
+                let lastToolResult = '';
                 for (const tc of data.message.tool_calls) {
                     const name = tc.function?.name;
                     const args = tc.function?.arguments || {};
@@ -3062,11 +3066,13 @@ async function runSubAgent(
                         try {
                             const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
                             const truncated = truncateToolResult(name, result);
+                            lastToolResult = truncated;
                             messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
                             if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
                                 modifiedFiles.add(args.file_path);
                             onToolCall(name, argSummary, truncated.slice(0, 200));
                         } catch (err: any) {
+                            lastToolResult = `Error: ${err.message}`;
                             messages.push({ role: 'tool', content: `Error: ${err.message}` });
                             onToolCall(name, argSummary, `Error: ${err.message}`.slice(0, 200));
                         }
@@ -3074,13 +3080,27 @@ async function runSubAgent(
                         try {
                             const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
                             const truncated = truncateToolResult(name, result);
+                            lastToolResult = truncated;
                             messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
                             if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
                                 modifiedFiles.add(args.file_path);
                         } catch (err: any) {
+                            lastToolResult = `Error: ${err.message}`;
                             messages.push({ role: 'tool', content: `Error: ${err.message}` });
                         }
                     }
+                }
+                // Single-shot agents (maxIterations <= 1): one tool call, then
+                // hand the result straight to the orchestrator — no second model
+                // round, no "stopped at safety limit" tail. The orchestrator
+                // decides if the one shot was right; if not, it sends a fresh
+                // request. (See the iris def: maxIterations: 1.)
+                if (cap <= 1) {
+                    const ran = [...new Set(toolsRun)];
+                    const content = lastToolResult.trim()
+                        || (ran.length ? `Done. Actions taken: ${ran.join(', ')}.` : 'Task completed (no response)');
+                    log(`[${agentName}] Single-shot: returning after 1 tool call (${ran.join(', ') || 'none'})`);
+                    return { content, modifiedFiles: [...modifiedFiles] };
                 }
                 // Sub-agent vision: drain any images queued by Read/webcam_capture
                 // so the model sees them on the next iteration. Sub-agents are

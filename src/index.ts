@@ -3008,10 +3008,18 @@ export function syncAgentCtxEnv(): void {
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
-  // Byte, Dexter, and Iris share one ctx (local:subagent_ctx).
-  process.env.BYTE_NUM_CTX = getRouterState('local:subagent_ctx') || '';
-  process.env.DEXTER_NUM_CTX = getRouterState('local:subagent_ctx') || '';
-  process.env.IRIS_NUM_CTX = getRouterState('local:subagent_ctx') || '';
+  // Byte, Dexter, and Iris each have their own ctx row in Settings
+  // (local:byte_ctx / dexter_ctx / iris_ctx). Until a per-agent value is saved
+  // they inherit the shared toolcall ctx (local:subagent_ctx) so behavior is
+  // unchanged. Reading the per-agent key here (and the host re-syncing env per
+  // turn before runAgent) is what lets the dropdown override the spawn-time
+  // 32k the persistent child was locked to.
+  process.env.BYTE_NUM_CTX =
+    getRouterState('local:byte_ctx') || getRouterState('local:subagent_ctx') || '';
+  process.env.DEXTER_NUM_CTX =
+    getRouterState('local:dexter_ctx') || getRouterState('local:subagent_ctx') || '';
+  process.env.IRIS_NUM_CTX =
+    getRouterState('local:iris_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
   process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
   // Mercury and Oculus have their own ctx rows in Settings. Until a per-agent
