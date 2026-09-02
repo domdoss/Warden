@@ -160,7 +160,6 @@
     <div class="flow-sub-list">
       <div class="flow-node">Atlas</div>
       <div class="flow-node">Byte</div>
-      <div class="flow-node">Dexter</div>
       <div class="flow-node">Iris</div>
       <div class="flow-node">Artemis</div>
       <div class="flow-node">The Council</div>
@@ -169,7 +168,7 @@
   <p style="margin: 4px 0 0; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono);">Multiple sub-agent calls in the same turn run in parallel. The verbose bar below the composer shows which one is live.</p>
 
   <div class="help-section-label"><span>02</span> The sub-agents</div>
-  <p style="margin: -8px 0 14px; color: var(--text-faint); font-size: 13px; line-height: 1.6;">Byte, Dexter, Iris, Mercury, and Oculus share one <strong>Toolcall model</strong> (a single model + ctx override in Settings). Atlas, Vulkan, Artemis, and each Council seat keep their own model.</p>
+  <p style="margin: -8px 0 14px; color: var(--text-faint); font-size: 13px; line-height: 1.6;">Byte, Iris, Mercury, and Oculus share one <strong>Toolcall model</strong> (a single model + ctx override in Settings). Atlas, Vulkan, Artemis, and each Council seat keep their own model.</p>
   <div class="agent-grid">
     <div class="agent-tile" style="--tile-accent: var(--info);">
       <div class="agent-tile-icon">
@@ -191,24 +190,14 @@
         <pre>Compute the factorial of 10 using python3.</pre>
       </div>
     </div>
-    <div class="agent-tile" style="--tile-accent: var(--violet);">
-      <div class="agent-tile-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      </div>
-      <div>
-        <h3>Dexter <small>time + scheduling (toolcall)</small></h3>
-        <p>Answers date/time questions and manages scheduled tasks. "What time is it in UTC?", "remind me at 3pm to check the deploy."</p>
-        <pre>Remind me at 3pm to check the deploy status.</pre>
-      </div>
-    </div>
     <div class="agent-tile" style="--tile-accent: var(--ok);">
       <div class="agent-tile-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>
       </div>
       <div>
-        <h3>Iris <small>email + digest (toolcall)</small></h3>
-        <p>Lists your inbox, counts unread, searches emails, and (if enabled) drafts and sends mail. Also writes hourly/daily/weekly digests. Unavailable until email is configured.</p>
-        <pre>List my last 10 unread emails and summarize each.</pre>
+        <h3>Iris <small>email + scheduling + digest (toolcall)</small></h3>
+        <p>Lists your inbox, counts unread, searches emails, and (if enabled) drafts and sends mail. Also creates and manages reminders, scheduled/recurring tasks, and calendar events, and writes hourly/daily/weekly digests. Email features are unavailable until email is configured.</p>
+        <pre>Remind me at 3pm to check the deploy status.</pre>
       </div>
     </div>
     <div class="agent-tile" style="--tile-accent: var(--accent);">

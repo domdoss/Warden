@@ -2128,11 +2128,10 @@ async function processOwnerMessages(): Promise<void> {
     // Supervisor self-audit on/off + cadence (dashboard "Supervisor" row).
     supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
     supervisorIntervalMs: parseInt(getRouterState('supervisor:interval_ms') || '600000', 10) || 600000,
-    // byte/dexter/iris share the Toolcall model (dashboard "Toolcall model" row,
+    // byte/iris share the Toolcall model (dashboard "Toolcall model" row,
     // persisted as local:subagent_model). The host feeds the same value into each
     // per-agent IPC field so the runner's dispatch is unchanged.
     byteModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
-    dexterModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
     irisModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
     artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
     drivingForce: getRouterState('orchestrator:driving_force') || '',
@@ -3026,7 +3025,6 @@ function seedPerAgentModelSettings(): void {
   seed('local:orch_keep_alive', '-1');
   // New per-agent model keys inherit the legacy shared value.
   seed('byte:model', subagent);
-  seed('dexter:model', subagent);
   seed('iris:model', subagent);
   seed('artemis:model', atlas);
   // Existing keys that previously fell back to orchestrator at runtime — seed
@@ -3046,7 +3044,6 @@ function seedPerAgentModelSettings(): void {
   seed('supervisor:interval_ms', '600000');
   // ctx — preserve each agent's current effective value.
   seed('local:byte_ctx', toolsCtx);
-  seed('local:dexter_ctx', toolsCtx);
   seed('local:iris_ctx', toolsCtx);
   seed('local:artemis_ctx', atlasCtx);
   // Oculus bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
@@ -3067,16 +3064,14 @@ export function syncAgentCtxEnv(): void {
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
-  // Byte, Dexter, and Iris each have their own ctx row in Settings
-  // (local:byte_ctx / dexter_ctx / iris_ctx). Until a per-agent value is saved
+  // Byte and Iris each have their own ctx row in Settings
+  // (local:byte_ctx / iris_ctx). Until a per-agent value is saved
   // they inherit the shared toolcall ctx (local:subagent_ctx) so behavior is
   // unchanged. Reading the per-agent key here (and the host re-syncing env per
   // turn before runAgent) is what lets the dropdown override the spawn-time
   // 32k the persistent child was locked to.
   process.env.BYTE_NUM_CTX =
     getRouterState('local:byte_ctx') || getRouterState('local:subagent_ctx') || '';
-  process.env.DEXTER_NUM_CTX =
-    getRouterState('local:dexter_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.IRIS_NUM_CTX =
     getRouterState('local:iris_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';

@@ -42,7 +42,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
-    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','vulkan','artemis','iris'], tier: 'public' },
+    agent:     { name: 'agent',     tools: ['byte','atlas','vulkan','artemis','iris'], tier: 'public' },
 
     // Security tools — used by Oculus (the single background security agent) to
     // Oculus awareness tools — look at the live frame + log. Oculus is a SILENT
@@ -63,7 +63,6 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // and turn actionable messages into real projects/work tasks when the
     // user asks in chat.
     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','email'] },
-    'dexter-core':   { name: 'dexter-core',   includes: ['tasks','calendar'] },
     // Media (speaker/mic volume + playback) — atlas drives the hardware.
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
     'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','desktop-vision','media'] },
@@ -78,11 +77,15 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // merge active skill tools at spawn, so the data/skills/ library is inherited.
     'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
-    // Iris (digest compiler) — email (IMAP read_emails, works) + admin
-    // (post_summary, list_api_keys, api_request). Contacts/todos toolsets were
-    // removed entirely (no DB backend, were Radicale-only). Calendar + tasks
-    // come from buildDigestContext (DB) in INPUT (above), not from tools.
-    'iris-core':     { name: 'iris-core',     includes: ['email','admin'] },
+    // Iris — the single toolcall agent. Email (read/send/get/cache) + admin
+    // (post_summary, list_api_keys, api_request) + tasks (schedule/list/pause/
+    // resume/cancel/update) + calendar (create/list/update/delete). Iris is
+    // single-shot (one tool call per delegation); the orchestrator drives any
+    // multi-step flow (list → id → act) by calling iris once per step. The
+    // digest INPUT (calendar/tasks from DB) is still built host-side and passed
+    // in the prompt; iris does not need calendar/tasks tools for the digest
+    // itself, but owns them for explicit scheduling requests.
+    'iris-core':     { name: 'iris-core',     includes: ['email','admin','tasks','calendar'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };
 

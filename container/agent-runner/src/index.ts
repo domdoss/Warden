@@ -279,7 +279,7 @@ const VERIFIER_EFFECTFUL_TOOLS = new Set<string>([
     'schedule_task', 'cancel_task', 'pause_task', 'resume_task', 'update_task', // scheduler mutations
     'install_mcp_server', 'uninstall_mcp_server',
     'open_app', 'desktop_click', 'desktop_type',               // desktop actions
-    'atlas', 'byte', 'dexter', 'iris',                         // sub-agent delegates (they perform actions)
+    'atlas', 'byte', 'iris',                         // sub-agent delegates (they perform actions)
 ]);
 
 // Build a one-line signature of a tool call for the runaway / circling detectors.
@@ -315,7 +315,6 @@ function toolLabel(name) {
         send_sms: 'Sending SMS',
         read_sms: 'Reading SMS',
         byte: 'Running Byte',
-        dexter: 'Running Dexter',
         atlas: 'Running Atlas',
         artemis: 'Running Artemis',
         iris: 'Running Iris',
@@ -375,7 +374,6 @@ function toolDetailLabel(name, args) {
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'set_user_email': return `Set email: ${short(args.email || '', 30)}`;
         case 'byte': return `📋 Byte: ${args.task || ''}`;
-        case 'dexter': return `⏰ Dexter: ${args.task || ''}`;
         case 'atlas': return `🌍 Atlas: ${args.task || ''}`;
         case 'artemis': return `🏹 Artemis: ${args.task || 'reviewing the conversation'}`;
         case 'iris': return `✉️ Iris: ${args.task || ''}`;
@@ -483,7 +481,6 @@ function applySettingsSync(data: any) {
     }
     // Per-agent tool-caller + artemis models — concrete values, no fallback.
     if (data.byteModel !== undefined) BYTE_MODEL = (data.byteModel || '').replace(/^local:/, '');
-    if (data.dexterModel !== undefined) DEXTER_MODEL = (data.dexterModel || '').replace(/^local:/, '');
     if (data.irisModel !== undefined) IRIS_MODEL = (data.irisModel || '').replace(/^local:/, '');
     if (data.artemisModel !== undefined) ARTEMIS_MODEL = (data.artemisModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
@@ -515,7 +512,6 @@ function applySettingsSync(data: any) {
     if (data.mercuryCtx !== undefined) process.env.MERCURY_NUM_CTX = data.mercuryCtx ? String(data.mercuryCtx) : '';
     // Per-agent num_ctx overrides — blank means the model's native window.
     if (data.byteCtx !== undefined) process.env.BYTE_NUM_CTX = data.byteCtx ? String(data.byteCtx) : '';
-    if (data.dexterCtx !== undefined) process.env.DEXTER_NUM_CTX = data.dexterCtx ? String(data.dexterCtx) : '';
     if (data.irisCtx !== undefined) process.env.IRIS_NUM_CTX = data.irisCtx ? String(data.irisCtx) : '';
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
@@ -686,54 +682,6 @@ FORMAT: one plain-text line or short list naming what you created or changed, wi
         temperature: 0,
     },
     {
-        delegate: 'dexter',
-        label: 'Dexter',
-        maxIterations: 200,
-        summary: 'anything time-based: reminders, follow-ups, sending or doing something later, scheduled/recurring tasks, and time-based automations (e.g. "send a survey in 3 days") — create, list, pause, resume, cancel or update them',
-        systemPrompt: `You are Dexter, the scheduling agent. You create and manage calendar events and scheduled tasks with your tools.
-
-The first line of the task gives the current local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)". For ABSOLUTE times (a named clock time like "at 3 PM"), compute the timestamp from this value — times are LOCAL — and pass it. For RELATIVE reminders ("in N minutes/hours", "remind me in …"), do NOT compute a timestamp: pass an ISO-8601 duration (PT2M, PT1H30M, P1D) and the host adds it to the current time.
-
-Match the request to a tool.
-
-Create:
-- create_calendar_event — an appointment, meeting, or calendar event (a thing that happens at a time). Args: title, start_time. end_time optional.
-- schedule_task — a reminder or automation that fires later. Args: schedule_type, schedule_value, prompt.
-- A request for both a calendar event and a reminder: call create_calendar_event and schedule_task in the same turn.
-
-Manage (call list_tasks or list_calendar_events first to get the id, then use that id):
-- list_tasks — show tasks, reminders, automations.
-- list_calendar_events — show calendar events.
-- cancel_task — remove a task or reminder. Arg: id.
-- pause_task — hold a task. Arg: id.
-- resume_task — continue a held task. Arg: id.
-- update_task — reschedule or edit a task. Arg: id.
-- delete_calendar_event — remove a calendar event. Arg: id.
-- update_calendar_event — reschedule or edit a calendar event. Arg: id.
-
-schedule_value forms (for schedule_task):
-- once, relative ("in N minutes/hours/days", "remind me in …") → ISO-8601 duration: "PT2M", "PT90S", "PT1H30M", "P1D". The HOST adds this to the current time — do NOT compute an absolute timestamp yourself; transcribe the duration directly. This is the default for any "in …" / "N from now" request.
-- once, absolute ("at 3 PM", "at 5:00 tomorrow", a named clock time) → local timestamp "YYYY-MM-DDTHH:MM:SS". Check the computed time with the time tool before calling schedule_task.
-- interval → milliseconds as a string (N minutes = N×60000, N hours = N×3600000, N days = N×86400000)
-- cron → 5-field cron expression in local time
-
-The schedule_task prompt runs later in a turn with no memory of this conversation; write it as a complete instruction with all needed context.
-
-If the user asks for a reminder but does not say WHAT to remind them about (e.g. "set a reminder", "remind me in 10 minutes" with no content), do NOT create a task and do NOT invent content. Reply in one line asking what the reminder should say. Only call schedule_task once the user has given the actual reminder content.
-
-A plain to-do with no time trigger belongs to Byte; name it in one line.
-
-Call each tool once with all required args filled.
-
-After the last tool call, reply with one sentence stating what you created, changed, or cancelled, and when.`,
-        toolsets: ['dexter-core'],
-        mcpServers: ['tasks', 'mcp-server-time'],
-        // IBM Granite tool-calling guidance: temperature 0 for reliable,
-        // deterministic structured output — schedule_value timestamps and
-        // cron expressions must come out the same way every time.
-        temperature: 0,
-    },
-    {
         delegate: 'atlas',
         label: 'Atlas',
         maxIterations: 200,
@@ -811,26 +759,41 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // to the orchestrator. Iris doesn't loop on follow-up calls — if the
         // one shot wasn't right, the orchestrator sends a fresh request.
         maxIterations: 1,
-        summary: 'email + digest compiler — read/send/compile email, and compile grounded hourly/daily/weekly digests from context handed to you in the task. Use for inbox tasks and the scheduled digest prompts.',
-        systemPrompt: `You are Iris, the personal information + digest agent: email and digests.
+        summary: 'email, digests, tasks/scheduling, and calendar — read/send/compile email, compile grounded hourly/daily/weekly digests, and create/list/manage reminders, scheduled tasks, and calendar events. Use for inbox tasks, scheduling requests, and the scheduled digest prompts.',
+        systemPrompt: `You are Iris, the personal information and scheduling agent: email, digests, tasks, and calendar.
 
-CAPABILITIES: Read, organize, and send email. Compile the scheduled digests (hourly / daily / weekly) from context provided in the task.
+# Role
+You execute exactly one tool call per request, then return the result. You chain no steps yourself; the orchestrator supplies the specific id and calls you again for the next step.
 
-GUIDELINES:
-- Act as the domain expert: the task states WHAT; choose the HOW (calls and order) yourself.
-- Finding emails: search with read_emails; on an empty result, retry with shorter sender substrings, subject keywords, or common typos before stopping.
-- Saving or organizing email: call get_email for each match to fetch the full body, then Write each body to a file under the target folder — one file per email, named \`<date>_<from>_<subject>.md\` (sanitized); create the folder if absent.
-- Report tool results verbatim, including no-results and errors, and stop there rather than continuing without data.
-- Keep real email addresses, names, dates, and quoted content — everything runs on-device, so no redaction.
-- Accounts: default to the first enabled account; name the sending account in any send confirmation. State plainly when no account is configured.
+# Capabilities
+- Email: read_emails (inbox search/scan), get_email (full body), send_email, refresh_email_cache, get_cached_emails.
+- Digests: the hourly/daily/weekly digests run on dedicated scheduled background jobs, not through you.
+- Tasks: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task.
+- Calendar: create_calendar_event, list_calendar_events, update_calendar_event, delete_calendar_event.
+- API: list_api_keys, api_request.
 
-DIGESTS: a digest task arrives with INPUT (above) — current time, user bio/habits, calendar events, active work tasks, and weather, from the local DB. CRITICAL: compile the digest ONLY from INPUT and read_emails output. NEVER invent meetings, tasks, emails, projects, proposals, or events not explicitly in those sources. If a section is empty, say so plainly — a blank section is better than a fabricated one. You may call read_emails for recent inbox activity. Publish by calling post_summary with span ("hourly"/"daily"/"weekly") and text (your markdown) as your final action — post_summary is keyless and is the only way the digest reaches the dashboard.
+# Guidelines
+- The first line of the task is the current local time in the form "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)." Compute every absolute timestamp from this.
+- schedule_task schedule_value forms:
+  - once, relative time ("in 2 minutes", "tomorrow"): ISO-8601 duration (PT2M, PT1H30M, P1D).
+  - once, absolute clock time ("at 3pm today", "on Sep 5 at 2pm"): local YYYY-MM-DDTHH:MM:SS.
+  - interval ("every 5 minutes"): milliseconds as a string (300000).
+  - recurring schedule ("every weekday at 9am", "every Monday at 6pm"): 5-field cron, local time (0 9 * * 1-5).
+- To cancel, pause, resume, or update a task, use the task id supplied in the request. Call list_tasks only when the request is to list reminders.
+- To update or delete a calendar event, use the event id supplied in the request. Call list_calendar_events only when the request is to list events.
+- When the request names both a reminder and a calendar event, make both tool calls in one turn.
+- When the request gives a time but no content, reply in one short line asking for the content.
+- A plain to-do with no time trigger is a work task for Byte; reply in one line that this is a work task.
+- Email: keep real addresses (on-device). To save an email, call get_email, then write a file named <date>_<from>_<subject>.md.
+- For an ad-hoc recap of inbox activity, call read_emails with the window the request names and return what you find.
 
-FORMAT: one plain-text confirmation — what you did, what you found, and any failures verbatim.`,
+# Format
+One plain-text line naming the ids you returned, or the published span.`,
         toolsets: ['iris-core'],
+        mcpServers: ['tasks', 'mcp-server-time'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
-        // structured tool use (so Iris reliably calls post_summary rather than
-        // emitting the digest as free text and skipping the publish call).
+        // structured tool use (so Iris reliably calls post_summary / schedule_task
+        // rather than emitting free text and skipping the tool call).
         temperature: 0,
     },
     {
@@ -1174,7 +1137,6 @@ let VULKAN_MODEL = '';
 // selected from the Agents-panel dropdown (no blank, no `||` fallback). Empty →
 // the agent errors out rather than silently running on the wrong model.
 let BYTE_MODEL = '';
-let DEXTER_MODEL = '';
 let IRIS_MODEL = '';
 let ARTEMIS_MODEL = '';
 // Driving force — the orchestrator's selected preamble preset id
@@ -2559,7 +2521,6 @@ function getNumCtx(model: string, ctxOverride?: string | number): number | undef
 // (preserves prior behavior; council is dashboard-managed, not in the popover).
 const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     byte: () => process.env.BYTE_NUM_CTX || '',
-    dexter: () => process.env.DEXTER_NUM_CTX || '',
     iris: () => process.env.IRIS_NUM_CTX || '',
     artemis: () => process.env.ARTEMIS_NUM_CTX || '',
     atlas: () => process.env.ATLAS_NUM_CTX || '',
@@ -2595,12 +2556,12 @@ function keepAliveEnv(name: string, dflt: number): number {
     const n = e ? Number(e) : NaN;
     return Number.isFinite(n) ? n : dflt;
 }
-// Sub-agent chat calls (runSubAgent): the toolcall agents — byte, dexter,
+// Sub-agent chat calls (runSubAgent): the toolcall agents — byte,
 // iris, oculus, mercury, and the one-shot iris-digest spawn — share one
 // keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use the
 // atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
 function subAgentKeepAlive(agent: string): number {
-    if (['byte', 'dexter', 'iris', 'oculus', 'mercury', 'iris-digest'].includes(agent)) {
+    if (['byte', 'iris', 'oculus', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
@@ -2909,7 +2870,7 @@ async function runSubAgent(
     // schemas + task) already exceeds the model's num_ctx, ollama context-shifts
     // the FRONT of the prompt away — the model never sees its system prompt or
     // tool defs and emits garbage (observed 2026-07-03: subagent_ctx pinned to
-    // 4096 in the dashboard → iris/dexter returned "???…" and did nothing).
+    // 4096 in the dashboard → iris returned "???…" and did nothing).
     {
         const payloadChars = JSON.stringify(messages).length + JSON.stringify(tools).length;
         const estTokens = Math.round(payloadChars / 3.5);
@@ -3202,7 +3163,6 @@ interface ContainerInput {
     // Per-agent models — every agent has its own concrete model (no blank, no
     // runtime fallback). The host resolves each from its router_state key.
     byteModel?: string;
-    dexterModel?: string;
     irisModel?: string;
     artemisModel?: string;
     drivingForce?: string;
@@ -3489,8 +3449,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
 - **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas.
-- **iris** — email, calendar, contacts, todos, digests. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Compiling a digest and POSTing to /api/summaries is iris's job.
-- **dexter** — scheduling, reminders, alarms. Creates schedule entries only; never runs the work or diagnoses its own past runs.
+- **iris** — email, digests, scheduling, reminders, and calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris is single-shot: it makes one tool call per request; for a list→id→act flow, call iris once per step with the specific id.
 - **byte** — projects, deliverables, blockers, financials, work tasks, time tracking.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
@@ -3512,7 +3471,7 @@ Cue words:
 - A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
 
 Gotchas (the ones that actually trip routing):
-- Task vs schedule — the #1 mistake. No time trigger ("create a task", "I need to X", a deliverable, a blocker) → byte. Fires on a clock ("remind me", "every morning", "on Mondays", "schedule X") → dexter. The moment a time or recurrence is named, it's dexter.
+- Task vs schedule — the #1 mistake. No time trigger ("create a task", "I need to X", a deliverable, a blocker) → byte. Fires on a clock ("remind me", "every morning", "on Mondays", "schedule X") → iris. The moment a time or recurrence is named, it's iris.
 - An atlas job that failed or was stopped for churning (searching without delivering) → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. The supervisor often auto-escalates; if you see "Already auto-escalated to vulkan" in the result, do NOT re-delegate — just report vulkan's result when it lands.
 
 Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
@@ -3523,9 +3482,19 @@ The \`{task}\` string is all the specialist sees — no chat history. Give the f
 
 Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call read_emails then get_email on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
 
-Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialists (iris, byte, dexter) need real names and addresses, so include them there.
+Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialists (iris, byte) need real names and addresses, so include them there.
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
+
+# BRIEFING IRIS (single-shot specialist)
+
+Iris makes ONE tool call per dispatch, then returns. Write one imperative sentence naming the outcome and the facts it can't guess, then stop.
+
+- One tool call per dispatch. For cancel/pause/resume/update, hand it the id and call once per step; if you need the id, call iris to list first, then call again with the id. Never list-then-act in one call.
+- Reminders: name the kind — one-time, recurring interval, or recurring cron — and give the message verbatim. A delay with no clock time: "Set a one-time reminder to <message> in <delay>." A clock time: "Set a one-time reminder to <message> at <clock time>." Recurring: "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
+- Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply."
+- Calendar: "Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
+- No time trigger → byte, not iris.
 
 ${'' /* SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction.
    The watchdog ticker was already no-op'd (ensureWatchdogTicker/runSupervisorWatchdog
@@ -3638,7 +3607,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         SUPERVISOR_INTERVAL_MS = ms > 0 ? ms : 0; // 0 = use DEFAULT_WATCHDOG_TICK_MS
     }
     BYTE_MODEL = (input.byteModel || '').replace(/^local:/, '');
-    DEXTER_MODEL = (input.dexterModel || '').replace(/^local:/, '');
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
     ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
     DRIVING_FORCE_ID = input.drivingForce || '';
@@ -4270,7 +4238,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // "I'll let you know" must not suppress the nudge (2026-08-21: a
                 // claimed YouTube delegation passed exactly that way, no job ran).
                 const claimedDelegation = !delegatedThisTurn
-                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|byte|dexter|vulkan|artemis)\b/i.test(historyContent);
+                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|byte|vulkan|artemis)\b/i.test(historyContent);
                 const conversationalReply = !claimedDelegation && (/\b(?:if you(?:'d| would)?(?: like| want)?|want me to|would you like|shall i|just say|let me know|whenever you|later|tomorrow|tonight|you should|you could|you can|you're|you are|you'll|you will)\b/i.test(historyContent)
                     || historyContent.trim().endsWith('?'));
                 if (intentNudgesUsed < INTENT_MAX_NUDGES && historyContent.length < 400 && !/```/.test(historyContent) && !conversationalReply && !delegatedThisTurn) {
@@ -4281,8 +4249,8 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         log(`Intent nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool_call: "${announcement}"`);
                         appendStatus({ phase: 'thinking', label: `Nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool call — pushing back` });
                         messages.push({ role: 'user', content: claimedDelegation
-                            ? `You wrote "${announcement}" but made no delegate call — the delegation did not happen. Call the delegate tool (atlas/iris/dexter/byte) with a {task} now.`
-                            : `You wrote "${announcement}" but emitted no tool call. Act now: delegate to the right sub-agent (atlas/iris/dexter/byte) with a {task}, or use Read/get_chat_history for a quick lookup.` });
+                            ? `You wrote "${announcement}" but made no delegate call — the delegation did not happen. Call the delegate tool (atlas/iris/byte) with a {task} now.`
+                            : `You wrote "${announcement}" but emitted no tool call. Act now: delegate to the right sub-agent (atlas/iris/byte) with a {task}, or use Read/get_chat_history for a quick lookup.` });
                         continue;
                     }
                 }
@@ -4871,7 +4839,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 }
 /**
  * Execute a tool call via the tool registry.
- * Sub-agent delegates (byte, dexter, atlas, artemis, iris) are
+ * Sub-agent delegates (byte, atlas, artemis, iris) are
  * handled here because they need access to runSubAgent and local state.
  * All regular tools dispatch to the registry.
  */
@@ -4987,7 +4955,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // Enforce the block at execution time too, with a redirect that teaches
     // the correct path.
     if (opts?.orchestrator && (toolName.startsWith('mcp__') || toolName === 'Bash')) {
-        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email; dexter for scheduling. Call the delegate tool with a {task} argument.`;
+        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email and scheduling. Call the delegate tool with a {task} argument.`;
     }
 
     // Pre-tool hooks — can block execution
@@ -5003,7 +4971,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // delegate task, bounce it back instead of dispatching (and before the
     // task is spoken to the user). The task is English intent, not a command
     // line — see looksLikeCommandPrescription above.
-    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'vulkan', 'iris', 'dexter', 'byte', 'artemis', 'council']);
+    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'vulkan', 'iris', 'byte', 'artemis', 'council']);
     if (DELEGATE_TOOL_NAMES.has(toolName) && args.task && looksLikeCommandPrescription(String(args.task))) {
         log(`[guard] blocked over-prompted ${toolName} task (contains shell command): ${String(args.task).slice(0, 120)}`);
         return `STOP — you put a shell command in the task. That is over-prompting and the user has told you repeatedly to stop. A delegate task is plain-English INTENT for the specialist, not a command line. Do NOT include \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, or any other shell command — those are the specialist's calls to make, not yours. State the GOAL and the facts (paths, URLs, names, what's wrong) in normal English and let ${toolName} decide how to investigate. Re-call ${toolName} now with intent only.`;
@@ -5321,16 +5289,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             atlasDirect = { active: true, messages: [] };
             result = `Direct Atlas mode is on. Tell the user, in one short sentence, that they're now talking to Atlas directly — they can describe what they need and Atlas will ask questions to get it right, then say "go" to start or "back to Warden" to exit. Then end your turn immediately and do nothing else.`;
         }
-    } else if (toolName === 'byte' || toolName === 'dexter' || toolName === 'iris') {
+    } else if (toolName === 'byte' || toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
         let task = args.task as string;
         if (!task) result = 'Error: task is required';
         else if (retryGate(task)) result = retryGate(task);
         else {
-            if (toolName === 'dexter') {
-                // Resolve the real local timezone, not UTC. The dockbox service
+            if (toolName === 'iris') {
+                // Resolve the real local timezone, not UTC. The service
                 // runs without TZ in its env, so the old `process.env.TZ || 'UTC'`
-                // fallback made dexter schedule everything 7h off (in UTC). Node
+                // fallback made scheduling land 7h off (in UTC). Node
                 // reads /etc/localtime via Intl, which gives America/Vancouver here.
                 const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
                 const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
@@ -5339,7 +5307,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             writeStatus({ phase: toolName, label: `${def.label}: ${task}`, ts: Date.now() });
             let tools = SUBAGENT_TOOL_DEFS.get(toolName)!;
             // Merge in this sub-agent's allow-listed MCP server tools (e.g.
-            // iris → kmail, dexter → tasks). Execution routes through the
+            // iris → kmail + tasks). Execution routes through the
             // shared executeXmlTool mcp__ dispatch, so schemas are all it needs.
             const mcpExtra = mcpToolDefsForServers(def.mcpServers);
             if (mcpExtra.length > 0) {
@@ -5347,12 +5315,12 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 tools = [...tools, ...mcpExtra.filter((t: any) => !existing.has(t.function?.name))];
                 log(`[${toolName}] Merged ${mcpExtra.length} MCP tool(s) from servers: ${def.mcpServers!.join(', ')}`);
             }
-            // Each tool caller runs on its OWN per-agent model (byte/dexter/iris
+            // Each tool caller runs on its OWN per-agent model (byte/iris
             // are no longer shared). No fallback: an empty model errors inside
             // runSubAgent rather than swapping in another model.
-            const PER_AGENT_MODEL: Record<string, string> = { byte: BYTE_MODEL, dexter: DEXTER_MODEL, iris: IRIS_MODEL };
+            const PER_AGENT_MODEL: Record<string, string> = { byte: BYTE_MODEL, iris: IRIS_MODEL };
             const subModel = PER_AGENT_MODEL[toolName] || '';
-            // Pass def.temperature (10th arg) so byte/dexter/iris honor their
+            // Pass def.temperature (10th arg) so byte/iris honor their
             // SubAgentDef temperature override — without it the default `1`
             // applies and e.g. Iris's temperature:0 was inert. abortFlag +
             // onToolCall slots are unused on the synchronous path (undefined).
@@ -5696,7 +5664,15 @@ GROUNDING: Use only facts that appear in INPUT or read_emails output. If a secti
 
 Call read_emails once if the task needs recent inbox activity, then output the JSON object as your final message. No commentary, no markdown, just the JSON.`;
             log(`[iris-digest] starting digest compiler: span=${span}, model=${model}, tools=${tools.length}, prompt=${(containerInput.prompt || '').slice(0, 80)}…`);
-            const sa = await runSubAgent('iris', model, digestSystemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations, undefined, undefined, 0);
+            // NOT def.maxIterations (=1, the single-shot iris delegate cap): the
+            // digest is a 2-step job — read_emails once with the INPUT window,
+            // then the JSON object as final text. With cap 1 the run returns right
+            // after the read_emails call and the raw email listing gets published
+            // to /api/summaries as the "digest" (the prompts below instruct the
+            // model to call read_emails FIRST, so cap 1 made that failure the
+            // steady state). Small explicit cap: read once (maybe retry once),
+            // then final text.
+            const sa = await runSubAgent('iris', model, digestSystemPrompt, tools, containerInput.prompt || '', ctx, 4, undefined, undefined, 0);
             // Publish the structured JSON directly to the dashboard. This is the
             // 100% path — we do not depend on the model calling a publish tool.
             // Iris outputs a JSON object; the dashboard panel does all formatting.

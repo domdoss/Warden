@@ -1442,7 +1442,7 @@ function handleSettings(res: http.ServerResponse): void {
     if (fs.existsSync(oculusMdPath)) oculusMd = fs.readFileSync(oculusMdPath, 'utf8');
   } catch { /* ignore */ }
   const drivingForces = listDrivingForces();
-  // Byte, Dexter, and Iris share one model + ctx — surfaced from the
+  // Byte and Iris share one model + ctx — surfaced from the
   // local:subagent_model/_ctx wire that the dashboard "Toolcall model" row
   // writes. Mercury and Oculus have their OWN model + ctx rows and keys
   // (mercury:model / oculus:model / local:mercury_ctx / local:oculus_ctx),
@@ -1476,9 +1476,8 @@ function handleSettings(res: http.ServerResponse): void {
     supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
     supervisorIntervalMs: parseInt(getRouterState('supervisor:interval_ms') || '600000', 10) || 600000,
     // Per-agent models — each agent has its own concrete model (no blank/inherit).
-    // Byte, Dexter, and Iris share one model (the dashboard "Toolcall model" row).
+    // Byte and Iris share one model (the dashboard "Toolcall model" row).
     byteModel: toolcallModel,
-    dexterModel: toolcallModel,
     irisModel: toolcallModel,
     artemisModel: getRouterState('artemis:model') || '',
     drivingForce: getRouterState('orchestrator:driving_force') || '',
@@ -1518,9 +1517,8 @@ function handleSettings(res: http.ServerResponse): void {
     atlasCtx: getRouterState('local:atlas_ctx') || '',
     toolsCtx: getRouterState('local:tools_ctx') || '',
     // Per-agent num_ctx overrides — blank means the model's native window.
-    // Byte, Dexter, and Iris share one ctx (the dashboard "Toolcall model" row).
+    // Byte and Iris share one ctx (the dashboard "Toolcall model" row).
     byteCtx: toolcallCtx,
-    dexterCtx: toolcallCtx,
     irisCtx: toolcallCtx,
     artemisCtx: getRouterState('local:artemis_ctx') || '',
     vulkanCtx: getRouterState('local:vulkan_ctx') || '',
@@ -1606,9 +1604,6 @@ async function handleSettingsSave(
   // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
   if (body.byteModel !== undefined) {
     setRouterState('byte:model', String(body.byteModel || ''));
-  }
-  if (body.dexterModel !== undefined) {
-    setRouterState('dexter:model', String(body.dexterModel || ''));
   }
   if (body.irisModel !== undefined) {
     setRouterState('iris:model', String(body.irisModel || ''));
@@ -1745,9 +1740,6 @@ async function handleSettingsSave(
   if (body.byteCtx !== undefined) {
     setRouterState('local:byte_ctx', String(body.byteCtx || ''));
   }
-  if (body.dexterCtx !== undefined) {
-    setRouterState('local:dexter_ctx', String(body.dexterCtx || ''));
-  }
   if (body.irisCtx !== undefined) {
     setRouterState('local:iris_ctx', String(body.irisCtx || ''));
   }
@@ -1789,9 +1781,9 @@ async function handleSettingsSave(
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
     body.atlasModel !== undefined || body.vulkanModel !== undefined || body.supervisorModel !== undefined || body.drivingForce !== undefined ||
-    body.byteModel !== undefined || body.dexterModel !== undefined ||
+    body.byteModel !== undefined ||
     body.irisModel !== undefined || body.artemisModel !== undefined ||
-    body.byteCtx !== undefined || body.dexterCtx !== undefined ||
+    body.byteCtx !== undefined ||
     body.irisCtx !== undefined || body.artemisCtx !== undefined ||
     body.vulkanCtx !== undefined || body.oculusCtx !== undefined ||
     body.councilSkepticModel !== undefined ||

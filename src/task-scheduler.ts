@@ -26,7 +26,7 @@ import { ScheduledTask } from './types.js';
  */
 /**
  * Parse a relative-duration schedule_value the HOST computes against now, so
- * the model never does timestamp arithmetic. Granite (dexter) was shifting
+ * the model never does timestamp arithmetic. Granite (iris) was shifting
  * digits between hour and minute — "2 minutes" from 11:10 → 13:12, not
  * 11:12 — and its "time-tool check" was a no-op (same source/target TZ) that
  * rubber-stamped the wrong value. With a duration, the model just transcribes
@@ -290,7 +290,7 @@ async function runTask(
 
   // Two firing modes:
   //
-  // 1. REMINDERS (every non-heartbeat task): the chamber prompt — set by dexter
+  // 1. REMINDERS (every non-heartbeat task): the chamber prompt — set by iris
   //    at creation time — fires directly into chat as a visible notification.
   //    No orchestrator turn, no model reply. The message is stored with
   //    is_bot_message=true + idea='' so getMessagesForDashboard shows it but

@@ -8,7 +8,7 @@
  * Timezone handling (mandatory — see the 2026-07-02 dexter hour-off bug):
  * every parsed datetime is normalized at the parse boundary to a naive local
  * ISO string in the system timezone (e.g. `2026-07-02T09:00:00`, no `Z`), the
- * format dexter/scheduler already use. Three input forms are handled:
+ * format the scheduler already uses. Three input forms are handled:
  *
  *   - `DTSTART;TZID=America/Vancouver:20260702T090000`  (zoned wall time)
  *   - `DTSTART:20260702T170000Z`                        (UTC, Z-suffixed)
@@ -48,7 +48,7 @@ export interface ICalTodo {
 // Timezone helpers (Intl-only, no deps)
 // ---------------------------------------------------------------------------
 
-// System timezone for normalization. Honor TZ env (dexter/scheduler read the
+// System timezone for normalization. Honor TZ env (the scheduler reads the
 // same value), fall back to the runtime's resolved zone.
 const SYSTEM_TZ: string =
   process.env.TZ ||
