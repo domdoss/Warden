@@ -2677,7 +2677,26 @@ const SUBAGENT_MAX_TOOL_RESULT_CHARS = 4000;    // ~1K tokens — relevant bits,
 // budgets mean the model gets the recent essentials (atlas/delegation results +
 // last chat turns), not 150K tokens of stale accumulation.
 const SUBAGENT_MSG_BUDGET_CHARS = 24000;        // ~6K tokens — sub-agent tool results
-const ORCHESTRATOR_MSG_BUDGET_CHARS = 20000;    // ~5K tokens verbatim tail. The pinned mercury summary slot (messages[1]) carries older turns the tail has dropped, so the verbatim tail only needs the last ~2 dispatch+result pairs + recent chat. Fits the 32k num_ctx with the shrunken fixed overhead (~6–7K tokens) + summary slot (~0.5K) + generation reserve.
+const ORCHESTRATOR_MSG_BUDGET_CHARS = 20000;    // fallback / floor when the model's window is unknown. In practice the budget is scaled to the orchestrator's real num_ctx (orchestratorMsgBudgetChars) — the pinned head alone (system prompt + mercury slot + first ask) is ~23K chars, so a flat 20K cap left the tail with NEGATIVE headroom and every mid-turn trim collapsed to the last message group (the "lost the emails answer" failure: user's question + Iris's results dropped mid-turn).
+
+/** Orchestrator message budget scaled to the model's actual num_ctx, mirroring
+ *  subAgentMsgBudgetChars. The budget covers the WHOLE messages array —
+ *  trimMessagesToBudget subtracts the pinned head itself. Never returns less
+ *  than the pinned head plus real working room: a budget under the head makes
+ *  every trim drop all but the newest group, which is how immediate context
+ *  (the live question and its sub-agent results) gets stripped mid-turn. */
+function orchestratorMsgBudgetChars(model: string, headChars: number, toolsChars: number): number {
+    const ctx = getNumCtx(model, orchestratorCtxOverride());
+    const floor = Math.max(ORCHESTRATOR_MSG_BUDGET_CHARS, headChars + 20000);
+    if (!ctx || ctx <= 0) return floor; // window unknown — flat cap, but never below head + working room
+    const toolsTokens = Math.ceil(toolsChars / 3.5);
+    const outputReserve = 4096;                   // generation headroom
+    const availTokens = ctx - toolsTokens - outputReserve;
+    // The window is genuinely too small for even this configuration — fall back
+    // to the floor rather than a budget that instantly collapses the tail.
+    if (availTokens * 3 < floor) return floor;
+    return Math.min(availTokens * 3, 600000);     // ~3 chars/token (conservative)
+}
 
 function truncateToolResult(toolName: string, result: string): string {
     if (typeof result !== 'string') result = String(result ?? '');
@@ -3837,8 +3856,15 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 ? `${lastToolSummary} — planning next...`
                 : `Warden is thinking...`;
             appendStatus({ phase: 'thinking', label: thinkLabel });
-            // Trim history to fit context budget before each chat call.
-            const trimmedOrch = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
+            // Trim history to fit context budget before each chat call. The
+            // budget is scaled to the model's actual window — never flat, or the
+            // pinned head alone exhausts it and the tail collapses mid-turn.
+            const orchBudget = orchestratorMsgBudgetChars(
+                model,
+                estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
+                JSON.stringify(mergeSkillTools()).length,
+            );
+            const trimmedOrch = trimMessagesToBudget(messages, orchBudget);
             if (trimmedOrch.length !== messages.length) messages.length = 0, messages.push(...trimmedOrch);
             try {
                 // #3 Mid-loop breaker: if circling or runaway was detected last
@@ -4330,7 +4356,12 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         log(`Retry ${attempt}/${MAX_RETRIES} in ${delay/1000}s...`);
                         await new Promise(r => setTimeout(r, delay));
                         try {
-                            const trimmedRetry = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
+                            const retryBudget = orchestratorMsgBudgetChars(
+                                model,
+                                estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
+                                JSON.stringify(mergeSkillTools()).length,
+                            );
+                            const trimmedRetry = trimMessagesToBudget(messages, retryBudget);
                             if (trimmedRetry.length !== messages.length) messages.length = 0, messages.push(...trimmedRetry);
                             const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
                             if (toolIteration <= 1 || modelRequiresThink(model)) {
@@ -4454,7 +4485,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             log(`Tool cap hit with no final answer — forcing a no-tools round`);
             appendStatus({ phase: 'tool', label: 'Tool cap reached — forcing final answer...' });
             try {
-                const forcedMessages = trimMessagesToBudget(messages, ORCHESTRATOR_MSG_BUDGET_CHARS);
+                const forcedMessages = trimMessagesToBudget(messages, orchestratorMsgBudgetChars(
+                    model,
+                    estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
+                    JSON.stringify(mergeSkillTools()).length,
+                ));
                 const forcedBody: any = {
                     model,
                     messages: forcedMessages,
@@ -4651,14 +4686,14 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // leaving the orchestrator with amnesia between turns: it forgot it had
         // dispatched a sub-agent (→ double-dispatch) and lost the job result it
         // had just read (→ holding replies instead of relaying facts). Instead
-        // we rely on trimMessagesToBudget(ORCHESTRATOR_MSG_BUDGET_CHARS), which
+        // we rely on trimMessagesToBudget(orchestratorMsgBudgetChars(...)), which
         // runs before each chat call and trims oldest WHOLE groups (dispatch +
         // its result paired) to keep the window under budget — so recent
-        // dispatches and their results survive across turns. The verbatim budget
-        // is 20K chars (~5K tokens); older turns the tail drops are carried by
+        // dispatches and their results survive across turns. The budget is
+        // scaled to the orchestrator's real num_ctx (never less than the pinned
+        // head + working room); older turns the tail drops are carried by
         // the pinned mercury summary slot (messages[1], refreshed each turn), so
-        // the thread survives past the ~3-turn verbatim window without raising
-        // num_ctx.
+        // the thread survives past the verbatim window without raising num_ctx.
         // const collapsed = collapseToChatHistory(messages);
         // messages.length = 0;
         // messages.push(...collapsed);
