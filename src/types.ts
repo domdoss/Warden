@@ -48,7 +48,6 @@ export interface AgentInput {
   // Agents-panel dropdown (no blank, no runtime fallback). The host resolves each
   // from its router_state key; the agent-runner uses it directly and errors if empty.
   byteModel?: string;
-  dexterModel?: string;
   irisModel?: string;
   artemisModel?: string;
   drivingForce?: string;        // orchestrator preamble preset id (data/driving-forces/)

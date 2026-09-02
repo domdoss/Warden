@@ -887,7 +887,7 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint">Orchestrator replies to you. Supervisor runs the periodic checks on background jobs (small/cloud model recommended). Atlas does browser/research/review. Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Byte, Dexter, and Iris share one <b>Toolcall model</b> — the fast local tool-call agents. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
+        <div class="hint">Orchestrator replies to you. Supervisor runs the periodic checks on background jobs (small/cloud model recommended). Atlas does browser/research/review. Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Byte and Iris share one <b>Toolcall model</b> — the fast local tool-call agents. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
         <div class="setting-row"><label>Orchestrator</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
         </div>
@@ -950,7 +950,7 @@
           <label>Toolcall model</label>
           <div style="flex:1">
             <select class="select" id="sToolcallModel">${orchHtml}</select>
-            <div class="dim mono" style="font-size:10px;margin-top:2px">Shared by Byte, Dexter, and Iris — the fast local tool-call agents.</div>
+            <div class="dim mono" style="font-size:10px;margin-top:2px">Shared by Byte and Iris — the fast local tool-call agents.</div>
             <div class="setting-row" style="margin-top:6px"><label>ctx</label>
               <select class="select small" id="sToolcallCtx">${buildCtxOptions(d.subagentCtx)}</select>
               <span class="dim mono" style="font-size:10px">blank = model default</span>
@@ -1146,7 +1146,6 @@
     setSelect('sArtemisCtx', d.artemisCtx || '');
     setSelect('sVulkanCtx', d.vulkanCtx || '');
     setSelect('sByteCtx', d.byteCtx || '');
-    setSelect('sDexterCtx', d.dexterCtx || '');
     setSelect('sIrisCtx', d.irisCtx || '');
     setSelect('sOculusCtx', d.oculusCtx || '');
 
@@ -2379,7 +2378,7 @@
       title: 'Welcome',
       body: `
         <h2>This is Warden.</h2>
-        <p>Warden is a <strong>personal hybrid agent</strong> — one orchestrator model that replies to you, plus a fleet of specialist sub-agents (Atlas, Byte, Dexter, Iris, Artemis, The Council) it can delegate to. It can read files, run code, open browsers, send email, and schedule tasks on your machine.</p>
+        <p>Warden is a <strong>personal hybrid agent</strong> — one orchestrator model that replies to you, plus a fleet of specialist sub-agents (Atlas, Byte, Iris, Artemis, The Council) it can delegate to. It can read files, run code, open browsers, send email, and schedule tasks on your machine.</p>
         <p>There's a learning curve. Warden responds best to <em>actionable requests</em>, not conversation. The next few screens cover the essentials. You can also read the standalone guides:</p>
         <div class="topics">
           <a href="/help/not-a-chatbot.html" target="_blank">Not a chatbot</a>
@@ -2400,8 +2399,7 @@
         <ul>
           <li><strong>Atlas</strong> — browser + research (URLs, screenshots, fetch HTML).</li>
           <li><strong>Byte</strong> — compute (python3 / bash / node).</li>
-          <li><strong>Dexter</strong> — time + scheduling.</li>
-          <li><strong>Iris</strong> — email (read; send if enabled).</li>
+          <li><strong>Iris</strong> — email (read; send if enabled) + scheduling (reminders, calendar).</li>
           <li><strong>Artemis</strong> — read-only auditor / reviewer.</li>
           <li><strong>The Council</strong> — three Artemis seats deliberate in parallel.</li>
         </ul>
