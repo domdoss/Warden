@@ -230,6 +230,25 @@ const STATUS_MARKER = '---WARDEN_STATUS---';
 const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|delegate)\b/i;
 const INTENT_MAX_NUDGES = 2;
 
+// Narrated-but-never-dispatched guard (Atlas regression): the model narrates a
+// delegation in present-progressive ("Atlas is opening the page now") or future
+// ("I'll have Atlas do X — I'll let you know") then ends the turn with no tool
+// call. INTENT_RE and claimedDelegation (past-tense only) both miss this. The
+// structural check below keys on the invariant — a delegate NAME appears in the
+// reply with no matching tool_call this turn and it is NOT a past-tense
+// citation of a prior result ("Atlas reported…", "Atlas's report") — instead of
+// chasing phrasings (arms race per feedback-fix-general-cause-not-symptom).
+const DELEGATE_NAMES = ['atlas', 'iris', 'byte', 'vulkan', 'artemis', 'oculus'];
+// Words that, when they appear within ~40 chars before OR after a delegate
+// name, mark the mention as a citation of an already-completed result rather
+// than a promise to dispatch now. Before: "according to Atlas", "from Atlas".
+// After (subject-verb order): "Atlas noted…", "Vulkan reported…", "Atlas
+// finished/completed/delivered…". These are the structural completed-work
+// signal; present-progressive ("Atlas is opening") and future ("I'll have
+// Atlas") deliberately do NOT match, so the nudge still fires on real
+// narrated-but-undispatched hand-offs. Matched case-insensitively.
+const PAST_TENSE_MARKER_RE = /\b(?:reported|reports|said|says|noted|found|replied|concluded|observed|discovered|answered|confirmed|told|finished|completed|delivered|produced|wrote|built|returned|according\s+to|per|from|as)\b/i;
+
 // Prompt-injection guard markers: wrap external content (tool output, web
 // fetches, email bodies) so the model can recognize untrusted text and so
 // attacker-embedded marker literals are neutralized before wrapping.
@@ -700,7 +719,7 @@ WEB — Two tools, two jobs. No site-specific rituals — apply the same rule to
 Route by intent:
 - User just wants to KNOW something → \`WebFetch\`, answer in your reply, no browser.
 - User wants to SEE a page, watch/play media, or DO something (form, login, click) → find the real URL with \`WebFetch\`/\`WebSearch\`, then \`browser_navigate\` straight to that final URL so it opens in front of them. Reuse the shared browser — don't pile up new tabs.
-- User wants to SEE a LOCAL file you just wrote or that already exists (an HTML page, a PDF, an image) → \`open_app\` with \`app: "xdg-open"\` and the file's ABSOLUTE path. That opens it in their real default browser/viewer on the host display, fire-and-forget. Do NOT use \`browser_navigate\` for a local file — it rejects non-http(s) URLs — and do NOT spin up \`python3 -m http.server\` to work around that.
+- User wants to SEE a LOCAL file you just wrote or that already exists (an HTML page, a PDF, an image) → \`browser_navigate\` with the file's ABSOLUTE path as \`url\`. Bare paths open as file:// in the shared Warden Chrome and you get the snapshot back — check the snapshot shows the right page before you report done. Use \`open_app\` (xdg-open) only when the file belongs in its OS-default app (a PDF reader, an image viewer), not the browser. A local server IS the right call when the page genuinely needs one — it's the node/express/dev server you just built, or the page fails from file:// (fetch, CORS, service workers). Then: serve the directory that ACTUALLY contains the file, \`browser_navigate\` to the exact URL, and read the snapshot — a 404 or a different site means the server root is wrong; fix the root path, don't navigate again hoping it changed.
 - User is ALREADY on a page in the shared browser → work THERE. \`browser_current_url\` + \`browser_snapshot\` to see where they are, then act in that page (navigate onward, click, control media) instead of opening a new one.
 - \`WebFetch\` comes back empty/blocked → the page is probably JS-rendered; fall back to \`browser_navigate\` + \`browser_snapshot\` to read it.
 For media playback on any site, drive the page's \`<video>\`/\`<audio>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the site's UI buttons.
@@ -2701,19 +2720,13 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
     const total = estimateMessagesChars(msgs);
     if (total <= budgetChars) return msgs;
     const system = msgs[0];
-    // The persistent orchestrator pins a system-role mercury summary slot at
-    // messages[1] and the original first ask at messages[2]:
-    //   [system, summarySlot, initialUser, ...tail]
-    // The summary slot is the host's rolling compaction of older turns the
-    // verbatim tail has dropped — it carries the thread past the ~3-turn window
-    // the tail alone fits, so it is pinned and never trimmed. Detect it
-    // (messages[1] is role 'system'); fall back to the legacy
-    // [system, initialUser, ...tail] layout for any path that builds messages
-    // without the slot.
-    const hasSummarySlot = msgs[1]?.role === 'system';
-    const summarySlot = hasSummarySlot ? msgs[1] : undefined;
-    const initialUser = hasSummarySlot ? msgs[2] : msgs[1];
-    const tail = hasSummarySlot ? msgs.slice(3) : msgs.slice(2);
+    // The persistent orchestrator's layout is:
+    //   [system(+merged mercury summary), initialUser, ...tail]
+    // The mercury summary — the host's rolling compaction of older turns the
+    // verbatim tail has dropped — lives inside the system prompt (pinned, never
+    // trimmed; a separate messages[1] system slot trips Ollama renderers).
+    const initialUser = msgs[1];
+    const tail = msgs.slice(2);
     // Group the tail into complete units and drop oldest WHOLE groups: a group
     // is a user or assistant message plus any tool-result messages that follow
     // it. Dropping whole groups keeps every retained tool_call paired with its
@@ -2725,7 +2738,7 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
         if (m?.role === 'tool' && groups.length) groups[groups.length - 1].push(m);
         else groups.push([m]);
     }
-    const headMsgs = summarySlot ? [system, summarySlot, initialUser] : [system, initialUser];
+    const headMsgs = [system, initialUser];
     const headChars = estimateMessagesChars(headMsgs);
     let groupChars = groups.reduce((s, g) => s + estimateMessagesChars(g), 0);
     let start = 0;
@@ -3094,9 +3107,15 @@ async function runSubAgent(
             } else {
                 // Final text response. If the model went silent, synthesize a summary
                 // from the tools it ran so the orchestrator never gets a blank result.
+                // A turn with NO tools and NO text is not "completed" — it is a
+                // silent failure (observed 2026-09-02: fine-tuned iris emitted an
+                // empty turn on a reminder+calendar pair request). Report it as an
+                // error, like the degenerate-output guard below, so the orchestrator
+                // does not relay a fake success to the user.
                 const ran = [...new Set(toolsRun)];
                 const content = (data.message?.content || '').trim()
-                    || (ran.length ? `Done. Actions taken: ${ran.join(', ')}.` : 'Task completed (no response)');
+                    || (ran.length ? `Done. Actions taken: ${ran.join(', ')}.`
+                        : `Error: the ${agentName} sub-agent produced no output and ran no tools — the task did not happen. Tell the user it failed or retry with a clearer brief; do not claim success.`);
                 // Degenerate-result guard: pure punctuation / symbol soup (e.g. 31
                 // "?"s from a context-clamped granite, 2026-07-03) must reach the
                 // orchestrator as an ERROR — it was being relayed as ✅ success and
@@ -3191,6 +3210,18 @@ async function runNativeOllama(input: ContainerInput) {
     // Warm-runner window: inherited from data/env/env via the orchestrator's
     // process.env. Falls back to 30 minutes when unset or invalid.
     const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT || '', 10) || 30 * 60 * 1000;
+    // Headers-phase (time-to-first-byte) timeout: only the pre-headers window.
+    // Once headers arrive, the silence watchdog (90s/180s) + MAX_STREAM_DURATION_MS
+    // (10min) guard against genuinely stuck streams, so a larger TTFB only
+    // affects the wait for the first response byte. A local qwen3.8:27b cold
+    // reprocess of a ~22-24k-token prompt (SWA cache miss + model load) needs
+    // ~130s observed; default 180s for margin without making a stalled
+    // cloud-proxied request hang too long. Was hardcoded 120s, which fired on
+    // cold reprocess → 499. Env-tunable via ORCHESTRATOR_HEADERS_TIMEOUT_MS.
+    const HEADERS_TIMEOUT_MS = Math.max(
+        30_000,
+        parseInt(process.env.ORCHESTRATOR_HEADERS_TIMEOUT_MS || '', 10) || 180_000,
+    );
     const MAX_TOOL_ITERATIONS = 200;
 
     const MAX_STREAM_DURATION_MS = 10 * 60 * 1000; // 10 min total per stream
@@ -3675,38 +3706,54 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // tool call when it needs one. (Completion guidance lives in the system prompt.)
         // The parent composes EVERY turn's prompt with <mercury_summary>/<mercury_context>/
         // <chat_history> baked in. The persistent `messages` layout is:
-        //   [system, summarySlot, initialUser, ...verbatimTail]
-        // summarySlot (messages[1], system role) is the host's rolling compaction of
-        // older turns the verbatim tail has dropped — it is what keeps the thread
-        // alive past the ~3-turn window the tail alone fits. It is refreshed in
+        //   [system(+merged mercury slot), initialUser, ...verbatimTail]
+        // The mercury summary is MERGED INTO the system prompt (messages[0]) as a
+        // trailing <mercury_summary> block — NOT a separate system message at
+        // messages[1]. A second system message trips Ollama renderers (qwen3.8
+        // logs "non-leading system message" and the render is undefined behavior
+        // — linked to premature mid-word EOS truncation). It is refreshed in
         // place each turn from the latest <mercury_summary> injection (never grows).
         // The verbatim tail carries the live conversation; <chat_history> and
         // <mercury_context> are pure duplication on persistent turns and are stripped.
         let cleanedPrompt = prompt;
+        const MERCURY_RE = /\n*<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g;
         if (isFirstUserTurn) {
             // First turn after spawn / context-clear: a fresh process has no
             // in-memory conversation, so the host's <chat_history> + <mercury_context>
             // are kept in the first ask this turn (a follow-up like "run it again"
-            // needs the referent). Pin <mercury_summary> as the summary slot at
-            // messages[1] (extracting it from the prompt), and strip only the
-            // summary from the ask so it isn't duplicated. chat_history/mercury_context
-            // are stripped from the permanent first-ask slot on the NEXT turn.
+            // needs the referent). Merge <mercury_summary> into the system prompt
+            // (extracting it from the ask), and strip only the summary from the ask
+            // so it isn't duplicated. chat_history/mercury_context are stripped
+            // from the permanent first-ask slot on the NEXT turn.
             const sm = cleanedPrompt.match(/<mercury_summary>([\s\S]*?)<\/mercury_summary>\s*/);
             const body = sm && sm[1].trim()
                 ? sm[1].trim()
                 : '(no summary yet — mercury compaction populates this after the next reply)';
-            messages.push({ role: 'system', content: `<mercury_summary>\n${body}\n</mercury_summary>` });
+            MERCURY_RE.lastIndex = 0;
+            messages[0].content = messages[0].content.replace(MERCURY_RE, '') + `\n\n<mercury_summary>\n${body}\n</mercury_summary>`;
             cleanedPrompt = cleanedPrompt.replace(/<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g, '');
-            log(`First turn: pinned mercury summary slot (${body.length} chars)`);
+            log(`First turn: merged mercury summary into system prompt (${body.length} chars)`);
         } else {
-            // Persistent turn: refresh the pinned summary slot from the host's
+            // Persistent turn: refresh the merged summary block from the host's
             // latest <mercury_summary>, then strip all three re-injected blocks
             // from this turn's prompt (the verbatim tail carries the conversation;
-            // the summary lives in the slot).
+            // the summary lives in the system prompt).
             const sm = cleanedPrompt.match(/<mercury_summary>([\s\S]*?)<\/mercury_summary>\s*/);
-            if (sm && sm[1].trim() && messages[1] && messages[1].role === 'system') {
-                messages[1].content = `<mercury_summary>\n${sm[1].trim()}\n</mercury_summary>`;
-                log(`Persistent turn: refreshed mercury summary slot (${sm[1].trim().length} chars)`);
+            if (sm && sm[1].trim() && messages[0] && messages[0].role === 'system' && typeof messages[0].content === 'string') {
+                const newSlot = `<mercury_summary>\n${sm[1].trim()}\n</mercury_summary>`;
+                // Only rewrite the block when the summary actually changed. An
+                // unconditional equal-string write still diverges the cached
+                // prefix for qwen3.8's SWA attention on the next prompt eval,
+                // forcing a full 22k reprocess. Skipping a byte-identical write
+                // preserves the cache prefix.
+                MERCURY_RE.lastIndex = 0;
+                const cur = messages[0].content.match(/<mercury_summary>[\s\S]*?<\/mercury_summary>/);
+                if (!cur || cur[0] !== newSlot) {
+                    messages[0].content = messages[0].content.replace(MERCURY_RE, '').trimEnd() + `\n\n${newSlot}`;
+                    log(`Persistent turn: refreshed mercury summary in system prompt (${sm[1].trim().length} chars)`);
+                } else {
+                    log(`Persistent turn: mercury summary unchanged — skipping write (preserves SWA cache prefix)`);
+                }
             }
             const before = cleanedPrompt.length;
             cleanedPrompt = cleanedPrompt
@@ -3716,11 +3763,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             if (cleanedPrompt.length !== before) {
                 log(`Persistent turn: stripped ${before - cleanedPrompt.length} chars of re-injected context`);
             }
-            // The first ask (messages[2]) kept <chat_history>/<mercury_context> on
+            // The first ask (messages[1]) kept <chat_history>/<mercury_context> on
             // turn 1 for follow-up referents. Now that the verbatim tail carries the
             // live conversation, strip them once so the permanent first-ask slot is
-            // just the ask (the summary lives in its own pinned slot, never here).
-            const m2 = messages[2];
+            // just the ask (the summary lives merged in the system prompt, never here).
+            const m2 = messages[1];
             if (m2 && typeof m2?.content === 'string' && /<(chat_history|mercury_context)/.test(m2.content)) {
                 m2.content = m2.content
                     .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
@@ -3750,6 +3797,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // === Per-turn state for defensive loop patterns ============================
         let intentNudgesUsed = 0;          // #2: intent-without-action nudge cap
         let delegatedThisTurn = false;     // #2: a delegate ran this turn — closing prose after a hand-off is a completion announcement, not unfulfilled intent (nudging it re-dispatches the same job)
+        // Names of delegates actually invoked via a tool_call this turn. Used by
+        // the narrated-delegation guard to distinguish a genuine "Atlas is doing
+        // X now" promise (name mentioned, no call) from "Atlas reported X"
+        // citations of completed work (name mentioned AND was called).
+        const delegatesCalledThisTurn = new Set<string>();
         let circlingUselessRounds = 0;     // #3: consecutive useless rounds
         let forceToolFreeRound = false;    // #3: set by breaker → next round runs with NO tools
         let forcedNoToolRetries = 0;       // #3b: times a forced tool-free round still returned phantom tool_calls
@@ -3758,9 +3810,15 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         let verifierRoundsUsed = 0;        // #1: verifier sub-agent round cap
         let verifierActions: string[] = []; // #1: accumulated snapshot for the verifier
         let verifierTriggeredThisTurn = false; // #1: only fires once per turn (re-arms on new effectful work)
-        // Pipe status updates through stdout — no file I/O
+        // Pipe status updates through stdout — no file I/O. `fg:1` marks this
+        // as the ORCHESTRATOR'S OWN turn status: the host routes fg entries to
+        // the dashboard live label and uses them to flag a turn in flight.
+        // Without the marker, background-job heartbeats sharing this stdout
+        // stream clobber the foreground label mid-turn, and spontaneous digest
+        // turns (report-back replies, no host runAgent wrapper) are invisible
+        // to the Oversight panel entirely.
         function appendStatus(entry) {
-            writeStatus({ ...entry, ts: Date.now() });
+            writeStatus({ ...entry, fg: 1, ts: Date.now() });
         }
         log(`Entering tool loop (max ${MAX_TOOL_ITERATIONS} iterations)`);
         while (toolIteration < MAX_TOOL_ITERATIONS) {
@@ -3817,6 +3875,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             let tokenCount = 0;
             let inThinkingBlock = false;
             let wroteThinkingStatus = false;
+            let wroteRespondingStatus = false;
             let doneReason = '';
             const collectedToolCalls = [];
             // Write thinking status — include what just happened so the user sees progress
@@ -3872,7 +3931,8 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // the body stream exists. A cloud-proxied request that stalls
                 // BEFORE sending response headers would otherwise hang this
                 // await forever (observed: 11+ min dead chat, zero bytes).
-                const HEADERS_TIMEOUT_MS = 120_000;
+                // HEADERS_TIMEOUT_MS is derived at function scope from
+                // ORCHESTRATOR_HEADERS_TIMEOUT_MS (default 180s).
                 const headersTimer = setTimeout(() => {
                     log(`No response headers after ${HEADERS_TIMEOUT_MS / 1000}s — aborting fetch (stalled cloud request)`);
                     try { streamController.abort(); } catch { /* already aborted */ }
@@ -3974,7 +4034,19 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 if (content.includes('</think>') || content.includes('</reasoning>')) {
                                     inThinkingBlock = false;
                                     // Transition from thinking to responding
-                                    appendStatus({ phase: 'responding', label: 'Generating response...' });
+                                    appendStatus({ phase: 'responding', label: 'Warden is generating...' });
+                                }
+                                // Separate-thinking-field models (qwen3.8, kimi) stream
+                                // reasoning in data.message.thinking and never emit the
+                                // inline tags above — so without this, no status reaches
+                                // the dashboard while the final reply streams and the
+                                // Oversight panel freezes on the last stale label. Emit
+                                // 'responding' once when real content starts outside a
+                                // thinking block. 'Warden is generating...' is what the
+                                // dashboard maps to "composing a reply…".
+                                if (!inThinkingBlock && !wroteRespondingStatus) {
+                                    wroteRespondingStatus = true;
+                                    appendStatus({ phase: 'responding', label: 'Warden is generating...' });
                                 }
                                 // For models that put thinking in <think> tags, update status with content preview
                                 if (inThinkingBlock && !wroteThinkingStatus && fullContent.length > 50) {
@@ -4183,7 +4255,10 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         recentCallSigs.push(sig);
                         if (recentCallSigs.length > RECENT_CALL_SIG_DEPTH) recentCallSigs.shift();
                         callFreq[sig] = (callFreq[sig] || 0) + 1;
-                        if (SUBAGENT_BY_DELEGATE.has(name)) delegatedThisTurn = true;
+                        if (SUBAGENT_BY_DELEGATE.has(name)) {
+                            delegatedThisTurn = true;
+                            delegatesCalledThisTurn.add(name);
+                        }
                         if (VERIFIER_EFFECTFUL_TOOLS.has(name)) {
                             const resultPreview = (toolResults[k]?.content || '').slice(0, 300).replace(/\n/g, ' ');
                             verifierActions.push(`${name}(${JSON.stringify(args).slice(0, 200)}) → ${resultPreview}`);
@@ -4238,19 +4313,69 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // "I'll let you know" must not suppress the nudge (2026-08-21: a
                 // claimed YouTube delegation passed exactly that way, no job ran).
                 const claimedDelegation = !delegatedThisTurn
-                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|byte|vulkan|artemis)\b/i.test(historyContent);
-                const conversationalReply = !claimedDelegation && (/\b(?:if you(?:'d| would)?(?: like| want)?|want me to|would you like|shall i|just say|let me know|whenever you|later|tomorrow|tonight|you should|you could|you can|you're|you are|you'll|you will)\b/i.test(historyContent)
+                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|byte|vulkan|artemis|oculus)\b/i.test(historyContent);
+                // Narrated delegation: a delegate is named in the reply but was
+                // never called this turn, and the mention is NOT a past-tense
+                // citation ("Atlas reported…") or a possessive ("Atlas's
+                // report"). Catches present-progressive ("Atlas is opening the
+                // page now") and future ("I'll have Atlas do X — I'll let you
+                // know") hand-offs that escape both INTENT_RE and the past-tense
+                // claimedDelegation regex. Returns the named delegate so the
+                // nudge can name the exact tool to call.
+                let narratedDelegation = '';
+                if (!delegatedThisTurn) {
+                    for (const dn of DELEGATE_NAMES) {
+                        if (delegatesCalledThisTurn.has(dn)) continue;
+                        const re = new RegExp(`\\b${dn}\\b`, 'gi');
+                        let m: RegExpExecArray | null;
+                        while ((m = re.exec(historyContent)) !== null) {
+                            const idx = m.index;
+                            // Possessive "Atlas's" → citation of a prior artifact.
+                            if (historyContent[idx + dn.length] === "'" && historyContent[idx + dn.length + 1] === 's') continue;
+                            // Past-tense citation, two English orders:
+                            //  (a) marker before the name — "according to Atlas",
+                            //      "from Atlas", "per Atlas", "as Atlas said";
+                            //  (b) subject-verb after the name — "Atlas noted…",
+                            //      "Vulkan reported…", "Atlas said X". This is the
+                            //      common case for a completion report citing a
+                            //      delegate's result ("Vulkan noted the file had
+                            //      no localhost:8001 wiring") and MUST be excluded
+                            //      or the guard false-fires on the very report it
+                            //      should let through, re-dispatching a finished
+                            //      job. Scan both directions (~40 chars each).
+                            const preceding = historyContent.slice(Math.max(0, idx - 40), idx);
+                            if (PAST_TENSE_MARKER_RE.test(preceding)) continue;
+                            const following = historyContent.slice(idx + dn.length, idx + dn.length + 40);
+                            if (PAST_TENSE_MARKER_RE.test(following)) continue;
+                            narratedDelegation = dn;
+                            break;
+                        }
+                        if (narratedDelegation) break;
+                    }
+                }
+                const conversationalReply = !claimedDelegation && !narratedDelegation && (/\b(?:if you(?:'d| would)?(?: like| want)?|want me to|would you like|shall i|just say|let me know|whenever you|later|tomorrow|tonight|you should|you could|you can|you're|you are|you'll|you will)\b/i.test(historyContent)
                     || historyContent.trim().endsWith('?'));
-                if (intentNudgesUsed < INTENT_MAX_NUDGES && historyContent.length < 400 && !/```/.test(historyContent) && !conversationalReply && !delegatedThisTurn) {
+                // Narrations can be long ("I'll have Atlas open the page and
+                // report exactly what's on screen, then I'll summarize…"), so
+                // exempt narratedDelegation from the 400-char cap that bounds
+                // the INTENT_RE path; intent/claimed paths keep the cap.
+                if (intentNudgesUsed < INTENT_MAX_NUDGES && (narratedDelegation || historyContent.length < 400) && !/```/.test(historyContent) && !conversationalReply && !delegatedThisTurn) {
                     const intentMatch = historyContent.match(INTENT_RE);
-                    if (intentMatch || claimedDelegation) {
+                    if (intentMatch || claimedDelegation || narratedDelegation) {
                         intentNudgesUsed++;
                         const announcement = (intentMatch ? intentMatch[0] : historyContent).slice(0, 120);
                         log(`Intent nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool_call: "${announcement}"`);
                         appendStatus({ phase: 'thinking', label: `Nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool call — pushing back` });
-                        messages.push({ role: 'user', content: claimedDelegation
-                            ? `You wrote "${announcement}" but made no delegate call — the delegation did not happen. Call the delegate tool (atlas/iris/byte) with a {task} now.`
-                            : `You wrote "${announcement}" but emitted no tool call. Act now: delegate to the right sub-agent (atlas/iris/byte) with a {task}, or use Read/get_chat_history for a quick lookup.` });
+                        const delegateList = 'atlas/iris/byte/vulkan/artemis/oculus';
+                        let nudgeMsg: string;
+                        if (narratedDelegation) {
+                            nudgeMsg = `You wrote "${announcement}" and named ${narratedDelegation}, but you made no ${narratedDelegation} tool call — the delegation did not happen. Call the ${narratedDelegation} tool with a {task} now, or drop the narration and answer directly.`;
+                        } else if (claimedDelegation) {
+                            nudgeMsg = `You wrote "${announcement}" but made no delegate call — the delegation did not happen. Call the delegate tool (${delegateList}) with a {task} now.`;
+                        } else {
+                            nudgeMsg = `You wrote "${announcement}" but emitted no tool call. Act now: delegate to the right sub-agent (${delegateList}) with a {task}, or use Read/get_chat_history for a quick lookup.`;
+                        }
+                        messages.push({ role: 'user', content: nudgeMsg });
                         continue;
                     }
                 }
@@ -4660,8 +4785,9 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // dispatches and their results survive across turns. The budget is
         // scaled to the orchestrator's real num_ctx (never less than the pinned
         // head + working room); older turns the tail drops are carried by
-        // the pinned mercury summary slot (messages[1], refreshed each turn), so
-        // the thread survives past the verbatim window without raising num_ctx.
+        // the mercury summary merged into the system prompt (messages[0],
+        // refreshed each turn), so the thread survives past the verbatim window
+        // without raising num_ctx.
         // const collapsed = collapseToChatHistory(messages);
         // messages.length = 0;
         // messages.push(...collapsed);
@@ -4762,6 +4888,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             const unreadItems = inbox.unread();
             if (unreadItems.length > 0) {
                 turnWasInboxDigest = true;
+                // Spontaneous digest turn: no host runAgent wrapper wraps it, so
+                // agent:processing stays false — this fg status is what tells the
+                // host a turn is in flight, making the report-back reply visible
+                // in the Oversight panel instead of "nothing running".
+                writeStatus({ phase: 'thinking', label: 'Reporting back on finished work…', fg: 1, ts: Date.now() });
                 for (const item of unreadItems) inbox.markRead(item.jobId);
                 drainedDigestJobIds = unreadItems.map(i => i.jobId); // for one-shot requeue if this digest turn errors out
                 // Supervisor flags (kind: 'supervisor_flag') are NOT finished
@@ -5444,8 +5575,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             const cbResult = await writeCallbackAsync(toolName, args, 15000);
             if (cbResult?.ok) {
                 result = JSON.stringify(toolName === 'schedule_task'
-                    ? { ok: true, taskId: cbResult.taskId, message: `Task scheduled (id: ${cbResult.taskId}). It will run at the specified time.` }
-                    : { ok: true, message: `${toolName} completed.` });
+                    ? { ok: true, taskId: cbResult.taskId, message: `Task scheduled (id: ${cbResult.taskId}, type: ${args.schedule_type}, value: ${args.schedule_value}, prompt: "${String(args.prompt || '').slice(0, 200)}"). It will run at the specified time.` }
+                    : { ok: true, message: `${toolName} completed (task_id: ${args.task_id || 'n/a'}).` });
             } else {
                 result = JSON.stringify({ ok: false, error: cbResult?.error || `${toolName} failed in the parent process` });
             }
@@ -5678,8 +5809,14 @@ Call read_emails once if the task needs recent inbox activity, then output the J
             // Iris outputs a JSON object; the dashboard panel does all formatting.
             // Extract the JSON (the model may wrap it in prose/code fences); if
             // extraction fails, post the raw text and the UI falls back to
-            // markdown rendering.
+            // markdown rendering. But never publish an error string (e.g. the
+            // silent-turn guard's "Error: … produced no output") as a digest —
+            // that's a run failure, not digest content.
             let publishedText = (sa.content || '').trim();
+            if (publishedText.startsWith('Error:')) {
+                log(`[iris-digest] ${span} digest run failed (no valid output): ${publishedText.slice(0, 120)}`);
+                publishedText = '';
+            }
             const jsonMatch = publishedText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
             if (jsonMatch) publishedText = jsonMatch[1].trim();
             else {
