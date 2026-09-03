@@ -19,7 +19,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
 import {
   createTask,
   getAllTasks,
@@ -3219,7 +3219,13 @@ async function main(): Promise<void> {
   };
   startStatusServer({
     queue: { enqueueMessageCheck() {}, enqueueTask() {}, setActiveMode() {}, getStatus: () => {
-      const processing = getRouterState('agent:processing') === 'true';
+      // A turn is in flight if the host drove it (agent:processing, set in
+      // processOwnerMessages around runAgent) OR the runner is running a
+      // spontaneous digest turn — the report-back reply after a background job
+      // finishes. Those run inside the persistent child with no runAgent
+      // wrapper, so the fg statuses the runner streams are the only in-flight
+      // signal the host gets (isForegroundTurnActive).
+      const processing = getRouterState('agent:processing') === 'true' || isForegroundTurnActive();
       return {
         activeCount: processing ? 1 : 0,
         groups: [{

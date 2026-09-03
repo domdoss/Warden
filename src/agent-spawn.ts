@@ -490,6 +490,15 @@ export const liveStatus = {
   ts: 0,
 };
 
+// True while the runner child is executing an orchestrator turn — including
+// SPONTANEOUS digest turns (the report-back reply after a background job
+// finishes), which run inside the persistent child with no host runAgent
+// wrapper, so agent:processing never goes true for them. Set by the first
+// fg-tagged status the runner streams, cleared at turn end (OUTPUT_END) and
+// on child exit. The /api/status group active/idle flags OR this in.
+let fgTurnActive = false;
+export function isForegroundTurnActive(): boolean { return fgTurnActive; }
+
 // Structured per-job snapshot for the dashboard Oversight window. The runner
 // attaches `jobsList` to its ---WARDEN_STATUS--- heartbeats (emitJobsStatus);
 // the latest snapshot is the source of truth — each entry fully replaces it
@@ -578,6 +587,7 @@ export function clearLiveStatus() {
   liveStatus.tools = [];
   liveStatus.jobs = 0;
   liveStatus.ts = 0;
+  fgTurnActive = false;
 }
 
 function resetTurnState(callbacks: CallbackMap, resolve: (out: AgentOutput) => void, timeoutMs: number) {
@@ -679,27 +689,40 @@ function onPersistentStdoutData(chunk: Buffer) {
       try {
         const json = line.slice('---WARDEN_STATUS---'.length).trim();
         const entry = JSON.parse(json);
-        liveStatus.phase = entry.phase || '';
-        liveStatus.label = entry.label || '';
+        // fg:1 marks the ORCHESTRATOR'S OWN turn status. Only fg entries drive
+        // the dashboard live label — background-job heartbeats share this
+        // stdout stream and used to clobber the foreground label mid-turn
+        // (e.g. "atlas: iteration 44" showing while the orchestrator composed
+        // its reply). fg entries also flag a turn in flight: spontaneous
+        // digest turns (report-back replies) have no runAgent wrapper, so
+        // this is the only in-flight signal the host gets for them.
+        if (entry.fg) {
+          liveStatus.phase = entry.phase || '';
+          liveStatus.label = entry.label || '';
+          liveStatus.tools = Array.isArray(entry.tools) ? entry.tools : [];
+          liveStatus.ts = entry.ts || Date.now();
+          fgTurnActive = true;
+        }
         // Structured job snapshot for the Oversight window — the runner's
         // heartbeat carries the full running list; replace on every update.
         if (Array.isArray(entry.jobsList)) {
           liveJobs = entry.jobsList;
         }
-        liveStatus.tools = Array.isArray(entry.tools) ? entry.tools : [];
-        liveStatus.jobs = typeof entry.jobs === 'number' ? entry.jobs : 0;
-        liveStatus.ts = entry.ts || Date.now();
+        // Running-jobs count comes only from entries that carry it (the
+        // heartbeats) — non-carrying fg statuses used to zero it out and make
+        // runningJobs flicker mid-turn.
+        if (typeof entry.jobs === 'number') liveStatus.jobs = entry.jobs;
         // Buffer real progress for the dashboard panel — only when the label
         // actually changes, so a job that emits the same status repeatedly
         // doesn't flood the history with identical entries.
-        if (liveStatus.label && liveStatus.label !== lastProgressLabel) {
-          lastProgressLabel = liveStatus.label;
+        if (entry.label && entry.label !== lastProgressLabel) {
+          lastProgressLabel = entry.label;
           pushProgress({
-            ts: liveStatus.ts,
+            ts: entry.ts || Date.now(),
             kind: 'status',
-            phase: liveStatus.phase,
-            label: liveStatus.label,
-            jobs: liveStatus.jobs,
+            phase: entry.phase || '',
+            label: entry.label,
+            jobs: typeof entry.jobs === 'number' ? entry.jobs : 0,
           });
         }
       } catch { /* ignore malformed status lines */ }
@@ -765,6 +788,7 @@ function setupPersistentChild(child: ChildProcess, startedAt: number) {
     logger.info({ exitCode, signal, stderrLen: agentState.stderr.length, stderrTail: agentState.stderr.slice(-2000) }, 'agent-spawn: child exited');
     if (persistentChild === child) { persistentChild = null; currentAgent = null; }
     liveJobs = []; // runner died — all its background jobs went with it
+    fgTurnActive = false; // …and any in-flight digest turn died with it
     const r = agentState.resolve;
     if (r) {
       agentState.resolve = null;
@@ -782,6 +806,7 @@ function setupPersistentChild(child: ChildProcess, startedAt: number) {
   child.on('error', (err) => {
     if (persistentChild === child) { persistentChild = null; currentAgent = null; }
     liveJobs = []; // runner died — all its background jobs went with it
+    fgTurnActive = false; // …and any in-flight digest turn died with it
     const r = agentState.resolve;
     if (r) {
       agentState.resolve = null;
