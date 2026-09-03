@@ -2699,6 +2699,13 @@ function truncateToolResult(toolName: string, result: string): string {
 const IMAGE_TOKEN_COST = 1500;
 const IMAGE_CHARS_EQUIV = IMAGE_TOKEN_COST * 3;
 
+// Models that rejected an image-bearing request with "does not support image
+// input" (Ollama 400 — e.g. glm-5.3:cloud via the proxy, 2026-09-03: it killed
+// vulkan-7qm8 AND vulkan-gdpo mid-job). Learned on first refusal; from then on
+// every image attach point skips this model and leaves a text-only note, so a
+// visionless model never sees an image it would 400 on again.
+const MODELS_WITHOUT_VISION = new Set<string>();
+
 function estimateMessagesChars(msgs: any[]): number {
     let total = 0;
     for (const m of msgs) {
@@ -2893,6 +2900,7 @@ async function runSubAgent(
     ];
     let lastContent = '';
     let transientRetries = 0;  // transient provider errors get retries-with-backoff, not instant job death
+    let imageInputRefusals = 0; // 400 "does not support image input" — strip images + retry, once
     const toolsRun: string[] = [];  // tools the sub-agent actually executed (fallback summary if it goes silent)
 
     log(`[${agentName}] Starting sub-agent: model=${model}, tools=${tools.length}, maxIter=${maxIterations > 0 ? maxIterations : '∞ (ceiling ' + HARD_CEILING + ')'}, task="${task.slice(0, 80)}"`);
@@ -3134,11 +3142,12 @@ async function runSubAgent(
                 if (Array.isArray(_pi) && _pi.length > 0) {
                     (globalThis as any)._pendingImages = [];
                     const imgBudget = subAgentMsgBudgetChars(model, ctxOverride, estimateMessagesChars([messages[0]!]), JSON.stringify(tools).length);
-                    if (imagesFitBudget(messages, _pi.length, imgBudget)) {
+                    if (imagesFitBudget(messages, _pi.length, imgBudget) && !MODELS_WITHOUT_VISION.has(model)) {
                         messages.push({ role: 'user', content: '[The image(s) from the Read/webcam_capture tool are now visible in this message.]', images: _pi } as any);
                     } else {
-                        log(`[${agentName}] Image drain: ${_pi.length} image(s) (~${IMAGE_TOKEN_COST} tokens each) don't fit the context budget — NOT attached, keeping the job alive`);
-                        messages.push({ role: 'user', content: `[The image(s) you Read were NOT attached: the conversation is near the model's context limit and adding them would exceed it (the job would fail). Do not Read the image again. Continue from what you already know — verify files by reading their TEXT via Read/Grep/Bash — and finish the task.]` });
+                        const why = MODELS_WITHOUT_VISION.has(model) ? 'this model cannot see images' : 'the conversation is near the context limit and adding them would exceed it (the job would fail)';
+                        log(`[${agentName}] Image drain: ${_pi.length} image(s) NOT attached (${why}) — keeping the job alive`);
+                        messages.push({ role: 'user', content: `[The image(s) you Read were NOT attached: ${why}. Do not Read the image again. Continue from what you already know — verify files by reading their TEXT via Read/Grep/Bash — and finish the task.]` });
                     }
                 }
             } else {
@@ -3176,6 +3185,27 @@ async function runSubAgent(
         } catch (err: any) {
             clearTimeout(silenceTimer);  // release the silence watchdog on any throw
             const errMsg = err?.message || String(err);
+            // A 400 "this model does not support image input" means an image
+            // reached a visionless model (e.g. glm-5.3:cloud killed both
+            // vulkan-7qm8 and vulkan-gdpo this way, 2026-09-03). That must NOT
+            // kill the job: learn the model, strip every image from the
+            // conversation (leave a text note in place), and retry the
+            // iteration text-only. The one-shot counter guards against a
+            // backend that keeps refusing even with no images attached.
+            if (/does not support image input/i.test(errMsg) && imageInputRefusals < 1) {
+                imageInputRefusals++;
+                MODELS_WITHOUT_VISION.add(model);
+                let stripped = 0;
+                for (const m of messages) {
+                    if (Array.isArray((m as any)?.images)) {
+                        (m as any).content = '[The image(s) in this message were removed: this model cannot see images. Continue text-only.]';
+                        delete (m as any).images;
+                        stripped++;
+                    }
+                }
+                log(`[${agentName}] Model "${model}" does not support image input — stripped images from ${stripped} message(s), retrying text-only (not fatal)`);
+                i--; continue;
+            }
             // Transient provider failures (ollama mid-restart, the model still
             // loading into VRAM, a socket blip) must NOT kill the job on contact
             // — one 500 during a qwen reload cost a whole job plus ~2 min of
@@ -3833,11 +3863,12 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
                 JSON.stringify(mergeSkillTools()).length,
             );
-            if (imagesFitBudget(messages, _pi.length, orchImgBudget)) {
+            if (imagesFitBudget(messages, _pi.length, orchImgBudget) && !MODELS_WITHOUT_VISION.has(model)) {
                 userMsg.images = _pi;
             } else {
-                log(`[orchestrator] Image attach: ${_pi.length} image(s) don't fit the context budget — NOT attached to this turn`);
-                userMsg.content += `\n[Note: image(s) you Read earlier are NOT visible — the conversation is near the context limit. Do not Read them again; proceed from what you already know.]`;
+                const why = MODELS_WITHOUT_VISION.has(model) ? 'this model cannot see images' : 'the conversation is near the context limit';
+                log(`[orchestrator] Image attach: ${_pi.length} image(s) NOT attached to this turn (${why})`);
+                userMsg.content += `\n[Note: image(s) you Read earlier are NOT visible — ${why}. Do not Read them again; proceed from what you already know.]`;
             }
         }
         messages.push(userMsg);
@@ -4351,11 +4382,12 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                             estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
                             JSON.stringify(mergeSkillTools()).length,
                         );
-                        if (imagesFitBudget(messages, _pi.length, orchImgBudget2)) {
+                        if (imagesFitBudget(messages, _pi.length, orchImgBudget2) && !MODELS_WITHOUT_VISION.has(model)) {
                             messages.push({ role: 'user', content: '[The image(s) from the Read tool are now visible in this message.]', images: _pi } as any);
                         } else {
-                            log(`[orchestrator] Image drain: ${_pi.length} image(s) don't fit the context budget — NOT attached, keeping the turn alive`);
-                            messages.push({ role: 'user', content: '[The image(s) you Read were NOT attached: the conversation is near the context limit and adding them would exceed it. Do not Read them again — continue from what you already know and answer.]' });
+                            const why = MODELS_WITHOUT_VISION.has(model) ? 'this model cannot see images' : 'the conversation is near the context limit and adding them would exceed it';
+                            log(`[orchestrator] Image drain: ${_pi.length} image(s) NOT attached (${why}) — keeping the turn alive`);
+                            messages.push({ role: 'user', content: `[The image(s) you Read were NOT attached: ${why}. Do not Read them again — continue from what you already know and answer.]` });
                         }
                     }
                     finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
