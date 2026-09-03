@@ -41,11 +41,36 @@ registry.register({
         try { execSync(`tmux has-session -t ${WARDEN_SESSION} 2>/dev/null`, { encoding: 'utf-8' }); useTmux = true; } catch {}
 
         if (!useTmux) {
+            // Never pipe this command's stdio: a `cmd &`-backgrounded child
+            // (e.g. `node /tmp/serve-work.js &`) inherits the pipes, and
+            // execSync/spawnSync wait for the STREAMS to close, not just the
+            // shell — so a legitimate server start blocked the full 120s
+            // timeout and reported failure for a server that actually started
+            // (observed 2026-09-03: 2 min of dead GPU per Bash call). Route
+            // stdout/stderr to a temp file: the shell exits immediately, the
+            // backgrounded child inherits a harmless file, and the tool
+            // returns when the command is actually done.
+            const { spawnSync } = await import('child_process');
+            const outFile = `/tmp/.warden_bash_${process.pid}_${Date.now()}.log`;
+            let fd: number;
+            try { fd = fs.openSync(outFile, 'w'); } catch { fd = 1; }
             try {
-                const result = execSync(cmd, { encoding: 'utf-8', timeout: args.timeout || 120000, cwd: process.cwd(), shell: '/bin/bash' });
-                return result || 'Command executed successfully (no output).';
-            } catch (err: any) {
-                return `Error: ${err.message}`;
+                const result = spawnSync('/bin/bash', ['-c', cmd], {
+                    encoding: 'utf-8',
+                    timeout: args.timeout || 120000,
+                    cwd: process.cwd(),
+                    stdio: ['ignore', fd, fd],
+                });
+                let out = '';
+                try { out = fs.readFileSync(outFile, 'utf-8'); } catch { /* nothing written */ }
+                if (result.error || result.status !== 0) {
+                    const why = result.error?.message || `exit ${result.status}`;
+                    return `Error (${why}):\n${out}` || `Error: ${why}`;
+                }
+                return out || 'Command executed successfully (no output).';
+            } finally {
+                try { if (fd !== 1) fs.closeSync(fd); } catch { /* already closed */ }
+                try { fs.unlinkSync(outFile); } catch { /* temp cleanup best-effort */ }
             }
         }
 
