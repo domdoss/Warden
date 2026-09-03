@@ -68,7 +68,12 @@ export class OllamaProvider implements ChatProvider {
             ...(request.signal ? { signal: request.signal } : {}),
         });
         if (!resp.ok) {
-            throw new Error(`Ollama stream error: ${resp.status} ${resp.statusText}`);
+            // Include Ollama's error body like the non-streaming path does — a
+            // bare "400 Bad Request" hides whether it's context overflow
+            // ("input length exceeds context length"), an unsupported image, or
+            // something else. Diagnosis needs the body.
+            const body = await resp.text().catch(() => '');
+            throw new Error(`Ollama stream error: ${resp.status} ${resp.statusText}${body ? ` (${body.slice(0, 200)})` : ''}`);
         }
         const reader = resp.body?.getReader();
         if (!reader) throw new Error('No response body');

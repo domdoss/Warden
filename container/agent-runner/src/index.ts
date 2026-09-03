@@ -2687,14 +2687,40 @@ function truncateToolResult(toolName: string, result: string): string {
     return `${head}\n\n[…truncated ${result.length - SUBAGENT_MAX_TOOL_RESULT_CHARS + 400} chars by context budget…]`;
 }
 
+// Image payloads (base64 in `images`, queued by Read/webcam_capture) count
+// against the context budgets at their real token cost. Ollama encodes our
+// 512px Read thumbnails at ~(512*512)/(758*758)*1710 ≈ 780 tokens; 1500 is a
+// conservative ceiling (covers framing and non-local proxy variance), and the
+// budget layer works in chars at ~3 chars/token. Before this, images rode
+// along FREE — the estimator saw only the tiny bracket note — so a message
+// list that "fit the budget" actually blew past num_ctx once the image landed,
+// and Ollama killed the whole job with a 400 (vulkan-7qm8, iteration 43: a
+// verification screenshot Read at the end of a long job).
+const IMAGE_TOKEN_COST = 1500;
+const IMAGE_CHARS_EQUIV = IMAGE_TOKEN_COST * 3;
+
 function estimateMessagesChars(msgs: any[]): number {
     let total = 0;
     for (const m of msgs) {
         const c = typeof m?.content === 'string' ? m.content : (m?.content ? JSON.stringify(m.content) : '');
         total += c.length;
         if (m?.tool_calls) total += JSON.stringify(m.tool_calls).length;
+        if (Array.isArray(m?.images)) total += m.images.length * IMAGE_CHARS_EQUIV;
     }
     return total;
+}
+
+/** Can `nImages` images be attached to this message list without blowing the
+ *  context? The trimmer only drops TAIL groups — the pinned head (system +
+ *  initial ask) and the just-attached image message always ride along — so
+ *  attaching is safe exactly when head + images fit the same budget the
+ *  trimmer enforces; whatever the tail costs gets trimmed before the request.
+ *  When they don't fit, attaching guarantees the next request 400s (Ollama
+ *  refuses rather than truncating), so the caller drops the images and leaves
+ *  a text note instead: a job that loses vision beats a job that dies. */
+function imagesFitBudget(msgs: any[], nImages: number, budgetChars: number): boolean {
+    const head = [msgs[0], msgs[1]].filter(Boolean);
+    return estimateMessagesChars(head) + nImages * IMAGE_CHARS_EQUIV <= budgetChars;
 }
 
 /** Sub-agent message budget scaled to the agent's own num_ctx: reserve room for
@@ -3100,11 +3126,20 @@ async function runSubAgent(
                 // Sub-agent vision: drain any images queued by Read/webcam_capture
                 // so the model sees them on the next iteration. Sub-agents are
                 // otherwise blind to _pendingImages (only the orchestrator's loop
-                // drained it). Mirrors the orchestrator's mid-loop drain.
+                // drained it). Mirrors the orchestrator's mid-loop drain — but
+                // only when the agent's context can actually hold them: an image
+                // the pinned head can't fit turns the next request into a 400
+                // that kills the whole job (vulkan-7qm8, iteration 43).
                 const _pi = (globalThis as any)._pendingImages;
                 if (Array.isArray(_pi) && _pi.length > 0) {
-                    messages.push({ role: 'user', content: '[The image(s) from the Read/webcam_capture tool are now visible in this message.]', images: _pi } as any);
                     (globalThis as any)._pendingImages = [];
+                    const imgBudget = subAgentMsgBudgetChars(model, ctxOverride, estimateMessagesChars([messages[0]!]), JSON.stringify(tools).length);
+                    if (imagesFitBudget(messages, _pi.length, imgBudget)) {
+                        messages.push({ role: 'user', content: '[The image(s) from the Read/webcam_capture tool are now visible in this message.]', images: _pi } as any);
+                    } else {
+                        log(`[${agentName}] Image drain: ${_pi.length} image(s) (~${IMAGE_TOKEN_COST} tokens each) don't fit the context budget — NOT attached, keeping the job alive`);
+                        messages.push({ role: 'user', content: `[The image(s) you Read were NOT attached: the conversation is near the model's context limit and adding them would exceed it (the job would fail). Do not Read the image again. Continue from what you already know — verify files by reading their TEXT via Read/Grep/Bash — and finish the task.]` });
+                    }
                 }
             } else {
                 // Final text response. If the model went silent, synthesize a summary
@@ -3787,10 +3822,23 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         }
         isFirstUserTurn = false;
         const userMsg: any = { role: 'user', content: cleanedPrompt.trim() };
-        // Attach any pending images from Read tool (vision)
+        // Attach any pending images from Read tool (vision) — but only when the
+        // orchestrator's context can hold them; an over-limit attach 400s the
+        // next request and kills the turn (same defect as the sub-agent drain).
         if ((globalThis as any)._pendingImages && (globalThis as any)._pendingImages.length > 0) {
-            userMsg.images = (globalThis as any)._pendingImages;
+            const _pi = (globalThis as any)._pendingImages;
             (globalThis as any)._pendingImages = [];
+            const orchImgBudget = orchestratorMsgBudgetChars(
+                model,
+                estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
+                JSON.stringify(mergeSkillTools()).length,
+            );
+            if (imagesFitBudget(messages, _pi.length, orchImgBudget)) {
+                userMsg.images = _pi;
+            } else {
+                log(`[orchestrator] Image attach: ${_pi.length} image(s) don't fit the context budget — NOT attached to this turn`);
+                userMsg.content += `\n[Note: image(s) you Read earlier are NOT visible — the conversation is near the context limit. Do not Read them again; proceed from what you already know.]`;
+            }
         }
         messages.push(userMsg);
         // Re-rank tools for this turn (never throws — falls back to full list)
@@ -4293,9 +4341,22 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         circlingUselessRounds = 0;
                     }
                     // If Read tool queued images, inject them as a user message for vision
+                    // — only when they fit the context budget (an over-limit attach
+                    // 400s the next request and kills the turn).
                     if ((globalThis as any)._pendingImages && (globalThis as any)._pendingImages.length > 0) {
-                        messages.push({ role: 'user', content: '[The image(s) from the Read tool are now visible in this message.]', images: (globalThis as any)._pendingImages } as any);
+                        const _pi = (globalThis as any)._pendingImages;
                         (globalThis as any)._pendingImages = [];
+                        const orchImgBudget2 = orchestratorMsgBudgetChars(
+                            model,
+                            estimateMessagesChars(messages[1]?.role === 'system' ? messages.slice(0, 3) : messages.slice(0, 2)),
+                            JSON.stringify(mergeSkillTools()).length,
+                        );
+                        if (imagesFitBudget(messages, _pi.length, orchImgBudget2)) {
+                            messages.push({ role: 'user', content: '[The image(s) from the Read tool are now visible in this message.]', images: _pi } as any);
+                        } else {
+                            log(`[orchestrator] Image drain: ${_pi.length} image(s) don't fit the context budget — NOT attached, keeping the turn alive`);
+                            messages.push({ role: 'user', content: '[The image(s) you Read were NOT attached: the conversation is near the context limit and adding them would exceed it. Do not Read them again — continue from what you already know and answer.]' });
+                        }
                     }
                     finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
                     const newlySent = [...modifiedFiles].filter(f => !attachedFiles.has(f));
