@@ -1018,7 +1018,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
     // ─── Work tasks (wired to db.ts user_work_tasks) ───────────────────────
     // The agent-runner's create_work_task/list_work_tasks/update_work_task/
     // delete_work_task tools delegate here via callHost(); without these the
-    // callbacks had "no registered handler" and Byte could never add a task.
+    // callbacks had "no registered handler" and the work-management agent could never add a task.
     list_work_tasks: async (args: any) => {
       try {
         // Single-user schema: every work task is the owner's, so list all of
@@ -1040,7 +1040,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         // email-driven tasks that don't fit a specific project go here.
         if (!projectId) projectId = PERSONAL_PROJECT_ID;
         // Resolve name→id if the model passed the project name, and confirm the
-        // project actually exists — Byte's retry loop created duplicates because
+        // project actually exists — an early work-management agent's retry loop created duplicates because
         // it kept re-creating projects when its task calls silently failed.
         const resolved = resolveProjectId(projectId) || projectId;
         if (!getProject(resolved)) return { ok: false, error: 'project not found' };
@@ -2128,10 +2128,9 @@ async function processOwnerMessages(): Promise<void> {
     // Supervisor self-audit on/off + cadence (dashboard "Supervisor" row).
     supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
     supervisorIntervalMs: parseInt(getRouterState('supervisor:interval_ms') || '600000', 10) || 600000,
-    // byte/iris share the Toolcall model (dashboard "Toolcall model" row,
-    // persisted as local:subagent_model). The host feeds the same value into each
-    // per-agent IPC field so the runner's dispatch is unchanged.
-    byteModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
+    // Iris is the single toolcall agent (byte merged in 2026-09-05) and runs
+    // on the Toolcall model (dashboard "Toolcall model" row, persisted as
+    // local:subagent_model).
     irisModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
     artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
     drivingForce: getRouterState('orchestrator:driving_force') || '',
@@ -3003,11 +3002,9 @@ function seedPerAgentModelSettings(): void {
   // representative one — typically granite4.1:8b) and ctx so nothing changes.
   const toolcall = getRouterState('local:subagent_model')
     || getRouterState('iris:model')
-    || getRouterState('byte:model')
     || orch;
   const toolcallCtx = getRouterState('local:subagent_ctx')
     || getRouterState('local:iris_ctx')
-    || getRouterState('local:byte_ctx')
     || '';
   const subagent = toolcall;
   const atlas = getRouterState('atlas:model') || orch;
@@ -3024,7 +3021,6 @@ function seedPerAgentModelSettings(): void {
   // the runner defaults to 300 (their historic sub-agent TTL).
   seed('local:orch_keep_alive', '-1');
   // New per-agent model keys inherit the legacy shared value.
-  seed('byte:model', subagent);
   seed('iris:model', subagent);
   seed('artemis:model', atlas);
   // Existing keys that previously fell back to orchestrator at runtime — seed
@@ -3043,7 +3039,6 @@ function seedPerAgentModelSettings(): void {
   seed('supervisor:enabled', 'true');
   seed('supervisor:interval_ms', '600000');
   // ctx — preserve each agent's current effective value.
-  seed('local:byte_ctx', toolsCtx);
   seed('local:iris_ctx', toolsCtx);
   seed('local:artemis_ctx', atlasCtx);
   // Oculus bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
@@ -3064,14 +3059,11 @@ export function syncAgentCtxEnv(): void {
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
   process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
-  // Byte and Iris each have their own ctx row in Settings
-  // (local:byte_ctx / iris_ctx). Until a per-agent value is saved
-  // they inherit the shared toolcall ctx (local:subagent_ctx) so behavior is
-  // unchanged. Reading the per-agent key here (and the host re-syncing env per
-  // turn before runAgent) is what lets the dropdown override the spawn-time
-  // 32k the persistent child was locked to.
-  process.env.BYTE_NUM_CTX =
-    getRouterState('local:byte_ctx') || getRouterState('local:subagent_ctx') || '';
+  // Iris has its own ctx row in Settings (local:iris_ctx). Until a per-agent
+  // value is saved it inherits the shared toolcall ctx (local:subagent_ctx)
+  // so behavior is unchanged. Reading the per-agent key here (and the host
+  // re-syncing env per turn before runAgent) is what lets the dropdown
+  // override the spawn-time 32k the persistent child was locked to.
   process.env.IRIS_NUM_CTX =
     getRouterState('local:iris_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
@@ -3143,7 +3135,12 @@ async function warmResidentOllamaModels(): Promise<void> {
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
-  startChromeWatchdog();
+  // The auto-spawned dedicated Chrome session is disabled (2026-09-03): the
+  // user prefers pages opening as a new tab in their normal Chrome (xdg-open)
+  // and the extra window was unwanted. Browser-automation tools that attach
+  // over CDP :9222 will find no agent Chrome unless one is started manually —
+  // agents should open user-facing pages with xdg-open instead.
+  // startChromeWatchdog();
   loadState();
   // Seed the three Iris digest automations (hourly/daily/weekly) as
   // scheduled_tasks rows so they show in the Sched tab and the host poll loop

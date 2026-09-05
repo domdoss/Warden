@@ -1,96 +1,69 @@
 // Full toolcall-model SFT dataset generator.
 //
-// Produces JSONL for a single LoRA fine-tune that serves TWO toolcall subagents
-// from one Granite 4.1:3b model: byte (work/projects) and iris (email +
-// digests + tasks/scheduling). dexter is GONE — iris absorbed its scheduling
-// role and is now the sole toolcall agent covering email, digests, tasks, and
-// calendar. Each row is OpenAI-style messages + a `tools` array, so the Granite
-// chat template renders the EXACT system block + tool schemas the agent sees
-// at inference, and the assistant target is a Granite tool call.
+// Produces JSONL for the single LoRA fine-tune that powers IRIS — the one
+// toolcall agent since 2026-09-05, when byte was merged in (one toolcall agent,
+// one fine-tuned model). Iris covers email, digests, scheduled tasks, calendar,
+// AND work management (projects, work tasks, deliverables, blockers,
+// priorities, financials, time tracking). Each row is OpenAI-style messages +
+// a `tools` array, so the Granite chat template renders the EXACT system block
+// + tool schemas the agent sees at inference, and the assistant target is a
+// Granite tool call.
 //
-// iris is SINGLE-SHOT: one tool call per request, then return. She chains no
-// steps herself; the orchestrator supplies the specific id and calls her again
-// for the next step. Manage flows (list → id → act) are split into standalone
-// examples: a list example (→ list_tasks/list_calendar_events) OR an
-// act-with-id example (id already supplied in the request → cancel/update).
-// byte is multi-step and keeps its exManage list→act flows.
+// IRIS IS SINGLE-SHOT (maxIterations: 1): ONE model turn per request — one
+// tool call (or parallel calls when the request names several things, e.g. the
+// reminder+calendar pair). Manage flows are id-supplied: the orchestrator
+// resolves ids (its own list dispatch) and the brief carries them. No
+// list→act chains anywhere in the data.
 //
-// The `tools` array is loaded from tool_schemas.json, dumped straight from the
-// compiled agent-runner registry (see dump_tool_schemas.mjs) — so the SFT tool
-// shapes are byte-for-byte the live schemas, not hand-copied.
+// The system prompt is EXTRACTED from the live runner source at gen time
+// (see IRIS_SYSTEM below) — training always matches production, and a source
+// edit that breaks extraction throws here, loudly. The `tools` array is loaded
+// from tool_schemas.json, dumped straight from the compiled agent-runner
+// registry (see dump_tool_schemas.mjs) — so the SFT tool shapes are
+// byte-for-byte the live schemas, not hand-copied.
 //
-// Coverage is weighted to the hard calls each agent fumbles:
-//   iris:   schedule_value forms (PT2M vs timestamp vs cron vs ms), field
-//           placement, ask-back when no payload, manage flows (id supplied),
-//           email read/send/search, digests (post_summary as final action),
-//           list_api_keys → api_request.
-//   byte:   create_work_task project_id="personal" default + priority enum,
+// Digest examples (section D) train the REAL digest run-mode — the agent-runner
+// `iris-digest-<span>` branch: the digest system prompt, read_emails as the only
+// tool, and the JSON digest object as FINAL TEXT (the runner publishes it;
+// the model never calls post_summary). Everything below for the digest comes
+// from digest_reality.mjs, which reads the live prompts straight out of the
+// Warden sources.
+//
+// Coverage is weighted to the hard calls the 3B Granite fumbles:
+//   scheduling: schedule_value forms (PT2M vs timestamp vs cron vs ms), field
+//           placement, ask-back when no payload, id-supplied manage flows,
+//           email read/send/search, list_api_keys → api_request.
+//   digest: verbatim since/before copy from the INPUT window line, grounded
+//           JSON (empty states, no invented facts), actionable extraction.
+//   work mgmt: create_work_task project_id="personal" default + priority enum,
 //           update_project status enum, add_blocker/add_priority enums,
-//           log_time/update_financials numeric fields, list-first manage flows
+//           log_time/update_financials numeric fields, id-supplied manage.
 //
-// Request strings are written in the real orchestrator-brief style (verbose,
-// parenthetical timezone, ALLCAPS emphasis, explicit ids, em-dashes) so
-// train≈infer — the model must extract clean tool args from emphatic prose.
+// Every request carries the ANCHOR time header (the dispatch path prepends it
+// to ALL iris tasks, work management included). Request strings are written in
+// the real orchestrator-brief style (verbose, parenthetical timezone, ALLCAPS
+// emphasis, explicit ids, em-dashes) so train≈infer — the model must extract
+// clean tool args from emphatic prose.
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { DIGEST_SYSTEM, DIGEST_PROMPTS, DIGEST_TOOLS, buildDigestInput } from './digest_reality.mjs';
+export { DIGEST_SYSTEM, DIGEST_PROMPTS, DIGEST_TOOLS };
 
 const SCHEMAS = JSON.parse(readFileSync(new URL('./tool_schemas.json', import.meta.url), 'utf8'));
-export const TOOLS = {
-  byte: SCHEMAS.byte,
-  iris: SCHEMAS.iris,
-};
+export const TOOLS = { iris: SCHEMAS.iris };
 
-const BYTE_SYSTEM = `You are Byte, the work-management agent.
-
-CAPABILITIES: Manage projects, work tasks, deliverables, blockers, priorities, financials, and time tracking. Read the user's inbox and turn actionable emails into projects and work tasks.
-
-GUIDELINES:
-- Act as the domain expert: the task states WHAT; choose the HOW (calls and order) yourself.
-- Read before writing: list or get the relevant record first.
-- Supply required fields for every item — blockers: title + description; tasks and deliverables: title; financials: amount + category. Infer reasonable values when the task omits them.
-- create_work_task always needs project_id. Pass "personal" (the permanent Personal project) when the task names no project; pass the named project's ID only when the user specifies one. priority is low | medium | high | urgent (default medium).
-- Call each tool once; move on after a success.
-- Use only IDs and data your tools return.
-- Inbox scan: read_emails, keep messages in the requested range (filter by Date), then create a work task (and a project when warranted) for each actionable item. Treat newsletters, confirmations, receipts, shipping notices, and ads as non-actionable.
-
-Example:
-Task: "Record a new work task: 'Fix the login bug' — add it to my personal list."
-→ create_work_task(title="Fix the login bug", project_id="personal")
-
-FORMAT: one plain-text line or short list naming what you created or changed, with the IDs returned.`;
-
-const IRIS_SYSTEM = `You are Iris, the personal information and scheduling agent: email, digests, tasks, and calendar.
-
-# Role
-You execute exactly one tool call per request, then return the result. You chain no steps yourself; the orchestrator supplies the specific id and calls you again for the next step.
-
-# Capabilities
-- Email: read_emails (inbox search/scan), get_email (full body), send_email, refresh_email_cache, get_cached_emails.
-- Digests: compile from the INPUT block plus read_emails output, publish via post_summary(span, text) as your final action.
-- Tasks: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task.
-- Calendar: create_calendar_event, list_calendar_events, update_calendar_event, delete_calendar_event.
-- API: list_api_keys, api_request.
-
-# Guidelines
-- The first line of the task is the current local time in the form "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)." Compute every absolute timestamp from this.
-- schedule_task schedule_value forms:
-  - once, relative time ("in 2 minutes", "tomorrow"): ISO-8601 duration (PT2M, PT1H30M, P1D).
-  - once, absolute clock time ("at 3pm today", "on Sep 5 at 2pm"): local YYYY-MM-DDTHH:MM:SS.
-  - interval ("every 5 minutes"): milliseconds as a string (300000).
-  - recurring schedule ("every weekday at 9am", "every Monday at 6pm"): 5-field cron, local time (0 9 * * 1-5).
-- To cancel, pause, resume, or update a task, use the task id supplied in the request. Call list_tasks only when the request is to list reminders.
-- To update or delete a calendar event, use the event id supplied in the request. Call list_calendar_events only when the request is to list events.
-- When the request names both a reminder and a calendar event, make both tool calls in one turn.
-- When the request gives a time but no content, reply in one short line asking for the content.
-- A plain to-do with no time trigger is a work task for Byte; reply in one line that this is a work task.
-- Email: keep real addresses (on-device). To save an email, call get_email, then write a file named <date>_<from>_<subject>.md.
-- Digests: compile ONLY from the INPUT block and read_emails output. State each section plainly; if a section is empty, say so. post_summary is the only way the digest reaches the dashboard; call it as your final action.
-
-# Format
-One plain-text line naming the ids you returned, or the published span.`;
-
-const SYSTEMS = { byte: BYTE_SYSTEM, iris: IRIS_SYSTEM };
-export { SYSTEMS, BYTE_SYSTEM, IRIS_SYSTEM };
+// IRIS_SYSTEM — extracted VERBATIM from the live runner source so the SFT
+// system block is exactly what the merged agent ships with. If the iris
+// SUBAGENTS entry moves or its prompt is edited, this throws at gen time
+// rather than silently training a stale prompt.
+const runnerSrc = readFileSync('/opt/Warden/container/agent-runner/src/index.ts', 'utf8');
+const irisPromptMatch = runnerSrc.match(/delegate: 'iris',[\s\S]*?systemPrompt: `([\s\S]*?)`,\s*\n\s*toolsets:/);
+if (!irisPromptMatch) {
+  throw new Error("iris systemPrompt not found in container/agent-runner/src/index.ts — extraction drifted from source (was the SUBAGENTS entry renamed or the systemPrompt moved?)");
+}
+const IRIS_SYSTEM = irisPromptMatch[1];
+const SYSTEMS = { iris: IRIS_SYSTEM };
+export { SYSTEMS, IRIS_SYSTEM };
 
 // Fixed anchor so iris's absolute timestamps are reproducible. Matches the
 // injected time-header format exactly (the dispatch path prepends this for
@@ -100,15 +73,25 @@ export { ANCHOR };
 
 // ---- example builders ---------------------------------------------------
 
-// Single-turn: user request → one or more tool calls, then an optional text
-// reply (emitted as a separate assistant turn after a synthetic tool result).
-// iris requests get the ANCHOR prepended (iris does time math); byte does not.
+// Single agent since the byte merge — every builder below hard-fails on
+// anything but 'iris' so a stale byte call site can't silently emit a
+// never-seen-at-inference system prompt.
+function assertIris(agent) {
+  if (agent !== 'iris') {
+    throw new Error(`ex('${agent}', ...) — iris is the only toolcall agent (byte merged 2026-09-05). Retag the call site.`);
+  }
+}
+
+// Single-shot: user request → one tool call (or a parallel set when the
+// request names several things), then an optional text reply (emitted as a
+// separate assistant turn after a synthetic tool result). Every request gets
+// the ANCHOR prepended — the dispatch path injects the time header into ALL
+// iris tasks, work management included.
 function ex(agent, request, toolCalls, opts = {}) {
-  const sys = SYSTEMS[agent], tools = TOOLS[agent];
-  const userLine = agent === 'iris' ? `${ANCHOR}\n\n${request}` : request;
+  assertIris(agent);
   const msgs = [
-    { role: 'system', content: sys },
-    { role: 'user', content: userLine },
+    { role: 'system', content: IRIS_SYSTEM },
+    { role: 'user', content: `${ANCHOR}\n\n${request}` },
   ];
   msgs.push({
     role: 'assistant', content: '',
@@ -119,39 +102,39 @@ function ex(agent, request, toolCalls, opts = {}) {
     msgs.push({ role: 'tool', name: toolCalls[i].name, content: String(results[i]) });
   }
   if (opts.reply) msgs.push({ role: 'assistant', content: opts.reply });
-  return { messages: msgs, tools };
+  return { messages: msgs, tools: TOOLS.iris };
 }
 
 // No-tool: assistant replies with text only (ask-back / out-of-scope / empty).
 function exText(agent, request, reply) {
-  const userLine = agent === 'iris' ? `${ANCHOR}\n\n${request}` : request;
+  assertIris(agent);
   return {
     messages: [
-      { role: 'system', content: SYSTEMS[agent] },
-      { role: 'user', content: userLine },
+      { role: 'system', content: IRIS_SYSTEM },
+      { role: 'user', content: `${ANCHOR}\n\n${request}` },
       { role: 'assistant', content: reply },
     ],
-    tools: TOOLS[agent],
+    tools: TOOLS.iris,
   };
 }
 
-// Multi-turn manage: list first, then act on a returned id. byte ONLY — iris
-// is single-shot and never lists-then-acts in one delegation; her manage calls
-// arrive with the id already supplied (use ex('iris', ...) for those).
-function exManage(agent, request, { listTool, listArgs, listResult, actionTool, actionArgs, actionResult, reply }) {
-  const sys = SYSTEMS[agent], tools = TOOLS[agent];
+// Single-shot manage: the id arrives ALREADY SUPPLIED in the request — the
+// orchestrator resolves it (its own list dispatch) and the brief names it. The
+// id clause is derived from actionArgs and appended to the request, matching
+// how real orchestrator briefs carry explicit ids ("…the Warden project
+// (proj-warden-01)…"). Emits exactly ONE tool call.
+function exManage(agent, request, { actionTool, actionArgs, actionResult, reply }) {
+  assertIris(agent);
+  const idKey = Object.keys(actionArgs).find((k) => /_id$/.test(k));
+  const brief = idKey ? `${request} (id: ${actionArgs[idKey]} — use that exact id.)` : request;
   const msgs = [
-    { role: 'system', content: sys },
-    { role: 'user', content: request },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: listTool, arguments: listArgs || {} } }] },
-    { role: 'tool', name: listTool, content: listResult },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'update_work_task', arguments: { task_id: 'wt-2001', status: 'done' } } }] },
+    { role: 'system', content: IRIS_SYSTEM },
+    { role: 'user', content: `${ANCHOR}\n\n${brief}` },
+    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: actionTool, arguments: actionArgs } }] },
+    { role: 'tool', name: actionTool, content: actionResult },
+    { role: 'assistant', content: reply },
   ];
-  // overwrite the action call built above (kept the builder simple)
-  msgs[4] = { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: actionTool, arguments: actionArgs } }] };
-  msgs.push({ role: 'tool', name: actionTool, content: actionResult });
-  msgs.push({ role: 'assistant', content: reply });
-  return { messages: msgs, tools };
+  return { messages: msgs, tools: TOOLS.iris };
 }
 
 const examples = [];
@@ -415,10 +398,90 @@ examples.push(exText('iris', 'Set a daily reminder at 11:30am.',
   'What should the daily 11:30am reminder say? Give me the content.'));
 examples.push(exText('iris', 'Set a reminder on the 15th of every month.',
   'What should the monthly 15th reminder say? Give me the content.'));
-examples.push(exText('iris', 'Add a to-do item to fix the kitchen sink.',
-  'A plain to-do with no time trigger is a work task for Byte, not me. I have noted "fix the kitchen sink" — Byte can track it as a work task.'));
+// Plain to-do → iris creates the work task herself now (the byte hand-off is
+// gone — she owns work management). One create_work_task call.
+examples.push(ex('iris', 'Add a to-do item to fix the kitchen sink.',
+  [{ name: 'create_work_task', arguments: { title: 'Fix the kitchen sink', project_id: 'personal' } }],
+  { results: ['Created work task "Fix the kitchen sink" (id wt-2100) in project personal.'],
+    reply: 'Created work task "Fix the kitchen sink" (wt-2100) in Personal.' }));
 examples.push(exText('iris', 'Set a reminder to call the bank.',
   'When should I remind you to call the bank? Give me a time (e.g. "tomorrow at 10am" or "in 3 hours").'));
+
+// ---- H2. Ask-back reinforcement — MORE phrasings of the same two gaps ----
+// The 4-case dryfire regression (2026-09-02: model invented "Check the inbox
+// for unread emails." as reminder content, schedule_value P1D for a no-time
+// request, a reminder for a plain to-do) was a RATIO problem: ~7 schedule_task
+// examples per ask-back. These reps keep it ~3:1. Every variant is one of
+// the same two gaps: time-without-content or content-without-time. (The third
+// gap — plain to-dos — is now a create_work_task call, not an ask-back: iris
+// owns work management since the byte merge.)
+// Time-but-no-content:
+examples.push(exText('iris', 'Remind me in 10 minutes.',
+  'What should I remind you about in 10 minutes? Give me the content.'));
+examples.push(exText('iris', 'Remind me in 5 minutes.',
+  'What should the 5-minute reminder say? Give me the content.'));
+examples.push(exText('iris', 'Set a one-time reminder in 30 seconds.',
+  'What should the reminder be about? Give me the content and I will set it for 30 seconds from now.'));
+examples.push(exText('iris', 'Set a reminder for every hour.',
+  'What should the hourly reminder say? Give me the content.'));
+examples.push(exText('iris', 'Remind me every day at noon.',
+  'What should the daily noon reminder say? Give me the content.'));
+examples.push(exText('iris', 'Set a recurring reminder daily at 11:30 AM.',
+  'What should the daily 11:30am reminder say? Give me the content.'));
+examples.push(exText('iris', 'Remind me weekdays at 8am.',
+  'What should the weekday 8am reminder say? Give me the content.'));
+examples.push(exText('iris', 'Remind me tonight at 9.',
+  'What should the 9pm reminder be about? Give me the content.'));
+examples.push(exText('iris', 'Remind me every Friday.',
+  'What should the Friday reminder say, and what time? Give me the content and a time (e.g. "9am").'));
+examples.push(exText('iris', 'Set a reminder in 2 hours.',
+  'What should I remind you about in 2 hours? Give me the content.'));
+// Content-but-no-time:
+examples.push(exText('iris', 'Remind me to take medication.',
+  'When should I remind you to take your medication? Give me a time (e.g. "every day at 11:30am" or "in 2 hours").'));
+examples.push(exText('iris', 'Set a reminder to buy milk.',
+  'When should I remind you to buy milk? Give me a time (e.g. "tomorrow at 8am" or "in 3 hours").'));
+examples.push(exText('iris', 'Set a reminder to check the mail.',
+  'When should I remind you to check the mail? Give me a time (e.g. "today at 5pm" or "in 1 hour").'));
+examples.push(exText('iris', 'Remind me about the dentist appointment.',
+  'When should I remind you about the dentist appointment? Give me a date and time.'));
+examples.push(exText('iris', 'Remind me to call the plumber.',
+  'When should I remind you to call the plumber? Give me a time (e.g. "tomorrow at 9am").'));
+examples.push(exText('iris', 'Remind me to renew my passport.',
+  'When should I remind you to renew your passport? Give me a date (e.g. "next Monday" or "September 10th").'));
+// Plain to-dos, more phrasings → create_work_task (one call, project_id
+// "personal" — the permanent Personal project, per the prompt default):
+examples.push(ex('iris', 'Add a to-do item: fix the kitchen sink.',
+  [{ name: 'create_work_task', arguments: { title: 'Fix the kitchen sink', project_id: 'personal' } }],
+  { results: ['Created work task "Fix the kitchen sink" (id wt-2101) in project personal.'],
+    reply: 'Created work task "Fix the kitchen sink" (wt-2101) in Personal.' }));
+examples.push(ex('iris', 'Add a todo to renew the car insurance.',
+  [{ name: 'create_work_task', arguments: { title: 'Renew the car insurance', project_id: 'personal' } }],
+  { results: ['Created work task "Renew the car insurance" (id wt-2102) in project personal.'],
+    reply: 'Created work task "Renew the car insurance" (wt-2102) in Personal.' }));
+examples.push(ex('iris', "Put 'book the dentist' on my todo list.",
+  [{ name: 'create_work_task', arguments: { title: 'Book the dentist', project_id: 'personal' } }],
+  { results: ['Created work task "Book the dentist" (id wt-2103) in project personal.'],
+    reply: 'Created work task "Book the dentist" (wt-2103) in Personal.' }));
+examples.push(ex('iris', 'Add "call the ISP" to my to-dos.',
+  [{ name: 'create_work_task', arguments: { title: 'Call the ISP', project_id: 'personal' } }],
+  { results: ['Created work task "Call the ISP" (id wt-2104) in project personal.'],
+    reply: 'Created work task "Call the ISP" (wt-2104) in Personal.' }));
+examples.push(ex('iris', 'Todo: reorganize the garage shelves.',
+  [{ name: 'create_work_task', arguments: { title: 'Reorganize the garage shelves', project_id: 'personal' } }],
+  { results: ['Created work task "Reorganize the garage shelves" (id wt-2105) in project personal.'],
+    reply: 'Created work task "Reorganize the garage shelves" (wt-2105) in Personal.' }));
+// Colon-phrased variants — the 2026-09-02 checkpoint scheduled "Add a to-do
+// item: fix the kitchen sink." with schedule_value "now" (invalid server-side).
+// A plain to-do is a create_work_task, NEVER a schedule_task.
+examples.push(ex('iris', 'Add to-do: pick up dry cleaning.',
+  [{ name: 'create_work_task', arguments: { title: 'Pick up dry cleaning', project_id: 'personal' } }],
+  { results: ['Created work task "Pick up dry cleaning" (id wt-2106) in project personal.'],
+    reply: 'Created work task "Pick up dry cleaning" (wt-2106) in Personal.' }));
+examples.push(ex('iris', 'New to-do: replace the furnace filter.',
+  [{ name: 'create_work_task', arguments: { title: 'Replace the furnace filter', project_id: 'personal' } }],
+  { results: ['Created work task "Replace the furnace filter" (id wt-2107) in project personal.'],
+    reply: 'Created work task "Replace the furnace filter" (wt-2107) in Personal.' }));
 
 // =========================================================================
 // IRIS — reinforcement reps (relative/interval/cron/absolute, more phrasings)
@@ -539,6 +602,27 @@ examples.push(ex('iris', 'Schedule a 1 PM lunch meeting on Friday and remind me 
     { name: 'create_calendar_event', arguments: { title: 'Lunch meeting', start_time: '2026-09-04T13:00:00' } },
   ],
   { reply: 'Created a 1pm Friday lunch meeting and set a reminder 15 minutes before, at 12:45pm.' }));
+// Reinforcement for the "reminder … and create a calendar event called X"
+// phrasing — the 2026-09-02 checkpoint emitted an EMPTY turn (no calls, no
+// text) on this exact shape, deterministically. Same-time (not offset) pairs:
+examples.push(ex('iris', 'Set a one-time reminder about the team meeting at 2:00 PM today, and create a calendar event called "Team meeting" at 2:00 PM today.',
+  [
+    { name: 'schedule_task', arguments: { prompt: 'Team meeting.', schedule_type: 'once', schedule_value: '2026-08-31T14:00:00', context_mode: 'group' } },
+    { name: 'create_calendar_event', arguments: { title: 'Team meeting', start_time: '2026-08-31T14:00:00' } },
+  ],
+  { reply: 'Set a 2pm reminder for the team meeting and created a "Team meeting" calendar event (2026-08-31T14:00:00).' }));
+examples.push(ex('iris', 'Remind me at 5 PM today about the server restart, and create a calendar event called "Server restart" at 5 PM today.',
+  [
+    { name: 'schedule_task', arguments: { prompt: 'Server restart.', schedule_type: 'once', schedule_value: '2026-08-31T17:00:00', context_mode: 'group' } },
+    { name: 'create_calendar_event', arguments: { title: 'Server restart', start_time: '2026-08-31T17:00:00' } },
+  ],
+  { reply: 'Set a 5pm reminder for the server restart and created a "Server restart" calendar event (2026-08-31T17:00:00).' }));
+examples.push(ex('iris', 'Set a one-time reminder about the phone call at 4:30 PM tomorrow, and create a calendar event called "Phone call" at 4:30 PM tomorrow.',
+  [
+    { name: 'schedule_task', arguments: { prompt: 'Phone call.', schedule_type: 'once', schedule_value: '2026-09-01T16:30:00', context_mode: 'group' } },
+    { name: 'create_calendar_event', arguments: { title: 'Phone call', start_time: '2026-09-01T16:30:00' } },
+  ],
+  { reply: 'Set a 4:30pm reminder for the phone call and created a "Phone call" calendar event tomorrow (2026-09-01T16:30:00).' }));
 
 // ---- W12. Calendar manage (id supplied — single call) -------------------
 examples.push(ex('iris', 'Cancel the dentist appointment — delete calendar event ev-1003 (the Sep 3 10 AM dentist appointment).',
@@ -563,94 +647,397 @@ examples.push(ex('iris', 'Delete the "Company Holiday" event — calendar event 
     reply: 'Deleted the Company Holiday event (ev-1002).' }));
 
 // =========================================================================
-// IRIS — email + digests. Heavy on post_summary digest formatting for the
-// dashboard UI plus email read/send/search and list_api_keys → api_request.
+// IRIS-DIGEST — the digest pipeline as production ACTUALLY runs it. The host
+// spawns an `iris-digest-<span>` run DIRECTLY (no chat, no orchestrator) with
+// the digest system prompt, read_emails as the ONLY tool, and a prompt =
+// buildDigestContext INPUT + "---" + the baked span prompt. The model calls
+// read_emails with since/before copied VERBATIM from the INPUT's
+// "Email window (UTC)" line, then emits the digest JSON object as FINAL TEXT
+// (the agent-runner extracts and publishes it — the model never publishes).
+// digest_reality.mjs pulls the real prompts/tool defs out of the live
+// sources, so these examples can't drift from what ships.
 // =========================================================================
 
-// ---- R. Digest: daily — full INPUT, read_emails, then post_summary ------
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the daily digest.\n\nINPUT:\nCurrent time: 2026-08-31T08:00:00 (America/Vancouver)\nUser: Dominic — software engineer, prefers terse summaries, deep-work mornings.\nCalendar: 2026-08-31T14:00:00 Project Review (1h); 2026-08-31T18:00:00 Dentist (30m)\nWork tasks: wt-1001 Finish API spec (high, due 2026-09-01); wt-1002 Fix login bug (urgent, due 2026-08-31)\nWeather: 18°C partly cloudy, high 22°C, 0% rain.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { limit: 30, since: '2026-08-30T00:00:00' } } }] },
-    { role: 'tool', name: 'read_emails', content: '3 emails:\n1. 2026-08-30T22:14 sarah@acme.io | "Re: Q4 budget approval needed" — needs sign-off by Friday\n2. 2026-08-30T19:02 jason@partnerco.com | "Action required: sign the NDA"\n3. 2026-08-30T15:30 newsletter@hackernews.com | "HN Weekly" (newsletter)' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'daily',
-      text: '# Daily Digest — Mon Aug 31\n\n## Calendar\n- **2:00–3:00 PM** — Project Review\n- **6:00–6:30 PM** — Dentist\n\n## Priority work\n- 🔴 **Fix login bug** (wt-1002) — urgent, due today\n- 🟡 **Finish API spec** (wt-1001) — high, due tomorrow (Sep 1)\n\n## Inbox (3 since yesterday)\n- **Sarah** — Q4 budget approval needed by Friday. *Action: sign off.*\n- **Jason** — NDA needs signing. *Action: review + sign.*\n- HN Weekly — newsletter, no action.\n\n## Weather\nPartly cloudy, high 22°C, no rain expected.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted daily digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the daily digest to the dashboard.' },
-  ],
-  tools: TOOLS.iris,
-});
+// exDigest: digest system + INPUT, one read_emails call with the verbatim
+// window (limit 50/100/200 per span, preview_only — as the baked prompt
+// instructs), then the digest JSON object as the final assistant text.
+function exDigest(span, input, emailsResult, digestObj) {
+  const win = input.match(/Email window \(UTC\): since (\S+) before (\S+)/);
+  if (!win) throw new Error('exDigest: INPUT is missing the "Email window (UTC)" line');
+  const limit = span === 'hourly' ? 50 : span === 'daily' ? 100 : 200;
+  return {
+    messages: [
+      { role: 'system', content: DIGEST_SYSTEM },
+      { role: 'user', content: `${input}\n\n---\n\n${DIGEST_PROMPTS[span]}` },
+      { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { since: win[1], before: win[2], limit, preview_only: true } } }] },
+      { role: 'tool', name: 'read_emails', content: emailsResult },
+      { role: 'assistant', content: JSON.stringify(digestObj) },
+    ],
+    tools: DIGEST_TOOLS,
+  };
+}
 
-// ---- R2. Digest: hourly — lighter, mostly calendar + inbox --------------
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the hourly digest.\n\nINPUT:\nCurrent time: 2026-08-31T13:00:00 (America/Vancouver)\nUser: Dominic — deep-work mornings.\nCalendar: 2026-08-31T14:00:00 Project Review (1h)\nWork tasks: wt-1002 Fix login bug (urgent, due today)\nWeather: 20°C partly cloudy.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { limit: 15, since: '2026-08-31T12:00:00' } } }] },
-    { role: 'tool', name: 'read_emails', content: '1 email:\n1. 2026-08-31T12:42 ci-bot@warden | "Build #1284 failed" — tests/test_scheduler.py assertion error' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'hourly',
-      text: '# Hourly Digest — 1:00 PM Mon Aug 31\n\n## Next up\n- **2:00 PM** — Project Review (in 1h)\n\n## Still open\n- 🔴 **Fix login bug** (wt-1002) — urgent, due today\n\n## Inbox\n- CI bot — **Build #1284 failed** (`test_scheduler.py` assertion). *Action: investigate.*\n\n## Weather\nPartly cloudy, 20°C.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted hourly digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the hourly digest to the dashboard.' },
+// ---- D1. Daily, morning: emails in window + a Look Out For match ---------
+examples.push(exDigest('daily', buildDigestInput({
+  localTime: '8/31/2026, 8:00:07 AM',
+  since: '2026-08-30T15:00:07.000Z', before: '2026-08-31T15:00:07.000Z',
+  bio: 'Location: Victoria, BC\nDominic — software engineer; prefers terse summaries; deep-work mornings.',
+  calendar: ['- 2026-08-31T14:00:00 → 2026-08-31T15:00:00: Project Review', '- 2026-08-31T18:00:00 → 2026-08-31T18:30:00: Dentist'],
+  tasks: ['- [todo] Finish API spec (project personal)', '- [todo] Fix login bug (project personal)'],
+  weather: ['Now: 18°C, Partly cloudy, humidity 58%', 'Next hours: 09:00 18°C, 10:00 19°C, 11:00 20°C'],
+  lookout: ['- Q4 budget sign-off from Sarah'],
+}),
+'3 emails:\n1. 2026-08-30T22:14 sarah@acme.io | "Re: Q4 budget approval needed" — needs sign-off by Friday\n2. 2026-08-30T19:02 jason@partnerco.com | "Action required: sign the NDA"\n3. 2026-08-30T15:30 newsletter@hackernews.com | "HN Weekly" (newsletter)',
+{
+  title: '2026-08-31 8:00 AM',
+  summary: 'Good morning. Project Review at 2 PM and Dentist at 6 PM today. Sarah needs the Q4 budget signed off by Friday.',
+  alerts: ['Q4 budget sign-off from Sarah - matched by email sarah@acme.io: "Re: Q4 budget approval needed"'],
+  blocks: [
+    { icon: 'review', label: 'Day in Review', type: 'prose', text: 'Today: Project Review 2:00–3:00 PM and Dentist 6:00–6:30 PM. Open tasks are the API spec and the login bug. Notable email: Sarah needs the Q4 budget signed off by Friday.' },
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: sarah@acme.io: Re: Q4 budget approval needed (Aug 30, 10:14 PM)', 'From: jason@partnerco.com: Action required: sign the NDA (Aug 30, 7:02 PM)', 'From: newsletter@hackernews.com: HN Weekly (Aug 30, 3:30 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['14:00 Project Review (1h)', '18:00 Dentist (30m)'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[todo] Finish API spec', '[todo] Fix login bug'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 18°C, partly cloudy. Next hours 18–20°C.' },
+    { icon: 'tomorrow', label: 'Tomorrow', type: 'prose', text: '' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Sign off the Q4 budget for Sarah before Friday.' },
   ],
-  tools: TOOLS.iris,
-});
+}));
 
-// ---- R3. Digest: weekly — summary of the week ---------------------------
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the weekly digest.\n\nINPUT:\nCurrent time: 2026-08-31T20:00:00 (America/Vancouver)\nUser: Dominic — software engineer, prefers terse summaries.\nCalendar this week: 2026-08-25T14:00:00 Sprint planning; 2026-08-27T10:00:00 1:1 with Sarah; 2026-08-29T15:00:00 Demo to stakeholders\nWork tasks: wt-1001 Finish API spec (high, done); wt-1002 Fix login bug (urgent, done); wt-1003 Write integration tests (medium, open); wt-1004 Migrate DB (high, in-progress)\nWeather: Week mostly sunny, high 21–24°C.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { limit: 50, since: '2026-08-24T00:00:00' } } }] },
-    { role: 'tool', name: 'read_emails', content: '12 emails this week. Actionable: 2026-08-25 sarah — "Roadmap feedback"; 2026-08-28 finance — "Expense report due Sep 5". Non-actionable: 10 newsletters/receipts.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'weekly',
-      text: '# Weekly Digest — Week of Aug 25\n\n## Week in review\n3 meetings: Sprint planning (Mon), 1:1 with Sarah (Wed), Stakeholder demo (Fri).\n\n## Completed\n- ✅ **Fix login bug** (wt-1002)\n- ✅ **Finish API spec** (wt-1001)\n\n## In progress / open\n- 🟡 **Migrate DB** (wt-1004) — high, in progress\n- ⚪ **Write integration tests** (wt-1003) — medium, open\n\n## Inbox (12 this week)\n- **Sarah** — roadmap feedback. *Action: respond.*\n- **Finance** — expense report due **Sep 5**. *Action: file.*\n- 10 newsletters/receipts — no action.\n\n## Weather\nMostly sunny, highs 21–24°C.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted weekly digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the weekly digest to the dashboard.' },
+// ---- D2. Hourly: CI bot is automated — matched as an alert, NOT actionable
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '8/31/2026, 1:07:00 PM',
+  since: '2026-08-31T19:07:00.000Z', before: '2026-08-31T20:07:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic — deep-work mornings.',
+  calendar: ['- 2026-08-31T14:00:00 → 2026-08-31T15:00:00: Project Review'],
+  tasks: ['- [todo] Fix login bug (project personal)'],
+  weather: ['Now: 20°C, Partly cloudy, humidity 55%', 'Next hours: 14:00 20°C, 15:00 21°C, 16:00 21°C'],
+  lookout: ['- Build failures from CI'],
+}),
+'1 email:\n1. 2026-08-31T12:42 ci-bot@warden | "Build #1284 failed" — tests/test_scheduler.py assertion error',
+{
+  title: '2026-08-31 1:07 PM',
+  summary: 'Mostly quiet hour. CI reported build #1284 failed on a scheduler test assertion. Project Review at 2 PM.',
+  alerts: ['Build failures from CI - matched by email ci-bot@warden: "Build #1284 failed"'],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: ci-bot@warden: Build #1284 failed (12:42 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['14:00 Project Review (1h)'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[todo] Fix login bug'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 20°C, partly cloudy. Next hours 20–21°C.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Project Review in under an hour; CI build #1284 failed on a test assertion.' },
   ],
-  tools: TOOLS.iris,
-});
+  actionable_tasks: [], actionable_events: [],
+}));
 
-// ---- R4. Digest with an empty section — say so plainly, do NOT invent ----
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the hourly digest.\n\nINPUT:\nCurrent time: 2026-08-31T07:00:00 (America/Vancouver)\nUser: Dominic.\nCalendar: (none)\nWork tasks: (none active)\nWeather: 14°C clear.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { limit: 10, since: '2026-08-31T00:00:00' } } }] },
-    { role: 'tool', name: 'read_emails', content: '0 emails.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'hourly',
-      text: '# Hourly Digest — 7:00 AM Mon Aug 31\n\n## Calendar\n_No events._\n\n## Priority work\n_No active tasks._\n\n## Inbox\n_No new emails._\n\n## Weather\nClear, 14°C.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted hourly digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the hourly digest. Nothing on the calendar, no active tasks, inbox empty.' },
+// ---- D3. Hourly: a real actionable email drives actionable_tasks ---------
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '8/31/2026, 4:07:00 PM',
+  since: '2026-08-31T22:07:00.000Z', before: '2026-08-31T23:07:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: [],
+  tasks: ['- [todo] Review PRs (project proj-warden-01)'],
+  weather: ['Now: 19°C, Sunny, humidity 52%'],
+  lookout: [],
+}),
+'1 email:\n1. 2026-08-31T15:55 jason@partnerco.com | "Action required: sign the NDA" — please review and sign the attached NDA by end of week',
+{
+  title: '2026-08-31 4:07 PM',
+  summary: 'Jason at PartnerCo asked for the NDA to be reviewed and signed by end of week; otherwise a quiet hour.',
+  alerts: [],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: jason@partnerco.com: Action required: sign the NDA (3:55 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['Nothing in the next 2 hours.'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[todo] Review PRs'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 19°C, sunny.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Sign the NDA Jason sent before end of week.' },
   ],
-  tools: TOOLS.iris,
-});
+  actionable_tasks: [{ title: 'Sign the NDA', due: '', project_hint: '' }],
+  actionable_events: [],
+}));
 
-// ---- R5. Digest published directly from INPUT (no inbox fetch needed) --
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the daily digest.\n\nINPUT:\nCurrent time: 2026-08-31T09:00:00 (America/Vancouver)\nUser: Dominic.\nCalendar: 2026-08-31T11:00:00 Standup (15m); 2026-08-31T15:30:00 Client call (45m)\nWork tasks: wt-9901 Ship release (urgent, due today); wt-9902 Update docs (low, open)\nWeather: 17°C overcast.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'daily',
-      text: '# Daily Digest — Mon Aug 31\n\n## Calendar\n- **11:00–11:15 AM** — Standup\n- **3:30–4:15 PM** — Client call\n\n## Priority work\n- 🔴 **Ship release** (wt-9901) — urgent, due today\n- ⚪ **Update docs** (wt-9902) — low, open\n\n## Weather\nOvercast, 17°C.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted daily digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the daily digest to the dashboard.' },
+// ---- D4. Weekly: week in review from INPUT + email activity --------------
+examples.push(exDigest('weekly', buildDigestInput({
+  localTime: '8/30/2026, 8:32:00 PM',
+  since: '2026-08-24T03:32:00.000Z', before: '2026-08-31T03:32:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic — software engineer; prefers terse summaries.',
+  calendar: ['- 2026-08-31T14:00:00 → 2026-08-31T15:00:00: Project Review', '- 2026-09-01T10:00:00 → 2026-09-01T10:30:00: 1:1 with Sarah'],
+  tasks: ['- [doing] Migrate DB (project proj-warden-01)', '- [todo] Write integration tests (project proj-warden-01)'],
+  weather: ['Now: 17°C, Clear, humidity 60%'],
+  lookout: [],
+}),
+'12 emails this week. From: 2026-08-25 sarah@acme.io — "Roadmap feedback"; 2026-08-28 finance@acme.io — "Expense report due Sep 5". 10 newsletters/receipts — non-actionable.',
+{
+  title: 'Week of 2026-08-24',
+  summary: 'Project Review on Monday and a 1:1 with Sarah on Tuesday close out the calendar. The DB migration is still in progress, and the expense report is due Sep 5.',
+  alerts: [],
+  blocks: [
+    { icon: 'review', label: 'Week in Review', type: 'prose', text: 'On the calendar: Project Review (Mon 2 PM) and a 1:1 with Sarah (Tue 10 AM). Migrate DB is in progress; Write integration tests is open. Expense report is due Sep 5.' },
+    { icon: 'inbox', label: 'Email Activity', type: 'list', items: ['From: sarah@acme.io: Roadmap feedback (Aug 25)', 'From: finance@acme.io: Expense report due Sep 5 (Aug 28)', '10 newsletters/receipts — no action'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['2026-08-31 14:00 Project Review', '2026-09-01 10:00 1:1 with Sarah'] },
+    { icon: 'tasks', label: 'Tasks', type: 'list', items: ['[doing] Migrate DB', '[todo] Write integration tests'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 17°C, clear.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'File the expense report before Sep 5.' },
   ],
-  tools: TOOLS.iris,
-});
+}));
 
-// ---- S. Email: read / search / get --------------------------------------
+// ---- D5. Hourly, EMPTY window: empty-state values, nothing invented ------
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '8/31/2026, 7:07:00 AM',
+  since: '2026-08-31T13:07:00.000Z', before: '2026-08-31T14:07:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: [],
+  tasks: [],
+  weather: ['Now: 14°C, Clear, humidity 70%'],
+  lookout: [],
+}),
+'0 emails received in this window.',
+{
+  title: '2026-08-31 7:07 AM',
+  summary: 'Quiet hour — no new emails, nothing on the calendar, and no active tasks.',
+  alerts: [],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: [] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['Nothing in the next 2 hours.'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['No active tasks.'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 14°C, clear.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: '' },
+  ],
+  actionable_tasks: [], actionable_events: [],
+}));
+
+// ---- D6. Daily, no emails: Look Out For present but unmatched → alerts []
+examples.push(exDigest('daily', buildDigestInput({
+  localTime: '8/31/2026, 9:00:12 AM',
+  since: '2026-08-30T16:00:12.000Z', before: '2026-08-31T16:00:12.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: ['- 2026-08-31T11:00:00 → 2026-08-31T11:15:00: Standup', '- 2026-08-31T15:30:00 → 2026-08-31T16:15:00: Client call'],
+  tasks: ['- [todo] Ship release (project personal)'],
+  weather: ['Now: 17°C, Overcast, humidity 62%'],
+  lookout: ['- Reply from Jason about the NDA'],
+}),
+'0 emails received in this window.',
+{
+  title: '2026-08-31 9:00 AM',
+  summary: 'Good morning. Standup at 11 AM and a client call at 3:30 PM; the release is the open task. No new email overnight.',
+  alerts: [],
+  blocks: [
+    { icon: 'review', label: 'Day in Review', type: 'prose', text: 'Today: Standup 11:00–11:15 AM and Client call 3:30–4:15 PM. Ship release is the open task. The inbox is quiet.' },
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: [] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['11:00 Standup (15m)', '15:30 Client call (45m)'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[todo] Ship release'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 17°C, overcast.' },
+    { icon: 'tomorrow', label: 'Tomorrow', type: 'prose', text: '' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Client call at 3:30 PM — the release task is still open.' },
+  ],
+}));
+
+// ---- D7. Hourly, evening: several emails, one a real to-do ---------------
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '8/31/2026, 8:07:00 PM',
+  since: '2026-09-01T02:07:00.000Z', before: '2026-09-01T03:07:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic — software engineer; prefers terse summaries.',
+  calendar: [],
+  tasks: ['- [todo] Finish API spec (project personal)'],
+  weather: ['Now: 15°C, Clear, humidity 64%'],
+  lookout: ['- Invoice from the contractor'],
+}),
+'3 emails:\n1. 2026-08-31T19:40 contractor@buildit.ca | "Invoice #77 attached" — $1,240, due Sep 15\n2. 2026-08-31T19:12 mom@gmail.com | "Dinner on Sunday?"\n3. 2026-08-31T18:58 newsletter@hackernews.com | "HN Weekly" (newsletter)',
+{
+  title: '2026-08-31 8:07 PM',
+  summary: 'The contractor invoice ($1,240, due Sep 15) arrived, and mom asked about Sunday dinner.',
+  alerts: ['Invoice from the contractor - matched by email contractor@buildit.ca: "Invoice #77 attached"'],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: contractor@buildit.ca: Invoice #77 attached (7:40 PM)', 'From: mom@gmail.com: Dinner on Sunday? (7:12 PM)', 'From: newsletter@hackernews.com: HN Weekly (6:58 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['Nothing in the next 2 hours.'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[todo] Finish API spec'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 15°C, clear.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Pay the contractor invoice before Sep 15 and reply to mom about Sunday.' },
+  ],
+  actionable_tasks: [{ title: 'Pay contractor invoice #77 ($1,240)', due: '2026-09-15', project_hint: '' }],
+  actionable_events: [],
+}));
+
+// ---- D8. Hourly, midday: only newsletters → no actionables, no alerts ----
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '9/1/2026, 11:07:00 AM',
+  since: '2026-09-01T17:07:00.000Z', before: '2026-09-01T18:07:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: ['- 2026-09-01T13:00:00 → 2026-09-01T13:30:00: Call with accountant'],
+  tasks: ['- [doing] Migrate DB (project proj-warden-01)'],
+  weather: ['Now: 21°C, Sunny, humidity 50%'],
+  lookout: ['- Build failures from CI'],
+}),
+'2 emails:\n1. 2026-09-01T10:33 newsletter@hackernews.com | "HN Weekly" (newsletter)\n2. 2026-09-01T10:05 receipts@amazon.ca | "Your order has shipped" (receipt)',
+{
+  title: '2026-09-01 11:07 AM',
+  summary: 'Nothing actionable this hour — a newsletter and a shipping receipt. Call with the accountant at 1 PM.',
+  alerts: [],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: newsletter@hackernews.com: HN Weekly (10:33 AM)', 'From: receipts@amazon.ca: Your order has shipped (10:05 AM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['13:00 Call with accountant (30m)'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[doing] Migrate DB'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 21°C, sunny.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Call with the accountant at 1 PM.' },
+  ],
+  actionable_tasks: [], actionable_events: [],
+}));
+
+// ---- D9. Daily, evening: long busy window, two actionable emails ---------
+examples.push(exDigest('daily', buildDigestInput({
+  localTime: '8/31/2026, 9:00:04 PM',
+  since: '2026-08-31T04:00:04.000Z', before: '2026-09-01T04:00:04.000Z',
+  bio: 'Location: Victoria, BC\nDominic — software engineer; prefers terse summaries; deep-work mornings.',
+  calendar: ['- 2026-08-31T14:00:00 → 2026-08-31T15:00:00: Project Review (today)', '- 2026-09-01T10:00:00 → 2026-09-01T10:30:00: 1:1 with Sarah (tomorrow)'],
+  tasks: ['- [doing] Migrate DB (project proj-warden-01)', '- [todo] Write integration tests (project proj-warden-01)'],
+  weather: ['Now: 14°C, Clear, humidity 68%'],
+  lookout: ['- Q4 budget sign-off from Sarah'],
+}),
+'6 emails:\n1. 2026-08-31T20:15 sarah@acme.io | "Q4 budget approved — thanks!"\n2. 2026-08-31T16:40 jason@partnerco.com | "Action required: sign the NDA" — please sign by end of week\n3. 2026-08-31T15:02 contractor@buildit.ca | "Invoice #77 attached" — due Sep 15\n4. 2026-08-31T12:11 newsletter@hackernews.com | "HN Weekly" (newsletter)\n5. 2026-08-31T09:30 billing@stripe.com | "Invoice #4421 paid" (receipt)\n6. 2026-08-31T08:02 boss@acme.io | "Great review today"',
+{
+  title: '2026-08-31 9:00 PM',
+  summary: 'Sarah approved the Q4 budget. Still open: sign the NDA by end of week and pay contractor invoice #77 by Sep 15. 1:1 with Sarah tomorrow at 10 AM.',
+  alerts: ['Q4 budget sign-off from Sarah - matched by email sarah@acme.io: "Q4 budget approved — thanks!"'],
+  blocks: [
+    { icon: 'review', label: 'Day in Review', type: 'prose', text: 'Busy day: Project Review at 2 PM, six emails. Sarah approved the Q4 budget; Jason still needs the NDA signed; the contractor invoice (#77, due Sep 15) is in. Tomorrow: 1:1 with Sarah at 10 AM.' },
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: sarah@acme.io: Q4 budget approved — thanks! (8:15 PM)', 'From: jason@partnerco.com: Action required: sign the NDA (4:40 PM)', 'From: contractor@buildit.ca: Invoice #77 attached (3:02 PM)', 'From: boss@acme.io: Great review today (8:02 AM)', 'Newsletter/receipt: HN Weekly, Stripe receipt'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['Today 14:00 Project Review (done)', 'Tomorrow 10:00 1:1 with Sarah'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[doing] Migrate DB', '[todo] Write integration tests'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 14°C, clear.' },
+    { icon: 'tomorrow', label: 'Tomorrow', type: 'prose', text: '1:1 with Sarah at 10 AM.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Sign the NDA for Jason before end of week.' },
+  ],
+  actionable_tasks: [{ title: 'Sign the NDA', due: '', project_hint: '' }, { title: 'Pay contractor invoice #77', due: '2026-09-15', project_hint: '' }],
+  actionable_events: [],
+}));
+
+// ---- D10. Weekly with a Look Out For match -------------------------------
+examples.push(exDigest('weekly', buildDigestInput({
+  localTime: '9/6/2026, 8:30:00 PM',
+  since: '2026-08-31T03:30:00.000Z', before: '2026-09-07T03:30:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: ['- 2026-09-08T14:00:00 → 2026-09-08T15:00:00: Sprint planning'],
+  tasks: ['- [doing] Migrate DB (project proj-warden-01)'],
+  weather: ['Now: 16°C, Partly cloudy, humidity 63%'],
+  lookout: ['- Invoice from the contractor'],
+}),
+'9 emails this week. From: 2026-09-04 contractor@buildit.ca — "Invoice #77 attached"; 2026-09-03 sarah@acme.io — "Sprint planning agenda". 7 newsletters/receipts — non-actionable.',
+{
+  title: 'Week of 2026-08-31',
+  summary: 'The contractor invoice (#77) came in and Sarah sent the sprint-planning agenda; sprint planning is Tuesday at 2 PM. The DB migration is still in progress.',
+  alerts: ['Invoice from the contractor - matched by email contractor@buildit.ca: "Invoice #77 attached"'],
+  blocks: [
+    { icon: 'review', label: 'Week in Review', type: 'prose', text: 'Notable: contractor invoice #77 arrived and Sarah circulated the sprint-planning agenda. Migrate DB is still in progress. Coming up: Sprint planning on Tuesday at 2 PM.' },
+    { icon: 'inbox', label: 'Email Activity', type: 'list', items: ['From: contractor@buildit.ca: Invoice #77 attached (Sep 4)', 'From: sarah@acme.io: Sprint planning agenda (Sep 3)', '7 newsletters/receipts — no action'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['2026-09-08 14:00 Sprint planning'] },
+    { icon: 'tasks', label: 'Tasks', type: 'list', items: ['[doing] Migrate DB'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 16°C, partly cloudy.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Pay contractor invoice #77 before Sep 15; skim the sprint agenda before Tuesday.' },
+  ],
+}));
+
+// ---- D11. Hourly, INPUT with no weather/bio sections included ------------
+// (buildDigestContext omits those when absent — the model sees fewer sections)
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '9/1/2026, 3:07:00 PM',
+  since: '2026-09-01T21:07:00.000Z', before: '2026-09-01T22:07:00.000Z',
+  bio: '',
+  calendar: [],
+  tasks: ['- [todo] Write integration tests (project proj-warden-01)'],
+  weather: [],
+  lookout: [],
+}),
+'1 email:\n1. 2026-09-01T14:52 jason@partnerco.com | "NDA — checking in" — any blockers on your end?',
+{
+  title: '2026-09-01 3:07 PM',
+  summary: 'Jason followed up on the NDA, asking about blockers; otherwise quiet.',
+  alerts: [],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: jason@partnerco.com: NDA — checking in (2:52 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['Nothing in the next 2 hours.'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[todo] Write integration tests'] },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Reply to Jason — the NDA is still unsigned.' },
+  ],
+  actionable_tasks: [{ title: 'Reply to Jason about the NDA', due: '', project_hint: '' }],
+  actionable_events: [],
+}));
+
+// ---- D12. Daily, quiet weekend: no tasks, one email ----------------------
+examples.push(exDigest('daily', buildDigestInput({
+  localTime: '8/30/2026, 8:00:09 AM',
+  since: '2026-08-29T15:00:09.000Z', before: '2026-08-30T15:00:09.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: ['- 2026-08-30T12:00:00 → 2026-08-30T13:00:00: Lunch with mom'],
+  tasks: [],
+  weather: ['Now: 15°C, Fog, humidity 78%', 'Next hours: 09:00 15°C, 10:00 16°C, 11:00 17°C'],
+  lookout: [],
+}),
+'1 email:\n1. 2026-08-29T22:31 mom@gmail.com | "Dinner on Sunday?"',
+{
+  title: '2026-08-30 8:00 AM',
+  summary: 'Good morning — a quiet Sunday. Lunch with mom at noon; she also emailed about Sunday dinner.',
+  alerts: [],
+  blocks: [
+    { icon: 'review', label: 'Day in Review', type: 'prose', text: 'One email overnight (mom, about Sunday dinner) and lunch with mom on the calendar at 12:00. No active tasks.' },
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: mom@gmail.com: Dinner on Sunday? (Aug 29, 10:31 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['12:00 Lunch with mom (1h)'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['No active tasks.'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 15°C, fog. Next hours 15–17°C.' },
+    { icon: 'tomorrow', label: 'Tomorrow', type: 'prose', text: 'Nothing on the calendar yet.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: '' },
+  ],
+  actionable_tasks: [], actionable_events: [],
+}));
+
+// ---- D13. Weekly, EMPTY week: no emails at all ----------------------------
+examples.push(exDigest('weekly', buildDigestInput({
+  localTime: '8/23/2026, 8:28:00 PM',
+  since: '2026-08-17T03:28:00.000Z', before: '2026-08-24T03:28:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: ['- 2026-08-25T09:00:00 → 2026-08-25T09:30:00: Dentist'],
+  tasks: ['- [todo] Refactor the scheduler (project proj-warden-01)'],
+  weather: ['Now: 16°C, Clear, humidity 66%'],
+  lookout: ['- Build failures from CI'],
+}),
+'0 emails received in this window.',
+{
+  title: 'Week of 2026-08-17',
+  summary: 'A silent week on email. Dentist on Tuesday at 9 AM; the scheduler refactor is the open task.',
+  alerts: [],
+  blocks: [
+    { icon: 'review', label: 'Week in Review', type: 'prose', text: 'No email all week and a thin calendar — Dentist Tuesday 9 AM. Refactor the scheduler is the open task.' },
+    { icon: 'inbox', label: 'Email Activity', type: 'list', items: ['No emails this week.'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['2026-08-25 09:00 Dentist'] },
+    { icon: 'tasks', label: 'Tasks', type: 'list', items: ['[todo] Refactor the scheduler'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 16°C, clear.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Dentist Tuesday 9 AM.' },
+  ],
+}));
+
+// ---- D14. Hourly: calendar event imminent, no emails (nudge leads it) ----
+examples.push(exDigest('hourly', buildDigestInput({
+  localTime: '8/31/2026, 12:52:00 PM',
+  since: '2026-08-31T18:52:00.000Z', before: '2026-08-31T19:52:00.000Z',
+  bio: 'Location: Victoria, BC\nDominic.',
+  calendar: ['- 2026-08-31T13:00:00 → 2026-08-31T13:30:00: Call with accountant'],
+  tasks: [],
+  weather: ['Now: 20°C, Partly cloudy, humidity 57%'],
+  lookout: [],
+}),
+'0 emails received in this window.',
+{
+  title: '2026-08-31 12:52 PM',
+  summary: 'Call with the accountant in 8 minutes; no new email this hour.',
+  alerts: [],
+  blocks: [
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: [] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['13:00 Call with accountant (30m) — starts in 8 minutes'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['No active tasks.'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 20°C, partly cloudy.' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Call with the accountant at 1 PM — heads up.' },
+  ],
+  actionable_tasks: [], actionable_events: [],
+}));
+
+// ---- S. Email: read / search / get ---------------------------------------
 examples.push(ex('iris', "What's in my inbox?",
   [{ name: 'read_emails', arguments: {} }],
   { results: ['5 emails:\n1. 2026-08-31T09:12 sarah@acme.io | "Re: Q4 budget approval needed"\n2. 2026-08-31T08:40 newsletter@hackernews.com | "HN Weekly"\n3. 2026-08-30T17:55 billing@stripe.com | "Invoice #4421 paid"\n4. 2026-08-30T14:20 jason@partnerco.com | "Action required: sign the NDA"\n5. 2026-08-30T11:00 boss@acme.io | "Monday standup moved to 11"'],
@@ -698,7 +1085,7 @@ examples.push(ex('iris', "Send a note to the team: standup is back to 10am Monda
 examples.push({
   messages: [
     { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'List my available API keys.' },
+    { role: 'user', content: `${ANCHOR}\n\nList my available API keys.` },
     { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'list_api_keys', arguments: {} } }] },
     { role: 'tool', name: 'list_api_keys', content: 'Configured API keys:\n- openai (key_type: "openai") — https://api.openai.com\n- github (key_type: "github") — https://api.github.com\n- slack (key_type: "slack") — https://slack.com/api' },
     { role: 'assistant', content: 'You have 3 API keys configured: openai, github, and slack.' },
@@ -712,7 +1099,7 @@ examples.push(ex('iris', "List my API keys so I know what services I can call.",
 examples.push({
   messages: [
     { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Fetch my latest 5 GitHub repos using the github key.' },
+    { role: 'user', content: `${ANCHOR}\n\nFetch my latest 5 GitHub repos using the github key.` },
     { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'api_request', arguments: { key_type: 'github', method: 'GET', path: '/user/repos?sort=updated&per_page=5', description: 'List 5 most recently updated repos for the user' } } }] },
     { role: 'tool', name: 'api_request', content: 'HTTP 200 OK\n\n[{"name":"Warden","updated_at":"2026-08-31T12:00:00Z"},{"name":"dotfiles","updated_at":"2026-08-20T09:00:00Z"},{"name":"sidenav","updated_at":"2026-08-10T09:00:00Z"},{"name":"acme-migration","updated_at":"2026-07-30T09:00:00Z"},{"name":"old-blog","updated_at":"2026-06-15T09:00:00Z"}]' },
     { role: 'assistant', content: 'Your 5 most recently updated GitHub repos: Warden, dotfiles, sidenav, acme-migration, old-blog.' },
@@ -776,37 +1163,10 @@ examples.push(ex('iris', 'Reply to boss@acme.io confirming the 11am standup work
   { results: ['Email sent to boss@acme.io ("Re: Standup moved to 11").'],
     reply: 'Sent the confirmation to boss@acme.io — 11am works.' }));
 
-// ---- W10. Iris: digests that call read_emails before post_summary ----
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the daily digest.\n\nINPUT:\nCurrent time: 2026-08-31T07:30:00 (America/Vancouver)\nUser: Dominic.\nCalendar: 2026-08-31T10:00:00 Standup (15m); 2026-08-31T13:00:00 Lunch with Sarah (1h)\nWork tasks: wt-701 Ship release (urgent, due today); wt-702 Review PRs (medium, open)\nWeather: 15°C clear.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { limit: 30, since: '2026-08-30T00:00:00' } } }] },
-    { role: 'tool', name: 'read_emails', content: '2 emails:\n1. 2026-08-30T22:14 sarah@acme.io | "Re: Q4 budget approval needed"\n2. 2026-08-30T15:30 newsletter@hackernews.com | "HN Weekly"' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'daily',
-      text: '# Daily Digest — Mon Aug 31\n\n## Calendar\n- **10:00–10:15 AM** — Standup\n- **1:00–2:00 PM** — Lunch with Sarah\n\n## Priority work\n- 🔴 **Ship release** (wt-701) — urgent, due today\n- 🟡 **Review PRs** (wt-702) — medium, open\n\n## Inbox (2 since yesterday)\n- **Sarah** — Q4 budget approval needed by Friday. *Action: sign off.*\n- HN Weekly — newsletter, no action.\n\n## Weather\nClear, 15°C.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted daily digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the daily digest to the dashboard.' },
-  ],
-  tools: TOOLS.iris,
-});
-examples.push({
-  messages: [
-    { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: 'Compile the hourly digest.\n\nINPUT:\nCurrent time: 2026-08-31T16:00:00 (America/Vancouver)\nUser: Dominic.\nCalendar: (none)\nWork tasks: wt-701 Ship release (urgent, due today)\nWeather: 19°C sunny.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'read_emails', arguments: { limit: 15, since: '2026-08-31T15:00:00' } } }] },
-    { role: 'tool', name: 'read_emails', content: '0 emails.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'post_summary', arguments: {
-      span: 'hourly',
-      text: '# Hourly Digest — 4:00 PM Mon Aug 31\n\n## Calendar\n_No events._\n\n## Priority work\n- 🔴 **Ship release** (wt-701) — urgent, due today\n\n## Inbox\n_No new emails._\n\n## Weather\nSunny, 19°C.',
-    } } }] },
-    { role: 'tool', name: 'post_summary', content: 'Posted hourly digest (HTTP 200).' },
-    { role: 'assistant', content: 'Posted the hourly digest. Nothing on the calendar, no new email; Ship release still open.' },
-  ],
-  tools: TOOLS.iris,
-});
+// ---- W10 REMOVED: the read_emails → post_summary digest chain it taught
+// never existed in production — digests are direct `iris-digest-<span>`
+// background spawns where the model emits JSON as final text and the RUNNER
+// publishes it. The real digest examples live in section D above. ----------
 
 // ---- W11. Iris: api_request clean single-call reps ----
 examples.push(ex('iris', 'Fetch my open GitHub issues with the github key.',
@@ -819,45 +1179,42 @@ examples.push(ex('iris', "Post a message to #general on slack: standup in 5 minu
     reply: 'Posted "Standup in 5 minutes." to #general on Slack (HTTP 200).' }));
 
 // =========================================================================
-// BYTE — work management (projects, work tasks, deliverables, blockers,
-// priorities, financials, time tracking, inbox → work tasks). Multi-step:
-// list → id → act is fine for byte.
+// IRIS — work management (projects, work tasks, deliverables, blockers,
+// priorities, financials, time tracking, inbox → work tasks). Absorbed from
+// byte 2026-09-05. Single-shot: the brief carries the id; one call per
+// request.
 // =========================================================================
 
 // ---- I. create_work_task — the project_id="personal" default + priority --
-examples.push(ex('byte', "Record a new work task: 'Fix the login bug' — add it to my personal list.",
+examples.push(ex('iris', "Record a new work task: 'Fix the login bug' — add it to my personal list.",
   [{ name: 'create_work_task', arguments: { title: 'Fix the login bug', project_id: 'personal' } }],
   { results: ['Created work task "Fix the login bug" (id wt-2001) in project personal.'],
     reply: 'Created work task "Fix the login bug" (wt-2001) in Personal.' }));
-examples.push(ex('byte', "Record a new high-priority work task: 'Write the API spec'.",
+examples.push(ex('iris', "Record a new high-priority work task: 'Write the API spec'.",
   [{ name: 'create_work_task', arguments: { title: 'Write the API spec', project_id: 'personal', priority: 'high' } }],
   { results: ['Created work task "Write the API spec" (id wt-2002) in project personal.'],
     reply: 'Created work task "Write the API spec" (wt-2002, high) in Personal.' }));
-examples.push(ex('byte', "Record a new urgent work task: 'Ship the hotfix'.",
+examples.push(ex('iris', "Record a new urgent work task: 'Ship the hotfix'.",
   [{ name: 'create_work_task', arguments: { title: 'Ship the hotfix', project_id: 'personal', priority: 'urgent' } }],
   { results: ['Created work task "Ship the hotfix" (id wt-2003) in project personal.'],
     reply: 'Created work task "Ship the hotfix" (wt-2003, urgent) in Personal.' }));
-examples.push(ex('byte', "Record a new low-priority work task: 'Review the PR'.",
+examples.push(ex('iris', "Record a new low-priority work task: 'Review the PR'.",
   [{ name: 'create_work_task', arguments: { title: 'Review the PR', project_id: 'personal', priority: 'low' } }],
   { results: ['Created work task "Review the PR" (id wt-2004) in project personal.'],
     reply: 'Created work task "Review the PR" (wt-2004, low) in Personal.' }));
-examples.push(ex('byte', "Record a new work task: 'Prepare the demo', due Friday — add it to my personal list.",
+examples.push(ex('iris', "Record a new work task: 'Prepare the demo', due Friday — add it to my personal list.",
   [{ name: 'create_work_task', arguments: { title: 'Prepare the demo', project_id: 'personal', due_date: '2026-09-04' } }],
   { results: ['Created work task "Prepare the demo" (id wt-2005) in project personal.'],
     reply: 'Created work task "Prepare the demo" (wt-2005) in Personal, due 2026-09-04.' }));
 
 // ---- J. Named project → list_projects first, then create_work_task ------
-examples.push(exManage('byte', "Add a work task 'Refactor the scheduler' to the Warden project.", {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', "Add a work task 'Refactor the scheduler' to the Warden project.", {
   actionTool: 'create_work_task',
   actionArgs: { title: 'Refactor the scheduler', project_id: 'proj-warden-01' },
   actionResult: 'Created work task "Refactor the scheduler" (id wt-2006) in project proj-warden-01.',
   reply: 'Created work task "Refactor the scheduler" (wt-2006) in the Warden project (proj-warden-01).',
 }));
-examples.push(exManage('byte', "Add an urgent work task 'Fix the prod outage' to the Acme Migration project.", {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', "Add an urgent work task 'Fix the prod outage' to the Acme Migration project.", {
   actionTool: 'create_work_task',
   actionArgs: { title: 'Fix the prod outage', project_id: 'proj-acme-02', priority: 'urgent' },
   actionResult: 'Created work task "Fix the prod outage" (id wt-2007) in project proj-acme-02.',
@@ -865,47 +1222,39 @@ examples.push(exManage('byte', "Add an urgent work task 'Fix the prod outage' to
 }));
 
 // ---- K. create_project + seed it (the multi-tool create flow) -----------
-examples.push(ex('byte', "Create a new project called 'Q4 Marketing Plan' with a description.",
+examples.push(ex('iris', "Create a new project called 'Q4 Marketing Plan' with a description.",
   [{ name: 'create_project', arguments: { name: 'Q4 Marketing Plan', description: 'Plan and execute the Q4 marketing campaign.' } }],
   { results: ['Project "Q4 Marketing Plan" created with id proj-q4mkt-01. Now call add_deliverable, add_blocker, add_priority, update_financials, and create_work_task using this project_id.'],
     reply: 'Created project "Q4 Marketing Plan" (proj-q4mkt-01).' }));
-examples.push(ex('byte', "Create a new project called 'Site Redesign', due 2026-10-31.",
+examples.push(ex('iris', "Create a new project called 'Site Redesign', due 2026-10-31.",
   [{ name: 'create_project', arguments: { name: 'Site Redesign', due_date: '2026-10-31' } }],
   { results: ['Project "Site Redesign" created with id proj-siteredesign-01.'],
     reply: 'Created project "Site Redesign" (proj-siteredesign-01), due 2026-10-31.' }));
-examples.push(ex('byte', "Create a new project called 'Mobile App' with project code MOB-001.",
+examples.push(ex('iris', "Create a new project called 'Mobile App' with project code MOB-001.",
   [{ name: 'create_project', arguments: { name: 'Mobile App', project_code: 'MOB-001' } }],
   { results: ['Project "Mobile App" created with id proj-mobileapp-01.'],
     reply: 'Created project "Mobile App" (proj-mobileapp-01, code MOB-001).' }));
 
 // ---- L. Deliverables on a project ---------------------------------------
-examples.push(exManage('byte', "Add a 'Launch landing page' deliverable to the Q4 Marketing Plan project.", {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-q4mkt-01 | Q4 Marketing Plan | On Track\n3. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Add a 'Launch landing page' deliverable to the Q4 Marketing Plan project.", {
   actionTool: 'add_deliverable',
   actionArgs: { project_id: 'proj-q4mkt-01', name: 'Launch landing page' },
   actionResult: 'Deliverable "Launch landing page" added (id deliv-301) to project proj-q4mkt-01.',
   reply: 'Added deliverable "Launch landing page" (deliv-301) to Q4 Marketing Plan.',
 }));
-examples.push(exManage('byte', "Add a 'Ship v1' deliverable, due 2026-09-15, to the Mobile App project.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-mobileapp-01 | Mobile App | On Track',
+examples.push(exManage('iris', "Add a 'Ship v1' deliverable, due 2026-09-15, to the Mobile App project.", {
   actionTool: 'add_deliverable',
   actionArgs: { project_id: 'proj-mobileapp-01', name: 'Ship v1', due_date: '2026-09-15' },
   actionResult: 'Deliverable "Ship v1" added (id deliv-302) to project proj-mobileapp-01.',
   reply: 'Added deliverable "Ship v1" (deliv-302) to Mobile App, due 2026-09-15.',
 }));
-examples.push(exManage('byte', "Mark the 'Launch landing page' deliverable as done.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-q4mkt-01 | Q4 Marketing Plan | On Track\nDeliverables:\n- deliv-301 | Launch landing page | open\n- deliv-303 | Email campaign | done',
+examples.push(exManage('iris', "Mark the 'Launch landing page' deliverable as done.", {
   actionTool: 'toggle_deliverable',
   actionArgs: { deliverable_id: 'deliv-301' },
   actionResult: 'Deliverable deliv-301 toggled.',
   reply: 'Marked "Launch landing page" (deliv-301) as done.',
 }));
-examples.push(exManage('byte', "Delete the 'Ship v1' deliverable from the Mobile App project.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-mobileapp-01 | Mobile App | On Track\nDeliverables:\n- deliv-302 | Ship v1 | open',
+examples.push(exManage('iris', "Delete the 'Ship v1' deliverable from the Mobile App project.", {
   actionTool: 'delete_deliverable',
   actionArgs: { deliverable_id: 'deliv-302' },
   actionResult: 'Deliverable deliv-302 deleted.',
@@ -913,49 +1262,37 @@ examples.push(exManage('byte', "Delete the 'Ship v1' deliverable from the Mobile
 }));
 
 // ---- M. Blockers + priorities + financials ------------------------------
-examples.push(exManage('byte', "Add a high-severity blocker to the Warden project: 'CI is flaky on arm64'.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Add a high-severity blocker to the Warden project: 'CI is flaky on arm64'.", {
   actionTool: 'add_blocker',
   actionArgs: { project_id: 'proj-warden-01', description: 'CI is flaky on arm64', severity: 'high' },
   actionResult: 'Blocker "CI is flaky on arm64" added (id blk-401) to project proj-warden-01.',
   reply: 'Added a high-severity blocker "CI is flaky on arm64" (blk-401) to Warden.',
 }));
-examples.push(exManage('byte', "Add a critical blocker to the Acme Migration project: 'Data migration script failing'.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. proj-warden-01 | Warden | On Track\n2. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', "Add a critical blocker to the Acme Migration project: 'Data migration script failing'.", {
   actionTool: 'add_blocker',
   actionArgs: { project_id: 'proj-acme-02', description: 'Data migration script failing', severity: 'critical' },
   actionResult: 'Blocker "Data migration script failing" added (id blk-402) to project proj-acme-02.',
   reply: 'Added a critical blocker "Data migration script failing" (blk-402) to Acme Migration.',
 }));
-examples.push(exManage('byte', "Add a high-impact priority to the Warden project: 'Improve test coverage'.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Add a high-impact priority to the Warden project: 'Improve test coverage'.", {
   actionTool: 'add_priority',
   actionArgs: { project_id: 'proj-warden-01', item: 'Improve test coverage', impact: 'high' },
   actionResult: 'Priority "Improve test coverage" added (id prio-501) to project proj-warden-01.',
   reply: 'Added a high-impact priority "Improve test coverage" (prio-501) to Warden.',
 }));
-examples.push(exManage('byte', "Set the Warden project financials: budget 50000, spent 12000.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Set the Warden project financials: budget 50000, spent 12000.", {
   actionTool: 'update_financials',
   actionArgs: { project_id: 'proj-warden-01', budget: 50000, spent: 12000 },
   actionResult: 'Financials updated for project proj-warden-01.',
   reply: 'Set Warden budget to $50,000 and spent to $12,000.',
 }));
-examples.push(exManage('byte', "Log 3.5 hours on the Warden project today for the scheduler refactor.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Log 3.5 hours on the Warden project today for the scheduler refactor.", {
   actionTool: 'log_time',
   actionArgs: { project_id: 'proj-warden-01', hours: 3.5, description: 'Scheduler refactor' },
   actionResult: 'Logged 3.5 hours on project proj-warden-01.',
   reply: 'Logged 3.5h on Warden for the scheduler refactor.',
 }));
-examples.push(exManage('byte', "Log 2 hours on the Acme Migration project for yesterday's migration work (2026-08-30).", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', "Log 2 hours on the Acme Migration project for yesterday's migration work (2026-08-30).", {
   actionTool: 'log_time',
   actionArgs: { project_id: 'proj-acme-02', hours: 2, date: '2026-08-30', description: 'Migration work' },
   actionResult: 'Logged 2 hours on project proj-acme-02 for 2026-08-30.',
@@ -963,79 +1300,103 @@ examples.push(exManage('byte', "Log 2 hours on the Acme Migration project for ye
 }));
 
 // ---- N. Timer -----------------------------------------------------------
-examples.push(exManage('byte', "Start a timer on the Warden project for testing.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Start a timer on the Warden project for testing.", {
   actionTool: 'start_timer',
   actionArgs: { project_id: 'proj-warden-01', description: 'Testing' },
   actionResult: 'Timer started (id timer-601) on project proj-warden-01.',
   reply: 'Started a timer on Warden (timer-601).',
 }));
-examples.push(ex('byte', "Stop my running timer (timer-601).",
+examples.push(ex('iris', "Stop my running timer (timer-601).",
   [{ name: 'stop_timer', arguments: { timer_id: 'timer-601' } }],
   { results: ['Timer timer-601 stopped. Logged 1.25 hours.'],
     reply: 'Stopped timer timer-601 (1.25h logged).' }));
 
 // ---- O. update_project status enum + manage flows ----------------------
-examples.push(exManage('byte', "Mark the Acme Migration project as At Risk.", {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | On Track',
+examples.push(exManage('iris', "Mark the Acme Migration project as At Risk.", {
   actionTool: 'update_project',
   actionArgs: { project_id: 'proj-acme-02', status: 'At Risk' },
   actionResult: 'Project proj-acme-02 updated.',
   reply: 'Marked Acme Migration (proj-acme-02) as At Risk.',
 }));
-examples.push(exManage('byte', "Mark the Warden project as Blocked.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Mark the Warden project as Blocked.", {
   actionTool: 'update_project',
   actionArgs: { project_id: 'proj-warden-01', status: 'Blocked' },
   actionResult: 'Project proj-warden-01 updated.',
   reply: 'Marked Warden (proj-warden-01) as Blocked.',
 }));
-examples.push(exManage('byte', "Rename the Mobile App project to 'Mobile App v2' and set it On Track.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-mobileapp-01 | Mobile App | On Track',
+// Reinforcement: the 2026-09-02 checkpoint answered "mark Warden as Blocked"
+// by CREATING a junk project and a work task instead of updating status.
+// More status-update phrasings, with varied project names in the listing:
+examples.push(exManage('iris', "Mark Warden as Blocked.", {
+  actionTool: 'update_project',
+  actionArgs: { project_id: 'proj-warden-01', status: 'Blocked' },
+  actionResult: 'Project proj-warden-01 updated.',
+  reply: 'Marked Warden (proj-warden-01) as Blocked.',
+}));
+examples.push(exManage('iris', "Set the Warden project status to At Risk.", {
+  actionTool: 'update_project',
+  actionArgs: { project_id: 'proj-warden-01', status: 'At Risk' },
+  actionResult: 'Project proj-warden-01 updated.',
+  reply: 'Set Warden (proj-warden-01) to At Risk.',
+}));
+examples.push(exManage('iris', "Mark the Site Redesign project as Completed.", {
+  actionTool: 'update_project',
+  actionArgs: { project_id: 'proj-siteredesign-01', status: 'Completed' },
+  actionResult: 'Project proj-siteredesign-01 updated.',
+  reply: 'Marked Site Redesign (proj-siteredesign-01) as Completed.',
+}));
+examples.push(exManage('iris', "Move the Acme Migration project back to On Track.", {
+  actionTool: 'update_project',
+  actionArgs: { project_id: 'proj-acme-02', status: 'On Track' },
+  actionResult: 'Project proj-acme-02 updated.',
+  reply: 'Moved Acme Migration (proj-acme-02) back to On Track.',
+}));
+// Priority reinforcement — the same checkpoint answered "add a priority" with
+// create_work_task (wrong artifact, drops the impact arg). Priority = the
+// add_priority tool; a work task is only for "add a task".
+examples.push(exManage('iris', "Add a priority to the Warden project: improve test coverage, high impact.", {
+  actionTool: 'add_priority',
+  actionArgs: { project_id: 'proj-warden-01', item: 'Improve test coverage', impact: 'high' },
+  actionResult: 'Priority "Improve test coverage" added (id prio-502) to project proj-warden-01.',
+  reply: 'Added a high-impact priority "Improve test coverage" (prio-502) to Warden.',
+}));
+examples.push(exManage('iris', "Add a priority to Acme Migration: finish the data backfill, medium impact.", {
+  actionTool: 'add_priority',
+  actionArgs: { project_id: 'proj-acme-02', item: 'Finish the data backfill', impact: 'medium' },
+  actionResult: 'Priority "Finish the data backfill" added (id prio-503) to project proj-acme-02.',
+  reply: 'Added a medium-impact priority "Finish the data backfill" (prio-503) to Acme Migration.',
+}));
+examples.push(exManage('iris', "Rename the Mobile App project to 'Mobile App v2' and set it On Track.", {
   actionTool: 'update_project',
   actionArgs: { project_id: 'proj-mobileapp-01', name: 'Mobile App v2', status: 'On Track' },
   actionResult: 'Project proj-mobileapp-01 updated.',
   reply: 'Renamed Mobile App to "Mobile App v2" (proj-mobileapp-01) and set it On Track.',
 }));
-examples.push(exManage('byte', "Complete the Site Redesign project.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-siteredesign-01 | Site Redesign | On Track',
+examples.push(exManage('iris', "Complete the Site Redesign project.", {
   actionTool: 'complete_project',
   actionArgs: { project_id: 'proj-siteredesign-01' },
   actionResult: 'Project proj-siteredesign-01 completed.',
   reply: 'Completed the Site Redesign project (proj-siteredesign-01).',
 }));
-examples.push(exManage('byte', "Archive the Acme Migration project.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', "Archive the Acme Migration project.", {
   actionTool: 'archive_project',
   actionArgs: { project_id: 'proj-acme-02' },
   actionResult: 'Project proj-acme-02 archived.',
   reply: 'Archived Acme Migration (proj-acme-02).',
 }));
-examples.push(exManage('byte', "Delete the Q4 Marketing Plan project.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-q4mkt-01 | Q4 Marketing Plan | On Track',
+examples.push(exManage('iris', "Delete the Q4 Marketing Plan project.", {
   actionTool: 'delete_project',
   actionArgs: { project_id: 'proj-q4mkt-01' },
   actionResult: 'Project proj-q4mkt-01 deleted.',
   reply: 'Deleted the Q4 Marketing Plan project (proj-q4mkt-01).',
 }));
-examples.push(exManage('byte', "Delete the 'CI is flaky on arm64' blocker (blk-401).", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track\nBlockers:\n- blk-401 | CI is flaky on arm64 | high',
+examples.push(exManage('iris', "Delete the 'CI is flaky on arm64' blocker (blk-401).", {
   actionTool: 'delete_blocker',
   actionArgs: { blocker_id: 'blk-401' },
   actionResult: 'Blocker blk-401 deleted.',
   reply: 'Deleted the "CI is flaky on arm64" blocker (blk-401).',
 }));
-examples.push(exManage('byte', "Remove the 'Improve test coverage' priority from the Warden project.", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track\nPriorities:\n- prio-501 | Improve test coverage | high',
+examples.push(exManage('iris', "Remove the 'Improve test coverage' priority from the Warden project.", {
   actionTool: 'delete_priority',
   actionArgs: { priority_id: 'prio-501' },
   actionResult: 'Priority prio-501 deleted.',
@@ -1043,41 +1404,33 @@ examples.push(exManage('byte', "Remove the 'Improve test coverage' priority from
 }));
 
 // ---- P. list / get + work-task manage flows -----------------------------
-examples.push(ex('byte', "List my projects.",
+examples.push(ex('iris', "List my projects.",
   [{ name: 'list_projects', arguments: {} }],
   { results: ['3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | At Risk'],
     reply: 'You have 3 projects: Personal, Warden (On Track), and Acme Migration (At Risk).' }));
-examples.push(ex('byte', "List my work tasks.",
+examples.push(ex('iris', "List my work tasks.",
   [{ name: 'list_work_tasks', arguments: {} }],
   { results: ['4 tasks:\n1. wt-2001 | Fix the login bug | personal | medium | open\n2. wt-2006 | Refactor the scheduler | proj-warden-01 | medium | open\n3. wt-2007 | Fix the prod outage | proj-acme-02 | urgent | in-progress\n4. wt-2005 | Prepare the demo | personal | medium | open'],
     reply: 'You have 4 work tasks across Personal, Warden, and Acme Migration; the urgent one is "Fix the prod outage".' }));
-examples.push(exManage('byte', "Mark the 'Fix the login bug' work task as done.", {
-  listTool: 'list_work_tasks',
-  listResult: '2 tasks:\n1. wt-2001 | Fix the login bug | personal | medium | open\n2. wt-2006 | Refactor the scheduler | proj-warden-01 | medium | open',
+examples.push(exManage('iris', "Mark the 'Fix the login bug' work task as done.", {
   actionTool: 'update_work_task',
   actionArgs: { task_id: 'wt-2001', status: 'done' },
   actionResult: 'Work task wt-2001 updated.',
   reply: 'Marked "Fix the login bug" (wt-2001) as done.',
 }));
-examples.push(exManage('byte', "Bump the 'Refactor the scheduler' work task to high priority.", {
-  listTool: 'list_work_tasks',
-  listResult: '2 tasks:\n1. wt-2001 | Fix the login bug | personal | medium | done\n2. wt-2006 | Refactor the scheduler | proj-warden-01 | medium | open',
+examples.push(exManage('iris', "Bump the 'Refactor the scheduler' work task to high priority.", {
   actionTool: 'update_work_task',
   actionArgs: { task_id: 'wt-2006', priority: 'high' },
   actionResult: 'Work task wt-2006 updated.',
   reply: 'Bumped "Refactor the scheduler" (wt-2006) to high priority.',
 }));
-examples.push(exManage('byte', "Delete the 'Prepare the demo' work task.", {
-  listTool: 'list_work_tasks',
-  listResult: '2 tasks:\n1. wt-2005 | Prepare the demo | personal | medium | open\n2. wt-2006 | Refactor the scheduler | proj-warden-01 | medium | open',
+examples.push(exManage('iris', "Delete the 'Prepare the demo' work task.", {
   actionTool: 'delete_work_task',
   actionArgs: { task_id: 'wt-2005' },
   actionResult: 'Work task wt-2005 deleted.',
   reply: 'Deleted the "Prepare the demo" task (wt-2005).',
 }));
-examples.push(exManage('byte', "Show me the details on the Warden project.", {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "Show me the details on the Warden project.", {
   actionTool: 'get_project',
   actionArgs: { project_id: 'proj-warden-01' },
   actionResult: 'Project details:\nname: Warden\nid: proj-warden-01\nstatus: On Track\nDeliverables: deliv-301 Launch landing page (open)\nBlockers: blk-401 CI is flaky on arm64 (high)\nFinancials: budget 50000, spent 12000',
@@ -1085,152 +1438,118 @@ examples.push(exManage('byte', "Show me the details on the Warden project.", {
 }));
 
 // ---- Q. Inbox → work tasks (read_emails → create_work_task) -------------
-examples.push(ex('byte', "Scan the inbox for actionable emails and turn them into work tasks.",
+examples.push(ex('iris', "Scan the inbox for actionable emails and turn them into work tasks.",
   [{ name: 'read_emails', arguments: { limit: 50, preview_only: true } }],
   { results: ['4 emails:\n1. 2026-08-31T09:12 sarah@acme.io | "Re: Q4 budget approval needed" | Sarah needs the Q4 budget signed off by Friday.\n2. 2026-08-31T08:40 newsletter@hackernews.com | "HN Weekly" | Weekly digest (newsletter).\n3. 2026-08-30T17:55 billing@stripe.com | "Invoice #4421 paid" | Receipt for $199.\n4. 2026-08-30T14:20 jason@partnerco.com | "Action required: sign the NDA" | Please review and sign the NDA attached.'],
     reply: 'Found 2 actionable emails: "Q4 budget approval needed" (Sarah) and "Action required: sign the NDA" (Jason). Want me to create a work task for each? The HN newsletter and Stripe receipt are non-actionable.' }));
-examples.push(ex('byte', "Turn the NDA email into a work task.",
+examples.push(ex('iris', "Turn the NDA email into a work task.",
   [{ name: 'create_work_task', arguments: { title: 'Review and sign the NDA from Jason', project_id: 'personal', priority: 'high', due_date: '2026-09-02', description: 'Jason at PartnerCo needs the NDA signed. Email 2026-08-30T14:20.' } }],
   { results: ['Created work task "Review and sign the NDA from Jason" (id wt-2010) in project personal.'],
     reply: 'Created work task "Review and sign the NDA from Jason" (wt-2010, high, due 2026-09-02) in Personal.' }));
 
-// ---- W6. Byte: manage flows that COMPLETE the second call (list → act) ----
-examples.push(exManage('byte', 'mark the Warden project as On Track', {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | Blocked\n3. proj-acme-02 | Acme Migration | At Risk',
+// ---- W6. Iris: id-supplied manage (the brief names the id — one call) ----
+examples.push(exManage('iris', 'mark the Warden project as On Track', {
   actionTool: 'update_project',
   actionArgs: { project_id: 'proj-warden-01', status: 'On Track' },
   actionResult: 'Project proj-warden-01 updated.',
   reply: 'Marked Warden (proj-warden-01) as On Track.',
 }));
-examples.push(exManage('byte', 'set Acme Migration to Blocked', {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', 'set Acme Migration to Blocked', {
   actionTool: 'update_project',
   actionArgs: { project_id: 'proj-acme-02', status: 'Blocked' },
   actionResult: 'Project proj-acme-02 updated.',
   reply: 'Marked Acme Migration (proj-acme-02) as Blocked.',
 }));
-examples.push(exManage('byte', 'mark the Mobile App project as At Risk', {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-mobileapp-01 | Mobile App | On Track',
+examples.push(exManage('iris', 'mark the Mobile App project as At Risk', {
   actionTool: 'update_project',
   actionArgs: { project_id: 'proj-mobileapp-01', status: 'At Risk' },
   actionResult: 'Project proj-mobileapp-01 updated.',
   reply: 'Marked Mobile App (proj-mobileapp-01) as At Risk.',
 }));
-examples.push(exManage('byte', "mark the 'Refactor the scheduler' task as in-progress", {
-  listTool: 'list_work_tasks',
-  listResult: '2 tasks:\n1. wt-2001 | Fix the login bug | personal | medium | done\n2. wt-2006 | Refactor the scheduler | proj-warden-01 | medium | open',
+examples.push(exManage('iris', "mark the 'Refactor the scheduler' task as in-progress", {
   actionTool: 'update_work_task',
   actionArgs: { task_id: 'wt-2006', status: 'in-progress' },
   actionResult: 'Work task wt-2006 updated.',
   reply: 'Marked "Refactor the scheduler" (wt-2006) as in-progress.',
 }));
-examples.push(exManage('byte', 'bump the login bug task to urgent', {
-  listTool: 'list_work_tasks',
-  listResult: '2 tasks:\n1. wt-2001 | Fix the login bug | personal | medium | open\n2. wt-2006 | Refactor the scheduler | proj-warden-01 | medium | open',
+examples.push(exManage('iris', 'bump the login bug task to urgent', {
   actionTool: 'update_work_task',
   actionArgs: { task_id: 'wt-2001', priority: 'urgent' },
   actionResult: 'Work task wt-2001 updated.',
   reply: 'Bumped "Fix the login bug" (wt-2001) to urgent.',
 }));
 
-// ---- W7. Byte: blockers/priorities with severity/impact split into own field ----
-examples.push(exManage('byte', 'add a low-severity blocker to Warden: docs are out of date', {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+// ---- W7. Iris: blockers/priorities with severity/impact split into own field ----
+examples.push(exManage('iris', 'add a low-severity blocker to Warden: docs are out of date', {
   actionTool: 'add_blocker',
   actionArgs: { project_id: 'proj-warden-01', description: 'Docs are out of date', severity: 'low' },
   actionResult: 'Blocker "Docs are out of date" added (id blk-601) to project proj-warden-01.',
   reply: 'Added a low-severity blocker "Docs are out of date" (blk-601) to Warden.',
 }));
-examples.push(exManage('byte', 'add a critical blocker to Acme: prod database is down', {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. proj-warden-01 | Warden | On Track\n2. proj-acme-02 | Acme Migration | At Risk',
+examples.push(exManage('iris', 'add a critical blocker to Acme: prod database is down', {
   actionTool: 'add_blocker',
   actionArgs: { project_id: 'proj-acme-02', description: 'Prod database is down', severity: 'critical' },
   actionResult: 'Blocker "Prod database is down" added (id blk-602) to project proj-acme-02.',
   reply: 'Added a critical blocker "Prod database is down" (blk-602) to Acme Migration.',
 }));
-examples.push(exManage('byte', 'add a medium blocker to Warden: the tests are slow', {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', 'add a medium blocker to Warden: the tests are slow', {
   actionTool: 'add_blocker',
   actionArgs: { project_id: 'proj-warden-01', description: 'The tests are slow', severity: 'medium' },
   actionResult: 'Blocker "The tests are slow" added (id blk-603) to project proj-warden-01.',
   reply: 'Added a medium blocker "The tests are slow" (blk-603) to Warden.',
 }));
-examples.push(exManage('byte', 'add a high-impact priority to Warden: ship v2', {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', 'add a high-impact priority to Warden: ship v2', {
   actionTool: 'add_priority',
   actionArgs: { project_id: 'proj-warden-01', item: 'Ship v2', impact: 'high' },
   actionResult: 'Priority "Ship v2" added (id prio-604) to project proj-warden-01.',
   reply: 'Added a high-impact priority "Ship v2" (prio-604) to Warden.',
 }));
-examples.push(exManage('byte', 'add a low priority to my list: organize my desk', {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. personal | Personal | On Track',
+examples.push(exManage('iris', 'add a low priority to my list: organize my desk', {
   actionTool: 'add_priority',
   actionArgs: { project_id: 'personal', item: 'Organize my desk', impact: 'low' },
   actionResult: 'Priority "Organize my desk" added (id prio-605) to project personal.',
   reply: 'Added a low priority "Organize my desk" (prio-605) to Personal.',
 }));
-examples.push(exManage('byte', "add a deliverable to Warden: write the docs, due 2026-09-20", {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', "add a deliverable to Warden: write the docs, due 2026-09-20", {
   actionTool: 'add_deliverable',
   actionArgs: { project_id: 'proj-warden-01', name: 'Write the docs', due_date: '2026-09-20' },
   actionResult: 'Deliverable "Write the docs" added (id deliv-606) to project proj-warden-01.',
   reply: 'Added deliverable "Write the docs" (deliv-606) to Warden, due 2026-09-20.',
 }));
 
-// ---- W13. Byte: financials / log_time — ALWAYS list_projects first, use the
+// ---- W13. Iris: financials / log_time — the brief carries the proj id; use
 // returned proj-id, NEVER the project name as project_id. ----
-examples.push(exManage('byte', 'set the Acme Migration budget to 80000', {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | On Track',
+examples.push(exManage('iris', 'set the Acme Migration budget to 80000', {
   actionTool: 'update_financials',
   actionArgs: { project_id: 'proj-acme-02', budget: 80000 },
   actionResult: 'Financials updated for project proj-acme-02.',
   reply: 'Set Acme Migration (proj-acme-02) budget to $80,000.',
 }));
-examples.push(exManage('byte', 'update the Warden spent to 15000', {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', 'update the Warden spent to 15000', {
   actionTool: 'update_financials',
   actionArgs: { project_id: 'proj-warden-01', spent: 15000 },
   actionResult: 'Financials updated for project proj-warden-01.',
   reply: 'Set Warden (proj-warden-01) spent to $15,000.',
 }));
-examples.push(exManage('byte', 'set Warden revenue to 100000', {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', 'set Warden revenue to 100000', {
   actionTool: 'update_financials',
   actionArgs: { project_id: 'proj-warden-01', revenue: 100000 },
   actionResult: 'Financials updated for project proj-warden-01.',
   reply: 'Set Warden (proj-warden-01) revenue to $100,000.',
 }));
-examples.push(exManage('byte', 'log 2 hours on the Warden project for today', {
-  listTool: 'list_projects',
-  listResult: '2 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', 'log 2 hours on the Warden project for today', {
   actionTool: 'log_time',
   actionArgs: { project_id: 'proj-warden-01', hours: 2 },
   actionResult: 'Logged 2 hours on project proj-warden-01.',
   reply: 'Logged 2h on Warden (proj-warden-01).',
 }));
-examples.push(exManage('byte', 'log 1.5 hours on Acme Migration', {
-  listTool: 'list_projects',
-  listResult: '3 projects:\n1. personal | Personal | On Track\n2. proj-warden-01 | Warden | On Track\n3. proj-acme-02 | Acme Migration | On Track',
+examples.push(exManage('iris', 'log 1.5 hours on Acme Migration', {
   actionTool: 'log_time',
   actionArgs: { project_id: 'proj-acme-02', hours: 1.5 },
   actionResult: 'Logged 1.5 hours on project proj-acme-02.',
   reply: 'Logged 1.5h on Acme Migration (proj-acme-02).',
 }));
-examples.push(exManage('byte', 'log 4 hours on Warden yesterday for the bug fix', {
-  listTool: 'list_projects',
-  listResult: '1 project:\n1. proj-warden-01 | Warden | On Track',
+examples.push(exManage('iris', 'log 4 hours on Warden yesterday for the bug fix', {
   actionTool: 'log_time',
   actionArgs: { project_id: 'proj-warden-01', hours: 4, date: '2026-08-30', description: 'Bug fix' },
   actionResult: 'Logged 4 hours on project proj-warden-01 for 2026-08-30.',
@@ -1239,7 +1558,7 @@ examples.push(exManage('byte', 'log 4 hours on Warden yesterday for the bug fix'
 
 // =========================================================================
 // REALITY GROUNDING — examples for the 3 live dryfire failures, phrased as
-// ORCHESTRATOR BRIEFS (what iris/byte actually receive at dispatch), NOT as
+// ORCHESTRATOR BRIEFS (what iris actually receives at dispatch), NOT as
 // raw user chat. The orchestrator rewrites the user's ask into a verbose,
 // imperative brief: explicit ids/addresses, parenthetical context, em-dashes,
 // the full intent restated. iris briefs get the time-header ANCHOR prepended
@@ -1411,20 +1730,20 @@ examples.push(ex('iris', 'Find the email for order #48215 and pull the tracking 
   { results: ['1 email:\n1. 2026-08-30T11:00 orders@shop.io | "Order #48215 shipped" — tracking 1Z999AA10123456784'],
     reply: 'Found order #48215 (orders@shop.io, Aug 30): tracking number 1Z999AA10123456784. Want me to fetch the full body?' }));
 
-// ---- RG8. Byte briefs (orch style: "Record/List/Break down …") -----------
-examples.push(ex('byte', "Record a new work task: 'Buy new headphones' — add it to my personal list.",
+// ---- RG8. Work-management briefs (orch style: "Record/List/Break down …") -
+examples.push(ex('iris', "Record a new work task: 'Buy new headphones' — add it to my personal list.",
   [{ name: 'create_work_task', arguments: { title: 'Buy new headphones', project_id: 'personal' } }],
   { results: ['Created work task "Buy new headphones" (id wt-2080) in project personal.'],
     reply: 'Created work task "Buy new headphones" (wt-2080) in Personal.' }));
-examples.push(ex('byte', 'List my work tasks marked high priority.',
+examples.push(ex('iris', 'List my work tasks marked high priority.',
   [{ name: 'list_work_tasks', arguments: {} }],
   { results: ['3 tasks:\n1. wt-2003 | Ship the hotfix | proj-acme-02 | urgent | open\n2. wt-2002 | Write the API spec | personal | high | open\n3. wt-2001 | Fix the login bug | personal | high | open'],
     reply: '3 high/urgent tasks: Ship the hotfix (urgent), Write the API spec (high), and Fix the login bug (high).' }));
-examples.push(ex('byte', 'List my work tasks that are past due / overdue.',
+examples.push(ex('iris', 'List my work tasks that are past due / overdue.',
   [{ name: 'list_work_tasks', arguments: {} }],
   { results: ['2 tasks:\n1. wt-1002 | Fix login bug | personal | urgent | open | due 2026-08-31 (overdue)\n2. wt-2005 | Prepare the demo | personal | medium | open | due 2026-08-31 (overdue)'],
     reply: '2 overdue tasks, both due today: "Fix login bug" (urgent) and "Prepare the demo".' }));
-examples.push(ex('byte', "Break the goal 'Launch Blog Update' into three subtasks — create each as a work task in the personal list.",
+examples.push(ex('iris', "Break the goal 'Launch Blog Update' into three subtasks — create each as a work task in the personal list.",
   [
     { name: 'create_work_task', arguments: { title: 'Draft the blog post', project_id: 'personal' } },
     { name: 'create_work_task', arguments: { title: 'Add images and formatting', project_id: 'personal' } },
@@ -1432,21 +1751,21 @@ examples.push(ex('byte', "Break the goal 'Launch Blog Update' into three subtask
   ],
   { results: ['Created work task "Draft the blog post" (id wt-2090) in project personal.', 'Created work task "Add images and formatting" (id wt-2091) in project personal.', 'Created work task "Publish and share the post" (id wt-2092) in project personal.'],
     reply: 'Broke "Launch Blog Update" into 3 subtasks: Draft the blog post (wt-2090), Add images and formatting (wt-2091), Publish and share (wt-2092).' }));
-// Real multi-tool create flow: project + deliverable + blocker (byte is multi-step).
-examples.push({
-  messages: [
-    { role: 'system', content: BYTE_SYSTEM },
-    { role: 'user', content: "Create a new work project called 'Jarvis Audit', then add a deliverable titled 'Capability Report' and a blocker 'No email account configured' to it." },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'create_project', arguments: { name: 'Jarvis Audit', description: 'Audit of assistant capabilities and coverage.' } } }] },
-    { role: 'tool', name: 'create_project', content: 'Project "Jarvis Audit" created with id proj-jarvisaudit-01. Now call add_deliverable, add_blocker, etc. using this project_id.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'add_deliverable', arguments: { project_id: 'proj-jarvisaudit-01', name: 'Capability Report' } } }] },
-    { role: 'tool', name: 'add_deliverable', content: 'Deliverable "Capability Report" added (id deliv-700) to project proj-jarvisaudit-01.' },
-    { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: 'add_blocker', arguments: { project_id: 'proj-jarvisaudit-01', description: 'No email account configured', severity: 'medium' } } }] },
-    { role: 'tool', name: 'add_blocker', content: 'Blocker "No email account configured" added (id blk-700) to project proj-jarvisaudit-01.' },
-    { role: 'assistant', content: 'Created project "Jarvis Audit" (proj-jarvisaudit-01), added the "Capability Report" deliverable (deliv-700) and a "No email account configured" blocker (blk-700).' },
+// Real multi-item create flow, single-shot reality: the project is created
+// first (its id comes back in the result — the orchestrator reads it from the
+// reply), then the orchestrator re-briefs with the id for the deliverable +
+// blocker pair (both named in one request → both calls in one turn).
+examples.push(ex('iris', "Create a new work project called 'Jarvis Audit' — an audit of assistant capabilities and coverage.",
+  [{ name: 'create_project', arguments: { name: 'Jarvis Audit', description: 'Audit of assistant capabilities and coverage.' } }],
+  { results: ['Project "Jarvis Audit" created with id proj-jarvisaudit-01.'],
+    reply: 'Created project "Jarvis Audit" (proj-jarvisaudit-01).' }));
+examples.push(ex('iris', "Add a deliverable titled 'Capability Report' and a blocker 'No email account configured' (medium severity) to the Jarvis Audit project (proj-jarvisaudit-01).",
+  [
+    { name: 'add_deliverable', arguments: { project_id: 'proj-jarvisaudit-01', name: 'Capability Report' } },
+    { name: 'add_blocker', arguments: { project_id: 'proj-jarvisaudit-01', description: 'No email account configured', severity: 'medium' } },
   ],
-  tools: TOOLS.byte,
-});
+  { results: ['Deliverable "Capability Report" added (id deliv-700) to project proj-jarvisaudit-01.', 'Blocker "No email account configured" added (id blk-700) to project proj-jarvisaudit-01.'],
+    reply: 'Added the "Capability Report" deliverable (deliv-700) and a "No email account configured" blocker (blk-700) to Jarvis Audit (proj-jarvisaudit-01).' }));
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const lines = examples.map(e => JSON.stringify(e));
@@ -1457,8 +1776,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const byAgent = {}, byTarget = {};
   for (const e of examples) {
     const sys = e.messages[0].content;
-    const agent = sys.startsWith('You are Byte') ? 'byte'
-      : sys.startsWith('You are Iris') ? 'iris' : '?';
+    const agent = sys.startsWith('You are Iris') ? 'iris'
+      : sys.startsWith('Scan the INPUT block') ? 'digest' : '?';
     byAgent[agent] = (byAgent[agent] || 0) + 1;
     const a = e.messages.find(m => m.role === 'assistant');
     const key = a?.tool_calls ? a.tool_calls.map(t => t.function.name).join('+') : 'text-only';

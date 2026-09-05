@@ -21,6 +21,7 @@ import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
 import { setOculusTaskPrompt } from './tools/awareness-tools.js';
+import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
 import { hooks } from './hooks.js';
@@ -230,6 +231,19 @@ const STATUS_MARKER = '---WARDEN_STATUS---';
 const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|delegate)\b/i;
 const INTENT_MAX_NUDGES = 2;
 
+// Sub-agent version of the same announced-intent defect, on the runSubAgent
+// side: a LOOPING sub-agent (vulkan/atlas) ends a text-only turn narrating the
+// NEXT tool action ("Now write index.html. I'll use the exact content…")
+// instead of making the call — runSubAgent treats a no-tool-call turn as the
+// final answer, so the job "completes" with the deliverable unwritten
+// (vulkan-9ryv, 2026-09-05: wrote style.css, then ended with "Now write
+// index.html…"; index.html never existed). The orchestrator loop already has
+// an intent nudge; sub-agents had none. First-person/now tense only, so a
+// final report that RECOMMENDS work ("Next, fix the login form" — an artemis
+// audit) is not a self-announcement and is not nudged.
+const SUB_INTENT_RE = /\b(?:now|i'?ll|i will|next,?\s+i'?ll|let me|let'?s|i'?m going to|then i'?ll)\b[\s\S]{0,40}?\b(?:write|create|make|build|add|update|edit|fix|run|install|move|copy|delete|save|generate|implement|apply|set up|put|check|verify|read|inspect|look(?: up| at)?|search|find|scan|examine|review)\b/i;
+const SUB_INTENT_MAX_NUDGES = 2;
+
 // Narrated-but-never-dispatched guard (Atlas regression): the model narrates a
 // delegation in present-progressive ("Atlas is opening the page now") or future
 // ("I'll have Atlas do X — I'll let you know") then ends the turn with no tool
@@ -238,7 +252,7 @@ const INTENT_MAX_NUDGES = 2;
 // reply with no matching tool_call this turn and it is NOT a past-tense
 // citation of a prior result ("Atlas reported…", "Atlas's report") — instead of
 // chasing phrasings (arms race per feedback-fix-general-cause-not-symptom).
-const DELEGATE_NAMES = ['atlas', 'iris', 'byte', 'vulkan', 'artemis', 'oculus'];
+const DELEGATE_NAMES = ['atlas', 'iris', 'vulkan', 'artemis', 'oculus'];
 // Words that, when they appear within ~40 chars before OR after a delegate
 // name, mark the mention as a citation of an already-completed result rather
 // than a promise to dispatch now. Before: "according to Atlas", "from Atlas".
@@ -298,7 +312,7 @@ const VERIFIER_EFFECTFUL_TOOLS = new Set<string>([
     'schedule_task', 'cancel_task', 'pause_task', 'resume_task', 'update_task', // scheduler mutations
     'install_mcp_server', 'uninstall_mcp_server',
     'open_app', 'desktop_click', 'desktop_type',               // desktop actions
-    'atlas', 'byte', 'iris',                         // sub-agent delegates (they perform actions)
+    'atlas', 'iris',                                // sub-agent delegates (they perform actions)
 ]);
 
 // Build a one-line signature of a tool call for the runaway / circling detectors.
@@ -333,7 +347,6 @@ function toolLabel(name) {
         list_api_keys: 'Checking API keys',
         send_sms: 'Sending SMS',
         read_sms: 'Reading SMS',
-        byte: 'Running Byte',
         atlas: 'Running Atlas',
         artemis: 'Running Artemis',
         iris: 'Running Iris',
@@ -392,7 +405,6 @@ function toolDetailLabel(name, args) {
         case 'read_sms': return `Read SMS${args.from ? ' from ' + short(args.from, 20) : ''}`;
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'set_user_email': return `Set email: ${short(args.email || '', 30)}`;
-        case 'byte': return `📋 Byte: ${args.task || ''}`;
         case 'atlas': return `🌍 Atlas: ${args.task || ''}`;
         case 'artemis': return `🏹 Artemis: ${args.task || 'reviewing the conversation'}`;
         case 'iris': return `✉️ Iris: ${args.task || ''}`;
@@ -499,7 +511,6 @@ function applySettingsSync(data: any) {
         VULKAN_MODEL = (data.vulkanModel || '').replace(/^local:/, '');
     }
     // Per-agent tool-caller + artemis models — concrete values, no fallback.
-    if (data.byteModel !== undefined) BYTE_MODEL = (data.byteModel || '').replace(/^local:/, '');
     if (data.irisModel !== undefined) IRIS_MODEL = (data.irisModel || '').replace(/^local:/, '');
     if (data.artemisModel !== undefined) ARTEMIS_MODEL = (data.artemisModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
@@ -530,7 +541,6 @@ function applySettingsSync(data: any) {
     if (data.toolsCtx !== undefined) process.env.TOOLS_NUM_CTX = data.toolsCtx ? String(data.toolsCtx) : '';
     if (data.mercuryCtx !== undefined) process.env.MERCURY_NUM_CTX = data.mercuryCtx ? String(data.mercuryCtx) : '';
     // Per-agent num_ctx overrides — blank means the model's native window.
-    if (data.byteCtx !== undefined) process.env.BYTE_NUM_CTX = data.byteCtx ? String(data.byteCtx) : '';
     if (data.irisCtx !== undefined) process.env.IRIS_NUM_CTX = data.irisCtx ? String(data.irisCtx) : '';
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
@@ -671,35 +681,8 @@ interface SubAgentDef {
 }
 
 const SUBAGENTS: SubAgentDef[] = [
-    {
-        delegate: 'byte',
-        label: 'Byte',
-        maxIterations: 50,
-        summary: 'projects, work tasks, deliverables, blockers, priorities, financials, and time tracking',
-        systemPrompt: `You are Byte, the work-management agent.
-
-CAPABILITIES: Manage projects, work tasks, deliverables, blockers, priorities, financials, and time tracking. Read the user's inbox and turn actionable emails into projects and work tasks.
-
-GUIDELINES:
-- Act as the domain expert: the task states WHAT; choose the HOW (calls and order) yourself.
-- Read before writing: list or get the relevant record first.
-- Supply required fields for every item — blockers: title + description; tasks and deliverables: title; financials: amount + category. Infer reasonable values when the task omits them.
-- create_work_task always needs project_id. Pass "personal" (the permanent Personal project) when the task names no project; pass the named project's ID only when the user specifies one. priority is low | medium | high | urgent (default medium).
-- Call each tool once; move on after a success.
-- Use only IDs and data your tools return.
-- Inbox scan: read_emails, keep messages in the requested range (filter by Date), then create a work task (and a project when warranted) for each actionable item. Treat newsletters, confirmations, receipts, shipping notices, and ads as non-actionable.
-
-Example:
-Task: "add 'fix the login bug' to my list"
-→ create_work_task(title="Fix the login bug", project_id="personal")
-
-FORMAT: one plain-text line or short list naming what you created or changed, with the IDs returned.`,
-        toolsets: ['byte-core'],
-        mcpServers: ['tasks'],
-        // IBM Granite tool-calling guidance: temperature 0 for reliable
-        // structured tool use.
-        temperature: 0,
-    },
+    // Byte was merged into iris (2026-09-05): one toolcall agent / one
+    // fine-tuned model. Iris's entry below carries the work-management role.
     {
         delegate: 'atlas',
         label: 'Atlas',
@@ -779,34 +762,43 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // Single-shot: one tool call, then the output is handed straight back
         // to the orchestrator. Iris doesn't loop on follow-up calls — if the
         // one shot wasn't right, the orchestrator sends a fresh request.
+        // (byte merged in 2026-09-05: iris is the single toolcall agent and
+        // carries the work-management role byte had.)
         maxIterations: 1,
-        summary: 'email, digests, tasks/scheduling, and calendar — read/send/compile email, compile grounded hourly/daily/weekly digests, and create/list/manage reminders, scheduled tasks, and calendar events. Use for inbox tasks, scheduling requests, and the scheduled digest prompts.',
-        systemPrompt: `You are Iris, the personal information and scheduling agent: email, digests, tasks, and calendar.
+        summary: 'email, digests, scheduling/reminders, calendar, and work management — read/send email, compile grounded hourly/daily/weekly digests, create/list/manage reminders, scheduled tasks, and calendar events, and manage projects, work tasks, to-dos, deliverables, blockers, priorities, financials, and time tracking. Use for inbox tasks, scheduling requests, work-task requests, and the scheduled digest prompts.',
+        systemPrompt: `You are Iris, the personal information, scheduling, and work-management agent: email, tasks, calendar, projects, and work tracking.
 
 # Role
-You execute exactly one tool call per request, then return the result. You chain no steps yourself; the orchestrator supplies the specific id and calls you again for the next step.
+You execute exactly one tool call per request, then return the result. The orchestrator supplies ids and calls you again for the next step.
 
 # Capabilities
-- Email: read_emails (inbox search/scan), get_email (full body), send_email, refresh_email_cache, get_cached_emails.
-- Digests: the hourly/daily/weekly digests run on dedicated scheduled background jobs, not through you.
-- Tasks: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task.
+- Email: read_emails, get_email, send_email, refresh_email_cache, get_cached_emails.
+- Scheduled tasks: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task.
 - Calendar: create_calendar_event, list_calendar_events, update_calendar_event, delete_calendar_event.
+- Work management: projects, work tasks, deliverables, blockers, priorities, financials, and time tracking (create/list/update/delete tools).
 - API: list_api_keys, api_request.
+- Digests run on dedicated scheduled background jobs, not through you.
 
 # Guidelines
 - The first line of the task is the current local time in the form "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)." Compute every absolute timestamp from this.
 - schedule_task schedule_value forms:
   - once, relative time ("in 2 minutes", "tomorrow"): ISO-8601 duration (PT2M, PT1H30M, P1D).
-  - once, absolute clock time ("at 3pm today", "on Sep 5 at 2pm"): local YYYY-MM-DDTHH:MM:SS.
+  - once, absolute clock time ("at 3pm today"): local YYYY-MM-DDTHH:MM:SS.
   - interval ("every 5 minutes"): milliseconds as a string (300000).
-  - recurring schedule ("every weekday at 9am", "every Monday at 6pm"): 5-field cron, local time (0 9 * * 1-5).
-- To cancel, pause, resume, or update a task, use the task id supplied in the request. Call list_tasks only when the request is to list reminders.
-- To update or delete a calendar event, use the event id supplied in the request. Call list_calendar_events only when the request is to list events.
+  - recurring schedule ("every weekday at 9am"): 5-field cron, local time (0 9 * * 1-5).
+- A to-do with no time trigger is a work task (create_work_task); an item that fires on a clock is a scheduled task (schedule_task).
+- Supply required fields — blockers: title + description; work tasks and deliverables: title; financials: amount + category. Infer reasonable values when the task omits them.
+- create_work_task needs project_id: "personal" (the permanent Personal project) when the task names no project; the named project's ID when one is. priority is low | medium | high | urgent (default medium).
+- To manage an existing task, calendar event, project, or work task, use the id supplied in the request; call the list tools only when the request is to list records.
 - When the request names both a reminder and a calendar event, make both tool calls in one turn.
 - When the request gives a time but no content, reply in one short line asking for the content.
-- A plain to-do with no time trigger is a work task for Byte; reply in one line that this is a work task.
-- Email: keep real addresses (on-device). To save an email, call get_email, then write a file named <date>_<from>_<subject>.md.
-- For an ad-hoc recap of inbox activity, call read_emails with the window the request names and return what you find.
+- Use only IDs and data your tools return.
+- Email: keep real addresses (on-device).
+- For an inbox scan, call read_emails with the window the request names and return what you find, marking which messages look actionable (newsletters, confirmations, receipts, shipping notices, and ads are non-actionable).
+
+Example:
+Task: "add 'fix the login bug' to my list"
+→ create_work_task(title="Fix the login bug", project_id="personal")
 
 # Format
 One plain-text line naming the ids you returned, or the published span.`,
@@ -1144,7 +1136,7 @@ function delegateToolDef(s: SubAgentDef) {
 }
 
 // The model the orchestrator is running on — set by runNativeOllama. A sub-agent may
-// share it (e.g. orchestrator=gemma4:latest, byte=granite); unloading a
+// share it (e.g. orchestrator=gemma4:latest, iris=granite); unloading a
 // shared model mid-turn crashes the orchestrator's next call (Ollama 500).
 let ORCHESTRATOR_MODEL = '';
 // Atlas model — from its own dashboard dropdown (input.model). No hardcoded
@@ -1157,9 +1149,14 @@ let VULKAN_MODEL = '';
 // Per-agent models for the tool callers + artemis. Each is a concrete value
 // selected from the Agents-panel dropdown (no blank, no `||` fallback). Empty →
 // the agent errors out rather than silently running on the wrong model.
-let BYTE_MODEL = '';
 let IRIS_MODEL = '';
 let ARTEMIS_MODEL = '';
+// The vision explainer — the model that answers image questions for visionless
+// seats (askVisionModel / the query_image tool). Resolution order: an explicit
+// VISION_MODEL override, else the atlas seat, else the orchestrator — seats the
+// operator keeps vision-capable. Resolved lazily per call, so dashboard model
+// changes apply immediately.
+setVisionModelResolver(() => (process.env.VISION_MODEL || ATLAS_MODEL || ORCHESTRATOR_MODEL || '').trim());
 // Driving force — the orchestrator's selected preamble preset id
 // (data/driving-forces/<id>.md). Empty = built-in default preamble.
 // CONTEXT_CLEAR_AT is a timestamp from the host; when it changes, the
@@ -2541,7 +2538,6 @@ function getNumCtx(model: string, ctxOverride?: string | number): number | undef
 // Blank → the model's native window. Council seats inherit the Atlas ctx
 // (preserves prior behavior; council is dashboard-managed, not in the popover).
 const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
-    byte: () => process.env.BYTE_NUM_CTX || '',
     iris: () => process.env.IRIS_NUM_CTX || '',
     artemis: () => process.env.ARTEMIS_NUM_CTX || '',
     atlas: () => process.env.ATLAS_NUM_CTX || '',
@@ -2577,12 +2573,12 @@ function keepAliveEnv(name: string, dflt: number): number {
     const n = e ? Number(e) : NaN;
     return Number.isFinite(n) ? n : dflt;
 }
-// Sub-agent chat calls (runSubAgent): the toolcall agents — byte,
+// Sub-agent chat calls (runSubAgent): the toolcall agents —
 // iris, oculus, mercury, and the one-shot iris-digest spawn — share one
 // keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use the
 // atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
 function subAgentKeepAlive(agent: string): number {
-    if (['byte', 'iris', 'oculus', 'mercury', 'iris-digest'].includes(agent)) {
+    if (['iris', 'oculus', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
@@ -2901,6 +2897,7 @@ async function runSubAgent(
     let lastContent = '';
     let transientRetries = 0;  // transient provider errors get retries-with-backoff, not instant job death
     let imageInputRefusals = 0; // 400 "does not support image input" — strip images + retry, once
+    let subIntentNudges = 0;   // announced-tool-action-without-call nudges (SUB_INTENT_RE), per run
     const toolsRun: string[] = [];  // tools the sub-agent actually executed (fallback summary if it goes silent)
 
     log(`[${agentName}] Starting sub-agent: model=${model}, tools=${tools.length}, maxIter=${maxIterations > 0 ? maxIterations : '∞ (ceiling ' + HARD_CEILING + ')'}, task="${task.slice(0, 80)}"`);
@@ -3147,7 +3144,25 @@ async function runSubAgent(
                     } else {
                         const why = MODELS_WITHOUT_VISION.has(model) ? 'this model cannot see images' : 'the conversation is near the context limit and adding them would exceed it (the job would fail)';
                         log(`[${agentName}] Image drain: ${_pi.length} image(s) NOT attached (${why}) — keeping the job alive`);
-                        messages.push({ role: 'user', content: `[The image(s) you Read were NOT attached: ${why}. Do not Read the image again. Continue from what you already know — verify files by reading their TEXT via Read/Grep/Bash — and finish the task.]` });
+                        // Visionless seat: don't just drop the image — have a
+                        // vision-capable model describe it so the job keeps its
+                        // eyes (the operator's design: glm seats can't see, so a
+                        // dedicated vision model answers questions about the
+                        // image). The agent can follow up via query_image.
+                        let visionReport = '';
+                        if (MODELS_WITHOUT_VISION.has(model)) {
+                            const vision = await askVisionModel(_pi,
+                                `An agent whose model cannot see images Read this image while working on the task: "${String(task).slice(0, 400)}". Describe factually and concretely what the image shows — layout, colors, any visible text, UI state — so that agent can continue its work without seeing it. Answer directly, no preamble.`);
+                            if (vision.ok && vision.answer) {
+                                visionReport = vision.answer;
+                                log(`[${agentName}] Vision report: "${visionReport.slice(0, 120)}"`);
+                            } else {
+                                log(`[${agentName}] Vision report failed: ${vision.error || 'no content'}`);
+                            }
+                        }
+                        messages.push({ role: 'user', content: visionReport
+                            ? `[The image(s) you Read were NOT attached (${why}) — a vision-capable model analyzed them for you:\n\n${visionReport}\n\nFor follow-up questions about the image, call query_image with its file_path and a specific question. Do not Read the image again. Finish the task.]`
+                            : `[The image(s) you Read were NOT attached: ${why}. Do not Read the image again. Continue from what you already know — verify files by reading their TEXT via Read/Grep/Bash — and finish the task.]` });
                     }
                 }
             } else {
@@ -3173,6 +3188,25 @@ async function runSubAgent(
                         content: `Error: the ${agentName} sub-agent produced degenerate output ("${content.slice(0, 40)}") and did NOT complete the task. Likely cause: sub-agent model or context misconfigured (model=${model}, num_ctx=${getNumCtx(model, ctxOverride)}). Tell the user the task failed — do not claim success.`,
                         modifiedFiles: [...modifiedFiles],
                     };
+                }
+                // Announced-intent guard (looping agents only): a text-only turn
+                // that ANNOUNCES the next tool action ("Now write index.html…")
+                // is an unfulfilled promise, not a final answer — without this,
+                // runSubAgent completes the job with the deliverable unwritten.
+                // Exemptions mirror the orchestrator's guard: single-shot agents
+                // (cap <= 1) legitimately end on text; a reply carrying the
+                // actual deliverable (fenced code) or asking a question is final;
+                // short replies only — long prose is a report.
+                if (cap > 1 && subIntentNudges < SUB_INTENT_MAX_NUDGES && i + 1 < cap) {
+                    const subIntentMatch = content.match(SUB_INTENT_RE);
+                    if (subIntentMatch && !/```/.test(content) && !content.trim().endsWith('?') && content.length < 600) {
+                        subIntentNudges++;
+                        const announcement = subIntentMatch[0].slice(0, 120);
+                        log(`[${agentName}] Intent nudge ${subIntentNudges}/${SUB_INTENT_MAX_NUDGES}: announced tool action without a tool call: "${announcement}"`);
+                        writeStatus({ phase: agentName, label: `${agentName}: pushing announced-but-unmade action back into the loop`, ts: Date.now() });
+                        messages.push({ role: 'user', content: `You wrote "${announcement}" but made no tool call — that action never happened. Do it NOW with your tools (make the call in this turn), or, if the task is already complete, reply with the final result only. Never end by announcing future work.` });
+                        continue;
+                    }
                 }
                 log(`[${agentName}] Done after ${i + 1} iteration(s): "${content.slice(0, 100)}"`);
                 // Do NOT unload this agent's model here. The GPU holds the
@@ -3248,7 +3282,6 @@ interface ContainerInput {
     vulkanModel?: string;
     // Per-agent models — every agent has its own concrete model (no blank, no
     // runtime fallback). The host resolves each from its router_state key.
-    byteModel?: string;
     irisModel?: string;
     artemisModel?: string;
     drivingForce?: string;
@@ -3551,8 +3584,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
 - **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas.
-- **iris** — email, digests, scheduling, reminders, and calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris is single-shot: it makes one tool call per request; for a list→id→act flow, call iris once per step with the specific id.
-- **byte** — projects, deliverables, blockers, financials, work tasks, time tracking.
+- **iris** — email, digests, scheduling, reminders, calendar, and work management: projects, work tasks, to-dos, deliverables, blockers, priorities, financials, and time tracking. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, calendar events, and work items ("create a task", "add a to-do", blockers, financials) are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris is single-shot: it makes one tool call per request; for a list→id→act flow, call iris once per step with the specific id.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
@@ -3567,13 +3599,12 @@ Cue words:
 - "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
 - "open X so I can see it", "show me the page/file" → **atlas** (opens local files via open_app, web pages in the real browser).
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
-- Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **byte**. One call with the title and required fields.
+- Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **iris**, same as scheduling. One call with the title and required fields (blockers: title + description; financials: amount + category).
 - Diagnosis — any "why/what happened" about something Warden did or didn't do (stalled/failed/never-finished job, "did you get that right", "double-check") → **artemis**. Never answer from your own memory — artemis reads logs and databases.
 - "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it, tell the user they're with Atlas, end your turn. Their messages then go straight to Atlas; you don't relay. Only for an explicit handoff.
 - A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
 
 Gotchas (the ones that actually trip routing):
-- Task vs schedule — the #1 mistake. No time trigger ("create a task", "I need to X", a deliverable, a blocker) → byte. Fires on a clock ("remind me", "every morning", "on Mondays", "schedule X") → iris. The moment a time or recurrence is named, it's iris.
 - An atlas job that failed or was stopped for churning (searching without delivering) → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. The supervisor often auto-escalates; if you see "Already auto-escalated to vulkan" in the result, do NOT re-delegate — just report vulkan's result when it lands.
 
 Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
@@ -3588,7 +3619,7 @@ NEVER ASK THE CAPTAIN FOR A FACT YOUR CREW CAN FIND. A missing path, id, name, o
 
 Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call read_emails then get_email on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
 
-Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialists (iris, byte) need real names and addresses, so include them there.
+Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
@@ -3600,7 +3631,7 @@ Iris makes ONE tool call per dispatch, then returns. Write one imperative senten
 - Reminders: name the kind — one-time, recurring interval, or recurring cron — and give the message verbatim. A delay with no clock time: "Set a one-time reminder to <message> in <delay>." A clock time: "Set a one-time reminder to <message> at <clock time>." Recurring: "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
 - Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply."
 - Calendar: "Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
-- No time trigger → byte, not iris.
+- Work items: give the title and required fields — "Add a work task to <title> to the <project> project", "Add a blocker titled <title> to project <project>: <description>", "Record a financial of <amount> in category <category>". No time trigger means work task, not reminder.
 
 ${'' /* SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction.
    The watchdog ticker was already no-op'd (ensureWatchdogTicker/runSupervisorWatchdog
@@ -3712,7 +3743,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         const ms = Math.floor(Number(input.supervisorIntervalMs)) || 0;
         SUPERVISOR_INTERVAL_MS = ms > 0 ? ms : 0; // 0 = use DEFAULT_WATCHDOG_TICK_MS
     }
-    BYTE_MODEL = (input.byteModel || '').replace(/^local:/, '');
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
     ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
     DRIVING_FORCE_ID = input.drivingForce || '';
@@ -3998,7 +4028,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     forcedNoToolRetries = 0;
                 }
                 const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
-                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 1, num_ctx: _orchCtx } };
+                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: _orchCtx } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
                 // reasoning when thinking is disabled (kimi) stay on every round.
@@ -4387,7 +4417,18 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         } else {
                             const why = MODELS_WITHOUT_VISION.has(model) ? 'this model cannot see images' : 'the conversation is near the context limit and adding them would exceed it';
                             log(`[orchestrator] Image drain: ${_pi.length} image(s) NOT attached (${why}) — keeping the turn alive`);
-                            messages.push({ role: 'user', content: `[The image(s) you Read were NOT attached: ${why}. Do not Read them again — continue from what you already know and answer.]` });
+                            let visionReport = '';
+                            if (MODELS_WITHOUT_VISION.has(model)) {
+                                const vision = await askVisionModel(_pi,
+                                    'The Warden orchestrator Read this image but its model cannot see images. Describe factually and concretely what the image shows — layout, colors, any visible text — so the orchestrator can continue. Answer directly, no preamble.');
+                                if (vision.ok && vision.answer) {
+                                    visionReport = vision.answer;
+                                    log(`[orchestrator] Vision report: "${visionReport.slice(0, 120)}"`);
+                                }
+                            }
+                            messages.push({ role: 'user', content: visionReport
+                                ? `[The image(s) you Read were NOT attached (${why}) — a vision-capable model analyzed them for you:\n\n${visionReport}\n\nFor follow-up questions call query_image with the image's file_path. Continue and answer.]`
+                                : `[The image(s) you Read were NOT attached: ${why}. Do not Read them again — continue from what you already know and answer.]` });
                         }
                     }
                     finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
@@ -4416,7 +4457,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // "I'll let you know" must not suppress the nudge (2026-08-21: a
                 // claimed YouTube delegation passed exactly that way, no job ran).
                 const claimedDelegation = !delegatedThisTurn
-                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|byte|vulkan|artemis|oculus)\b/i.test(historyContent);
+                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|vulkan|artemis|oculus)\b/i.test(historyContent);
                 // Narrated delegation: a delegate is named in the reply but was
                 // never called this turn, and the mention is NOT a past-tense
                 // citation ("Atlas reported…") or a possessive ("Atlas's
@@ -4469,7 +4510,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         const announcement = (intentMatch ? intentMatch[0] : historyContent).slice(0, 120);
                         log(`Intent nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool_call: "${announcement}"`);
                         appendStatus({ phase: 'thinking', label: `Nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool call — pushing back` });
-                        const delegateList = 'atlas/iris/byte/vulkan/artemis/oculus';
+                        const delegateList = 'atlas/iris/vulkan/artemis/oculus';
                         let nudgeMsg: string;
                         if (narratedDelegation) {
                             nudgeMsg = `You wrote "${announcement}" and named ${narratedDelegation}, but you made no ${narratedDelegation} tool call — the delegation did not happen. Call the ${narratedDelegation} tool with a {task} now, or drop the narration and answer directly.`;
@@ -4559,7 +4600,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                             );
                             const trimmedRetry = trimMessagesToBudget(messages, retryBudget);
                             if (trimmedRetry.length !== messages.length) messages.length = 0, messages.push(...trimmedRetry);
-                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
+                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
                             if (toolIteration <= 1 || modelRequiresThink(model)) {
                                 retryBody.think = true;
                             } else {
@@ -4691,7 +4732,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     messages: forcedMessages,
                     stream: true,
                     keep_alive: orchestratorKeepAlive(),
-                    options: { num_predict: 8192, temperature: 1, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
+                    options: { num_predict: 8192, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
                 if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
@@ -5073,7 +5114,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 }
 /**
  * Execute a tool call via the tool registry.
- * Sub-agent delegates (byte, atlas, artemis, iris) are
+ * Sub-agent delegates (atlas, artemis, iris) are
  * handled here because they need access to runSubAgent and local state.
  * All regular tools dispatch to the registry.
  */
@@ -5205,7 +5246,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // delegate task, bounce it back instead of dispatching (and before the
     // task is spoken to the user). The task is English intent, not a command
     // line — see looksLikeCommandPrescription above.
-    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'vulkan', 'iris', 'byte', 'artemis', 'council']);
+    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'vulkan', 'iris', 'artemis', 'council']);
     if (DELEGATE_TOOL_NAMES.has(toolName) && args.task && looksLikeCommandPrescription(String(args.task))) {
         log(`[guard] blocked over-prompted ${toolName} task (contains shell command): ${String(args.task).slice(0, 120)}`);
         return `STOP — you put a shell command in the task. That is over-prompting and the user has told you repeatedly to stop. A delegate task is plain-English INTENT for the specialist, not a command line. Do NOT include \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, or any other shell command — those are the specialist's calls to make, not yours. State the GOAL and the facts (paths, URLs, names, what's wrong) in normal English and let ${toolName} decide how to investigate. Re-call ${toolName} now with intent only.`;
@@ -5523,17 +5564,20 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             atlasDirect = { active: true, messages: [] };
             result = `Direct Atlas mode is on. Tell the user, in one short sentence, that they're now talking to Atlas directly — they can describe what they need and Atlas will ask questions to get it right, then say "go" to start or "back to Warden" to exit. Then end your turn immediately and do nothing else.`;
         }
-    } else if (toolName === 'byte' || toolName === 'iris') {
+    } else if (toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
         let task = args.task as string;
         if (!task) result = 'Error: task is required';
         else if (retryGate(task)) result = retryGate(task);
         else {
-            if (toolName === 'iris') {
+            {
                 // Resolve the real local timezone, not UTC. The service
                 // runs without TZ in its env, so the old `process.env.TZ || 'UTC'`
                 // fallback made scheduling land 7h off (in UTC). Node
                 // reads /etc/localtime via Intl, which gives America/Vancouver here.
+                // Every iris dispatch gets the anchor — scheduling needs it for
+                // clock math, and work-management calls ignore it harmlessly
+                // (training data carries the anchor on every example to match).
                 const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
                 const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
                 task = `Current local time is ${localNow} (timezone ${tz}). Compute every absolute timestamp from this.\n\n${task}`;
@@ -5549,12 +5593,11 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 tools = [...tools, ...mcpExtra.filter((t: any) => !existing.has(t.function?.name))];
                 log(`[${toolName}] Merged ${mcpExtra.length} MCP tool(s) from servers: ${def.mcpServers!.join(', ')}`);
             }
-            // Each tool caller runs on its OWN per-agent model (byte/iris
-            // are no longer shared). No fallback: an empty model errors inside
-            // runSubAgent rather than swapping in another model.
-            const PER_AGENT_MODEL: Record<string, string> = { byte: BYTE_MODEL, iris: IRIS_MODEL };
-            const subModel = PER_AGENT_MODEL[toolName] || '';
-            // Pass def.temperature (10th arg) so byte/iris honor their
+            // The toolcall agent runs on its OWN per-agent model. No fallback:
+            // an empty model errors inside runSubAgent rather than swapping in
+            // another model.
+            const subModel = IRIS_MODEL;
+            // Pass def.temperature (10th arg) so iris honors its
             // SubAgentDef temperature override — without it the default `1`
             // applies and e.g. Iris's temperature:0 was inert. abortFlag +
             // onToolCall slots are unused on the synchronous path (undefined).

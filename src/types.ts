@@ -47,7 +47,6 @@ export interface AgentInput {
   // Per-agent models — every agent has its own concrete model selected from the
   // Agents-panel dropdown (no blank, no runtime fallback). The host resolves each
   // from its router_state key; the agent-runner uses it directly and errors if empty.
-  byteModel?: string;
   irisModel?: string;
   artemisModel?: string;
   drivingForce?: string;        // orchestrator preamble preset id (data/driving-forces/)

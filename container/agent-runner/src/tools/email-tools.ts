@@ -27,7 +27,7 @@ registry.register({
         const limit = Math.min(parseInt(args.limit) || 500, 500);
         // A date-range lookup (since/before) with a large limit can take well
         // over the default 30s — fetching hundreds of emails from Gmail/Graph
-        // is slow. Give read_emails a 90s ceiling so Iris/Byte don't get a
+        // is slow. Give read_emails a 90s ceiling so Iris doesn't get a
         // spurious timeout on a week-long range. Plain recent-email reads still
         // finish in a few seconds.
         const resp = await callHost('read_emails', {

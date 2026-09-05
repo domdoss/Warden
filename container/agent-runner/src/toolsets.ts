@@ -1,7 +1,7 @@
 import { ToolsetDef, registry } from './tool-registry.js';
 
 export const TOOLSETS: Record<string, ToolsetDef> = {
-    file:      { name: 'file',      tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'], tier: 'both' },
+    file:      { name: 'file',      tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'query_image'], tier: 'both' },
     web:       { name: 'web',       tools: ['WebSearch', 'WebFetch'], tier: 'public' },
     browser:   { name: 'browser',   tools: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
                                              'browser_press_key', 'browser_select_option', 'browser_hover',
@@ -42,7 +42,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
-    agent:     { name: 'agent',     tools: ['byte','atlas','vulkan','artemis','iris'], tier: 'public' },
+    agent:     { name: 'agent',     tools: ['atlas','vulkan','artemis','iris'], tier: 'public' },
 
     // Security tools — used by Oculus (the single background security agent) to
     // Oculus awareness tools — look at the live frame + log. Oculus is a SILENT
@@ -59,10 +59,8 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     awareness:    { name: 'awareness',    tools: ['awareness_log','awareness_status'], tier: 'public' },
     'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
 
-    // Byte — work management. `email` is included so Byte can read the inbox
-    // and turn actionable messages into real projects/work tasks when the
-    // user asks in chat.
-    'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','email'] },
+    // Byte was merged into iris (2026-09-05, one toolcall agent / one fine-tuned
+    // model): iris-core below carries the work-management toolsets byte-core had.
     // Media (speaker/mic volume + playback) — atlas drives the hardware.
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
     'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','desktop-vision','media'] },
@@ -77,15 +75,18 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // merge active skill tools at spawn, so the data/skills/ library is inherited.
     'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
-    // Iris — the single toolcall agent. Email (read/send/get/cache) + admin
-    // (post_summary, list_api_keys, api_request) + tasks (schedule/list/pause/
-    // resume/cancel/update) + calendar (create/list/update/delete). Iris is
-    // single-shot (one tool call per delegation); the orchestrator drives any
-    // multi-step flow (list → id → act) by calling iris once per step. The
-    // digest INPUT (calendar/tasks from DB) is still built host-side and passed
-    // in the prompt; iris does not need calendar/tasks tools for the digest
-    // itself, but owns them for explicit scheduling requests.
-    'iris-core':     { name: 'iris-core',     includes: ['email','admin','tasks','calendar'] },
+    // Iris — the single toolcall agent (byte merged in 2026-09-05). Email
+    // (read/send/get/cache) + admin (post_summary, list_api_keys, api_request)
+    // + tasks (schedule/list/pause/resume/cancel/update) + calendar
+    // (create/list/update/delete) + work management inherited from byte-core
+    // (projects, worktasks, deliverables, blockers/priorities/financials,
+    // time tracking). Iris is single-shot (one tool call per delegation); the
+    // orchestrator drives any multi-step flow (list → id → act) by calling
+    // iris once per step. The digest INPUT (calendar/tasks from DB) is still
+    // built host-side and passed in the prompt; iris does not need
+    // calendar/tasks tools for the digest itself, but owns them for explicit
+    // scheduling requests.
+    'iris-core':     { name: 'iris-core',     includes: ['email','admin','tasks','calendar','projects','worktasks','deliverables','blockers','tracking'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };
 

@@ -11,7 +11,7 @@ import { log, cleanFilePath, writeIpcFile, waitForResult, TASKS_DIR } from '../i
 //    user "attached" by pointing the chat at a local file/dir). Warden has no
 //    sandbox, so the agent can read any local path the user has access to.
 //  - everything else → resolved relative to the workspace (existing behavior).
-function resolveFilePath(rawPath: string): string {
+export function resolveFilePath(rawPath: string): string {
     const cleanedPath = cleanFilePath(rawPath);
     if (rawPath.startsWith('~')) {
         return path.join(os.homedir(), rawPath.slice(1));

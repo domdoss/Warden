@@ -113,10 +113,10 @@ function createSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
-    -- User-facing board tasks (byte's create_work_task, dashboard Ops view).
+    -- User-facing board tasks (iris's create_work_task, dashboard Ops view).
     -- This table survived from the pre-desktop schema — its CREATE was never
     -- carried into createSchema, so a fresh/migrated desktop DB was missing it
-    -- entirely ("no such table: user_work_tasks" on any board view or byte call).
+    -- entirely ("no such table: user_work_tasks" on any board view or iris call).
     CREATE TABLE IF NOT EXISTS user_work_tasks (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,

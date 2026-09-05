@@ -14,10 +14,10 @@ When the user asks "what tools do you have", "what can you do", "list your skill
 
 2. **Sub-agents** you can delegate to:
    - atlas — coding, web research, browser automation, file editing
-   - byte — projects, deliverables, blockers, financials (legacy DB entities)
-   - dexter — scheduling, reminders, recurring tasks, alarms
-   - iris — email (read, send, search)
+   - iris — email (read, send, search), scheduling, reminders, recurring tasks, alarms, and work management (projects, work tasks, deliverables, blockers, financials)
+   - vulkan — heavy coding and builds
    - artemis — audit / second opinion on a conversation
+   - oculus — situational awareness (room logs, watch-outs)
    - council — three-perspective consensus (Skeptic, Pragmatist, Synthesist)
 
 3. **Skills** — call `list_skills` and list every entry verbatim with name, description, and active/inactive state. Inactive skills need `activate_skill(name)` before their tools are available.
