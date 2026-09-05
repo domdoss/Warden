@@ -269,7 +269,6 @@
     iris:'#ff66aa',
     atlas:'#00ff88',
     dexter:'#00ccff',
-    byte:'#cc88ff',
     mercury:'#c8d4e0',
     sentry:'#ff4444',
     artemis:'#ff8800',
@@ -283,7 +282,6 @@
     iris:'✉',
     atlas:'⚡',
     dexter:'📅',
-    byte:'📋',
     mercury:'☿',
     sentry:'🛡',
     artemis:'🔍',
@@ -298,7 +296,6 @@
     {key:'iris',name:'Iris',channel:'email'},
     {key:'atlas',name:'Atlas',channel:'research'},
     {key:'dexter',name:'Dexter',channel:'calendar'},
-    {key:'byte',name:'Byte',channel:'notes'},
     {key:'mercury',name:'Mercury',channel:'memory'},
     {key:'artemis',name:'Artemis',channel:'browser'},
     {key:'sentry',name:'Sentry',channel:'security'},
@@ -511,14 +508,13 @@
   // dropdowns (populated from Warden's /api/ollama/test + /api/settings).
   // Save writes the per-agent keys back via POST /api/settings. The model
   // dropdown has no blank option — every agent always has a concrete model.
-  // NOTE: Byte/Dexter/Iris/Mercury/Sentry now share the Toolcall model/ctx
+  // NOTE: Dexter/Iris/Mercury/Sentry now share the Toolcall model/ctx
   // (local:subagent_model/_ctx), but the popover still reads the replicated
   // per-agent fields the server returns for display purposes.
   var AGENT_SETTINGS_KEYS = {
     orchestrator:{name:'Orchestrator',model:'globalDefaultModel',ctx:'orchestratorCtx'},
     atlas:{name:'Atlas',model:'atlasModel',ctx:'atlasCtx'},
     artemis:{name:'Artemis',model:'artemisModel',ctx:'artemisCtx'},
-    byte:{name:'Byte',model:'byteModel',ctx:'byteCtx'},
     dexter:{name:'Dexter',model:'dexterModel',ctx:'dexterCtx'},
     iris:{name:'Iris',model:'irisModel',ctx:'irisCtx'},
     vulkan:{name:'Vulkan',model:'vulkanModel',ctx:'vulkanCtx'},

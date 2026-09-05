@@ -320,12 +320,12 @@ SCENARIOS_DEF+=(
 # --- I. Sub-agent delegation (10) -----------------------------------------
 # Exercise the non-Atlas sub-agents on everyday personal tasks.
 SCENARIOS_DEF+=(
-  "I1.byte-grocery|Delegate to byte: keep a running grocery list for me and add milk, eggs, and bread. Tell me what's on the list now.||120"
-  "I2.byte-budget|Delegate to byte: I have 200 left for groceries this month and I've spent 130. Tell me how much I have left.||120"
-  "I3.byte-project|Delegate to byte: tell me what active projects or open items I have on file, or report if there are none.||120"
-  "I4.byte-blockers|Delegate to byte: are there any blockers or outstanding items flagged on my current work? Report what it finds.||120"
-  "I5.dexter-now|Delegate to dexter: tell me what time it is right now in UTC.||120"
-  "I6.dexter-future|Delegate to dexter: tell me what date it will be 7 days from now.||120"
+  "I1.iris-grocery|Delegate to iris: keep a running grocery list for me and add milk, eggs, and bread. Tell me what's on the list now.||120"
+  "I2.iris-budget|Delegate to iris: I have 200 left for groceries this month and I've spent 130. Tell me how much I have left.||120"
+  "I3.iris-project|Delegate to iris: tell me what active projects or open items I have on file, or report if there are none.||120"
+  "I4.iris-blockers|Delegate to iris: are there any blockers or outstanding items flagged on my current work? Report what it finds.||120"
+  "I5.iris-now|Delegate to iris: tell me what time it is right now in UTC.||120"
+  "I6.iris-future|Delegate to iris: tell me what date it will be 7 days from now.||120"
   "I7.iris-list|Delegate to iris: list the most recent 3 emails in my inbox, or report if email tools are unavailable.||120"
   "I8.artemis-sum|Delegate to artemis: summarize what the user has asked for in this conversation in one sentence.||120"
   "I9.artemis-review|Delegate to artemis: review this conversation so far and tell me whether the assistant has been answering the actual questions or going off track.||120"
