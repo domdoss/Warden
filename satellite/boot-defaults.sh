@@ -75,7 +75,7 @@ if [ -f "$MODE_FILE" ]; then
     MODE_NOW=$(grep ^MODE= "$MODE_FILE" 2>/dev/null | cut -d= -f2-)
     echo "Boot: restoring last mode: ${MODE_NOW:-?}" || true
     # Roles launch with repo-root-relative paths (node dist/index.js,
-    # voice/satellite_server.py, hardware/voice-button.py), so cd to the repo
+    # satellite/satellite_server.py, satellite/voice-button.py), so cd to the repo
     # root first — systemd runs this oneshot from $HOME, not /opt/warden, and
     # the relative paths wouldn't resolve otherwise. Derive the root from this
     # script's own location (satellite/boot-defaults.sh → parent).
@@ -86,23 +86,23 @@ if [ -f "$MODE_FILE" ]; then
             read -rp "Start Warden + Satellite + button now? [y/N] " yn < /dev/tty 2>/dev/null || yn=""
             if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
                 nohup node dist/index.js > "$HOME/.warden-warden.log" 2>&1 &
-                nohup python3 voice/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
-                nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
+                nohup python3 satellite/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
+                nohup python3 satellite/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
             fi
             ;;
         satellite)
             read -rp "Start Satellite + button now? [y/N] " yn < /dev/tty 2>/dev/null || yn=""
             if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-                nohup python3 voice/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
-                nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
+                nohup python3 satellite/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
+                nohup python3 satellite/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
             fi
             ;;
         both)
             read -rp "Start Warden + Satellite + button now? [y/N] " yn < /dev/tty 2>/dev/null || yn=""
             if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
                 nohup node dist/index.js > "$HOME/.warden-warden.log" 2>&1 &
-                nohup python3 voice/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
-                nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
+                nohup python3 satellite/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
+                nohup python3 satellite/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
             fi
             ;;
     esac || true

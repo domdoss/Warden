@@ -75,8 +75,8 @@ it runs on a different machine. The flow is identical otherwise.
 
 ## Deploy
 
-These scripts assume the Pi repo-root layout (`dist/`, `voice/`, `hardware/`,
-`satellite/`). On the Pi, sync this repo to `/opt/warden` and run from there:
+These scripts assume the Pi repo-root layout (`dist/`, `satellite/`,
+`logs/`). On the Pi, sync this repo to `/opt/warden` and run from there:
 
 ```bash
 bash satellite/install-deps-pi.sh          # one-time: system deps
@@ -84,8 +84,8 @@ bash satellite/warden-tui.sh               # configure WiFi/BT/audio/mode + star
 ```
 
 The TUI's "Start roles" prompt starts each component with paths relative to the
-repo root (`node dist/index.js`, `voice/satellite_server.py`,
-`hardware/voice-button.py`), so launch it from the repo root. To run the boot
+repo root (`node dist/index.js`, `satellite/satellite_server.py`,
+`satellite/voice-button.py`), so launch it from the repo root. To run the boot
 defaults restore, install the service:
 
 ```bash
