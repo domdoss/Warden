@@ -24,6 +24,7 @@ import { setOculusTaskPrompt } from './tools/awareness-tools.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
+import { marmAutoRecall } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
 import { createProvider } from './providers/index.js';
@@ -242,6 +243,13 @@ const INTENT_MAX_NUDGES = 2;
 // final report that RECOMMENDS work ("Next, fix the login form" — an artemis
 // audit) is not a self-announcement and is not nudged.
 const SUB_INTENT_RE = /\b(?:now|i'?ll|i will|next,?\s+i'?ll|let me|let'?s|i'?m going to|then i'?ll)\b[\s\S]{0,40}?\b(?:write|create|make|build|add|update|edit|fix|run|install|move|copy|delete|save|generate|implement|apply|set up|put|check|verify|read|inspect|look(?: up| at)?|search|find|scan|examine|review)\b/i;
+// A promise that names the file it will produce ("Now write index.html", "I'll
+// create the page at v2/index.html") is an unfulfilled promise at ANY length:
+// the vulkan-9ryv failures (2026-09-05, three in a row) were long, fenced-code
+// plan dumps that named the file and then ended — sailing past the
+// short-reply exemptions below. Present-tense verbs only, so a completed
+// report ("wrote index.html", "created the page") does not match.
+const SUB_INTENT_FILE_WRITE_RE = /\b(?:write|create|make|build|save|generate)\b[\s\S]{0,40}?[\w~./@-]+\.[a-z0-9]{1,6}\b/i;
 const SUB_INTENT_MAX_NUDGES = 2;
 
 // Narrated-but-never-dispatched guard (Atlas regression): the model narrates a
@@ -740,6 +748,12 @@ PREMISE CHECK — PERSISTENCE governs approaches that FAIL WITH ERRORS; this gov
 
 WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
 
+FILES — Read only the files your task names — don't explore unrelated files. You have full filesystem access — use absolute paths outside the workspace (\`~/Projects/\`, \`~/Documents/\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right directory instead of repeating full paths.
+
+READ ONCE — Read each file the task names in a single pass (one Read or the specific ranges you need), then edit from what you have. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
+
+MAKE THE CALL — work happens through tool calls, not narration. The turn that creates the deliverable (Write, Edit, Bash heredoc) is the turn that counts; describing what you are about to write is a no-op — when you know what the file needs, write it in that same turn. State results in the past tense (files written, commands run); state intentions by acting on them.
+
 CODE — Read or Grep before you change anything: understand the real data flow (written → read → rendered) end to end before editing. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). Match the surrounding style — naming, indentation, comment density. Run the build and the tests to confirm a change; a successful Edit is not a working change. When your code references something defined elsewhere (a fetch→route, a field, an export), Grep that file once to confirm the contract exists before relying on it.
 
 VERIFYING — Match the check to the task. A successful Edit/Write/Bash call IS applied — don't re-Read the file to double-check it. For a behavioral change, run the build and the relevant test (or a focused reproduction) and read its actual output; "it should work" is not verification. When you change a contract (a route, a function signature, a config shape), Grep for the old form and update every caller — don't leave the build broken.
@@ -749,7 +763,7 @@ SUDO — interactive: the USER types the password, never you. For a system packa
 DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issue didn't work, don't re-apply it. Verify the earlier change is actually present (Read/Grep), trace the real data flow, and fix the actual cause. State what was wrong with the previous attempt.
 
 FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
-- **DONE**: the change is implemented, the build is clean, and the tests pass (or you ran a focused repro showing it works). Stop calling tools and write the final report — list exactly the files you changed and the commands you ran, nothing more, and never claim a change unless its tool call succeeded this task.
+- **DONE**: every deliverable the task asked for actually exists on disk — the file is written, the edit is applied, the build is clean, and the tests pass (or you ran a focused repro showing it works). Stop calling tools and write the final report — list exactly the files you changed and the commands you ran, nothing more, and never claim a change unless its tool call succeeded this task.
 - **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result.
 - **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
 
@@ -3196,10 +3210,15 @@ async function runSubAgent(
                 // Exemptions mirror the orchestrator's guard: single-shot agents
                 // (cap <= 1) legitimately end on text; a reply carrying the
                 // actual deliverable (fenced code) or asking a question is final;
-                // short replies only — long prose is a report.
+                // short replies only — long prose is a report. One carve-in: a
+                // promise that NAMES a file it will write (SUB_INTENT_FILE_WRITE_RE)
+                // is nudged regardless of length or fences — the deliverable of a
+                // file task lives on disk, never in the reply text.
                 if (cap > 1 && subIntentNudges < SUB_INTENT_MAX_NUDGES && i + 1 < cap) {
                     const subIntentMatch = content.match(SUB_INTENT_RE);
-                    if (subIntentMatch && !/```/.test(content) && !content.trim().endsWith('?') && content.length < 600) {
+                    const fileWritePromise = SUB_INTENT_FILE_WRITE_RE.test(content);
+                    if (subIntentMatch && !content.trim().endsWith('?')
+                        && (fileWritePromise || (!/```/.test(content) && content.length < 600))) {
                         subIntentNudges++;
                         const announcement = subIntentMatch[0].slice(0, 120);
                         log(`[${agentName}] Intent nudge ${subIntentNudges}/${SUB_INTENT_MAX_NUDGES}: announced tool action without a tool call: "${announcement}"`);
@@ -3486,9 +3505,12 @@ async function runNativeOllama(input: ContainerInput) {
         // covers both the activeToolDefs base and skill-layer extras regardless
         // of how the tools entered.
         const BLOCKED_ORCHESTRATOR_TOOLS = new Set(['Bash']);
+        // marm__ is the one MCP server the orchestrator calls directly: memory
+        // recall + logging is assistant state (same class as get_chat_history),
+        // not hands-on host work. Every other mcp__ server stays blocked.
         const blocked = (t: any) => {
             const n = t?.function?.name;
-            return typeof n === 'string' && (n.startsWith('mcp__') || BLOCKED_ORCHESTRATOR_TOOLS.has(n));
+            return typeof n === 'string' && ((n.startsWith('mcp__') && !n.startsWith('mcp__marm__')) || BLOCKED_ORCHESTRATOR_TOOLS.has(n));
         };
         const base = (activeToolDefs as any[]).filter((t) => !blocked(t));
         const skillTools = (skillToolDefs() as any[]).filter((t) => !blocked(t));
@@ -3542,6 +3564,7 @@ async function runNativeOllama(input: ContainerInput) {
     let messages: any[] = [];
     // Load the durable project journal (JOURNAL.md) so lessons learned persist across turns.
 let journalSection = '';
+let marmRecalledSection = '';
 try {
     const journalPath = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'JOURNAL.md');
     if (fs.existsSync(journalPath)) {
@@ -3562,7 +3585,26 @@ try {
 // driving force changes HOW the orchestrator thinks, not WHO it delegates to.
 const DEFAULT_PREAMBLE = `# ROLE
 
-You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain. The captain gives orders; you run the ship. Your job is a loop: understand what the captain actually wants (voice input rambles — extract the intent, hold the goal, anticipate the obvious next need), decompose it into clean briefs for the crew below, watch their work while it runs, and report back only what matters. You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".`;
+You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain. The captain gives orders; you run the ship. Your job is a loop: understand what the captain actually wants (voice input rambles — extract the intent, hold the goal, anticipate the obvious next need), decompose it into clean briefs for the crew below, watch their work while it runs, and report back only what matters. You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".
+
+The captain is an elderly person talking to you by voice. So: speak plainly — short sentences, no jargon, no tech-speak, one thing at a time. Never dump walls of text or lists of options; give the answer, then stop. Patience is absolute — a repeated question gets answered again, identically kindly, never "as I said". Rambled, half-stated, or meandering asks get gently confirmed in one short question rather than guessed wrong. Names, numbers, and times get stated clearly and repeated once if they matter (a reminder time, an appointment). The captain doesn't know or care HOW the ship works — never burden them with mechanism; just say what was done or what you need.`;
+
+// MARM recall layer — active only when the marm MCP server is enabled in
+// data/mcp-servers.json, so the prompt never references tools that don't
+// exist. Re-read per turn, so flipping the config applies on the next turn
+// without a rebuild. Matches the mcp__marm__ orchestrator exemption above.
+const marmEnabled = (() => {
+    try {
+        const cfgPath = process.env.MCP_SERVERS_CONFIG || path.join(process.cwd(), 'data', 'mcp-servers.json');
+        const servers = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as Array<{ name?: string; enabled?: boolean }>;
+        return servers.some((s) => s && s.name === 'marm' && s.enabled === true);
+    } catch {
+        return false;
+    }
+})();
+const marmRecallSection = marmEnabled
+    ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`marm_smart_recall\` (semantic search over every fact the memory distiller has ever logged). If a durable fact is missing from MARM and you just learned it, log it with \`marm_log_entry\` so it is recallable next time.\n`
+    : '';
 
 const ROUTING_CORE = `# CORE MANDATES (hard rules — follow exactly)
 
@@ -3718,8 +3760,14 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             }
         }
         if (!preamble) preamble = DEFAULT_PREAMBLE;
-        return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine;
+        return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine + marmRecallSection + marmRecalledSection;
     };
+    // Auto-recall: pull MARM memories relevant to this ask into the prompt —
+    // recall that does not depend on the model choosing to call the tool.
+    // Fail-open by contract: any error, timeout, or down MARM yields ''.
+    if (marmEnabled) {
+        marmRecalledSection = await marmAutoRecall(String(input.prompt || ''));
+    }
     messages.push({ role: 'system', content: buildSystemPrompt() });
     let prompt = input.prompt;
     lastUserAsk = String(input.prompt || '').replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400);
@@ -5229,7 +5277,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // the model can still call them blind (activate_skill lists tool names).
     // Enforce the block at execution time too, with a redirect that teaches
     // the correct path.
-    if (opts?.orchestrator && (toolName.startsWith('mcp__') || toolName === 'Bash')) {
+    if (opts?.orchestrator && ((toolName.startsWith('mcp__') && !toolName.startsWith('mcp__marm__')) || toolName === 'Bash')) {
         return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email and scheduling. Call the delegate tool with a {task} argument.`;
     }
 
