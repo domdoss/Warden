@@ -361,7 +361,7 @@ maybe_restart_button() {
         if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
             pkill -f "voice-button.py" 2>/dev/null
             sleep 1
-            nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
+            nohup python3 satellite/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
             echo "Button restarted, PID $!"
         fi
     fi
@@ -423,14 +423,14 @@ mode_start() {
         nohup node dist/index.js > "$HOME/.warden-warden.log" 2>&1 &
         echo "Warden started, PID $!"
     fi
-    read -rp "Start Satellite mic/speaker (python3 voice/satellite_server.py)? [y/N] " yn
+    read -rp "Start Satellite mic/speaker (python3 satellite/satellite_server.py)? [y/N] " yn
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-        nohup python3 voice/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
+        nohup python3 satellite/satellite_server.py > "$HOME/.warden-satellite.log" 2>&1 &
         echo "Satellite started, PID $!"
     fi
-    read -rp "Start button (python3 hardware/voice-button.py)? [y/N] " yn
+    read -rp "Start button (python3 satellite/voice-button.py)? [y/N] " yn
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-        nohup python3 hardware/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
+        nohup python3 satellite/voice-button.py > "$HOME/.warden-button.log" 2>&1 &
         echo "Button started, PID $!"
     fi
     echo ""
