@@ -1,0 +1,15 @@
+# Dexter LoRA SFT — Python 3.12, CUDA (RTX 5000 / Turing, fp16).
+# Install into training/.venv:
+#   python3.12 -m venv .venv && . .venv/bin/activate
+#   pip install -r requirements.txt
+# PyTorch is installed separately with the bundled CUDA wheel (no system CUDA
+# needed) — see the README. The versions below are minimums.
+torch>=2.2
+# Pin transformers to 4.x: granite-4.1 was tested on 4.53.3, and transformers 5.x
+# breaks apply_chat_template (returns a dict by default) and TrainingArguments
+# (warmup_ratio removed) — both would silently wreck this SFT.
+transformers>=4.53,<5
+peft>=0.10
+datasets>=2.18
+accelerate>=0.27
+huggingface_hub>=0.20

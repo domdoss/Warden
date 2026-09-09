@@ -1,0 +1,974 @@
+{
+  "iris": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_emails",
+        "description": "Read emails from the user's connected email account. Account is resolved automatically from the user's identity. Use `since` (and optionally `before`) to fetch emails in a specific date range — both are ISO 8601 timestamps (e.g. \"2026-08-01T00:00:00Z\"). Use this when the user asks to look up emails from a past period (\"my emails from last week\", \"anything from August\"). Leave both empty for just the most recent emails.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number",
+              "description": "Max emails to fetch before date filtering (default: 500)"
+            },
+            "preview_only": {
+              "type": "boolean",
+              "description": "Return previews only (default: true)"
+            },
+            "folder": {
+              "type": "string",
+              "description": "Mail folder (default: INBOX)"
+            },
+            "search": {
+              "type": "string",
+              "description": "Optional text search (provider query, e.g. Gmail q=)"
+            },
+            "since": {
+              "type": "string",
+              "description": "ISO 8601 timestamp — only return emails received at/after this"
+            },
+            "before": {
+              "type": "string",
+              "description": "ISO 8601 timestamp — only return emails received before this"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email from the user's connected email account.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "to",
+            "subject",
+            "body"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_email",
+        "description": "Get a specific email by ID.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "email_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "email_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "refresh_email_cache",
+        "description": "Refresh the email cache for the user's account.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_cached_emails",
+        "description": "Get emails from local cache. Use refresh_email_cache first.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "register_group",
+        "description": "Register a new group (main session only).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "trigger_pattern": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_api_keys",
+        "description": "List the user's configured API keys. Returns names and base URLs. Use to discover what services are available.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "api_request",
+        "description": "Call any external API with automatic key injection. The system injects stored API keys automatically — never hardcode keys. Use list_api_keys first to discover available services.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key_type": {
+              "type": "string",
+              "description": "API key name from list_api_keys (e.g. \"openai\", \"github\", \"slack\")"
+            },
+            "method": {
+              "type": "string",
+              "description": "HTTP method: GET, POST, PUT, PATCH, DELETE (default GET)"
+            },
+            "path": {
+              "type": "string",
+              "description": "API endpoint path (e.g. \"/v1/chat/completions\" or full URL)"
+            },
+            "body": {
+              "type": "string",
+              "description": "JSON request body as string"
+            },
+            "description": {
+              "type": "string",
+              "description": "What this request does (for logging)"
+            }
+          },
+          "required": [
+            "key_type",
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "post_summary",
+        "description": "Publish a compiled digest/summary so it shows in the dashboard digest panel. Keyless internal call — do NOT use api_request for this. Args: span (hourly|daily|weekly — which tab) and text (the markdown digest). Call once after compiling the digest.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "span": {
+              "type": "string",
+              "enum": [
+                "hourly",
+                "daily",
+                "weekly"
+              ],
+              "description": "Which digest tab this lands under."
+            },
+            "text": {
+              "type": "string",
+              "description": "The compiled digest as markdown."
+            }
+          },
+          "required": [
+            "span",
+            "text"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "schedule_task",
+        "description": "Create a recurring or one-time automated task. For a relative \"in N minutes/hours\" once task, pass an ISO-8601 duration (e.g. \"PT2M\") and the host computes the fire time — do NOT do timestamp arithmetic yourself. For an absolute \"at a specific time\" once task, pass a LOCAL timestamp and compute it from the current local time given in your context.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string"
+            },
+            "schedule_type": {
+              "type": "string",
+              "enum": [
+                "cron",
+                "interval",
+                "once"
+              ],
+              "description": "cron=recurring at set times, interval=every N milliseconds, once=single run at a specific time or after a delay"
+            },
+            "schedule_value": {
+              "type": "string",
+              "description": "cron: a cron expression like \"0 9 * * *\" (daily 9am) or \"*/5 * * * *\" (every 5 min) | interval: milliseconds like \"300000\" (5 min) | once: either an ISO-8601 DURATION like \"PT2M\" (in 2 minutes), \"PT1H30M\", \"P1D\" — the host adds this to now, so prefer this for any \"in …\"/\"N from now\" request and do NOT compute a timestamp yourself — OR an ABSOLUTE local timestamp like \"2026-05-27T09:25:00\" (no \"Z\"/timezone suffix) for a named clock time. NEVER pass natural language such as \"in 5 minutes\" or \"tomorrow\"."
+            },
+            "context_mode": {
+              "type": "string",
+              "enum": [
+                "group",
+                "isolated"
+              ]
+            }
+          },
+          "required": [
+            "prompt",
+            "schedule_type",
+            "schedule_value"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_tasks",
+        "description": "List all scheduled tasks.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "pause_task",
+        "description": "Pause a scheduled task by ID.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "resume_task",
+        "description": "Resume a paused task by ID.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "cancel_task",
+        "description": "Cancel and delete a scheduled task by ID.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_task",
+        "description": "Update an existing scheduled task.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "schedule_type": {
+              "type": "string",
+              "enum": [
+                "cron",
+                "interval",
+                "once"
+              ]
+            },
+            "schedule_value": {
+              "type": "string",
+              "description": "Same format as schedule_task: cron expression | milliseconds | ISO-8601 duration \"PT2M\" (for a once delay) | absolute local timestamp \"2026-05-27T09:25:00\" (no Z suffix). Never natural language."
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create a calendar event in the local calendar (DB).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Event title"
+            },
+            "description": {
+              "type": "string"
+            },
+            "start_time": {
+              "type": "string",
+              "description": "Local ISO e.g. \"2026-03-20T14:00:00\""
+            },
+            "end_time": {
+              "type": "string"
+            },
+            "all_day": {
+              "type": "boolean"
+            },
+            "location": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "start_time"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_calendar_events",
+        "description": "List calendar events in a date range (local ISO start/end) from the local calendar (DB).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "type": "string",
+              "description": "Local ISO lower bound"
+            },
+            "end": {
+              "type": "string",
+              "description": "Local ISO upper bound"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_calendar_event",
+        "description": "Update an existing calendar event by uid. Only provided fields are changed.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": "string",
+              "description": "Event uid"
+            },
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "start_time": {
+              "type": "string"
+            },
+            "end_time": {
+              "type": "string"
+            },
+            "location": {
+              "type": "string"
+            },
+            "all_day": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "event_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_calendar_event",
+        "description": "Delete a calendar event by uid.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_project",
+        "description": "Create a new project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "due_date": {
+              "type": "string"
+            },
+            "project_code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_project",
+        "description": "Get full project details.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_project",
+        "description": "Update project details.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "On Track",
+                "At Risk",
+                "Blocked"
+              ]
+            },
+            "due_date": {
+              "type": "string"
+            },
+            "project_code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "archive_project",
+        "description": "Archive a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "complete_project",
+        "description": "Mark a project as completed.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_project",
+        "description": "Permanently delete a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_projects",
+        "description": "List projects for this group.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_work_task",
+        "description": "Create a work task visible in the user dashboard. project_id is required.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "urgent"
+              ]
+            },
+            "due_date": {
+              "type": "string"
+            },
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_work_tasks",
+        "description": "List work tasks from the dashboard.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_work_task",
+        "description": "Update an existing work task.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "todo",
+                "in_progress",
+                "done"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "urgent"
+              ]
+            },
+            "due_date": {
+              "type": "string"
+            },
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_work_task",
+        "description": "Delete a work task by ID.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "add_deliverable",
+        "description": "Add a deliverable to a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "due_date": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id",
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "toggle_deliverable",
+        "description": "Toggle a deliverable done/not done.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "deliverable_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "deliverable_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_deliverable",
+        "description": "Delete a deliverable.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "deliverable_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "deliverable_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "add_blocker",
+        "description": "Add a blocker to a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "severity": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ]
+            }
+          },
+          "required": [
+            "project_id",
+            "description"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_blocker",
+        "description": "Remove a blocker.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "blocker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "blocker_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "add_priority",
+        "description": "Add a priority item to a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            },
+            "impact": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            }
+          },
+          "required": [
+            "project_id",
+            "item"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_priority",
+        "description": "Remove a priority item.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "priority_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "priority_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_financials",
+        "description": "Update project financial data.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "budget": {
+              "type": "number"
+            },
+            "spent": {
+              "type": "number"
+            },
+            "revenue": {
+              "type": "number"
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "log_time",
+        "description": "Log time spent on a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "hours": {
+              "type": "number",
+              "description": "Hours spent"
+            },
+            "date": {
+              "type": "string",
+              "description": "Date in YYYY-MM-DD (default: today)"
+            },
+            "description": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id",
+            "hours"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "start_timer",
+        "description": "Start a timer for a project.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "stop_timer",
+        "description": "Stop the active timer.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "timer_id": {
+              "type": "string",
+              "description": "Timer ID (optional, stops most recent if omitted)"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -22,8 +22,12 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# ── Docker packaging (local build artifacts + optional runtime) ──
-docker/
+# ── Docker packaging — the Arch packaging scaffold is tracked; build
+#    artifacts + any runtime state stay out ──
+docker/*
+!docker/Dockerfile
+!docker/docker-compose.yml
+!docker/README.md
 
 # ── Runtime data (DB, sessions, ipc, per-group folders) ──
 # Ignore everything under data/ EXCEPT the skills (those are tracked).

@@ -48,6 +48,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DIGEST_SYSTEM, DIGEST_PROMPTS, DIGEST_TOOLS, buildDigestInput } from './digest_reality.mjs';
 export { DIGEST_SYSTEM, DIGEST_PROMPTS, DIGEST_TOOLS };
+// Sentry run-mode rows REMOVED 2026-09-08: the user switched sentry to share
+// the orchestrator/atlas model (dashboard-set), so the toolcall fine-tune no
+// longer covers sentry — this dataset trains only what toolcall-ft runs.
 
 const SCHEMAS = JSON.parse(readFileSync(new URL('./tool_schemas.json', import.meta.url), 'utf8'));
 export const TOOLS = { iris: SCHEMAS.iris };
@@ -449,6 +452,17 @@ examples.push(exText('iris', 'Remind me to call the plumber.',
   'When should I remind you to call the plumber? Give me a time (e.g. "tomorrow at 9am").'));
 examples.push(exText('iris', 'Remind me to renew my passport.',
   'When should I remind you to renew your passport? Give me a date (e.g. "next Monday" or "September 10th").'));
+// Exact shapes of the two live 2026-09-08 dryfire failures — the model invented
+// content for time-only requests ("Set a reminder in 10 minutes.", "Daily
+// reminder"). Same gap, the exact phrasings that failed:
+examples.push(exText('iris', 'Set a one-time reminder in 10 minutes.',
+  'What should the 10-minute reminder say? Give me the content.'));
+examples.push(exText('iris', 'Set a one-time reminder in 20 minutes.',
+  'What should the 20-minute reminder say? Give me the content.'));
+examples.push(exText('iris', 'Set a recurring reminder every day at 7:30 PM.',
+  'What should the daily 7:30pm reminder say? Give me the content.'));
+examples.push(exText('iris', 'Set a recurring reminder daily at 9 AM.',
+  'What should the daily 9am reminder say? Give me the content.'));
 // Plain to-dos, more phrasings → create_work_task (one call, project_id
 // "personal" — the permanent Personal project, per the prompt default):
 examples.push(ex('iris', 'Add a to-do item: fix the kitchen sink.',
@@ -987,6 +1001,35 @@ examples.push(exDigest('daily', buildDigestInput({
   actionable_tasks: [], actionable_events: [],
 }));
 
+// ---- D12b. Daily, BUSY morning: full read_emails args on the longest span -
+// (2026-09-08 dryfire: the daily digest case stably called read_emails with
+// EMPTY args — the window transcription needs the most reinforcement on the
+// daily span, where the INPUT is longest and limit=100.)
+examples.push(exDigest('daily', buildDigestInput({
+  localTime: '9/1/2026, 8:00:05 AM',
+  since: '2026-08-31T15:00:05.000Z', before: '2026-09-01T15:00:05.000Z',
+  bio: 'Location: Victoria, BC\nDominic — software engineer; prefers terse summaries.',
+  calendar: ['- 2026-09-01T10:00:00 → 2026-09-01T10:30:00: Standup', '- 2026-09-01T16:00:00 → 2026-09-01T17:00:00: 1:1 with Jason'],
+  tasks: ['- [doing] Finish the API spec (project personal)', '- [todo] Review the NDA (project personal)'],
+  weather: ['Now: 16°C, Rain, humidity 84%', 'Next hours: 09:00 16°C, 10:00 17°C, 11:00 17°C'],
+  lookout: ['- Anything from Jason about the NDA'],
+}),
+'4 emails:\n1. 2026-08-31T23:40 jason@partnerco.com | "Re: NDA — one more clause" — wants section 4 reworded before signing\n2. 2026-08-31T21:12 sarah@acme.io | "Roadmap feedback" — notes attached\n3. 2026-08-31T18:03 billing@stripe.com | "Invoice #4502 paid" (receipt)\n4. 2026-08-31T16:20 newsletter@hackernews.com | "HN Weekly" (newsletter)',
+{
+  title: '2026-09-01 8:00 AM',
+  summary: 'Good morning. Standup at 10 and a 1:1 with Jason at 4 PM; he emailed again about rewording NDA section 4 before signing.',
+  alerts: ['Anything from Jason about the NDA - matched by email jason@partnerco.com: "Re: NDA — one more clause"'],
+  blocks: [
+    { icon: 'review', label: 'Day in Review', type: 'prose', text: 'Two meetings today: Standup (10:00) and the 1:1 with Jason (16:00). Jason asked for section 4 of the NDA to be reworded; the API spec is in progress and the NDA review is open. Rain all morning.' },
+    { icon: 'inbox', label: 'Recent Emails', type: 'list', items: ['From: jason@partnerco.com: Re: NDA — one more clause (Aug 31, 11:40 PM)', 'From: sarah@acme.io: Roadmap feedback (Aug 31, 9:12 PM)', 'From: billing@stripe.com: Invoice #4502 paid (Aug 31, 6:03 PM)', 'From: newsletter@hackernews.com: HN Weekly (Aug 31, 4:20 PM)'] },
+    { icon: 'calendar', label: 'Calendar', type: 'list', items: ['10:00 Standup (30m)', '16:00 1:1 with Jason (1h)'] },
+    { icon: 'tasks', label: 'Active Tasks', type: 'list', items: ['[doing] Finish the API spec', '[todo] Review the NDA'] },
+    { icon: 'weather', label: 'Weather', type: 'prose', text: 'Now 16°C, rain. Next hours 16–17°C.' },
+    { icon: 'tomorrow', label: 'Tomorrow', type: 'prose', text: '' },
+    { icon: 'nudge', label: 'Nudge', type: 'prose', text: 'Reword NDA section 4 for Jason before the 4 PM 1:1.' },
+  ],
+}));
+
 // ---- D13. Weekly, EMPTY week: no emails at all ----------------------------
 examples.push(exDigest('weekly', buildDigestInput({
   localTime: '8/23/2026, 8:28:00 PM',
@@ -1468,7 +1511,7 @@ examples.push(exManage('iris', 'mark the Mobile App project as At Risk', {
 }));
 examples.push(exManage('iris', "mark the 'Refactor the scheduler' task as in-progress", {
   actionTool: 'update_work_task',
-  actionArgs: { task_id: 'wt-2006', status: 'in-progress' },
+  actionArgs: { task_id: 'wt-2006', status: 'in_progress' },   // schema enum is in_progress (underscore)
   actionResult: 'Work task wt-2006 updated.',
   reply: 'Marked "Refactor the scheduler" (wt-2006) as in-progress.',
 }));
@@ -1477,6 +1520,26 @@ examples.push(exManage('iris', 'bump the login bug task to urgent', {
   actionArgs: { task_id: 'wt-2001', priority: 'urgent' },
   actionResult: 'Work task wt-2001 updated.',
   reply: 'Bumped "Fix the login bug" (wt-2001) to urgent.',
+}));
+// Status/priority transition variants (2026-09-08 expansion — the full enum
+// range and field combinations, all single-call with the id in the brief):
+examples.push(exManage('iris', 'move the login bug task (wt-2001) back to to-do', {
+  actionTool: 'update_work_task',
+  actionArgs: { task_id: 'wt-2001', status: 'todo' },
+  actionResult: 'Work task wt-2001 updated.',
+  reply: 'Moved "Fix the login bug" (wt-2001) back to to-do.',
+}));
+examples.push(exManage('iris', 'lower the priority of the API spec task (wt-2002) to medium', {
+  actionTool: 'update_work_task',
+  actionArgs: { task_id: 'wt-2002', priority: 'medium' },
+  actionResult: 'Work task wt-2002 updated.',
+  reply: 'Lowered "Write the API spec" (wt-2002) to medium priority.',
+}));
+examples.push(exManage('iris', 'mark the prod outage task (wt-2007) as done and drop it to low priority', {
+  actionTool: 'update_work_task',
+  actionArgs: { task_id: 'wt-2007', status: 'done', priority: 'low' },
+  actionResult: 'Work task wt-2007 updated.',
+  reply: 'Marked "Fix the prod outage" (wt-2007) as done and lowered it to low priority.',
 }));
 
 // ---- W7. Iris: blockers/priorities with severity/impact split into own field ----
@@ -1515,6 +1578,28 @@ examples.push(exManage('iris', "add a deliverable to Warden: write the docs, due
   actionArgs: { project_id: 'proj-warden-01', name: 'Write the docs', due_date: '2026-09-20' },
   actionResult: 'Deliverable "Write the docs" added (id deliv-606) to project proj-warden-01.',
   reply: 'Added deliverable "Write the docs" (deliv-606) to Warden, due 2026-09-20.',
+}));
+
+// Trailing-clause severity (2026-09-08 dryfire: "…, high severity" omitted the
+// severity field — every prior rep put severity BEFORE the noun, so the
+// trailing form was untrained). Bake the trailing form with severity split out.
+examples.push(exManage('iris', 'add a blocker to Warden (proj-warden-01): CI is flaky on arm64, high severity', {
+  actionTool: 'add_blocker',
+  actionArgs: { project_id: 'proj-warden-01', description: 'CI is flaky on arm64', severity: 'high' },
+  actionResult: 'Blocker "CI is flaky on arm64" added (id blk-607) to project proj-warden-01.',
+  reply: 'Added a high-severity blocker "CI is flaky on arm64" (blk-607) to Warden.',
+}));
+examples.push(exManage('iris', 'add a blocker to Acme (proj-acme-02): deploy pipeline breaks nightly, medium severity', {
+  actionTool: 'add_blocker',
+  actionArgs: { project_id: 'proj-acme-02', description: 'Deploy pipeline breaks nightly', severity: 'medium' },
+  actionResult: 'Blocker "Deploy pipeline breaks nightly" added (id blk-608) to project proj-acme-02.',
+  reply: 'Added a medium-severity blocker "Deploy pipeline breaks nightly" (blk-608) to Acme Migration.',
+}));
+examples.push(exManage('iris', 'add a priority to Warden (proj-warden-01): improve test coverage, high impact', {
+  actionTool: 'add_priority',
+  actionArgs: { project_id: 'proj-warden-01', item: 'Improve test coverage', impact: 'high' },
+  actionResult: 'Priority "Improve test coverage" added (id prio-609) to project proj-warden-01.',
+  reply: 'Added a high-impact priority "Improve test coverage" (prio-609) to Warden.',
 }));
 
 // ---- W13. Iris: financials / log_time — the brief carries the proj id; use
@@ -1768,16 +1853,18 @@ examples.push(ex('iris', "Add a deliverable titled 'Capability Report' and a blo
     reply: 'Added the "Capability Report" deliverable (deliv-700) and a "No email account configured" blocker (blk-700) to Jarvis Audit (proj-jarvisaudit-01).' }));
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const lines = examples.map(e => JSON.stringify(e));
+  const all = [...examples];
+  const lines = all.map(e => JSON.stringify(e));
   writeFileSync(new URL('./toolcall-sft.jsonl', import.meta.url), lines.join('\n') + '\n');
-  console.log(`Wrote ${examples.length} examples to toolcall-sft.jsonl`);
+  console.log(`Wrote ${all.length} examples to toolcall-sft.jsonl`);
 
   // Per-agent + per-target counts.
   const byAgent = {}, byTarget = {};
-  for (const e of examples) {
+  for (const e of all) {
     const sys = e.messages[0].content;
     const agent = sys.startsWith('You are Iris') ? 'iris'
-      : sys.startsWith('Scan the INPUT block') ? 'digest' : '?';
+      : sys.startsWith('Scan the INPUT block') ? 'digest'
+      : '?';
     byAgent[agent] = (byAgent[agent] || 0) + 1;
     const a = e.messages.find(m => m.role === 'assistant');
     const key = a?.tool_calls ? a.tool_calls.map(t => t.function.name).join('+') : 'text-only';

@@ -116,6 +116,87 @@ interface Distilled {
   journal: string;
 }
 
+// ---------------------------------------------------------------------------
+// MARM mirror (http://github.com/Lyellr88/marm-memory)
+//
+// Every fact the distiller appends to MEMORY.md is also logged into the MARM
+// memory server (hybrid BM25+semantic recall + concept graph) so the
+// orchestrator can retrieve it later via the marm_smart_recall MCP tool.
+// MARM speaks MCP streamable-HTTP on loopback:8001 — one initialize, one
+// tools/call. The whole mirror is fire-and-forget with a short timeout: if
+// MARM is down or slow, writeback is completely unaffected. Only the first
+// failure per process is logged so a stopped MARM doesn't spam the log.
+// ---------------------------------------------------------------------------
+const MARM_URL = process.env.MARM_URL || 'http://127.0.0.1:8001/mcp';
+const MARM_TIMEOUT_MS = 10_000;
+let marmWarned = false;
+
+async function marmRpc(sessionId: string | undefined, body: Record<string, unknown>): Promise<Record<string, any> | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MARM_TIMEOUT_MS);
+  try {
+    const res = await fetch(MARM_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const newSession = res.headers.get('mcp-session-id');
+    if (newSession) marmSessionId = newSession;
+    const ctype = res.headers.get('content-type') || '';
+    let text = await res.text();
+    if (ctype.includes('text/event-stream')) {
+      // SSE framing: take the first data: line holding a JSON-RPC object
+      const line = text.split('\n').find((l) => l.startsWith('data:'));
+      text = line ? line.slice(5).trim() : '';
+    }
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+    return JSON.parse(text.slice(start, text.lastIndexOf('}') + 1));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let marmSessionId: string | undefined;
+
+async function marmLogEntries(facts: string[]): Promise<void> {
+  if (facts.length === 0) return;
+  try {
+    const init = await marmRpc(undefined, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'warden-memory-writeback', version: '1.0.0' },
+      },
+    });
+    if (!init) throw new Error('initialize failed (MARM not running?)');
+    await marmRpc(marmSessionId, { jsonrpc: '2.0', method: 'notifications/initialized' });
+    for (const fact of facts) {
+      await marmRpc(marmSessionId, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'marm_log_entry', arguments: { entry: fact } },
+      });
+    }
+    if (marmWarned) marmWarned = false;
+  } catch (err) {
+    if (!marmWarned) {
+      marmWarned = true;
+      logger.warn({ err, facts: facts.length }, 'MARM mirror failed (MARM down? writeback unaffected)');
+    }
+  }
+}
+
 function parseDistilled(raw: string): Distilled | null {
   try {
     const cleaned = cleanModelOutput(raw);
@@ -267,6 +348,8 @@ Format: Reply with ONLY this JSON object, no prose:
     if (distilled.memory.length > 0) {
       const block = `\n### ${today}\n${distilled.memory.map((m) => `- ${m}`).join('\n')}\n`;
       fs.appendFileSync(memoryPath, block, 'utf-8');
+      // Mirror the same facts into MARM for semantic recall — fire-and-forget.
+      void marmLogEntries(distilled.memory);
     }
     if (distilled.journal) {
       fs.appendFileSync(journalPath, `\n### ${today} — ${chatJid}\n${distilled.journal}\n`, 'utf-8');

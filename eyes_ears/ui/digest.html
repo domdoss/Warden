@@ -592,7 +592,29 @@
       var icon=ICONS[b.icon]||'';
       var label=esc(b.label||'');
       if(b.type==='list'){
-        var items=(b.items||[]).filter(function(x){return x && String(x).trim().length;});
+        // A model sometimes emits an object where the prompt asked for a
+        // string list item (observed: {from,subject,date} AND capitalized
+        // {From,Subject,Time} email rows). Coerce to a readable line,
+        // key-lookup case-insensitive, instead of rendering raw JSON.
+        var itemLine=function(x){
+          if(x && typeof x==='object'){
+            try{
+              var get=function(keys){
+                for(var i=0;i<keys.length;i++){
+                  var k=Object.keys(x).find(function(kk){return kk.toLowerCase()===keys[i];});
+                  if(k&&x[k])return x[k];
+                }
+                return null;
+              };
+              var parts=[get(['from'])?('From: '+get(['from'])):null,
+                         get(['subject']), get(['date','time']),
+                         get(['snippet','body','content'])].filter(Boolean);
+              return parts.join(' — ')||JSON.stringify(x);
+            }catch(e){ return ''; }
+          }
+          return x;
+        };
+        var items=(b.items||[]).map(itemLine).filter(function(x){return x && String(x).trim().length;});
         if(!items.length)return;
         out+='<div class="block"><strong>'+(icon?icon+' ':'')+label+'</strong><ul>';
         items.forEach(function(it){ out+='<li>'+badgeFrom(inlineMd(esc(it)))+'</li>'; });

@@ -1,0 +1,12 @@
+# Training artifacts — generated, never committed:
+# - GGUF weights + the Modelfiles pack_dexter.sh writes from the stock granite one
+*.gguf
+Modelfile.*
+# - LoRA adapter + merged HF model (re-trained by run.sh, re-packable anytime)
+*-lora/
+*-lora-merged/
+# - training + dryfire logs
+*.log
+dryfire_*.txt
+# - venv + scratch
+.venv/

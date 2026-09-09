@@ -1,0 +1,412 @@
+<title>Warden — Local AI as Public Infrastructure</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ink:#102033;
+    --ground:#EAEDF1;
+    --panel:#DDE2E8;
+    --panel-2:#E4E8EC;
+    --rule:#B9C2CC;
+    --accent:#C8651B;
+    --accent-soft:#E8A668;
+    --muted:#5A6B7D;
+    --good:#2E7D5B;
+    --bad:#A8431B;
+    --shadow:0 1px 0 rgba(16,32,51,.04);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#DCE3EB;
+      --ground:#0C1622;
+      --panel:#14202E;
+      --panel-2:#18232F;
+      --rule:#2A3A4C;
+      --accent:#E8923A;
+      --accent-soft:#B5722E;
+      --muted:#8295A6;
+      --good:#5BB38C;
+      --bad:#D26A3A;
+      --shadow:0 1px 0 rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#DCE3EB; --ground:#0C1622; --panel:#14202E; --panel-2:#18232F;
+    --rule:#2A3A4C; --accent:#E8923A; --accent-soft:#B5722E; --muted:#8295A6;
+    --good:#5BB38C; --bad:#D26A3A; --shadow:0 1px 0 rgba(0,0,0,.3);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    background:var(--ground);
+    color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;
+    font-size:16px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 32px}
+
+  /* docket header */
+  .docket{
+    border-bottom:1px solid var(--rule);
+    background:var(--ground);
+  }
+  .docket .wrap{
+    display:flex;align-items:center;justify-content:space-between;
+    padding-top:18px;padding-bottom:18px;
+    font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.04em;
+    color:var(--muted);
+  }
+  .docket .mark{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:500}
+  .docket .mark .dot{width:9px;height:9px;background:var(--accent);border-radius:1px;display:inline-block}
+  .docket .meta{display:flex;gap:28px}
+  .docket .meta span b{color:var(--ink);font-weight:500}
+
+  /* hero */
+  .hero{padding:84px 0 64px;border-bottom:1px solid var(--rule);position:relative}
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--accent);margin-bottom:28px;
+    display:flex;align-items:center;gap:12px;
+  }
+  .eyebrow::after{content:"";height:1px;background:var(--rule);flex:1;max-width:120px}
+  h1.thesis{
+    font-family:"Instrument Serif",serif;font-weight:400;
+    font-size:clamp(40px,6.2vw,76px);line-height:1.02;letter-spacing:-.01em;
+    margin:0 0 28px;max-width:16ch;text-wrap:balance;
+  }
+  h1.thesis em{font-style:italic;color:var(--accent)}
+  .lede{font-size:19px;line-height:1.55;max-width:62ch;color:var(--ink);margin:0}
+  .lede strong{font-weight:600}
+
+  /* section frame */
+  section{padding:72px 0;border-bottom:1px solid var(--rule)}
+  .sec-label{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--muted);margin-bottom:14px;
+    display:flex;align-items:baseline;gap:14px;
+  }
+  .sec-label .num{color:var(--accent);font-weight:500}
+  h2{
+    font-family:"Instrument Serif",serif;font-weight:400;
+    font-size:clamp(28px,3.6vw,42px);line-height:1.08;letter-spacing:-.005em;
+    margin:0 0 18px;max-width:22ch;text-wrap:balance;
+  }
+  p{max-width:66ch;margin:0 0 18px}
+  p + p{margin-top:-6px}
+
+  /* problem: three columns */
+  .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:40px;margin-top:36px}
+  .cols .col h3{
+    font-family:"IBM Plex Sans",sans-serif;font-size:13px;font-weight:600;
+    letter-spacing:.04em;text-transform:uppercase;color:var(--muted);
+    margin:0 0 10px;
+  }
+  .cols .col p{font-size:15.5px;margin:0}
+
+  /* schematic */
+  .schematic{
+    margin-top:40px;background:var(--panel);border:1px solid var(--rule);
+    border-radius:4px;padding:36px 32px 28px;
+  }
+  .schem-title{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--muted);margin-bottom:26px;
+  }
+  .schem-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .lane{
+    background:var(--ground);border:1px solid var(--rule);border-radius:3px;
+    padding:20px 18px;position:relative;
+  }
+  .lane h4{font-family:"IBM Plex Sans",sans-serif;font-size:14px;font-weight:600;margin:0 0 6px}
+  .lane .tag{
+    position:absolute;top:14px;right:14px;
+    font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;
+    text-transform:uppercase;padding:3px 8px;border-radius:2px;
+  }
+  .lane.local .tag{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+  .lane.cloud .tag{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+  .flow{margin:14px 0 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .node{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;
+    padding:7px 10px;border:1px solid var(--rule);border-radius:2px;
+    background:var(--panel-2);color:var(--ink);white-space:nowrap;
+  }
+  .node.home{border-color:var(--accent);color:var(--accent)}
+  .arrow{color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:13px}
+  .lane.local .arrow{color:var(--good)}
+  .lane .note{font-size:13px;color:var(--muted);margin:12px 0 0;line-height:1.5}
+
+  /* who it serves */
+  .serves{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;margin-top:36px}
+  .serve{
+    background:var(--panel);border:1px solid var(--rule);border-radius:4px;
+    padding:26px 22px;
+  }
+  .serve .ico{
+    width:30px;height:30px;border:1.5px solid var(--accent);border-radius:2px;
+    margin-bottom:16px;display:flex;align-items:center;justify-content:center;
+    font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--accent);
+  }
+  .serve h3{font-family:"Instrument Serif",serif;font-size:22px;font-weight:400;margin:0 0 8px;line-height:1.1}
+  .serve p{font-size:14.5px;margin:0;color:var(--ink);max-width:none}
+  .serve .law{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);
+    margin-top:12px;letter-spacing:.02em;
+  }
+
+  /* the model: numbered rows */
+  .model{margin-top:34px;border-top:1px solid var(--rule)}
+  .row{
+    display:grid;grid-template-columns:64px 1fr 220px;gap:24px;
+    padding:26px 0;border-bottom:1px solid var(--rule);align-items:start;
+  }
+  .row .n{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--accent);font-weight:500}
+  .row .body h3{font-family:"IBM Plex Sans",sans-serif;font-size:18px;font-weight:600;margin:0 0 6px}
+  .row .body p{font-size:15px;margin:0;max-width:none}
+  .row .who{
+    font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--muted);text-align:right;
+  }
+  .row .who b{display:block;color:var(--ink);font-size:13px;letter-spacing:.02em;text-transform:none;margin-bottom:2px}
+
+  /* endgame */
+  .endgame{background:var(--ink);color:var(--ground);border-radius:5px;padding:48px 40px;margin-top:8px}
+  :root[data-theme="dark"] .endgame,:root:not([data-theme="light"]) .endgame{}
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .endgame{background:var(--panel-2);color:var(--ink)} }
+  :root[data-theme="dark"] .endgame{background:var(--panel-2);color:var(--ink)}
+  .endgame h2{color:var(--ground);max-width:20ch}
+  .endgame p{color:color-mix(in srgb,var(--ground) 82%,transparent)}
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .endgame p{color:var(--muted)} }
+  :root[data-theme="dark"] .endgame p{color:var(--muted)}
+  .endgame h2 em{color:var(--accent-soft)}
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .endgame h2{color:var(--ink)} }
+  :root[data-theme="dark"] .endgame h2{color:var(--ink)}
+
+  /* ask */
+  .ask{padding:80px 0 96px}
+  .ask h2{max-width:18ch}
+  .ask .steps{margin-top:36px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+  .ask .step{border-left:2px solid var(--accent);padding:4px 0 4px 18px}
+  .ask .step .k{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+  .ask .step p{font-size:15px;margin:0;max-width:none}
+
+  footer{
+    border-top:1px solid var(--rule);padding:28px 0;
+    font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.04em;
+    color:var(--muted);
+  }
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+
+  @media (max-width:760px){
+    .cols,.schem-grid,.serves,.ask .steps{grid-template-columns:1fr}
+    .row{grid-template-columns:1fr;gap:8px}
+    .row .who{text-align:left}
+    .docket .meta{display:none}
+    body{font-size:15.5px}
+  }
+
+  /* quiet load-in */
+  @media (prefers-reduced-motion:no-preference){
+    .hero,section,.ask{animation:rise .6s ease-out both}
+    section{animation-delay:.05s}
+    @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  }
+
+  /* print → PDF */
+  @media print{
+    @page{size:A4;margin:14mm 12mm}
+    :root{--ground:#FFFFFF}
+    body{background:var(--ground);font-size:11.5px}
+    .wrap{max-width:none;padding:0}
+    .docket .wrap{padding-top:0;padding-bottom:10px}
+    .hero{padding:30px 0 26px}
+    section{padding:22px 0}
+    /* print width dips below the 760px mobile breakpoint — restore desktop grids */
+    .cols{grid-template-columns:repeat(3,1fr);gap:24px}
+    .schem-grid{grid-template-columns:1fr 1fr}
+    .serves{grid-template-columns:repeat(2,1fr)}
+    .ask .steps{grid-template-columns:repeat(3,1fr)}
+    .row{grid-template-columns:40px 1fr 160px;gap:16px;padding:16px 0}
+    .row .who{text-align:right}
+    .schematic{padding:20px 18px 14px;margin-top:24px}
+    .serve,.lane,.row,.step,.schematic,.endgame{break-inside:avoid}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .hero,section,.ask{animation:none}
+  }
+</style>
+
+<div class="docket">
+  <div class="wrap">
+    <div class="mark"><span class="dot"></span> WARDEN</div>
+    <div class="meta">
+      <span><b>Executive Summary</b></span>
+      <span>Doc&nbsp;WDN-ES-01</span>
+      <span>Prepared for <b>Government &amp; Public-Sector Partners</b></span>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">A proposal for public-sector deployment</div>
+    <h1 class="thesis">Bring useful AI to everyone &mdash; without sending anyone's life to the <em>cloud.</em></h1>
+    <p class="lede">Warden is a home and institutional AI that runs entirely <strong>on local hardware</strong>, built on free, open-source software. No datacenters. No subscriptions. No personal information leaving the building. It gives schools, seniors, patients, and people with disabilities the same access to capable AI as anyone else &mdash; at the cost of a computer, not a contract.</p>
+  </header>
+
+  <section>
+    <div class="sec-label"><span class="num">01</span> The problem</div>
+    <h2>Today's AI is gated twice: your data goes away, and the price to keep it keeps rising.</h2>
+    <div class="cols">
+      <div class="col">
+        <h3>The privacy toll</h3>
+        <p>Cloud AI only works by sending every question, document, and record to a private datacenter. For a frail elder's health notes, a student's file, or a disabled person's care plan, that transfer is a compliance problem before it's a technical one &mdash; and an ethical one before it's a compliance problem.</p>
+      </div>
+      <div class="col">
+        <h3>The access toll</h3>
+        <p>Useful AI lives behind per-seat subscriptions and datacenter budgets. The institutions that serve the people who need AI most &mdash; underfunded schools, care homes, hospitals, disability services &mdash; are the ones least able to pay that toll. The gap widens by default.</p>
+      </div>
+      <div class="col">
+        <h3>The hardware toll</h3>
+        <p>Running AI locally is honest work: these machines still draw serious power, and the hardware itself is getting more expensive. Datacenter build-outs are buying up the world's memory supply, and the resulting RAM shortage has pushed the cost of a capable machine up for everyone. That inflated cost of entry is precisely what this proposal exists to fight.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span class="num">02</span> The Warden approach</div>
+    <h2>Keep the data. Keep the model. Run it in the room.</h2>
+    <p>Warden runs the AI model on the same machine it serves. The software is free and open-source; the only cost is the computer it runs on. Because nothing leaves the device, the populations who need the most protection get the most protection by default &mdash; not by policy, by architecture.</p>
+
+    <div class="schematic">
+      <div class="schem-title">Data path &mdash; cloud vs. local</div>
+      <div class="schem-grid">
+        <div class="lane local">
+          <span class="tag">Warden</span>
+          <h4>Local</h4>
+          <div class="flow">
+            <span class="node home">Home / school</span>
+            <span class="arrow">&rarr;</span>
+            <span class="node">Model on device</span>
+            <span class="arrow">&rarr;</span>
+            <span class="node home">Answer</span>
+          </div>
+          <p class="note">Records, prompts, and output stay on the machine. No network egress. Works offline. No per-seat bill.</p>
+        </div>
+        <div class="lane cloud">
+          <span class="tag">Cloud AI</span>
+          <h4>Cloud</h4>
+          <div class="flow">
+            <span class="node home">Home / school</span>
+            <span class="arrow">&rarr;</span>
+            <span class="node">Datacenter</span>
+            <span class="arrow">&rarr;</span>
+            <span class="node">Answer back</span>
+          </div>
+          <p class="note">Every record transits a third party. Requires connectivity. Billed per user, every month, forever.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span class="num">03</span> Who it serves</div>
+    <h2>The people privacy law exists to protect get privacy by design.</h2>
+    <div class="serves">
+      <div class="serve">
+        <div class="ico">SH</div>
+        <h3>Schools &amp; students</h3>
+        <p>Student work, IEPs, and records never leave the building. Teachers get a capable AI assistant without exposing minors' data to a vendor.</p>
+        <div class="law">FERPA / student-data safe by architecture</div>
+      </div>
+      <div class="serve">
+        <div class="ico">EL</div>
+        <h3>Elders &amp; care homes</h3>
+        <p>Reminders, schedules, email help, and a patient voice &mdash; running on a single machine in the home or facility. No confusing accounts, no data leaving the residence.</p>
+        <div class="law">HIPAA-sensitive by architecture</div>
+      </div>
+      <div class="serve">
+        <div class="ico">HO</div>
+        <h3>Hospitals &amp; clinics</h3>
+        <p>Patient questions, discharge instructions, and clinical notes handled on a machine inside the facility. No record ever transits a vendor's servers.</p>
+        <div class="law">HIPAA / clinical-data safe by architecture</div>
+      </div>
+      <div class="serve">
+        <div class="ico">DS</div>
+        <h3>People with disabilities</h3>
+        <p>A voice-driven assistant that holds the user's context locally and never ships their care details to a third party. Dignity and privacy in one decision.</p>
+        <div class="law">Care-plan private by architecture</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span class="num">04</span> The model</div>
+    <h2>Public funds the hardware. The software is free. Training sustains it.</h2>
+    <div class="model">
+      <div class="row">
+        <div class="n">01</div>
+        <div class="body">
+          <h3>Government funds installation for the needy</h3>
+          <p>Public procurement buys and installs the local computers &mdash; on the order of $100,000 machines with the memory and power to run capable AI &mdash; in schools, care homes, hospitals, and disability services. The state owns the hardware; the institution owns its data. Free AI for the people inside, permanently.</p>
+        </div>
+        <div class="who"><b>Public sector</b>funds hardware + install</div>
+      </div>
+      <div class="row">
+        <div class="n">02</div>
+        <div class="body">
+          <h3>The software is given away free</h3>
+          <p>Warden is free, open-source software. No license fees to the institution, no per-seat cost to the taxpayer beyond the one-time hardware. Any school or facility can run it, audit it, or extend it.</p>
+        </div>
+        <div class="who"><b>Open source</b>$0 license, forever</div>
+      </div>
+      <div class="row">
+        <div class="n">03</div>
+        <div class="body">
+          <h3>Education is sold to those who can pay</h3>
+          <p>Private training on how to actually use AI tools &mdash; sold to districts, businesses, and individuals who can afford it &mdash; funds the work and the free deployment to those who can't.</p>
+        </div>
+        <div class="who"><b>Private market</b>funds the mission</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span class="num">05</span> The endgame</div>
+    <div class="endgame">
+      <h2>Once it's sustained, the whole thing goes <em>open.</em></h2>
+      <p>The education revenue exists to buy time &mdash; enough to mature the platform and put more into a more profitable ambition. At that point Warden's full design and source are released to the public for free. The state, the schools, and the public own the infrastructure they paid for, outright.</p>
+    </div>
+  </section>
+
+  <section class="ask">
+    <div class="sec-label"><span class="num">06</span> The ask</div>
+    <h2>Install local AI in the rooms that need it most.</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="k">Step 1</div>
+        <p>Pilot Warden in a small set of classrooms and one care facility. One capable machine per site. Measure use, privacy posture, power draw, and cost.</p>
+      </div>
+      <div class="step">
+        <div class="k">Step 2</div>
+        <p>Procure $100,000-class machines at scale for the institutions serving students, patients, elders, and disabled residents. Free software, no per-seat fees &mdash; the hardware is the whole cost.</p>
+      </div>
+      <div class="step">
+        <div class="k">Step 3</div>
+        <p>Fund ongoing training so staff can use the tools well &mdash; the revenue stream that keeps the free deployment self-sustaining.</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>WARDEN &middot; Local AI as public infrastructure</span>
+    <span>Free software &middot; Local hardware &middot; Public good</span>
+  </div>
+</footer>

@@ -264,6 +264,51 @@ systemctl --user daemon-reload
 systemctl --user enable --now warden 2>/dev/null || true
 loginctl enable-linger "$USER" 2>/dev/null || true
 
+# ── MARM semantic long-term recall (OPTIONAL — off by default) ────────
+# MARM (https://github.com/Lyellr88/marm-memory, by Lyellr88) gives the
+# orchestrator long-term semantic memory: the memory writeback mirrors every
+# distilled fact into it, and each incoming message auto-recalls the most
+# relevant memories into the orchestrator's prompt. Warden runs identically
+# without it — every MARM path is fail-open, and the shipped config leaves it
+# off so a fresh install never references a server that isn't there.
+#
+# To enable: install MARM, then uncomment the next line and re-run install.sh
+#   uv tool install marm-mcp-server
+# INSTALL_MARM=1
+if [ "${INSTALL_MARM:-0}" = "1" ]; then
+    if ! command -v marm-memory >/dev/null; then
+        echo "  ! INSTALL_MARM=1 but marm-memory not on PATH —"
+        echo "    run: uv tool install marm-mcp-server"
+    else
+        MARM_BIN="$(command -v marm-memory)"
+        cat > ~/.config/systemd/user/marm-memory.service <<MARMEOF
+[Unit]
+Description=MARM memory server (MCP over HTTP, 127.0.0.1:8001)
+Before=warden.service
+After=network.target
+
+[Service]
+ExecStart=${MARM_BIN} http
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+MARMEOF
+        # Wire it into Warden via a drop-in so the main unit stays stock
+        # (and so deleting this drop-in fully reverts the wiring).
+        mkdir -p ~/.config/systemd/user/warden.service.d
+        cat > ~/.config/systemd/user/warden.service.d/marm.conf <<'DROPEOF'
+[Unit]
+Wants=marm-memory.service
+After=marm-memory.service
+DROPEOF
+        systemctl --user daemon-reload
+        systemctl --user enable --now marm-memory 2>/dev/null || true
+        echo "  MARM memory server enabled on 127.0.0.1:8001 (starts with Warden)"
+    fi
+fi
+
 echo ""
 echo "  Done. Installed to $INSTALL_DIR"
 echo "  Dashboard: http://localhost:3200"
