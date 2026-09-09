@@ -3,7 +3,8 @@
 *.gguf
 Modelfile.*
 # - LoRA adapter + merged HF model (re-trained by run.sh, re-packable anytime)
-*-lora/
+*-lora/*
+!toolcall-lora/**
 *-lora-merged/
 # - training + dryfire logs
 *.log
