@@ -28,9 +28,11 @@ if [ ! -x "$PY" ]; then
   PY="$WORK/.venv-merge/bin/python"
   if [ ! -x "$PY" ]; then
     uv venv --python python3.12 "$WORK/.venv-merge"
-    uv pip install --python "$PY" \
-      --index-url https://download.pytorch.org/whl/cpu torch \
-      --index-url https://pypi.org/simple "transformers>=4.53,<5" "peft>=0.10" accelerate
+    # torch from the CPU wheel index (small download, no CUDA needed for a
+    # merge); everything else from PyPI. Two installs — uv takes only one
+    # --index-url per command.
+    uv pip install --python "$PY" --index-url https://download.pytorch.org/whl/cpu torch
+    uv pip install --python "$PY" "transformers>=4.53,<5" "peft>=0.10" accelerate
   fi
 fi
 
