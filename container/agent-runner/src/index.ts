@@ -3065,10 +3065,21 @@ async function runSubAgent(
         // Throttle the per-iteration progress status so a fast stream (~40 t/s)
         // doesn't emit a status line per token; emit every ~400ms while generating.
         let lastStatusAt = 0;
+        // Accumulate THIS iteration's streamed text so the throttled preview
+        // shows the output-so-far, not the fragment that happened to land on
+        // the tick. Slicing the current chunk emitted one word/character per
+        // status line, which flooded the progress ring (PROGRESS_MAX=40) and
+        // rendered as word-per-line in the Today feed's console. Tail of the
+        // accumulation = the newest words, so consecutive previews read as a
+        // growing transcript instead of unrelated fragments.
+        let iterContent = '';
+        let iterThinking = '';
         const onChunk = (chunk: any) => {
             resetSilence();
             const m = chunk?.message;
             if (!m) return;
+            if (m.thinking) iterThinking += String(m.thinking);
+            if (m.content) iterContent += String(m.content);
             // Accumulate a capped streaming transcript on the job record so
             // Oversight can show the live output / thinking / tool calls.
             if (job) {
@@ -3085,8 +3096,11 @@ async function runSubAgent(
             const now = Date.now();
             if (now - lastStatusAt > 400) {
                 lastStatusAt = now;
-                const preview = String(m.content || m.thinking || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-                if (preview) writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — ${m.thinking ? 'thinking' : 'generating'} ${preview}`, ts: now });
+                // Prefer content; fall back to thinking when the iteration
+                // has only reasoned so far. Whitespace-collapsed tail slice.
+                const acc = (iterContent || iterThinking).replace(/\s+/g, ' ').trim();
+                const preview = acc.slice(-60);
+                if (preview) writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — ${iterContent ? 'generating' : 'thinking'} ${preview}`, ts: now });
             }
         };
         try {
