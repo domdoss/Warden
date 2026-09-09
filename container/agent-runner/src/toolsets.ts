@@ -42,7 +42,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
-    agent:     { name: 'agent',     tools: ['atlas','vulkan','artemis','iris'], tier: 'public' },
+    agent:     { name: 'agent',     tools: ['atlas','vulkan','artemis','iris','sentry'], tier: 'public' },
 
     // Security tools — used by Oculus (the single background security agent) to
     // Oculus awareness tools — look at the live frame + log. Oculus is a SILENT
@@ -58,6 +58,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // here either: Oculus is silent by design.
     awareness:    { name: 'awareness',    tools: ['awareness_log','awareness_status'], tier: 'public' },
     'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
+
+    // Sentry — the software-security scanner (reborn 2026-09-08; the old webcam
+    // awareness job belongs to oculus above). Bash for the read-only scan
+    // commands (ss, ps, systemctl, crontab — all user-readable, NO elevated
+    // permissions anywhere) + sentry_report to submit the inventory once; the
+    // host does the baseline diff. Like awareness, a narrow toolset on purpose:
+    // a security scanner gets no fabric/MCP/web/browser tools.
+    'sentry-core': { name: 'sentry-core', tools: ['Bash', 'sentry_report'], tier: 'public' },
 
     // Byte was merged into iris (2026-09-05, one toolcall agent / one fine-tuned
     // model): iris-core below carries the work-management toolsets byte-core had.

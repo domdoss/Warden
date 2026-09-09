@@ -289,9 +289,9 @@ class WardenBridge:
             return True
         # Explicit delegation markers anywhere.
         markers = (
-            "using the available tools", "atlas:", "iris:", "dexter:", "byte:",
+            "using the available tools", "atlas:", "iris:",
             "artemis:", "sentry:", "the council", ", atlas", ", iris",
-            ", dexter", ", byte", ", artemis", ", sentry", ", council",
+            ", artemis", ", sentry", ", council",
         )
         if any(m in t for m in markers):
             return True

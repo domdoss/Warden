@@ -155,6 +155,80 @@ class _JsApi:
             logger.exception("warden_api proxy failed")
             return ""
 
+    def marm_api(self, path: str, body: str = "", session_id: str = "") -> str:
+        """Proxy a JSON-RPC request to the local MARM MCP server (127.0.0.1:8001).
+
+        The memory-galaxy iframe can't fetch() it directly (Qt WebEngine
+        blocks fetch() from file:// URLs), so it routes through this bridge —
+        same reason warden_api exists. The MCP client needs the response
+        headers (mcp-session-id for session continuity), so we return a JSON
+        envelope {"ok", "status", "headers", "body"} instead of a bare body.
+        Returns {"ok": false, "error": ..., "status": ...} on failure — the
+        page reads "status" to back off on 429 (MARM rate-limits bursts).
+        """
+        import json as _json
+        import urllib.error
+        import urllib.request
+        try:
+            base = "http://127.0.0.1:8001"
+            req = urllib.request.Request(base + (path or "/mcp"), data=body.encode() if body else None, method="POST")
+            req.add_header("Content-Type", "application/json")
+            # MCP streamable-HTTP: the server 406s without the SSE type.
+            req.add_header("Accept", "application/json, text/event-stream")
+            if session_id:
+                req.add_header("mcp-session-id", session_id)
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+                payload = resp.read().decode()
+                return _json.dumps({
+                    "ok": True,
+                    "status": resp.status,
+                    "headers": headers,
+                    "body": payload,
+                })
+        except urllib.error.HTTPError as exc:
+            # Rate limiting is expected under bursts — don't traceback-spam
+            # the console for it; one line is enough. The page backs off on
+            # the status code.
+            if exc.code == 429:
+                logger.debug("marm_api proxy: MARM rate-limited (429)")
+            else:
+                logger.exception("marm_api proxy failed (HTTP %s)", exc.code)
+            return _json.dumps({"ok": False, "error": f"HTTP {exc.code}", "status": exc.code})
+        except Exception as exc:  # noqa: BLE001 — report any transport failure to the page
+            logger.exception("marm_api proxy failed")
+            return _json.dumps({"ok": False, "error": str(exc)})
+
+    def open_memory_window(self, title: str = "", html: str = "") -> str:
+        """Open (or reuse) a small separate window with the given HTML —
+        the galaxy's node-details popup. Keeps ONE window: repeated clicks
+        swap the content instead of stacking windows. Returns
+        {"ok": true} / {"ok": false, "error": ...}; the page falls back to
+        its tiny in-page chip when this fails.
+        """
+        import json as _json
+        try:
+            win = getattr(self._owner, "_memory_detail_window", None)
+            if win is not None and not getattr(win, "destroyed", False):
+                win.load_html(html)
+                win.set_title(title or "Memory detail")
+                return _json.dumps({"ok": True, "reused": True})
+            win = webview.create_window(
+                title=title or "Memory detail",
+                html=html or "<html><body style='background:#020308'></body></html>",
+                width=440, height=600,
+                background_color="#020308",
+                frameless=True,   # no OS title bar/border — the doc draws its own hologram card
+                easy_drag=True,   # drag anywhere to move (the doc says so)
+                js_api=self,  # this _JsApi IS the bridge — the popup's ✕ needs close_memory_window
+            )
+            win.events.closed += lambda: setattr(self._owner, "_memory_detail_window", None)
+            self._owner._memory_detail_window = win
+            return _json.dumps({"ok": True, "reused": False})
+        except Exception as exc:  # noqa: BLE001 — page falls back to its chip
+            logger.exception("open_memory_window failed")
+            return _json.dumps({"ok": False, "error": str(exc)})
+
     def chat_send(self, text: str) -> str:
         """Send a text message to Jarvis. Returns the reply string (or "")."""
         try:
@@ -232,6 +306,21 @@ class _JsApi:
             self._owner.close()
         except Exception:
             logger.exception("close_window raised")
+
+    def close_memory_window(self) -> str:
+        """Close the galaxy's node-detail popup (frameless, so its own ✕
+        button calls this)."""
+        try:
+            win = getattr(self._owner, "_memory_detail_window", None)
+            if win is not None:
+                try:
+                    win.destroy()
+                except Exception:
+                    logger.exception("close_memory_window: destroy failed")
+            return json.dumps({"ok": True})
+        except Exception as e:
+            logger.exception("close_memory_window failed")
+            return json.dumps({"ok": False, "error": str(e)})
 
     def http_get(self, url: str) -> str:
         """GET an external https URL and return the body string.

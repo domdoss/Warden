@@ -49,6 +49,7 @@ export interface AgentInput {
   // from its router_state key; the agent-runner uses it directly and errors if empty.
   irisModel?: string;
   artemisModel?: string;
+  sentryModel?: string;
   drivingForce?: string;        // orchestrator preamble preset id (data/driving-forces/)
   contextClearAt?: string;      // ISO timestamp; orchestrator history before this is dropped
   councilSkepticModel?: string;     // Council Skeptic seat model (optional, falls back to model)

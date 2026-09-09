@@ -1479,6 +1479,10 @@ function handleSettings(res: http.ServerResponse): void {
     // Iris (the single toolcall agent) runs on the dashboard "Toolcall model" row.
     irisModel: toolcallModel,
     artemisModel: getRouterState('artemis:model') || '',
+    // Sentry has its own model wire (sentry:model) — report the real
+    // configured value, inheriting the ORCHESTRATOR model for display when
+    // blank (the runner falls back the same way).
+    sentryModel: getRouterState('sentry:model') || getRouterState('orchestrator:model'),
     drivingForce: getRouterState('orchestrator:driving_force') || '',
     drivingForces,
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
@@ -1520,6 +1524,9 @@ function handleSettings(res: http.ServerResponse): void {
     irisCtx: toolcallCtx,
     artemisCtx: getRouterState('local:artemis_ctx') || '',
     vulkanCtx: getRouterState('local:vulkan_ctx') || '',
+    // Sentry ctx: real per-agent key (local:sentry_ctx), inheriting the
+    // orchestrator ctx for display (the runner falls back the same way).
+    sentryCtx: getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx'),
     // Mercury and Oculus ctx: real per-agent key, falling back to the shared
     // toolcall ctx for display so the dropdown shows the effective value (the
     // runner falls back the same way until a per-agent ctx is saved).
@@ -1605,6 +1612,11 @@ async function handleSettingsSave(
   }
   if (body.artemisModel !== undefined) {
     setRouterState('artemis:model', String(body.artemisModel || ''));
+  }
+  if (body.sentryModel !== undefined) {
+    // Sentry has its own model wire (sentry:model) — saving here changes
+    // only Sentry, not the shared Toolcall model.
+    setRouterState('sentry:model', String(body.sentryModel || ''));
   }
   if (body.drivingForce !== undefined) {
     const newForce = String(body.drivingForce || '');
@@ -1744,6 +1756,10 @@ async function handleSettingsSave(
   if (body.oculusCtx !== undefined) {
     setRouterState('local:oculus_ctx', String(body.oculusCtx || ''));
   }
+  if (body.sentryCtx !== undefined) {
+    // Sentry ctx is its own wire (local:sentry_ctx).
+    setRouterState('local:sentry_ctx', String(body.sentryCtx || ''));
+  }
   if (body.mercuryMode !== undefined) {
     setRouterState('mercury:mode', String(body.mercuryMode || 'full'));
   }
@@ -1774,8 +1790,10 @@ async function handleSettingsSave(
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
     body.atlasModel !== undefined || body.vulkanModel !== undefined || body.supervisorModel !== undefined || body.drivingForce !== undefined ||
     body.irisModel !== undefined || body.artemisModel !== undefined ||
+    body.sentryModel !== undefined ||
     body.irisCtx !== undefined || body.artemisCtx !== undefined ||
     body.vulkanCtx !== undefined || body.oculusCtx !== undefined ||
+    body.sentryCtx !== undefined ||
     body.councilSkepticModel !== undefined ||
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
     body.oculusModel !== undefined ||

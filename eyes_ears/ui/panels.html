@@ -124,8 +124,11 @@
   <div class="frame-host" style="width:380px;height:540px">
     <iframe id="chat" data-src="chat.html"></iframe>
   </div>
+  <!-- Center slot: the memory galaxy (replaced the old hologram — the
+       standalone hologram window keeps jarvis.html). id stays "hologram"
+       so the widget toggle and host state wiring keep matching. -->
   <div class="frame-host" style="width:340px;height:540px;background:rgba(0,0,0,0.9)">
-    <iframe id="hologram" data-src="jarvis.html"></iframe>
+    <iframe id="hologram" data-src="memory-galaxy.html" allowfullscreen></iframe>
   </div>
   <div class="frame-host" style="width:380px;height:540px">
     <iframe id="tasks" data-src="tasks.html"></iframe>
@@ -153,7 +156,7 @@
     <div class="widget-toggle on" data-widget="agents"><span class="wname">Agents</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="digest"><span class="wname">Digest</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="chat"><span class="wname">Direct Line</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="hologram"><span class="wname">Hologram</span><span class="switch"></span></div>
+    <div class="widget-toggle on" data-widget="hologram"><span class="wname">Galaxy</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="tasks"><span class="wname">Ops</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="upload"><span class="wname">Upload</span><span class="switch"></span></div>
     <div class="widget-toggle on" data-widget="today"><span class="wname">Ambient Strip</span><span class="switch"></span></div>
@@ -240,7 +243,13 @@
   // announces it has bound `window.jarvis` (hologram_ready).
   var _holoReady = false, _holoQ = [];
   function holoBroadcast(msg){
-    if(!_holoReady){ _holoQ.push(msg); return; }
+    if(!_holoReady){
+      // The center slot now hosts the galaxy, which never announces
+      // hologram_ready — cap the queue so the host's state stream can't
+      // grow unbounded. (The standalone hologram window isn't affected.)
+      if(_holoQ.length < 100) _holoQ.push(msg);
+      return;
+    }
     var f = document.getElementById('hologram');
     if(!f || !f.contentWindow) return;
     try { f.contentWindow.postMessage(Object.assign({__pm:true}, msg), '*'); } catch(e){}

@@ -1,0 +1,1748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Memory Galaxy — Concept Constellation</title>
+<style>
+  :root {
+    --glass: rgba(8, 12, 28, 0.62);
+    --glass-border: rgba(160, 190, 255, 0.22);
+    --text: rgba(236, 242, 255, 0.94);
+    --text-dim: rgba(150, 175, 220, 0.58);
+    --accent: #9ad8ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%; overflow: hidden; background: #020308; color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  #scene { position: fixed; inset: 0; }
+  .panel {
+    position: fixed; z-index: 10;
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .search { top: 22px; left: 22px; width: 310px; padding: 12px; }
+  .search input {
+    width: 100%; background: transparent; border: none; outline: none; color: var(--text);
+    font-size: 14px; padding: 8px 6px;
+  }
+  .search input::placeholder { color: var(--text-dim); }
+  #results { margin-top: 8px; max-height: 260px; overflow-y: auto; display: none; }
+  #results .row {
+    padding: 8px 10px; border-radius: 9px; cursor: pointer; font-size: 13px;
+    display: flex; justify-content: space-between; gap: 10px;
+  }
+  #results .row:hover { background: rgba(140, 180, 255, 0.14); }
+  #results .row .deg { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  /* Compact chip — the FULL details open in a separate popup window
+     (openDetailWindow); this stays behind as a tiny anchor/fallback for
+     when a separate window can't open. */
+  .node-panel {
+    top: 12px; right: 12px; width: 195px; max-width: calc(100% - 24px);
+    max-height: calc(100% - 24px); overflow-y: auto; padding: 10px 30px 8px 10px; display: none;
+  }
+  .node-panel h2 { font-size: 13px; font-weight: 600; margin-bottom: 4px; letter-spacing: 0.2px; word-break: break-word; }
+  .node-panel .mini { font-size: 10px; color: var(--text-dim); margin-bottom: 6px; }
+  .node-panel h3 {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 1.1px;
+    color: var(--text-dim); margin: 8px 0 4px;
+  }
+  .np-open {
+    margin-top: 8px; padding: 5px 8px; border-radius: 7px; cursor: pointer;
+    font-size: 10px; color: var(--accent); background: rgba(0, 255, 255, 0.06);
+    border: 1px solid rgba(0, 255, 255, 0.2); text-align: center;
+  }
+  .np-open:hover { background: rgba(0, 255, 255, 0.14); }
+  .conn {
+    display: flex; justify-content: space-between; padding: 4px 6px;
+    border-radius: 6px; cursor: pointer; font-size: 11px;
+  }
+  .conn:hover { background: rgba(140, 180, 255, 0.11); }
+  .conn .w { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 10px; }
+  .close-btn {
+    position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(255,255,255,0.08); border: none; color: var(--text);
+    cursor: pointer; font-size: 15px; line-height: 1;
+  }
+  .close-btn:hover { background: rgba(255,255,255,0.16); }
+  .hint {
+    bottom: 18px; left: 50%; transform: translateX(-50%);
+    padding: 9px 18px; font-size: 12px; color: var(--text-dim); pointer-events: none;
+    letter-spacing: 0.3px;
+    transition: opacity 1.2s ease;
+  }
+  .hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+  <div id="scene"></div>
+
+  <div class="panel search">
+    <input id="search" type="text" placeholder="Search concepts…" autocomplete="off" />
+    <div id="results"></div>
+  </div>
+
+  <div class="panel node-panel" id="nodePanel">
+    <button class="close-btn" id="closePanel" title="Close">×</button>
+    <h2 id="npName"></h2>
+    <div class="mini" id="npMini"></div>
+    <h3>Top connections</h3>
+    <div id="npConns"></div>
+    <div class="np-open" id="npOpen" title="Open full details in a separate window">⧉ Open in window</div>
+  </div>
+
+  <div class="panel hint" id="hint">Drift the galaxy — hover to trace · click to focus · search to fly</div>
+  <script>
+    // The hint is only useful for the first look — fade it out after 10s.
+    setTimeout(() => {
+      const h = document.getElementById('hint');
+      if (h) { h.classList.add('gone'); setTimeout(() => h.remove(), 1500); }
+    }, 10000);
+  </script>
+
+  <!-- Fullscreen expand — usable in the small center slot AND standalone.
+       Inside the panels.html iframe this needs allowfullscreen (set on the
+       iframe); standalone it's just the page itself. -->
+  <div id="fsBtn" title="Fullscreen" style="
+    position:fixed; right:14px; bottom:14px; z-index:1000;
+    padding:6px 12px; border-radius:8px; cursor:pointer; user-select:none;
+    font-size:11px; letter-spacing:1.5px; text-transform:uppercase;
+    color:rgba(0,255,255,0.55); background:rgba(0,10,20,0.55);
+    border:1px solid rgba(0,255,255,0.25);
+    transition:color .15s, border-color .15s, background .15s;
+  " onmouseover="this.style.color='#00ffff';this.style.borderColor='rgba(0,255,255,0.6)'" onmouseout="this.style.color='rgba(0,255,255,0.55)';this.style.borderColor='rgba(0,255,255,0.25)'">⛶ Expand</div>
+  <script>
+    (function(){
+      var btn = document.getElementById('fsBtn');
+      btn.addEventListener('click', function(){
+        if (document.fullscreenElement) { document.exitFullscreen(); return; }
+        document.documentElement.requestFullscreen().catch(function(){});
+      });
+    })();
+  </script>
+
+  <div id="bootError" style="
+    display:none; position:fixed; inset:0; z-index:9999;
+    background:#020308; color:#e8f0ff; font-family:system-ui,sans-serif;
+    padding:40px; overflow:auto; white-space:pre-wrap; font-size:14px; line-height:1.5;
+  "></div>
+
+  <script>
+    window.addEventListener('error', function(e) {
+      var el = document.getElementById('bootError');
+      if (!el) return;
+      el.style.display = 'block';
+      el.textContent += '[error] ' + (e.message || e) + '\n  at ' + (e.filename||'') + ':' + (e.lineno||'') + '\n\n';
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      var el = document.getElementById('bootError');
+      if (!el) return;
+      el.style.display = 'block';
+      el.textContent += '[rejection] ' + (e.reason && e.reason.message ? e.reason.message : e.reason) + '\n\n';
+    });
+  </script>
+
+  <script src="./marm-memory-map/bundle.js"></script>
+  <script>
+    // ── iframe postMessage bridge shim (same pattern as the other panels;
+    //    see chat.html / agents.html for the full note) ──
+    // pywebview injects window.pywebview.api only into the top-level window.
+    // When this page runs as an iframe inside panels.html, file:// origins
+    // are cross-origin, so the host can't assign onto our window — instead
+    // every api call is postMessaged up and dispatched on the real bridge.
+    // The MARM client below uses window.pywebview.api.marm_api to reach the
+    // MCP server through the Python-side proxy when embedded; standalone
+    // (opened directly in a browser) window.pywebview stays undefined and
+    // the direct-fetch path runs instead.
+    if (!window.pywebview && window.parent && window.parent !== window) {
+      var _pmPending = {};
+      window.addEventListener('message', function(ev) {
+        var d = ev.data;
+        if (!d || !d.__pm || !d.id || !_pmPending[d.id]) return;
+        var p = _pmPending[d.id]; delete _pmPending[d.id]; clearTimeout(p.timer);
+        if (d.error) p.reject(new Error(d.error)); else p.resolve(d.result);
+      });
+      window.pywebview = { api: new Proxy({}, {
+        get: function(_, method) {
+          return function() {
+            var args = Array.prototype.slice.call(arguments);
+            return new Promise(function(resolve, reject) {
+              var id = 'mg-' + Math.random().toString(36).slice(2);
+              var timer = setTimeout(function() {
+                delete _pmPending[id]; reject(new Error('bridge timeout: ' + method));
+              }, 30000);
+              _pmPending[id] = { resolve: resolve, reject: reject, timer: timer };
+              window.parent.postMessage({ __pm: true, id: id, method: method, args: args }, '*');
+            });
+          };
+        }
+      }) };
+    }
+  </script>
+  <script>
+    // THREE, EffectComposer, RenderPass, UnrealBloomPass, OutputPass,
+    // OrbitControls and RoomEnvironment are globals from bundle.js
+    (async function () {
+
+    if (typeof THREE === 'undefined') {
+      var el = document.getElementById('bootError');
+      el.style.display = 'block';
+      el.textContent = 'THREE is not defined.\n\nbundle.js failed to load.\n\nRequired structure:\n\n  memory-galaxy.html\n  marm-memory-map/\n    └── bundle.js\n\nOpen the HTML from the same folder that contains the marm-memory-map directory.';
+      return;
+    }
+    if (typeof EffectComposer === 'undefined' || typeof OrbitControls === 'undefined' || typeof RoomEnvironment === 'undefined') {
+      var el = document.getElementById('bootError');
+      el.style.display = 'block';
+      el.textContent = 'Three.js addons missing.\nEffectComposer / OrbitControls / RoomEnvironment not found on window.\nThe bundle may be incomplete or failed to execute.';
+      return;
+    }
+
+    // ---------- Demo dataset ----------
+    const CONCEPTS = [
+      "Neural Networks","Deep Learning","Transformers","Attention","Embeddings","Latent Space",
+      "Memory","Context","Retrieval","Augmented Generation","Knowledge Graphs","Ontologies",
+      "Agents","Tool Use","Reasoning","Planning","World Models","Reinforcement Learning",
+      "Recommender Systems","Recommendations","Forecasting","Time Series","Anomaly Detection",
+      "Clustering","Classification","Regression","Generative AI","Diffusion Models","Vision",
+      "Speech","Multimodal","Fine-tuning","RLHF","Alignment","Safety","Interpretability",
+      "Sparse Models","MoE","Quantization","Inference","Serving","Edge Devices","Batching",
+      "Distributed Training","Gradient","Optimizers","Regularization","Batch Norm","Dropout",
+      "Loss Function","Backpropagation","Convolution","Pooling","Pooling2D","Sequence Models",
+      "RNN","LSTM","GRU","Cyclical Data","Seasonality","Trend","Decomposition","Smoothing",
+      "Kalman Filter","Particle Filter","State Estimation","Control Systems","Feedback",
+      "Optimization","Combinatorics","Search","Scheduling","Routing","Logistics","Supply Chain",
+      "Inventory","Demand","Pricing","Bidding","Auctions","Game Theory","Nash Equilibrium",
+      "Bandits","Exploration","Exploitation","Regret","Multi-armed","Reward Shaping",
+      "Curiosity","Intrinsic Motivation","Goal Setting","Curriculum Learning","Self Play",
+      "Alpha Zero","Monte Carlo","Tree Search","Rollout","Simulation","Physics Engines",
+      "Robotics","Locomotion","Grasping","Manipulation","Perception","SLAM","Mapping",
+      "Localization","Odometry","Sensors","LiDAR","Radar","Cameras","Calibration","Depth",
+      "Segmentation","Detection","Tracking","Pose Estimation","Skeletal","Motion Capture",
+      "Human Motion","Gait","Biomechanics","Physiology","Cognition","Perception-Cognition",
+      "Memory Consolidation","Sleep","Dreaming","Synaptic Plasticity","Hebbian Learning",
+      "STDP","Dendrites","Axons","Neurotransmitters","Dopamine","Serotonin","Neuromodulation",
+      "Cortical Layers","Hippocampus","Prefrontal","Amygdala","Thalamus","Cerebellum",
+      "Spinal Cord","Reflexes","Proprioception","Vestibular","Balance","Coordination",
+      "Motor Learning","Skill Acquisition","Transfer Learning","Meta Learning","Few-shot",
+      "Zero-shot","In-context Learning","Prompting","Chain of Thought","Tree of Thought",
+      "Graph of Thought","ReAct","Reflexion","Self-critique","Planning Horizon","Lookahead"
+    ];
+
+    // Deterministic RNG
+    let seed = 1337;
+    function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+    // ---------- Label cosmetics ----------
+    // Node titles should read like proper nouns, not raw extractor output.
+    // MARM's NER emits lowercase fragments ("granite", "network manager"),
+    // stray wrapping quotes and trailing punctuation. Strip the noise, then
+    // title-case fully-lowercase names — short vowel-starved tokens go CAPS
+    // (iwd → IWD, mcp → MCP, but linux → Linux). Idempotent, so cached and
+    // fresh labels both converge to the same rendering.
+    const SMALL_WORDS = new Set(['a', 'an', 'the', 'of', 'in', 'on', 'at', 'by',
+      'for', 'to', 'and', 'or', 'vs', 'with', 'from', 'into', 'over', 'under']);
+    function prettyLabel(raw) {
+      let l = String(raw == null ? '' : raw)
+        .replace(/\s+/g, ' ')
+        .replace(/^[\s"'`]+/, '')
+        .replace(/[\s"'`]+$/, '')
+        .replace(/[\s:,;.]+$/, '')
+        .trim();
+      if (!l) return '';
+      if (l === l.toLowerCase() && /[a-z]/.test(l)) {
+        if (!l.includes(' ') && l.length <= 5 && (l.match(/[aeiouy]/g) || []).length <= 1) {
+          return l.toUpperCase();
+        }
+        return l.split(' ').map((w, i) =>
+          SMALL_WORDS.has(w) && i > 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)
+        ).join(' ');
+      }
+      return l;
+    }
+
+    function demoGraph() {
+      const labels = CONCEPTS;
+      const n = labels.length;
+      const edgeSet = new Set();
+      const adj = Array.from({length: n}, () => []);
+      function edgeKey(a,b){ return a < b ? a + "-" + b : b + "-" + a; }
+      for (let i = 0; i < n; i++) {
+        const deg = 2 + Math.floor(rnd() * 3);
+        for (let k = 0; k < deg; k++) {
+          let j;
+          if (rnd() < 0.6) {
+            const offset = 1 + Math.floor(rnd() * 8);
+            j = (i + (rnd() < 0.5 ? offset : -offset) + n) % n;
+          } else {
+            j = Math.floor(rnd() * n);
+          }
+          if (j === i) continue;
+          const kk = edgeKey(i, j);
+          if (edgeSet.has(kk)) continue;
+          edgeSet.add(kk);
+          const weight = 0.15 + rnd() * 0.85;
+          adj[i].push({ j, weight });
+          adj[j].push({ j: i, weight });
+        }
+      }
+      const mentions = adj.map((_, i) =>
+        Math.round(20 + adj[i].length * (30 + rnd() * 80) + rnd() * 200));
+      return { labels, mentions, adj };
+    }
+
+    // Live feed from MARM (falls back to demo).
+    // MARM is a FastAPI MCP server — JSON-RPC over HTTP at /mcp:
+    //   initialize (yields an Mcp-Session-Id response header)
+    //   → tools/call marm_concept_recall / marm_smart_recall
+    // The concept graph (entities + relationships extracted from stored
+    // memories) is queried with a few broad probes, then one probe per
+    // discovered entity name. Edges are reconstructed only from facts the
+    // API actually walked: direct neighbours of single-label matches and
+    // consecutive nodes on traversal paths.
+    const MARM_BASE = 'http://127.0.0.1:8001';
+    const MARM_TIMEOUT_MS = 8000;
+
+    const mcp = {
+      session: null,
+      nextId: 1,
+      // MARM rate-limits (80 req/min). The old code burst probes in parallel
+      // (Promise.all batches of 8) and tripped 429 storms through the Python
+      // proxy. Serialize every RPC with spacing instead; stretch the gap
+      // whenever a 429 comes back so the client cools down instead of
+      // hammering.
+      rpcChain: null,
+      rpcGapMs: 750,
+      lastRpcAt: 0,
+      rpc(method, params, opts) {
+        if (!this.rpcChain) this.rpcChain = Promise.resolve();
+        const call = () => {
+          const wait = Math.max(0, this.lastRpcAt + this.rpcGapMs - Date.now());
+          return new Promise(res => setTimeout(res, wait)).then(() => {
+            this.lastRpcAt = Date.now();
+            return this._rpcRaw(method, params, opts).catch(err => {
+              if (/\b429\b/.test(String(err && err.message))) {
+                this.rpcGapMs = Math.min(4000, Math.round(this.rpcGapMs * 1.5));
+              }
+              throw err;
+            });
+          });
+        };
+        const next = this.rpcChain.then(call, call);
+        this.rpcChain = next.catch(() => {});
+        return next;
+      },
+      async _rpcRaw(method, params, opts) {
+        const msg = { jsonrpc: '2.0', method, params };
+        if (!(opts && opts.notify)) msg.id = this.nextId++;
+        // Embedded in the Qt WebEngine voice window: fetch() from a file://
+        // iframe to 127.0.0.1:8001 is blocked, so route through the host's
+        // marm_api proxy (jarvis_window.py, reached via the panels.html
+        // postMessage bridge). The proxy returns the envelope
+        // {"ok","status","headers","body"} — the MCP client needs the
+        // mcp-session-id response header for session continuity, so it
+        // can't use the bare warden_api-style body-only proxy.
+        if (window.pywebview && window.pywebview.api &&
+            typeof window.pywebview.api.marm_api === 'function') {
+          const raw = await window.pywebview.api.marm_api(
+            '/mcp', JSON.stringify(msg), this.session || '');
+          const env = JSON.parse(raw);
+          if (!env || !env.ok) throw new Error('MARM proxy: ' + ((env && env.error) || 'unreachable'));
+          if (env.status !== 200 && env.status !== 202) throw new Error('MARM /mcp HTTP ' + env.status);
+          const sid = env.headers && env.headers['mcp-session-id'];
+          if (sid) this.session = sid;
+          const body = env.body ? JSON.parse(env.body) : null;  // notifications: 202 + empty body
+          if (body && body.error) throw new Error('MCP ' + method + ': ' + (body.error.message || 'rpc error'));
+          return body ? body.result : null;
+        }
+        // Standalone browser — direct fetch.
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), MARM_TIMEOUT_MS);
+        try {
+          const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream'
+          };
+          if (this.session) headers['mcp-session-id'] = this.session;
+          const r = await fetch(MARM_BASE + '/mcp', {
+            method: 'POST', headers,
+            body: JSON.stringify(msg), signal: ctrl.signal
+          });
+          if (!r.ok) throw new Error('MARM /mcp HTTP ' + r.status);
+          const sid = r.headers.get('mcp-session-id');
+          if (sid) this.session = sid;
+          const text = await r.text();      // notifications return 202 + empty body
+          const body = text ? JSON.parse(text) : null;
+          if (body && body.error) throw new Error('MCP ' + method + ': ' + (body.error.message || 'rpc error'));
+          return body ? body.result : null;
+        } finally { clearTimeout(timer); }
+      },
+      async connect() {
+        await this.rpc('initialize', {
+          protocolVersion: '2025-03-26', capabilities: {},
+          clientInfo: { name: 'memory-galaxy', version: '1.0' }
+        });
+        try { await this.rpc('notifications/initialized', {}, { notify: true }); }
+        catch (e) { /* courtesy notification only */ }
+      },
+      async tool(name, args) {
+        const result = await this.rpc('tools/call', { name, arguments: args });
+        if (!result) throw new Error(name + ': empty result');
+        if (result.isError) throw new Error(name + ' returned an error');
+        const text = (result.content || []).map(c => c && c.text).filter(Boolean).join('\n');
+        if (!text) throw new Error(name + ': no content');
+        return JSON.parse(text);
+      },
+      async conceptRecall(query) {
+        const attempt = () => this.tool('marm_concept_recall', {
+          query, limit: 40, depth: 2, direction: 'both'
+        });
+        let recall;
+        try {
+          recall = await attempt();
+        } catch (e) {
+          // One gentle retry — a 429 here means the paced queue's gap is
+          // still too tight; the rpc() cool-down stretches it for next time.
+          await new Promise(res => setTimeout(res, 3000));
+          recall = await attempt();
+        }
+        return (recall && recall.status === 'available') ? recall : null;
+      }
+    };
+
+    async function marmGraph() {
+      await mcp.connect();
+
+      const nodeInfo = new Map();     // label -> { type }
+      const entMentions = new Map();  // entity id -> { label, mentions } (ids are stable)
+      const edgeObs = new Map();       // "ab" -> observation count
+      const MAX_NODES = 96;
+      const MAX_PROBES = 48;
+      const deadline = Date.now() + 20000;
+
+      // MARM's concept extractor keeps HTML entities from the source text
+      // (&quot;, &amp;, …), which then render literally in node labels and
+      // the detail popup. Unescape them here so every label is clean text
+      // (&amp; LAST so it can't double-decode into a fresh entity).
+      const norm = s => prettyLabel(String(s == null ? '' : s)
+        .replace(/&quot;|&ldquo;|&rdquo;/g, '"')
+        .replace(/&apos;|&lsquo;|&rsquo;/g, "'")
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+        // NER noun phrases come article-led ("the 2.4GHz band"); a node
+        // title reads better without the leading article.
+        .replace(/^(the|a|an)\s+/i, ''));
+      function addNode(label, type) {
+        // Structural floor only — junk filtering lives in MARM's ingest gate.
+        // A label with no letters is never a concept ("700", "2026-09-08").
+        if (!label || !/[a-z]/i.test(label)) return;
+        const info = nodeInfo.get(label) || { type: type || null };
+        if (type) info.type = type;
+        nodeInfo.set(label, info);
+      }
+      function addEdge(a, b) {
+        if (!a || !b || a === b) return;
+        const key = a < b ? a + '' + b : b + '' + a;
+        edgeObs.set(key, (edgeObs.get(key) || 0) + 1);
+      }
+      function absorbRecall(recall) {
+        if (!recall) return;
+        const ents = recall.entities || [];
+        const rels = recall.related_entities || [];
+        const seedLabels = new Set();
+        ents.forEach(en => {
+          const label = norm(en && en.name);
+          if (!label) return;
+          addNode(label, en.type);
+          if (en.id != null) entMentions.set(en.id, {
+            label,
+            mentions: Math.max(0, Math.round(Number(en.mention_count) || 0))
+          });
+          seedLabels.add(label);
+        });
+        // marm_concept_recall seeds a LIKE '%query%' match: hop-1 neighbours
+        // only attribute cleanly when every matched seed bears one label.
+        const singleSeed = seedLabels.size === 1 ? [...seedLabels][0] : null;
+        rels.forEach(it => {
+          const path = (Array.isArray(it && it.path) ? it.path : [])
+            .map(p => norm(p && p.name)).filter(Boolean);
+          for (let i = 0; i + 1 < path.length; i++) addEdge(path[i], path[i + 1]);
+          const label = norm(it && it.name);
+          if (!label) return;
+          addNode(label, it.type);
+          if (singleSeed && path.length) addEdge(singleSeed, path[0]);
+        });
+      }
+
+      // Phase 1 — discovery: broad letter probes (entity names rarely avoid
+      // every common character) plus a semantic sweep whose graph context is
+      // seeded from the matched memories. Names that dodge both still surface
+      // as neighbours of what did match and get their own probe in phase 2.
+      const letters = ['a', 'e', 'i', 'o', 'n', 'r'];
+      const found = await Promise.all(
+        letters.map(q => mcp.conceptRecall(q).catch(() => null))
+      );
+      found.forEach(absorbRecall);
+      try {
+        const smart = await mcp.tool('marm_smart_recall', {
+          query: 'memory', search_all: true, limit: 20, detail: 1
+        });
+        const gc = smart && smart.graph_context;
+        if (gc && gc.status === 'available') absorbRecall(gc);
+      } catch (e) { /* semantic sweep is a bonus source */ }
+
+      // Phase 2 — one probe per discovered label for clean edges + counts.
+      // Probe the most connected labels first so a probe-budget cut still
+      // covers the graph's hubs.
+      const edgeCount = new Map();
+      edgeObs.forEach((count, key) => {
+        const sep = key.indexOf('');
+        const a = key.slice(0, sep), b = key.slice(sep + 1);
+        edgeCount.set(a, (edgeCount.get(a) || 0) + 1);
+        edgeCount.set(b, (edgeCount.get(b) || 0) + 1);
+      });
+      const names = [...nodeInfo.keys()]
+        .sort((a, b) => (edgeCount.get(b) || 0) - (edgeCount.get(a) || 0))
+        .slice(0, MAX_PROBES);
+      for (let i = 0; i < names.length; i += 8) {
+        if (Date.now() > deadline) break;
+        const batch = names.slice(i, i + 8);
+        const results = await Promise.all(
+          batch.map(q => mcp.conceptRecall(q).catch(() => null))
+        );
+        results.forEach(absorbRecall);
+      }
+
+      // Assemble the visual graph.
+      const labels = [...nodeInfo.keys()].slice(0, MAX_NODES);
+      if (labels.length < 2) throw new Error('MARM concept graph has no nodes');
+      const idx = new Map(labels.map((l, i) => [l, i]));
+      const mentionByLabel = new Map();
+      entMentions.forEach(m => {
+        mentionByLabel.set(m.label, (mentionByLabel.get(m.label) || 0) + m.mentions);
+      });
+      const mentions = labels.map(l => Math.max(0, mentionByLabel.get(l) | 0));
+      const adj = labels.map(() => []);
+      edgeObs.forEach((count, key) => {
+        const sep = key.indexOf('');
+        const a = idx.get(key.slice(0, sep));
+        const b = idx.get(key.slice(sep + 1));
+        if (a == null || b == null) return;
+        const w = Math.min(1, 0.4 + 0.12 * Math.max(0, count - 1));
+        adj[a].push({ j: b, weight: w });
+        adj[b].push({ j: a, weight: w });
+      });
+      console.info('[galaxy] MARM live data — ' + labels.length + ' concepts, ' +
+        adj.reduce((s, l) => s + l.length, 0) / 2 + ' relationships');
+      return { labels, mentions, adj };
+    }
+
+    let graph, galaxySource = 'demo';
+    // Local page, local data — no cache, ever. The graph is built live from
+    // MARM on every load (~40s of paced probes); if MARM is unreachable the
+    // demo sky renders instead.
+    try {
+      graph = await marmGraph(); galaxySource = 'marm';
+    } catch (e) {
+      console.info('[galaxy] MARM unavailable (' + (e && e.message || e) + ') — using demo data');
+      graph = demoGraph();
+    }
+    // Debug handle (matches the window.memoryMap convention below).
+    window.__galaxyGraph = { source: galaxySource, labels: graph.labels, mentions: graph.mentions };
+
+    const N = graph.labels.length;
+    const adj = graph.adj;
+
+    // Central nucleus
+    const NU = N;
+    adj.push([]);
+    const spokes = Array.from({ length: N }, (_, i) => i)
+      .sort((a, b) => adj[b].length - adj[a].length)
+      .slice(0, 14);
+    spokes.forEach((t) => {
+      const weight = 0.85 + rnd() * 0.15;
+      adj[t].push({ j: NU, weight });
+      adj[NU].push({ j: t, weight });
+    });
+
+    const nodes = graph.labels.map((label, i) => ({
+      id: i, label: prettyLabel(label),
+      degree: adj[i].length,
+      mention_count: graph.mentions[i]
+    }));
+    nodes.push({ id: NU, label: "Memory Nucleus", degree: spokes.length, mention_count: 4096 });
+
+    // ---------- Dormant slots ----------
+    // The map opens DENSE: unformed node slots are sprinkled across every
+    // topic cluster, so the galaxy reads as a living system at any memory
+    // size instead of a thin sprinkle in a void. When MARM learns a new
+    // concept, a dormant slot lights up into a real star right where it
+    // sits (then glides into its topic cluster on the next shuffle); a
+    // concept that vanishes demotes its star back to dormant. applyGraph()
+    // below claims and frees these slots.
+    const MIN_TOTAL = 96;        // live + dormant floor at boot
+    const GROWTH_HEADROOM = 24;  // spare slots kept free above the floor
+    const nDorm = Math.max(GROWTH_HEADROOM, MIN_TOTAL - nodes.length);
+    for (let d = 0; d < nDorm; d++) {
+      adj.push([]);
+      nodes.push({ id: nodes.length, label: '', degree: 0, mention_count: 0, dormant: true });
+    }
+
+    // Topic anchors — Fibonacci-sphere directions so the little groups stay
+    // evenly spaced in ALL directions (no shared axes, no crowded ecliptic),
+    // and close to the nucleus so the whole volume reads as one dense galaxy
+    // instead of a mostly-empty shell with distant sprinkle.
+    const TOPIC_ANCHORS = (() => {
+      const M = 8, ga = Math.PI * (3 - Math.sqrt(5));
+      const anchors = [];
+      for (let k = 0; k < M; k++) {
+        const y = 1 - (2 * k + 1) / M;
+        const r = Math.sqrt(Math.max(0, 1 - y * y));
+        const th = ga * k;
+        anchors.push(new THREE.Vector3(Math.cos(th) * r, y, Math.sin(th) * r)
+          .normalize().multiplyScalar(k % 2 ? 54 : 48));
+      }
+      return anchors;
+    })();
+
+    // No keyword→topic matcher: the old demo-era lists were a manually
+    // curated topic list that would rot the first time a real memory
+    // arrived. Topic structure lives in MARM's concept graph (topic nodes
+    // + similarity edges); placement just spreads nodes across the anchors.
+    function topicOf(label, idx) {
+      return idx % TOPIC_ANCHORS.length;
+    }
+
+    // shSeed 0 = the boot arrangement; each auto-shuffle bumps it so a group
+    // keeps its members (topicOf IS the auto-grouping — a new concept lands
+    // in its topic's cluster automatically) but trades anchor spots and
+    // re-deals positions inside the cluster.
+    function position(i, shSeed) {
+      const label = nodes[i].label;
+      const topic = topicOf(label, i);
+      const anchor = TOPIC_ANCHORS[(topic + shSeed) % TOPIC_ANCHORS.length];
+      const golden = (1 + Math.sqrt(5)) / 2;
+      const t = (((i * 7 + shSeed * 31) % N) + 0.5) / N;
+      const inclination = Math.acos(1 - 2 * t);
+      const azimuth = 2 * Math.PI * (t * golden + shSeed * 0.38);
+      // sqrt bias fills the cluster BALL (points inside, not on a shell) so
+      // each little group is a chunky, distinct blob, not a thin sprinkle.
+      const R = 20 * Math.sqrt(rnd());
+      const x = R * Math.sin(inclination) * Math.cos(azimuth);
+      const y = R * Math.cos(inclination) * 0.85;
+      const z = R * Math.sin(inclination) * Math.sin(azimuth);
+      return anchor.clone().add(new THREE.Vector3(
+        x + (rnd() - 0.5) * 8,
+        y + (rnd() - 0.5) * 8,
+        z + (rnd() - 0.5) * 8
+      ));
+    }
+    const positions = nodes.map((_, i) => position(i, 0));
+    positions[NU] = new THREE.Vector3(0, 0, 0);
+
+    // ---------- Auto-shuffle ----------
+    // The memory map is a living system — new concepts appear, new connections
+    // get made — so instead of one frozen arrangement drifting into dead
+    // empty space, the whole map periodically GLIDES to a fresh deal:
+    // clusters keep their members and their visual distinctness, but trade
+    // anchor spots. The nucleus never moves. Manual: memoryMap.shuffle().
+    const SHUFFLE_INTERVAL = 36;   // seconds between auto-shuffles
+    const SHUFFLE_DURATION = 4.2;  // glide length, seconds
+    let shuffleSeed = 0;
+    let shuffleT0 = -1;            // clock time the current glide started
+    let nextShuffleAt = SHUFFLE_INTERVAL;
+    const fromPos = positions.map(p => p.clone());
+    const toPos = positions.map(p => p.clone());
+
+    function beginShuffle(now) {
+      shuffleSeed++;
+      for (let i = 0; i < nodes.length; i++) {
+        fromPos[i].copy(positions[i]);
+        toPos[i].copy(position(i, shuffleSeed));
+      }
+      toPos[NU].set(0, 0, 0);
+      shuffleT0 = now;
+    }
+
+    // ---------- Scene ----------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x020308);
+    scene.fog = new THREE.FogExp2(0x020308, 0.0021);
+
+    const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 6000);
+    camera.position.set(0, 26, 132);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.95;
+    document.getElementById('scene').appendChild(renderer.domElement);
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.03).texture;
+
+    // Controlled bloom — soft neural glow, not white-out
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight),
+      0.42,   // strength — much lower
+      0.38,   // radius
+      0.78    // higher threshold so only bright cores bloom
+    );
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.048;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.32;
+    controls.minDistance = 24;
+    controls.maxDistance = 700;
+
+    // ---------- Textures ----------
+    function makeGlowTexture() {
+      const c = document.createElement('canvas');
+      c.width = c.height = 128;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+      g.addColorStop(0.0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.22, 'rgba(255,255,255,0.88)');
+      g.addColorStop(0.55, 'rgba(255,255,255,0.25)');
+      g.addColorStop(1.0, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(c);
+    }
+    const glowTex = makeGlowTexture();
+
+    function makeFlareTexture() {
+      const c = document.createElement('canvas');
+      c.width = c.height = 256;
+      const ctx = c.getContext('2d');
+      ctx.globalCompositeOperation = 'lighter';
+      // soft core
+      const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 42);
+      g.addColorStop(0, 'rgba(255,255,255,0.98)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 256, 256);
+      // anamorphic horizontal streak
+      const streak = (x0, y0, x1, y1, w, a) => {
+        const lg = ctx.createLinearGradient(x0, y0, x1, y1);
+        lg.addColorStop(0, `rgba(255,255,255,0)`);
+        lg.addColorStop(0.5, `rgba(255,255,255,${a})`);
+        lg.addColorStop(1, `rgba(255,255,255,0)`);
+        ctx.fillStyle = lg;
+        const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        const len = Math.hypot(x1 - x0, y1 - y0);
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(Math.atan2(y1 - y0, x1 - x0));
+        ctx.fillRect(-len / 2, -w / 2, len, w);
+        ctx.restore();
+      };
+      streak(8, 128, 248, 128, 5.5, 0.85);   // main anamorphic
+      streak(8, 128, 248, 128, 1.8, 0.6);
+      streak(128, 12, 128, 244, 3.2, 0.55);  // vertical
+      streak(40, 40, 216, 216, 1.6, 0.35);
+      streak(216, 40, 40, 216, 1.6, 0.35);
+      return new THREE.CanvasTexture(c);
+    }
+    const flareTex = makeFlareTexture();
+
+    // ---------- Deep space backdrop ----------
+    const starGroup = new THREE.Group();
+    scene.add(starGroup);
+
+    function makeStars(count, rMin, rMax, size, opacity, palette) {
+      const pos = new Float32Array(count * 3);
+      const col = new Float32Array(count * 3);
+      const c = new THREE.Color();
+      for (let i = 0; i < count; i++) {
+        const r = rMin + rnd() * (rMax - rMin);
+        const th = rnd() * Math.PI * 2;
+        const ph = Math.acos(2 * rnd() - 1);
+        pos[i*3]   = r * Math.sin(ph) * Math.cos(th);
+        pos[i*3+1] = r * Math.cos(ph);
+        pos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
+        c.set(palette[Math.floor(rnd() * palette.length)]).multiplyScalar(0.35 + rnd() * 0.45);
+        col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      const m = new THREE.PointsMaterial({
+        size, map: glowTex, vertexColors: true, transparent: true, opacity,
+        blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true, fog: false
+      });
+      const pts = new THREE.Points(g, m);
+      starGroup.add(pts);
+      return pts;
+    }
+
+    // Richer multi-layer starfield
+    const farStars = makeStars(3800, 900, 2100, 2.9, 0.58, [0xa8c4ff, 0x8ba8ff, 0xd0b8ff, 0x9aeeff, 0xffd6ec, 0xfff0d0]);
+    const midStars = makeStars(900, 320, 820, 1.85, 0.42, [0x9ab8ff, 0xb0c8ff, 0xe8f0ff, 0xc8d8ff]);
+    const nearDust = makeStars(400, 180, 420, 1.2, 0.28, [0x7a9cff, 0xa0b8ff, 0xd0e0ff]);
+
+    // Twinkling stars (shader)
+    function makeTwinkleStars(count, rMin, rMax, size, opacity) {
+      const pos = new Float32Array(count * 3);
+      const col = new Float32Array(count * 3);
+      const phase = new Float32Array(count);
+      const speed = new Float32Array(count);
+      const ssize = new Float32Array(count);
+      const palette = [0xa8c4ff, 0x8ba8ff, 0xd0b8ff, 0x9aeeff, 0xffd6ec, 0xfff0d0, 0xffffff];
+      const c = new THREE.Color();
+      for (let i = 0; i < count; i++) {
+        const r = rMin + rnd() * (rMax - rMin);
+        const th = rnd() * Math.PI * 2;
+        const ph = Math.acos(2 * rnd() - 1);
+        pos[i*3]   = r * Math.sin(ph) * Math.cos(th);
+        pos[i*3+1] = r * Math.cos(ph);
+        pos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
+        c.set(palette[Math.floor(rnd() * palette.length)]).multiplyScalar(0.55 + rnd() * 0.45);
+        col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+        phase[i] = rnd() * Math.PI * 2;
+        speed[i] = 0.35 + rnd() * 1.7;
+        ssize[i] = 0.45 + rnd() * 1.2;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+      g.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+      g.setAttribute('aSpeed', new THREE.BufferAttribute(speed, 1));
+      g.setAttribute('aSize', new THREE.BufferAttribute(ssize, 1));
+      const m = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uMap: { value: glowTex },
+          uScale: { value: innerHeight * 0.5 * renderer.getPixelRatio() },
+          uSize: { value: size },
+          uOpacity: { value: opacity }
+        },
+        vertexShader: `
+          attribute vec3 aColor;
+          attribute float aPhase;
+          attribute float aSpeed;
+          attribute float aSize;
+          uniform float uTime;
+          uniform float uScale;
+          uniform float uSize;
+          varying vec3 vColor;
+          varying float vTw;
+          void main() {
+            vColor = aColor;
+            vTw = 0.28 + 0.72 * (0.5 + 0.5 * sin(uTime * aSpeed + aPhase));
+            vec4 mv = modelViewMatrix * vec4(position, 1.0);
+            gl_PointSize = uSize * aSize * (0.55 + 0.9 * vTw) * (uScale / max(1.0, -mv.z));
+            gl_Position = projectionMatrix * mv;
+          }`,
+        fragmentShader: `
+          uniform sampler2D uMap;
+          uniform float uOpacity;
+          varying vec3 vColor;
+          varying float vTw;
+          void main() {
+            float a = texture2D(uMap, gl_PointCoord).a;
+            gl_FragColor = vec4(vColor * vTw * uOpacity * a, 1.0);
+          }`,
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+      });
+      const pts = new THREE.Points(g, m);
+      starGroup.add(pts);
+      return m;
+    }
+    const twinkleMat = makeTwinkleStars(1200, 450, 1900, 3.6, 0.92);
+
+    // Nebulae — richer, more cinematic washes
+    const NEBULAE = [
+      { color: 0x2e1a6e, pos: [-980, 420, -1100], size: 1250, op: 0.13 },
+      { color: 0x0e2a6a, pos: [1080, -340, -780], size: 1050, op: 0.11 },
+      { color: 0x0c4a4a, pos: [640, 740, 860], size: 1120, op: 0.10 },
+      { color: 0x52165a, pos: [-760, -640, 760], size: 980, op: 0.12 },
+      { color: 0x1a3a7a, pos: [220, -860, -1200], size: 1080, op: 0.10 },
+      { color: 0x3a2060, pos: [-400, 200, 900], size: 900, op: 0.09 },
+      { color: 0x1a4050, pos: [700, -100, -500], size: 850, op: 0.08 }
+    ];
+    const nebulaSprites = [];
+    NEBULAE.forEach(({ color, pos, size, op }) => {
+      const sm = new THREE.SpriteMaterial({
+        map: glowTex, color, transparent: true, opacity: op,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+      });
+      const s = new THREE.Sprite(sm);
+      s.position.set(pos[0], pos[1], pos[2]);
+      s.scale.setScalar(size);
+      starGroup.add(s);
+      nebulaSprites.push({ s, base: op, phase: rnd() * Math.PI * 2, speed: 0.045 + rnd() * 0.07 });
+    });
+
+    // Wide central haze
+    const haze = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTex, color: 0x3a2f80, transparent: true, opacity: 0.055,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+    }));
+    haze.scale.setScalar(1050);
+    starGroup.add(haze);
+    nebulaSprites.push({ s: haze, base: 0.055, phase: 1.8, speed: 0.04 });
+
+    // ---------- Concept stars: real starfield points, NOT glowing balls ----------
+    const nodeGroup = new THREE.Group();
+    scene.add(nodeGroup);
+    const nodeMeshes = []; // invisible hit targets only
+
+    // Star colors — realistic stellar sequence
+    const starPalette = [
+      0x9eb8ff, // blue-white
+      0xc8d8ff, // white
+      0xfff0e0, // warm white
+      0xffe0b0, // yellow
+      0xffc878, // orange
+      0xffa060, // red-orange
+      0xb0c8ff, // pale blue
+      0xe8d0ff  // soft violet-white
+    ];
+
+    let maxMentions = Math.max(1, ...nodes.map(n => n.mention_count));
+    function mentionFactor(mentions) {
+      return 0.3 + 0.7 * Math.log1p(mentions) / Math.log1p(maxMentions);
+    }
+    const WHITE = new THREE.Color(0xffffff);
+
+    // Build a single Points cloud for all concept stars
+    const starCount = nodes.length;
+    const starPos = new Float32Array(starCount * 3);
+    const starCol = new Float32Array(starCount * 3);
+    const starSize = new Float32Array(starCount);
+    const starPhase = new Float32Array(starCount);
+    const starSpeed = new Float32Array(starCount);
+
+    const hitTargets = [];
+
+    nodes.forEach((n, i) => {
+      const p = positions[i];
+      starPos[i*3] = p.x;
+      starPos[i*3+1] = p.y;
+      starPos[i*3+2] = p.z;
+
+      const mf = mentionFactor(n.mention_count);
+      const deg = n.degree;
+      // Dormant slots: dim motes waiting to be filled — real nodes, just not
+      // learned yet. Live stars get brighter/larger with degree and mentions.
+      const baseSize = (i === NU) ? 10.0 : n.dormant ? 1.6 : (3.2 + Math.pow(deg, 0.7) * 1.2 + mf * 1.9);
+      starSize[i] = baseSize;
+      starPhase[i] = rnd() * Math.PI * 2;
+      starSpeed[i] = 0.4 + rnd() * 1.2;
+
+      const c = new THREE.Color(n.dormant ? 0x3c466e : starPalette[i % starPalette.length]);
+      // Nucleus is warm galactic core
+      if (i === NU) c.set(0xffe8c0);
+      const bright = (i === NU) ? 1.0 : n.dormant ? 0.22 : (0.55 + mf * 0.45);
+      starCol[i*3] = c.r * bright;
+      starCol[i*3+1] = c.g * bright;
+      starCol[i*3+2] = c.b * bright;
+
+      // Invisible hit sphere for interaction
+      const hitR = Math.max(baseSize * 3.5, 7);
+      const hit = new THREE.Mesh(
+        new THREE.SphereGeometry(hitR, 6, 5),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      hit.position.copy(p);
+      hit.userData = {
+        index: i,
+        hl: false,
+        isNucleus: i === NU,
+        isDormant: !!n.dormant,
+        baseSize,
+        baseColor: c.clone(),
+        twPhase: starPhase[i],
+        twSpeed: starSpeed[i]
+      };
+      nodeGroup.add(hit);
+      nodeMeshes.push(hit);
+      hitTargets.push(hit);
+    });
+
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    starGeo.setAttribute('aColor', new THREE.BufferAttribute(starCol, 3));
+    starGeo.setAttribute('aSize', new THREE.BufferAttribute(starSize, 1));
+    starGeo.setAttribute('aPhase', new THREE.BufferAttribute(starPhase, 1));
+    starGeo.setAttribute('aSpeed', new THREE.BufferAttribute(starSpeed, 1));
+
+    // Shader: real stars — tiny cores with optional cross flare, no big soft balls
+    const conceptStarMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uMap: { value: glowTex },
+        uFlare: { value: flareTex },
+        uScale: { value: innerHeight * 0.5 * renderer.getPixelRatio() },
+        uOpacity: { value: 0.95 }
+      },
+      vertexShader: `
+        attribute vec3 aColor;
+        attribute float aSize;
+        attribute float aPhase;
+        attribute float aSpeed;
+        uniform float uTime;
+        uniform float uScale;
+        varying vec3 vColor;
+        varying float vTw;
+        varying float vSize;
+        void main() {
+          vColor = aColor;
+          vTw = 0.75 + 0.25 * (0.5 + 0.5 * sin(uTime * aSpeed + aPhase));
+          vSize = aSize;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          // Small point size — these are stars, not orbs
+          gl_PointSize = aSize * (0.9 + 0.25 * vTw) * (uScale / max(40.0, -mv.z));
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        uniform sampler2D uMap;
+        uniform float uOpacity;
+        varying vec3 vColor;
+        varying float vTw;
+        varying float vSize;
+        void main() {
+          // Soft core only — no big diffuse ball
+          vec2 uv = gl_PointCoord - 0.5;
+          float d = length(uv) * 2.0;
+          float core = exp(-d * d * 4.5);
+          float halo = exp(-d * d * 1.4) * 0.25;
+          float a = (core + halo) * vTw * uOpacity;
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(vColor * (0.85 + 0.4 * core), a);
+        }`,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const conceptStars = new THREE.Points(starGeo, conceptStarMat);
+    nodeGroup.add(conceptStars);
+
+    // Galactic core: a tight cluster of extra stars around the nucleus (not one ball)
+    const coreCount = 80;
+    const corePos = new Float32Array(coreCount * 3);
+    const coreCol = new Float32Array(coreCount * 3);
+    const coreSize = new Float32Array(coreCount);
+    for (let i = 0; i < coreCount; i++) {
+      const r = Math.pow(rnd(), 0.6) * 22;
+      const th = rnd() * Math.PI * 2;
+      const ph = Math.acos(2 * rnd() - 1);
+      corePos[i*3]   = r * Math.sin(ph) * Math.cos(th);
+      corePos[i*3+1] = r * Math.cos(ph) * 0.6;
+      corePos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
+      const warm = new THREE.Color().setHSL(0.08 + rnd() * 0.06, 0.55, 0.7 + rnd() * 0.25);
+      coreCol[i*3] = warm.r;
+      coreCol[i*3+1] = warm.g;
+      coreCol[i*3+2] = warm.b;
+      coreSize[i] = 0.8 + rnd() * 2.2;
+    }
+    const coreGeo = new THREE.BufferGeometry();
+    coreGeo.setAttribute('position', new THREE.BufferAttribute(corePos, 3));
+    coreGeo.setAttribute('aColor', new THREE.BufferAttribute(coreCol, 3));
+    coreGeo.setAttribute('aSize', new THREE.BufferAttribute(coreSize, 1));
+    coreGeo.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array(coreCount).map(() => rnd()*6.28), 1));
+    coreGeo.setAttribute('aSpeed', new THREE.BufferAttribute(new Float32Array(coreCount).map(() => 0.5+rnd()), 1));
+    const coreStars = new THREE.Points(coreGeo, conceptStarMat);
+    nodeGroup.add(coreStars);
+
+    // Dim point light at galactic center
+    const coreLight = new THREE.PointLight(0xffe0b0, 3500, 400, 1.8);
+    nodeGroup.add(coreLight);
+
+    // Ambient space lighting only
+    const ambient = new THREE.AmbientLight(0x12182a, 0.9);
+    scene.add(ambient);
+    const keyLight = new THREE.PointLight(0x8899cc, 4000, 1000, 1.6);
+    keyLight.position.set(200, 220, 160);
+    scene.add(keyLight);
+    const rim = new THREE.PointLight(0x5544aa, 2500, 800, 1.7);
+    rim.position.set(-220, -120, -160);
+    scene.add(rim);
+
+    // ---------- Edges: faint stellar streams / dust lanes ----------
+    const edgeGroup = new THREE.Group();
+    scene.add(edgeGroup);
+    const edgeLines = [];
+    const fadingEdges = [];  // freshly (re)linked streams ramping up to opacity
+
+    const EDGE_SEGS = 20;
+    const _edgeTmp = new THREE.Vector3();
+    // Refresh an edge to the CURRENT node positions — called for every edge
+    // each frame while a shuffle glides, so the stellar streams stay attached
+    // to their stars instead of detaching as fixed curves.
+    function updateEdgeGeometry(l) {
+      const ud = l.userData;
+      const va = positions[ud.a], vb = positions[ud.b];
+      ud.len = va.distanceTo(vb);
+      ud.curve.v0.copy(va);
+      ud.curve.v1.copy(va).lerp(vb, ud.midT).addScaledVector(ud.midDir, ud.len * ud.midScale);
+      ud.curve.v2.copy(vb);
+      const arr = l.geometry.attributes.position.array;
+      for (let s = 0; s <= EDGE_SEGS; s++) {
+        ud.curve.getPoint(s / EDGE_SEGS, _edgeTmp);
+        arr[s*3] = _edgeTmp.x; arr[s*3+1] = _edgeTmp.y; arr[s*3+2] = _edgeTmp.z;
+      }
+      l.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function makeEdgeLine(a, b, weight, baseColor) {
+      const va = positions[a], vb = positions[b];
+      const curve = new THREE.QuadraticBezierCurve3(va.clone(), va.clone(), vb.clone());
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array((EDGE_SEGS + 1) * 3), 3));
+      const m = new THREE.LineBasicMaterial({
+        color: baseColor, transparent: true, opacity: 0.03 + weight * 0.05,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+      });
+      const l = new THREE.Line(g, m);
+      l.userData = {
+        a, b, weight, curve, baseOpacity: m.opacity,
+        baseColor: new THREE.Color(baseColor), len: 0,
+        midT: 0.32 + rnd() * 0.36,
+        midDir: new THREE.Vector3(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize(),
+        midScale: 0.13 + rnd() * 0.15
+      };
+      updateEdgeGeometry(l);
+      edgeGroup.add(l);
+      edgeLines.push(l);
+    }
+
+    for (let i = 0; i < adj.length; i++) {
+      for (const { j, weight } of adj[i]) {
+        if (i < j) makeEdgeLine(i, j, weight, j === NU ? 0xe0b870 : 0x90a8e8);
+      }
+    }
+
+    // Synaptic pulse particles traveling along edges
+    const PULSES = 90;
+    const pulses = [];
+    const puTmp = new THREE.Vector3();
+    const puPos = new Float32Array(PULSES * 3);
+    const puCol = new Float32Array(PULSES * 3);
+    const puGeo = new THREE.BufferGeometry();
+    puGeo.setAttribute('position', new THREE.BufferAttribute(puPos, 3));
+    puGeo.setAttribute('color', new THREE.BufferAttribute(puCol, 3));
+    const puStarlight = new THREE.Color(0xfff6e8);
+
+    function pulseColor(k) {
+      const c = pulses[k].e.userData.baseColor.clone().lerp(puStarlight, 0.5);
+      pulses[k].r = c.r; pulses[k].g = c.g; pulses[k].b = c.b;
+      puCol[k*3] = c.r; puCol[k*3+1] = c.g; puCol[k*3+2] = c.b;
+      puGeo.attributes.color.needsUpdate = true;
+    }
+
+    for (let k = 0; k < PULSES; k++) {
+      pulses.push({
+        e: edgeLines[Math.floor(rnd() * edgeLines.length)],
+        t: rnd(),
+        speed: 14 + rnd() * 32
+      });
+      pulseColor(k);
+    }
+
+    const puMat = new THREE.PointsMaterial({
+      size: 1.8, map: glowTex, vertexColors: true, transparent: true, opacity: 0.55,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true, fog: false
+    });
+    scene.add(new THREE.Points(puGeo, puMat));
+
+    // ---------- Growth: new concepts light up as the memory system grows ------
+    // marmGraph() is a full re-probe (~50 paced calls, ~40s). refreshGraph()
+    // re-runs it periodically and merges the result into the LIVE sky — no
+    // reload, no re-deal: a concept keeps its star; concepts MARM newly
+    // learned claim a dormant slot and bloom in place (gliding into their
+    // topic cluster at the next shuffle); vanished concepts dim back to
+    // dormant; the edge set relinks — surviving streams keep their stars and
+    // brand-new connections fade in. Auto every REFRESH_INTERVAL_S, manual
+    // via memoryMap.refresh().
+    const labelToIdx = new Map();
+    nodes.forEach((n, i) => { if (i !== NU && !n.dormant) labelToIdx.set(n.label, i); });
+
+    function paintSlot(i) {
+      const n = nodes[i];
+      const mf = mentionFactor(n.mention_count);
+      const size = (i === NU) ? 10.0 : n.dormant ? 1.6 : (3.2 + Math.pow(n.degree, 0.7) * 1.2 + mf * 1.9);
+      const c = new THREE.Color(n.dormant ? 0x3c466e : starPalette[i % starPalette.length]);
+      if (i === NU) c.set(0xffe8c0);
+      const bright = (i === NU) ? 1.0 : n.dormant ? 0.22 : (0.55 + mf * 0.45);
+      starGeo.attributes.aSize.array[i] = size;
+      starGeo.attributes.aColor.array[i*3] = c.r * bright;
+      starGeo.attributes.aColor.array[i*3+1] = c.g * bright;
+      starGeo.attributes.aColor.array[i*3+2] = c.b * bright;
+      starGeo.attributes.aSize.needsUpdate = true;
+      starGeo.attributes.aColor.needsUpdate = true;
+      const ud = nodeMeshes[i].userData;
+      ud.isDormant = !!n.dormant;
+      ud.baseSize = size;
+      ud.baseColor = c.clone();
+    }
+
+    function applyGraph(g) {
+      const slotOf = new Array(g.labels.length).fill(null);
+      let activated = 0, skipped = 0;
+      for (let gi = 0; gi < g.labels.length; gi++) {
+        const label = prettyLabel(g.labels[gi]);
+        let slot = labelToIdx.get(label);
+        if (slot == null) {
+          const free = nodes.findIndex(n => n.dormant);
+          if (free === -1) { skipped++; continue; }  // every slot already lit
+          nodes[free] = { id: free, label, degree: g.adj[gi].length,
+            mention_count: Math.max(0, g.mentions[gi] | 0) };
+          labelToIdx.set(label, free);
+          slot = free;
+          nodeMeshes[free].userData.spawnAt = clock.getElapsedTime();
+          activated++;
+        } else {
+          nodes[slot].mention_count = Math.max(0, g.mentions[gi] | 0);
+          nodes[slot].degree = g.adj[gi].length;
+        }
+        slotOf[gi] = slot;
+      }
+      // A live star whose concept vanished from MARM dims back to dormant
+      const kept = new Set(slotOf.filter(s => s != null));
+      let faded = 0;
+      for (const [label, slot] of [...labelToIdx]) {
+        if (!kept.has(slot)) {
+          nodes[slot] = { id: slot, label: '', degree: 0, mention_count: 0, dormant: true };
+          labelToIdx.delete(label);
+          faded++;
+        }
+      }
+      if (activated || faded) {
+        maxMentions = Math.max(1, ...nodes.map(n => n.dormant ? 0 : n.mention_count));
+        nodes.forEach((n, i) => { if (i !== NU) paintSlot(i); });
+      } else {
+        // surviving concepts may have grown — repaint just those
+        for (let gi = 0; gi < g.labels.length; gi++) if (slotOf[gi] != null) paintSlot(slotOf[gi]);
+      }
+
+      // Relink the whole edge set from the fresh graph. Slot identities are
+      // stable, so surviving streams keep their stars; new ones fade in.
+      edgeLines.forEach(l => { edgeGroup.remove(l); l.geometry.dispose(); l.material.dispose(); });
+      edgeLines.length = 0;
+      activeEdges.clear();
+      const linked = new Set();
+      const link = (a, b, weight) => {
+        if (a == null || b == null || a === b) return;
+        const key = a < b ? a + '-' + b : b + '-' + a;
+        if (linked.has(key)) return;
+        linked.add(key);
+        makeEdgeLine(a, b, weight, (a === NU || b === NU) ? 0xe0b870 : 0x90a8e8);
+      };
+      for (let gi = 0; gi < g.labels.length; gi++) {
+        for (const { j, weight } of g.adj[gi]) link(slotOf[gi], slotOf[j], weight);
+      }
+      spokes.forEach(t => { if (!nodes[t].dormant) link(t, NU, 0.85 + rnd() * 0.15); });
+      // mirror the fresh edge set into adj[][] for the panels + hover chip
+      for (let i = 0; i < nodes.length; i++) adj[i] = [];
+      edgeLines.forEach(l => {
+        adj[l.userData.a].push({ j: l.userData.b, weight: l.userData.weight });
+        adj[l.userData.b].push({ j: l.userData.a, weight: l.userData.weight });
+      });
+      nodes[NU].degree = adj[NU].length;
+      const now = clock.getElapsedTime();
+      edgeLines.forEach(l => {
+        l.userData.fadeInAt = now;
+        l.material.opacity = 0;
+        fadingEdges.push(l);
+      });
+      pulses.forEach((p, k) => {
+        p.e = edgeLines[Math.floor(Math.random() * edgeLines.length)] || null;
+        p.t = Math.random();
+        if (p.e) pulseColor(k);
+      });
+      window.__galaxyGraph = { source: 'marm (live)',
+        labels: [...labelToIdx.keys()],
+        mentions: [...labelToIdx.values()].map(i => nodes[i].mention_count) };
+      if (activated || faded || skipped) {
+        console.info('[galaxy] grew — +' + activated + ' new concepts' +
+          (faded ? ', ' + faded + ' faded back to dormant' : '') +
+          (skipped ? ', ' + skipped + ' over capacity' : ''));
+      }
+    }
+
+    let refreshing = false;
+    async function refreshGraph() {
+      if (refreshing) return false;
+      refreshing = true;
+      try {
+        const g = await marmGraph();
+        applyGraph(g);
+        return true;
+      } catch (e) {
+        console.info('[galaxy] refresh failed (' + (e && e.message || e) + ') — keeping the current sky');
+        return false;
+      } finally { refreshing = false; }
+    }
+    const REFRESH_INTERVAL_S = 15 * 60;  // full MARM re-probe cadence
+    let nextAutoRefreshAt = 5 * 60;      // first growth check 5 min after boot
+
+    // ---------- Interaction ----------
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let hovered = null;
+    let selected = null;
+    let flyTarget = null;
+    let flyLook = null;
+
+    ['pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(ev =>
+      renderer.domElement.addEventListener(ev, () => { flyTarget = null; flyLook = null; }, { passive: true })
+    );
+
+    function owningNodeIndex(obj) {
+      let o = obj;
+      while (o && o.userData.index == null) o = o.parent;
+      return o ? o.userData.index : null;
+    }
+
+    function resetHighlight() {
+      edgeLines.forEach(l => {
+        l.material.opacity = l.userData.baseOpacity;
+        l.material.color.copy(l.userData.baseColor);
+      });
+      nodeMeshes.forEach((m) => { m.userData.hl = false; });
+      // reset star sizes/colors in the buffer
+      const sizes = starGeo.attributes.aSize;
+      const cols = starGeo.attributes.aColor;
+      for (let i = 0; i < nodes.length; i++) {
+        sizes.array[i] = nodeMeshes[i].userData.baseSize;
+        const c = nodeMeshes[i].userData.baseColor;
+        const bright = (i === NU) ? 1.0 : 0.75;
+        cols.array[i*3] = c.r * bright;
+        cols.array[i*3+1] = c.g * bright;
+        cols.array[i*3+2] = c.b * bright;
+      }
+      sizes.needsUpdate = true;
+      cols.needsUpdate = true;
+    }
+
+    function highlightNode(idx) {
+      resetHighlight();
+      if (idx == null) return;
+      const connected = new Set();
+      for (const { j } of adj[idx]) connected.add(j);
+      connected.add(idx);
+      const sizes = starGeo.attributes.aSize;
+      const cols = starGeo.attributes.aColor;
+      nodeMeshes.forEach((m, i) => {
+        if (connected.has(i)) {
+          m.userData.hl = true;
+          sizes.array[i] = m.userData.baseSize * 1.8;
+          cols.array[i*3] = Math.min(1, cols.array[i*3] * 1.4 + 0.2);
+          cols.array[i*3+1] = Math.min(1, cols.array[i*3+1] * 1.4 + 0.2);
+          cols.array[i*3+2] = Math.min(1, cols.array[i*3+2] * 1.4 + 0.25);
+        }
+      });
+      sizes.needsUpdate = true;
+      cols.needsUpdate = true;
+      edgeLines.forEach(l => {
+        if (l.userData.a === idx || l.userData.b === idx) {
+          l.material.color.set(0xc8d8ff);
+          l.material.opacity = 0.22 + l.userData.weight * 0.18;
+        }
+      });
+    }
+
+    // Activity highlight API
+    const activeNodes = new Map();
+    const activeEdges = new Map();
+    let activityTimer = null;
+    const ACTIVITY_ATTACK  = 0.09;
+    const ACTIVITY_RELEASE = 0.28;
+    const ACTIVITY_BREATH  = 3.8;
+
+    function _stepLevel(st, dt) {
+      const tau = st.target ? ACTIVITY_ATTACK : ACTIVITY_RELEASE;
+      st.level += (st.target - st.level) * (1 - Math.exp(-dt / tau));
+      return st.level;
+    }
+    function _breath(t) {
+      return 0.76 + 0.24 * Math.sin(t * ACTIVITY_BREATH);
+    }
+
+    function highlightTopics(topics, options = {}) {
+      const list = topics == null ? [] : (Array.isArray(topics) ? topics : [topics]);
+      const intensity = Math.max(0.1, Math.min(1,
+        isFinite(options.intensity) ? options.intensity : 1));
+      const resolved = new Set();
+      list.forEach((topic) => {
+        if (typeof topic === 'number') { resolved.add(topic); return; }
+        const q = String(topic).trim().toLowerCase();
+        if (!q) return;
+        for (let i = 0; i < nodes.length; i++) {
+          if (nodes[i].label.toLowerCase().includes(q)) resolved.add(i);
+        }
+      });
+      activeNodes.forEach((st, i) => { if (!resolved.has(i)) st.target = 0; });
+      activeEdges.forEach(st => { st.target = 0; });
+      resolved.forEach(i => {
+        const st = activeNodes.get(i);
+        if (st) { st.target = 1; st.intensity = intensity; }
+        else activeNodes.set(i, { level: 0, target: 1, intensity });
+      });
+      edgeLines.forEach(l => {
+        if (resolved.has(l.userData.a) && resolved.has(l.userData.b)) {
+          const st = activeEdges.get(l);
+          if (st) { st.target = 1; st.intensity = intensity; }
+          else activeEdges.set(l, { level: 0, target: 1, intensity });
+        }
+      });
+      if (activityTimer != null) { clearTimeout(activityTimer); activityTimer = null; }
+      const duration = Number(options && options.duration);
+      if (isFinite(duration) && duration > 0) {
+        activityTimer = setTimeout(clearActivity, duration);
+      }
+      return resolved.size;
+    }
+
+    function clearActivity() {
+      if (activityTimer != null) { clearTimeout(activityTimer); activityTimer = null; }
+      activeNodes.forEach(st => { st.target = 0; });
+      activeEdges.forEach(st => { st.target = 0; });
+    }
+
+    window.memoryMap = {
+      highlightTopics: highlightTopics,
+      clearActivity: clearActivity,
+      shuffle: () => beginShuffle(clock.getElapsedTime()),
+      refresh: refreshGraph
+    };
+
+    function onPointerMove(e) {
+      mouse.x = (e.clientX / innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(nodeMeshes, true);
+      const idx = hits.length ? owningNodeIndex(hits[0].object) : null;
+      if (idx !== hovered) {
+        hovered = idx;
+        highlightNode(selected != null ? selected : idx);
+        document.body.style.cursor = idx != null ? 'pointer' : 'default';
+      }
+    }
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+
+    renderer.domElement.addEventListener('click', (e) => {
+      mouse.x = (e.clientX / innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(nodeMeshes, true);
+      if (hits.length) selectNode(owningNodeIndex(hits[0].object));
+    });
+
+    // Full node details open in a SEPARATE window (pywebview popup via the
+    // host bridge when embedded; window.open when running standalone in a
+    // normal browser). The tiny in-page chip stays as a fallback.
+    function openDetailWindow(idx) {
+      const n = nodes[idx];
+      if (!n || n.dormant) return;  // unformed slots have no details
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const conns = [...adj[idx]].sort((a, b) => b.weight - a.weight);
+      const rows = conns.map(({ j, weight }) =>
+        `<div class="row"><span>${esc(nodes[j].label)}</span><span class="w">${weight.toFixed(2)}</span></div>`).join('');
+      const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(n.label)}</title><style>
+        html,body { background:#020308; height:100%; }
+        body { margin:0; color:#e8f0ff; font-family:system-ui,sans-serif; overflow:hidden; }
+        .card { position:absolute; inset:7px; border-radius:15px; padding:20px 18px;
+          background:linear-gradient(165deg, rgba(13,22,41,.97), rgba(3,5,12,.98));
+          border:1px solid rgba(78,201,255,.3);
+          box-shadow:0 0 26px rgba(78,201,255,.2), inset 0 0 46px rgba(78,201,255,.05);
+          overflow-y:auto; }
+        .card::-webkit-scrollbar { width:4px; }
+        .card::-webkit-scrollbar-thumb { background:rgba(78,201,255,.35); border-radius:3px; }
+        h1 { font-size:17px; font-weight:600; margin:2px 30px 8px 0; word-break:break-word;
+          color:#dff1ff; text-shadow:0 0 14px rgba(78,201,255,.35); }
+        .mini { color:#7d8db3; font-size:11px; letter-spacing:.4px; margin-bottom:16px; }
+        h3 { font-size:10px; text-transform:uppercase; letter-spacing:1.4px; color:#5d6f96;
+          margin:14px 0 8px; }
+        .row { display:flex; justify-content:space-between; gap:10px; padding:7px 11px;
+          border-radius:9px; font-size:13px; }
+        .row:hover { background:rgba(78,201,255,.11); }
+        .w { color:#4ec9ff; font-variant-numeric:tabular-nums; }
+        .x { position:absolute; top:12px; right:12px; width:24px; height:24px; line-height:24px;
+          text-align:center; border-radius:50%; font-size:14px; color:#7d8db3; cursor:pointer;
+          background:rgba(140,180,255,.08); border:none; }
+        .x:hover { background:rgba(255,120,120,.18); color:#ffb3b3; }
+        .drag { position:fixed; bottom:12px; left:0; right:0; text-align:center;
+          font-size:10px; color:#41527a; letter-spacing:.5px; pointer-events:none; }
+      </style></head><body>
+        <div class="card">
+          <button class="x" id="x" title="Close">✕</button>
+          <h1>${esc(n.label)}</h1>
+          <div class="mini">${n.degree} connections · ${n.mention_count.toLocaleString()} mentions</div>
+          <h3>Connections</h3>${rows || '<div style="color:#7d8db3;font-size:12px;">none</div>'}
+        </div>
+        <div class="drag">drag anywhere to move this window</div>
+        <script>
+          document.getElementById('x').onclick = () => {
+            if (window.pywebview && window.pywebview.api &&
+                typeof window.pywebview.api.close_memory_window === 'function') {
+              try { window.pywebview.api.close_memory_window(); } catch (e) { /* ignore */ }
+            }
+          };
+        <\/script>
+      </body></html>`;
+      if (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.open_memory_window === 'function') {
+        window.pywebview.api.open_memory_window(n.label, doc).catch(() => {});
+      } else {
+        const w = window.open('', '_blank', 'width=420,height=560');
+        if (w) { w.document.write(doc); w.document.close(); }
+      }
+    }
+
+    function selectNode(idx) {
+      selected = idx;
+      highlightNode(idx);
+      const n = nodes[idx];
+      if (n.dormant) {
+        // An unformed slot — a star that hasn't been learned yet
+        document.getElementById('npName').textContent = 'Unformed memory';
+        document.getElementById('npMini').textContent = 'waiting for Warden to learn a new concept';
+        document.getElementById('npConns').innerHTML = '';
+        document.getElementById('nodePanel').style.display = 'block';
+        return;
+      }
+      document.getElementById('npName').textContent = n.label;
+      document.getElementById('npMini').textContent =
+        n.degree + ' connections · ' + n.mention_count.toLocaleString() + ' mentions';
+      const conns = [...adj[idx]].sort((a, b) => b.weight - a.weight).slice(0, 3);
+      const list = document.getElementById('npConns');
+      list.innerHTML = '';
+      conns.forEach(({ j, weight }) => {
+        const row = document.createElement('div');
+        row.className = 'conn';
+        row.innerHTML = `<span>${nodes[j].label}</span><span class="w">${weight.toFixed(2)}</span>`;
+        row.addEventListener('click', () => selectNode(j));
+        list.appendChild(row);
+      });
+      document.getElementById('nodePanel').style.display = 'block';
+      openDetailWindow(idx);
+      flyTo(positions[idx]);
+    }
+
+    document.getElementById('npOpen').addEventListener('click', () => {
+      if (selected != null) openDetailWindow(selected);
+    });
+
+    document.getElementById('closePanel').addEventListener('click', () => {
+      selected = null;
+      document.getElementById('nodePanel').style.display = 'none';
+      resetHighlight();
+      flyTo(new THREE.Vector3(0, 0, 0));
+    });
+
+    // Search
+    const searchEl = document.getElementById('search');
+    const resultsEl = document.getElementById('results');
+    searchEl.addEventListener('input', () => {
+      const q = searchEl.value.trim().toLowerCase();
+      resultsEl.innerHTML = '';
+      if (!q) {
+        resultsEl.style.display = 'none';
+        window.memoryMap.clearActivity();
+        return;
+      }
+      const matches = nodes
+        .map((n, i) => ({ n, i }))
+        .filter(x => x.n.label.toLowerCase().includes(q))
+        .sort((a, b) => b.n.mention_count - a.n.mention_count)
+        .slice(0, 12);
+      window.memoryMap.highlightTopics(q);
+      if (!matches.length) { resultsEl.style.display = 'none'; return; }
+      resultsEl.style.display = 'block';
+      matches.forEach(({ n, i }) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = `<span>${n.label}</span><span class="deg">${n.degree} · ${n.mention_count}</span>`;
+        row.addEventListener('click', () => {
+          window.memoryMap.clearActivity();
+          selectNode(i);
+          resultsEl.style.display = 'none';
+          searchEl.value = '';
+        });
+        resultsEl.appendChild(row);
+      });
+    });
+
+    function flyTo(target) {
+      if (target.lengthSq() < 1) {
+        flyTarget = new THREE.Vector3(0, 26, 132);
+      } else {
+        flyTarget = target.clone().multiplyScalar(1.35).add(new THREE.Vector3(0, 32, 0));
+      }
+      flyLook = target.clone();
+    }
+
+    // ---------- Animate ----------
+    const clock = new THREE.Clock();
+    let lastT = 0;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      const dt = Math.min(t - lastT, 0.05);
+      lastT = t;
+
+      // Auto-shuffle: fire on schedule, then glide every star, hit target and
+      // edge to its fresh deal (ease in-out; clusters move as whole blobs).
+      if (shuffleT0 < 0 && t >= nextShuffleAt) beginShuffle(t);
+      if (shuffleT0 >= 0) {
+        const rawK = Math.min(1, (t - shuffleT0) / SHUFFLE_DURATION);
+        if (rawK >= 1) {
+          shuffleT0 = -1;
+          nextShuffleAt = t + SHUFFLE_INTERVAL;
+        }
+        const k = rawK < 0.5 ? 2 * rawK * rawK : 1 - Math.pow(-2 * rawK + 2, 2) / 2;
+        for (let i = 0; i < nodes.length; i++) {
+          positions[i].lerpVectors(fromPos[i], toPos[i], k);
+          starPos[i*3]   = positions[i].x;
+          starPos[i*3+1] = positions[i].y;
+          starPos[i*3+2] = positions[i].z;
+          nodeMeshes[i].position.copy(positions[i]);
+        }
+        starGeo.attributes.position.needsUpdate = true;
+        for (let ei = 0; ei < edgeLines.length; ei++) updateEdgeGeometry(edgeLines[ei]);
+      }
+
+      // Growth cadence: re-probe MARM periodically and merge new concepts
+      // and connections into the live sky (applyGraph). Deferred while hidden.
+      if (t >= nextAutoRefreshAt) {
+        if (document.visibilityState === 'hidden') nextAutoRefreshAt = t + 90;
+        else { nextAutoRefreshAt = t + REFRESH_INTERVAL_S; refreshGraph(); }
+      }
+
+      // Freshly (re)linked streams ramp up to their base opacity
+      for (let fi = fadingEdges.length - 1; fi >= 0; fi--) {
+        const l = fadingEdges[fi];
+        const k = Math.min(1, (t - l.userData.fadeInAt) / 2.4);
+        l.material.opacity = l.userData.baseOpacity * (k < 1 ? k * k : 1);
+        if (k >= 1) fadingEdges.splice(fi, 1);
+      }
+
+      // Update twinkle shader
+      twinkleMat.uniforms.uTime.value = t;
+
+      // Concept Stars — update shader time + activity sizing
+      conceptStarMat.uniforms.uTime.value = t;
+
+      const sizes = starGeo.attributes.aSize;
+      const cols = starGeo.attributes.aColor;
+      let sizeDirty = false;
+      let colDirty = false;
+
+      nodeMeshes.forEach((m, i) => {
+        const ud = m.userData;
+        const st = activeNodes.get(i);
+        let act = 0;
+        if (st) {
+          act = _stepLevel(st, dt) * st.intensity * _breath(t);
+          if (st.target === 0 && st.level < 0.005) activeNodes.delete(i);
+        }
+        // A slot that just claimed a new concept blooms in from a dim mote
+        let spawn = 1;
+        if (ud.spawnAt != null) {
+          const raw = Math.min(1, (t - ud.spawnAt) / 1.8);
+          if (raw >= 1) ud.spawnAt = null;
+          else spawn = 1 - Math.pow(1 - raw, 3);
+        }
+        const targetSize = ud.baseSize * (ud.hl ? 1.7 : 1) * (1 + act * 0.9) * spawn;
+        if (Math.abs(sizes.array[i] - targetSize) > 0.02) {
+          sizes.array[i] = targetSize;
+          sizeDirty = true;
+        }
+        if (act > 0.05 || spawn < 1) {
+          const c = ud.baseColor;
+          const br = 0.25 + 0.75 * spawn;
+          cols.array[i*3]   = Math.min(1, c.r * br + act * 0.4);
+          cols.array[i*3+1] = Math.min(1, c.g * br + act * 0.4);
+          cols.array[i*3+2] = Math.min(1, c.b * br + act * 0.5);
+          colDirty = true;
+        }
+      });
+      if (sizeDirty) sizes.needsUpdate = true;
+      if (colDirty) cols.needsUpdate = true;
+
+      // Active edges
+      activeEdges.forEach((st, l) => {
+        const lvl = _stepLevel(st, dt);
+        if (st.target === 0 && lvl < 0.005) {
+          l.material.color.copy(l.userData.baseColor);
+          l.material.opacity = l.userData.baseOpacity;
+          activeEdges.delete(l);
+          return;
+        }
+        const glow = lvl * st.intensity * _breath(t);
+        l.material.color.copy(l.userData.baseColor).lerp(WHITE, Math.min(1, glow * 0.5));
+        l.material.opacity = Math.min(0.55, l.userData.baseOpacity + 0.28 * glow);
+      });
+
+      // Deep field drift
+      starGroup.rotation.y += dt * 0.0018;
+      farStars.material.opacity = 0.58;
+      midStars.material.opacity = 0.42;
+      nebulaSprites.forEach(nb => {
+        nb.s.material.opacity = nb.base * (0.92 + 0.08 * Math.sin(t * nb.speed + nb.phase));
+      });
+
+      // Synaptic pulses
+      for (let k = 0; k < PULSES; k++) {
+        const p = pulses[k];
+        if (!p.e) { puPos[k*3] = puPos[k*3+1] = puPos[k*3+2] = 0; continue; }
+        p.t += (dt * p.speed) / Math.max(1, p.e.userData.len);
+        if (p.t > 1) {
+          p.e = edgeLines[Math.floor(Math.random() * edgeLines.length)] || null;
+          p.t = 0;
+          if (p.e) pulseColor(k);
+        }
+        p.e.userData.curve.getPoint(p.t, puTmp);
+        puPos[k*3]   = puTmp.x;
+        puPos[k*3+1] = puTmp.y;
+        puPos[k*3+2] = puTmp.z;
+        const crest = Math.pow(Math.sin(Math.PI * p.t), 0.65);
+        puCol[k*3] = p.r * crest; puCol[k*3+1] = p.g * crest; puCol[k*3+2] = p.b * crest;
+      }
+      puGeo.attributes.position.needsUpdate = true;
+      puGeo.attributes.color.needsUpdate = true;
+
+      // Camera fly
+      if (flyTarget && flyLook) {
+        camera.position.lerp(flyTarget, 0.055);
+        controls.target.lerp(flyLook, 0.055);
+        if (camera.position.distanceTo(flyTarget) < 2.5 && controls.target.distanceTo(flyLook) < 2.5) {
+          flyTarget = null; flyLook = null;
+        }
+      }
+      controls.update();
+      composer.render();
+    }
+    animate();
+
+    console.info('[memoryMap] ready — window.memoryMap.highlightTopics(topics, { intensity, duration }) / window.memoryMap.clearActivity()');
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      composer.setSize(innerWidth, innerHeight);
+      twinkleMat.uniforms.uScale.value = innerHeight * 0.5 * renderer.getPixelRatio();
+    });
+    })();
+  </script>
+</body>
+</html>

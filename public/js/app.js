@@ -927,6 +927,13 @@
           <select class="select small" id="sArtemisCtx">${buildCtxOptions(d.artemisCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
+        <div class="setting-row"><label>Sentry</label>
+          <select class="select" id="sSentry">${orchHtml}</select>
+        </div>
+        <div class="setting-row"><label>Sentry ctx</label>
+          <select class="select small" id="sSentryCtx">${buildCtxOptions(d.sentryCtx)}</select>
+          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+        </div>
         <div class="setting-row"><label>Vulkan</label>
           <select class="select" id="sVulkan">${orchHtml}</select>
         </div>
@@ -1111,6 +1118,8 @@
     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
+    setSelect('sSentry', (d.sentryModel || '').replace(/^local:/, ''));
+    setSelect('sSentryCtx', d.sentryCtx || '');
     setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
     setSelect('sToolcallModel', (d.ollamaChatModel || '').replace(/^local:/, ''));
     setSelect('sToolcallCtx', d.subagentCtx || '');
@@ -1280,6 +1289,8 @@
         globalDefaultModel: stripLocal($('sOrchestrator').value),
         atlasModel: stripLocal($('sAtlas').value),
         artemisModel: stripLocal($('sArtemis').value),
+        sentryModel: stripLocal($('sSentry').value),
+        sentryCtx: $('sSentryCtx').value,
         vulkanModel: stripLocal($('sVulkan').value),
         ollamaChatModel: stripLocal($('sToolcallModel').value),
         drivingForce: $('sDrivingForce').value,

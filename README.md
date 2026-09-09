@@ -56,11 +56,10 @@ A single LLM — the **orchestrator** — runs the show. It's the only thing you
 ```
 You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (large, cloud) → result → Orchestrator → You
                                    → Vulkan (coding, background)
-                                   → Iris (email/calendar/digest)
-                                   → Dexter (scheduling)
-                                   → Byte (projects)
+                                   → Iris (email, calendar, projects)
                                    → Mercury (memory)
-                                   → Oculus (security)
+                                   → Oculus (room awareness)
+                                   → Sentry (security scans)
                                    → Artemis (audit)
                                    → The Council (deliberation)
 ```
@@ -93,7 +92,7 @@ The net effect: you ask once, and the orchestrator owns the outcome — promptin
 
 #### One conversation, one voice
 
-You have one conversation, with one assistant. Atlas, Iris, Dexter, and the rest never see your messages and never speak to you — the orchestrator is the only voice in the chat. It works out what you actually need, composes a self-contained brief for the right specialist, and reports back in its own words when the work is done.
+You have one conversation, with one assistant. Atlas, Iris, and the rest never see your messages and never speak to you — the orchestrator is the only voice in the chat. It works out what you actually need, composes a self-contained brief for the right specialist, and reports back in its own words when the work is done.
 
 ![The orchestrator rewrites casual requests into clean task briefs before delegating](docs/screenshots/fabric.webp)
 
@@ -101,21 +100,19 @@ Your raw message never reaches a specialist. *"hey can you set the volume to lik
 
 ### Sub-Agents
 
-Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercury, and Oculus share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
+Each sub-agent has its own system prompt and toolset. Iris, Oculus, and Sentry share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
 
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
 | **Atlas** | Local or cloud | Shell, browser (DOM control), desktop, files, web search/fetch, documents | Execution — anything that touches the internet or runs commands. |
 | **Vulkan** | Local or cloud | Read, Edit, Grep, Glob, Bash, build & test runs | Coding, scripting, building, heavy bash — editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like Atlas. |
-| **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos | Personal information management. |
-| **Dexter** | Local or cloud (local recommended) | Calendar events (create / list / update / delete) + scheduled tasks (create / list / pause / resume / cancel / update; cron, interval, once) | Scheduling & calendar — builds perfect schedule entries and calendar events; never executes the scheduled tasks. |
-| **Byte** | Local or cloud (local recommended) | Projects, deliverables, blockers, work tasks, time tracking | Work management. |
-| **Mercury** | Local or cloud (local recommended) | Memory summarization + RAG injection | Distills long conversations and memory into the context window each turn. |
+| **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos, scheduling, projects & work tasks | Personal information management — email digests, calendar events, scheduled tasks (cron, interval, once), projects, deliverables, and work tasks. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
-| **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background security & situational-awareness agent. Receives structured JSON AWARENESS events from the desktop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
+| **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background room-awareness agent. Receives structured JSON AWARENESS events from the desktop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
+| **Sentry** | Local or cloud (local recommended) | Bash (read-only), `sentry_report` | Background security scanner — periodically inventories the PC (listening sockets, network connections, running services, autostart, user crontab, enabled units, processes) with no elevated permissions, diffs against a learned baseline, and reports only when something new or suspicious appears. Runs an hourly peek and a daily deep scan; can also be dispatched on demand ("run a security scan"). |
 
-> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Byte, Dexter, Iris, Mercury, and Oculus share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Byte/Dexter/Iris/Mercury/Oculus, so Mercury rides along here) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident.
+> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Iris, Oculus, and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Iris/Oculus/Sentry) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident.
 
 ![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
 
@@ -123,30 +120,30 @@ Each sub-agent has its own system prompt and toolset. Byte, Dexter, Iris, Mercur
 
 ![A Council verdict is returned to the orchestrator](docs/screenshots/council-verdict.png)
 
-### ⏰ Scheduling — Dexter
+### ⏰ Scheduling — Iris
 
-**Dexter is the scheduling and calendar agent. Its entire job is to create and manage schedule entries and calendar events — it never executes the scheduled tasks.**
+**Iris owns the scheduling and calendar side of personal information management. It creates and manages schedule entries and calendar events — it never executes the scheduled tasks.**
 
-The orchestrator owns the intent; Dexter owns the timing. When something needs to happen later, the orchestrator gives Dexter a **prompt** (what to run) and a **when** (the timing intent). Dexter's sole job is to translate that into one flawless schedule entry and hand it to the scheduler. Nothing more. When the ask is an appointment rather than a fire-later task, Dexter writes a **calendar event** (start/end time, location) the same way.
+The orchestrator owns the intent; Iris owns the timing. When something needs to happen later, the orchestrator gives Iris a **prompt** (what to run) and a **when** (the timing intent). For scheduling, Iris's sole job is to translate that into one flawless schedule entry and hand it to the scheduler. Nothing more. When the ask is an appointment rather than a fire-later task, Iris writes a **calendar event** (start/end time, location) the same way.
 
-**What Dexter does:**
+**What Iris does:**
 - Picks the right `schedule_type` — `cron` (recurring at specific times), `interval` (every N ms), or `once` (a single future timestamp) — and writes the `schedule_value` in its exact format.
 - Does the time arithmetic in your **local timezone**, walking the offset digit by digit and verifying computed-time minus now equals the requested interval before committing.
-- Stores the prompt verbatim — at fire time that prompt is injected into the running chat as a message from "Scheduler", and the **orchestrator runs it** like any other message, with full context and all its tools. Dexter set up the schedule; the orchestrator does the work.
+- Stores the prompt verbatim — at fire time that prompt is injected into the running chat as a message from "Scheduler", and the **orchestrator runs it** like any other message, with full context and all its tools. Iris set up the schedule; the orchestrator does the work.
 - Manages the lifecycle of existing entries — list, pause, resume, cancel, update.
 - Creates, lists, updates, and deletes **calendar events** (appointments with start/end time, location) — the calendar side of timing.
+- Everything else personal: email, contacts, todos, projects, and work tasks.
 
-**What Dexter does not do:**
+**What Iris does not do:**
 - It does not execute the scheduled task. Ever. It writes the entry and stops.
-- It does not gather data or do research — if a scheduled prompt needs facts (a price, a status, a number), the orchestrator delegates that to Atlas first and hands Dexter the result to bake into the prompt.
-- It does not diagnose why a task did or didn't fire — that's Artemis's job. Dexter only touches the entry if it needs fixing or recreating.
-- It does not own todos or contacts — those are Iris. A *todo* is a list item; a *reminder that fires at a time* or a *calendar appointment* is Dexter.
+- It does not gather data or do research — if a scheduled prompt needs facts (a price, a status, a number), the orchestrator delegates that to Atlas first and hands Iris the result to bake into the prompt.
+- It does not diagnose why a task did or didn't fire — that's Artemis's job. Iris only touches the entry if it needs fixing or recreating.
 
 **Model:** basic structured output — a small local model (granite) is plenty. The reliability lives in the prompt and the format validation, not in a big model.
 
-The schedule-value format is where scheduling breaks in every system that has one, so Dexter is built to be obsessive about it: it validates the cron expression, rejects malformed intervals and timestamps, refuses timezone suffixes on `once`, and double-checks its own offset math. The point is that the entry is correct the first time, every time, on a model that costs nothing to run.
+The schedule-value format is where scheduling breaks in every system that has one, so Iris is built to be obsessive about it: it validates the cron expression, rejects malformed intervals and timestamps, refuses timezone suffixes on `once`, and double-checks its own offset math. The point is that the entry is correct the first time, every time, on a model that costs nothing to run.
 
-> 🪨 **The toolcall agents (Byte, Dexter, Iris, Mercury, Oculus) are prompted for `granite4.1:3b`.** Their system prompts are tuned to that 3B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 3B local one.
+> 🪨 **The toolcall agents (Iris, Oculus, Sentry) are prompted for `granite4.1:3b`.** Their system prompts are tuned to that 3B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 3B local one.
 
 ### Persistent Runner
 
@@ -211,6 +208,25 @@ The orchestrator writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` �
 
 After every conversation, a **memory writeback** pass runs automatically: a local model reads the last ~30 messages of the chat, distills durable facts (preferences, decisions, context the agent should carry forward), and appends them to `MEMORY.md` with a dated entry in `JOURNAL.md`. The distilled facts are visible to the agent on the very next turn — no manual note-taking, no "remember this" prompts. The writeback is fire-and-forget (never blocks the message loop), throttled to once per chat per 15 minutes, and auto-compacts `MEMORY.md` when it grows too large. Both files live at `WORKSPACE_ROOT` — the same place the orchestrator loads from every turn, and the same place Mercury writes `MERCURY_MEMORY.md`.
 
+#### 🧬 MARM — semantic long-term recall (optional, off by default)
+
+[MARM Memory](https://github.com/Lyellr88/marm-memory) (by [Lyellr88](https://github.com/Lyellr88)) is an **optional** dependency: a local-first memory server that gives the agent recall beyond what `MEMORY.md` can hold. Warden runs identically without it — every MARM path is fail-open — but with it installed you get:
+
+- **Nothing is forgotten.** `MEMORY.md` auto-compacts and drops older lines; MARM keeps every distilled fact the writeback has ever logged, recallable by relevance.
+- **Semantic recall, injected automatically.** Every turn, the runner asks MARM for the memories most relevant to the incoming message and injects the top hits into the orchestrator's prompt — recall doesn't depend on the model remembering to ask. Hybrid BM25 + embedding search, so "why did the streaming app white-page" finds the memory written as "router DNS hijack blocked stremio.com." The orchestrator can still call `marm_smart_recall` directly for a deeper dig.
+- **Linked ideas.** MARM's concept graph connects the logged facts into entity → predicate → entity relations, so separate ideas are pieced together instead of sitting in a flat list.
+
+**Off by default.** A fresh install never references a MARM server that isn't there. To enable it:
+
+1. Install the server (loopback only): `uv tool install marm-mcp-server`. Data lives in `~/.marm/`.
+2. Uncomment `# INSTALL_MARM=1` in `install.sh` and re-run it (or copy the MARM block from `install.sh` by hand). That provisions a `marm-memory.service` systemd --user unit (MCP HTTP at `127.0.0.1:8001`) and wires it into `warden.service` via a drop-in (`warden.service.d/marm.conf`) so it starts with Warden. Delete the drop-in to fully revert.
+3. Enable the `marm` entry in `data/mcp-servers.json` (shipped disabled). The orchestrator is granted `mcp__marm__*` tools — the one MCP server it calls directly, since recall is assistant state, not hands-on work. The `# LONG-TERM RECALL` prompt section is emitted only when the entry is enabled, so a disabled MARM never leaves the model advertised tools it doesn't have.
+
+How it integrates (all built in, none of it requires touching Warden's core):
+
+- The memory writeback mirrors every distilled fact into MARM (`marm_log_entry`, over MCP HTTP) right after appending to `MEMORY.md` — fire-and-forget, with a 10s timeout: MARM down or absent changes nothing. In the other direction, `marm-recall.ts` auto-recalls the top MARM matches for each incoming message (2.5s timeout, ≤3 hits, ≤900 chars, fail-open) and injects them into the orchestrator's prompt as a `# RECALLED MEMORIES` section.
+- The voice app's center panel is the **memory galaxy** (`eyes_ears/ui/memory-galaxy.html`): a 3D constellation of MARM's concept graph — nodes are entities extracted from stored memories, edges are walked relations. Clicking a node opens its details in a separate popup window. The built graph is cached (15 min), so a UI restart doesn't re-probe MARM. With MARM off or the concept graph unbuilt, the galaxy falls back to its built-in demo constellation.
+
 ### 💓 Heartbeat
 
 `HEARTBEAT.md` holds standing instructions the agent executes on schedule via the task scheduler — no prompt from you required. Edit it from the dashboard's Heartbeat panel (or let the agent edit it itself) and the instructions run automatically, giving the agent persistent autonomous behavior between conversations.
@@ -248,7 +264,7 @@ Every model selection in the dashboard is per-role:
 | **Supervisor (watchdog)** | Small local (e.g. granite4.1:3b) | **The running-job self-audit tick is cut out** (see above). The model still runs the **completion verdict** on finished jobs — tool-less, a few hundred tokens per call, falls back to the orchestrator model if unset. The dashboard Supervisor row is removed. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
 | **Vulkan** | Cloud (default) | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
-| **Toolcall agents** | Local (recommended) | Byte, Dexter, Iris, Mercury, and Oculus share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
+| **Toolcall agents** | Local (recommended) | Iris, Oculus, and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
 | **Artemis** | Cloud (default) | Read-only audit. Keep-alive optional. |
 | **Council seats** | Cloud ×3 (different models) | Diverse perspectives for deliberation. |
 
@@ -278,7 +294,7 @@ The agent-runner speaks Ollama's native HTTP API and talks to Ollama directly �
 
 **Optional — piping in Claude:** `src/credential-proxy.ts` (port 3001) is in the codebase but **not wired in by default**. It exists for one case: routing to Anthropic's Claude. It translates Ollama-native requests ↔ Anthropic format and injects the Claude API key so the agent-runner never sees it. If you want Claude, wire the proxy in and point the agent-runner at it; otherwise everything stays on native Ollama.
 
-**Supervisor model & per-iteration thinking.** The running-job self-audit tick is **cut out**; the **completion verdict** still runs on a separate `SUPERVISOR_MODEL` (falls back to the orchestrator model) — a small, tool-less call, so a local model is ideal. Sub-agents think on a per-iteration rule: **Atlas thinks on its first turn only** (plan, then act — paired with the READ-ONCE prompt rule against the re-reading loop); **kimi thinks every turn** (it leaks reasoning as untagged text when thinking is off, so `/^kimi/i` models are forced on); every other sub-agent iteration is `think:false`. The orchestrator has its own dashboard `thinkingMode` (`max` = every turn, `true` = first turn, off otherwise) and thinks on turn 1 by default. Never send `think:true` to a Granite model — Ollama rejects it, so the Granite toolcall agents (byte/dexter/iris) stay on `think:false`.
+**Supervisor model & per-iteration thinking.** The running-job self-audit tick is **cut out**; the **completion verdict** still runs on a separate `SUPERVISOR_MODEL` (falls back to the orchestrator model) — a small, tool-less call, so a local model is ideal. Sub-agents think on a per-iteration rule: **Atlas thinks on its first turn only** (plan, then act — paired with the READ-ONCE prompt rule against the re-reading loop); **kimi thinks every turn** (it leaks reasoning as untagged text when thinking is off, so `/^kimi/i` models are forced on); every other sub-agent iteration is `think:false`. The orchestrator has its own dashboard `thinkingMode` (`max` = every turn, `true` = first turn, off otherwise) and thinks on turn 1 by default. Never send `think:true` to a Granite model — Ollama rejects it, so the Granite toolcall agents (iris/oculus/sentry) stay on `think:false`.
 
 ---
 
@@ -426,7 +442,7 @@ A single email can yield both — the meeting at a stated time is an event; "mak
 
 **Auto-accept** — when `scan:auto_accept` is on, `createActionableItems` writes every row with `confirmed = 1` already, so items skip the inbox entirely and land straight on the calendar/task list. Turn it on from the Actionable tab's toggle or `POST /api/scan/config { "autoAccept": true }`. Off (the default) means everything is `confirmed = 0` and waits in the inbox for your ✓.
 
-**Offline calendar fill** — extracted events are written to the **local** calendar DB (`calendar_source: 'local'`, a fresh `ical_uid`), with no round-trip to Google. That's the "auto-fills the calendar offline" part: your inbox-to-calendar pipeline doesn't depend on any provider being reachable. Online calendars sync the *other* direction — the 15-minute `startCalendarSyncPoller` pulls Google events into the same local DB so the models can read both local and remote in one `list_calendar_events` call. (Dexter manages entries on that local copy: create, list, update, and delete by the uid `list_calendar_events` returns.)
+**Offline calendar fill** — extracted events are written to the **local** calendar DB (`calendar_source: 'local'`, a fresh `ical_uid`), with no round-trip to Google. That's the "auto-fills the calendar offline" part: your inbox-to-calendar pipeline doesn't depend on any provider being reachable. Online calendars sync the *other* direction — the 15-minute `startCalendarSyncPoller` pulls Google events into the same local DB so the models can read both local and remote in one `list_calendar_events` call. (Iris manages entries on that local copy: create, list, update, and delete by the uid `list_calendar_events` returns.)
 
 **Manual run** — the Actionable tab's **Scan now** button (`POST /api/scan/run`) fires the same hourly Iris digest on demand through `triggerDigest('hourly', true)` → identical path → identical extraction. There is no separate scan cron or scan model; the hourly digest cron is the only thing that extracts, and the button is just "run it now."
 
@@ -554,7 +570,7 @@ Warden is an autonomous AI that runs on your own hardware. It can operate fully 
 ### Step 1 — Get the repo
 
 ```bash
-git clone <your-repo-url> warden
+git clone https://github.com/domdoss/Warden.git warden
 cd warden
 ```
 
@@ -650,7 +666,7 @@ tail -f logs/warden.log
 
 ### Tuning the Ollama daemon
 
-Warden drives Ollama as its local model runtime — the orchestrator, the shared Toolcall model (Byte/Dexter/Iris/Mercury/Oculus), and any resident cloud models all live there. The daemon's defaults are tuned for a generic single-user chat client, not an agent loop that fires many short requests across several models, so it's worth overriding them. Create a systemd drop-in for the `ollama` system service:
+Warden drives Ollama as its local model runtime — the orchestrator, the shared Toolcall model (Iris/Oculus/Sentry), and any resident cloud models all live there. The daemon's defaults are tuned for a generic single-user chat client, not an agent loop that fires many short requests across several models, so it's worth overriding them. Create a systemd drop-in for the `ollama` system service:
 
 ```bash
 sudo systemctl edit ollama
@@ -684,7 +700,7 @@ What each line does and why it's here:
 | Setting | What it controls | Why this value |
 |---|---|---|
 | `OLLAMA_NUM_PARALLEL=1` | How many inference requests Ollama will run **concurrently**. The default scales with your CPU count, inviting parallelism. | Warden's orchestrator runs **one conversation at a time** and dispatches one sub-agent at a time. There is no benefit to concurrent inference here — only downside: two models racing for VRAM, evicting each other, or OOMing. Pinning this to `1` serializes requests so a model finishes and frees memory before the next one loads. |
-| `OLLAMA_MAX_LOADED_MODELS=3` | The max number of models Ollama will keep **resident in VRAM at once**. Beyond this, the least-recently-used resident model is evicted. | Room for the three things that matter to Warden: the **orchestrator** (kept alive always), the shared **Toolcall model** (Byte/Dexter/Iris/Mercury/Oculus — so Mercury rides along here), and a third resident model whose keep-alive you've enabled. (The supervisor no longer holds a slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs.) A fourth request simply evicts the LRU rather than OOMing. (Raise or lower this to match your VRAM; the dashboard's keep-alive checkboxes decide *which* models are candidates for these slots.) |
+| `OLLAMA_MAX_LOADED_MODELS=3` | The max number of models Ollama will keep **resident in VRAM at once**. Beyond this, the least-recently-used resident model is evicted. | Room for the three things that matter to Warden: the **orchestrator** (kept alive always), the shared **Toolcall model** (Iris/Oculus/Sentry), and a third resident model whose keep-alive you've enabled. (The supervisor no longer holds a slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs.) A fourth request simply evicts the LRU rather than OOMing. (Raise or lower this to match your VRAM; the dashboard's keep-alive checkboxes decide *which* models are candidates for these slots.) |
 | `OLLAMA_KEEP_ALIVE=30m` | How long a model stays loaded in VRAM **after its last request** before Ollama unloads it. Default is `5m`. | The agent loop issues many short, bursty requests separated by seconds-to-minutes of thinking. At `5m` a model often unloads between turns and you pay the multi-second reload latency on the next call. `30m` keeps models hot across a typical work session so repeated calls hit resident weights. Lower it if you're tight on VRAM and want idle models to release memory sooner. |
 | `OLLAMA_KV_CACHE_TYPE=q8_0` | Quantizes the **KV cache** (the per-token attention state that grows with context length) to 8-bit instead of fp16. | Long agent contexts eat VRAM fast, and the KV cache is where it goes. `q8_0` roughly halves that cache footprint at a negligible quality cost, which is what lets you run longer contexts and keep more models resident (see `OLLAMA_MAX_LOADED_MODELS`) on the same GPU. Leave it fp16 only if you have VRAM to spare and want the last bit of fidelity. |
 
@@ -1114,7 +1130,7 @@ systemctl --user restart warden
 
 Most runtime behavior is controlled from the dashboard at `http://localhost:3200`:
 
-- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Byte/Dexter/Iris/Mercury/Oculus. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
+- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Iris/Oculus/Sentry. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
 - **Servers** — Ollama URL, Whisper URL, video server / Satellite IP, and (after the distributed-roles refactor) Audio/Warden/Video role URLs.
 - **Heartbeat** — scheduled standing instructions.
 - **Skills & MCP** — toggle capabilities and external tools.

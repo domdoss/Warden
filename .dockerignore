@@ -1,0 +1,61 @@
+# Build context is the repo root. The image needs: package.json, package-lock.json,
+# tsconfig.json, src/, container/, public/. Everything else is either build
+# output regenerated in the image, live state owned by volumes, or desktop-only.
+
+# VCS / tooling
+.git
+.gitignore
+.claude
+.pi-edits
+husky
+
+# Regenerated in-image by npm run build
+dist
+node_modules
+container/agent-runner/node_modules
+container/agent-runner/dist
+
+# Live state → volumes, never baked into an image
+store
+store.db
+data
+groups
+home
+logs
+tmp
+telegram-inbox
+*.db
+
+# Secrets / env
+.env
+data/env
+
+# Desktop-only components (host-side processes, documented in docker/README.md)
+eyes_ears
+voice
+satellite
+training
+tests
+docs
+Notes
+public_old_flat_backup
+
+# Archives, backups, one-off patches — junk to the build context
+*.zip
+*.tar.gz
+*.patch
+patch.patch
+dryfire_baseline*.txt
+
+# Misc repo cruft
+*.md
+!README.md
+dockbox-single.zip
+run.sh
+start.sh
+install.sh
+install-deps.sh
+install-macos.sh
+safe-copy.sh
+marm-map-exporter.mjs
+compress-photos.cjs

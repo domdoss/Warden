@@ -447,6 +447,16 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           } catch { /* ignore */ }
           continue;
         }
+        // Sentry scans likewise: the host's checkSentryDue() (src/index.ts)
+        // fires the peek/deep scans directly as background sentry spawns. The
+        // rows exist for visibility + cron editing; skip to avoid double-fire.
+        if (task.id.startsWith('sentry-')) {
+          try {
+            const nextRun = computeNextRun(currentTask);
+            if (nextRun) updateTaskAfterRun(task.id, nextRun, 'skipped (fired by checkSentryDue)');
+          } catch { /* ignore */ }
+          continue;
+        }
 
         void runTask(currentTask, deps);
       }

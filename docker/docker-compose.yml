@@ -1,0 +1,40 @@
+# Warden — host orchestrator + agent-runner in one Arch container.
+# Build from the repo root (the build context is .. so .dockerignore at the
+# repo root applies):   docker compose -f docker/docker-compose.yml up -d
+services:
+  warden:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: warden:latest
+    container_name: warden
+    ports:
+      - "3200:3200"          # dashboard/API (STATUS_PORT, default 3200)
+    environment:
+      # Ollama runs on the HOST, not in this container. host-gateway maps
+      # host.docker.internal to the host's bridge IP — the same trick the
+      # containerless setup used to do with 172.17.0.1. If you would rather
+      # share the host network entirely (localhost:11434 keeps working),
+      # replace this block with `network_mode: host` and drop ports/extra_hosts.
+      - OLLAMA_URL=http://host.docker.internal:11434
+      # MARM (if enabled) also stays on the host for now — same gateway IP.
+      # - MARM_URL=http://host.docker.internal:8001
+      - WORKSPACE_ROOT=/data
+      # - STATUS_PORT=3200
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Agent workspace: groups/, uploads, attachments, MEMORY.md — also the
+      # cwd of every spawned agent-runner child. Drop an mcp-servers.json in
+      # here; the runner reads its MCP config from the workspace.
+      - warden-workspace:/data
+      # SQLite store (messages.db) — cwd-relative /app/store in the image.
+      - warden-store:/app/store
+      # The env file the host reads (data/env/env) and rewrites at runtime.
+      - warden-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  warden-workspace:
+  warden-store:
+  warden-data:

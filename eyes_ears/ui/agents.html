@@ -180,6 +180,8 @@
   }
   .pop-field select:focus{border-color:rgba(0,255,136,0.5);box-shadow:0 0 8px rgba(0,255,136,0.12)}
   .pop-field select option{background:#001828;color:#cfefff}
+  .pop-field .pop-note{font-size:9px;line-height:1.45;color:rgba(160,200,220,0.75);margin-top:4px;
+    display:none}
   .pop-status{font-size:9px;min-height:12px;margin-bottom:8px;letter-spacing:0.5px;
     font-family:'Courier New',monospace}
   .pop-status.ok{color:rgba(0,255,136,0.7)}
@@ -222,6 +224,7 @@
       <div class="pop-field">
         <label>Model</label>
         <select id="pop-model"></select>
+        <div class="pop-note" id="pop-note"></div>
       </div>
       <div class="pop-field">
         <label>Context (num_ctx)</label>
@@ -268,7 +271,6 @@
     orchestrator:'#ffaa00',
     iris:'#ff66aa',
     atlas:'#00ff88',
-    dexter:'#00ccff',
     mercury:'#c8d4e0',
     sentry:'#ff4444',
     artemis:'#ff8800',
@@ -281,7 +283,6 @@
     orchestrator:'⬡',
     iris:'✉',
     atlas:'⚡',
-    dexter:'📅',
     mercury:'☿',
     sentry:'🛡',
     artemis:'🔍',
@@ -293,9 +294,8 @@
   // live group phase below.
   var KNOWN_AGENTS=[
     {key:'orchestrator',name:'Orchestrator',channel:'owner'},
-    {key:'iris',name:'Iris',channel:'email'},
+    {key:'iris',name:'Iris',channel:'email & calendar'},
     {key:'atlas',name:'Atlas',channel:'research'},
-    {key:'dexter',name:'Dexter',channel:'calendar'},
     {key:'mercury',name:'Mercury',channel:'memory'},
     {key:'artemis',name:'Artemis',channel:'browser'},
     {key:'sentry',name:'Sentry',channel:'security'},
@@ -367,7 +367,7 @@
       if(g.liveTs)card.ts=(g.liveTs||0)*1000;
     });
 
-    // Add subagent cards from progress events (iris, atlas, dexter, etc.)
+    // Add subagent cards from progress events (iris, atlas, etc.)
     Object.keys(latestByPhase).forEach(function(agent){
       if(seen[agent])return; // already have a card from groups
       seen[agent]=true;
@@ -506,19 +506,19 @@
   // ── Per-agent model + ctx popover ──────────────────────────────────────
   // Click an agent card → open a popover with that agent's Model + Ctx
   // dropdowns (populated from Warden's /api/ollama/test + /api/settings).
-  // Save writes the per-agent keys back via POST /api/settings. The model
+  // Save writes the keys back via POST /api/settings. The model
   // dropdown has no blank option — every agent always has a concrete model.
-  // NOTE: Dexter/Iris/Mercury/Sentry now share the Toolcall model/ctx
-  // (local:subagent_model/_ctx), but the popover still reads the replicated
-  // per-agent fields the server returns for display purposes.
+  // NOTE: Sentry has its OWN model/ctx wires (sentry:model / local:sentry_ctx)
+  // — the server returns the effective value (with the shared Toolcall model
+  // as fallback) in sentryModel/sentryCtx, and saving writes Sentry's wire
+  // only. Iris stays on the shared Toolcall model/ctx.
   var AGENT_SETTINGS_KEYS = {
     orchestrator:{name:'Orchestrator',model:'globalDefaultModel',ctx:'orchestratorCtx'},
     atlas:{name:'Atlas',model:'atlasModel',ctx:'atlasCtx'},
     artemis:{name:'Artemis',model:'artemisModel',ctx:'artemisCtx'},
-    dexter:{name:'Dexter',model:'dexterModel',ctx:'dexterCtx'},
-    iris:{name:'Iris',model:'irisModel',ctx:'irisCtx'},
+    iris:{name:'Iris',model:'irisModel',ctx:'irisCtx',note:'Email, calendar, and work tasks.'},
     vulkan:{name:'Vulkan',model:'vulkanModel',ctx:'vulkanCtx'},
-    sentry:{name:'Sentry',model:'sentryModel',ctx:'sentryCtx'},
+    sentry:{name:'Sentry',model:'sentryModel',ctx:'sentryCtx',note:'Security scans of the PC — speaks only when something looks wrong.'},
     mercury:{name:'Mercury',model:'mercuryModel',ctx:'mercuryCtx'}
   };
   var CTX_OPTIONS=['',2048,4096,8192,16384,32768,65536,128000];
@@ -590,6 +590,8 @@
     var cfg=AGENT_SETTINGS_KEYS[key];
     if(!cfg)return;
     currentAgent=key;
+    var popNote=document.getElementById('pop-note');
+    if(popNote){ popNote.textContent=cfg.note||''; popNote.style.display=cfg.note?'block':'none'; }
     popName.textContent=cfg.name;
     popIcon.textContent=AGENT_ICONS[key]||'●';
     popIcon.style.color=AGENT_COLORS[key]||'#00ff88';

@@ -72,6 +72,7 @@ import {
   markCalendarReminderFired,
   getTaskById,
   getSatelliteIp,
+  logSentryScan,
   createAlarm,
   getUserAlarms,
   updateAlarm,
@@ -1392,6 +1393,86 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       return awarenessLog(args);
     },
 
+    // Sentry scan submission. The agent collects the raw inventory with Bash,
+    // JUDGES it itself (a smart model knows what a normal Linux desktop looks
+    // like), and submits it ONCE with its `suspicious` flags. THIS handler
+    // only logs the scan row and relays the flags — no baseline, no host-side
+    // diff. Clean scans are logged and silent.
+    sentry_report: async (args: any) => {
+      try {
+        const mode = args?.mode === 'deep' ? 'deep' : 'peek';
+        const arr = (v: any): string[] =>
+          Array.isArray(v) ? v.map((x: any) => String(x).trim()).filter(Boolean) : [];
+        const inventory: Record<string, string[]> = {
+          listening: arr(args?.listening),
+          connections: arr(args?.connections),
+          services: arr(args?.services),
+        };
+        if (mode === 'deep') {
+          inventory.autostart = arr(args?.autostart);
+          inventory.crontab = arr(args?.crontab);
+          inventory.units = arr(args?.units);
+        }
+        const suspicious = arr(args?.suspicious);
+        const nowIso = new Date().toISOString();
+        const checked = Object.values(inventory).reduce((n, a) => n + a.length, 0);
+        const verdict = suspicious.length > 0 ? 'FINDINGS' : 'CLEAN';
+
+        logSentryScan({
+          ts: nowIso,
+          mode,
+          verdict,
+          summary: `${checked} items checked${suspicious.length ? `, ${suspicious.length} finding(s)` : ''}`,
+          rawJson: JSON.stringify(inventory),
+          findingsJson: JSON.stringify(suspicious),
+        });
+
+        // Speak only when something's wrong. Dedup announcements: a flag
+        // spoken once stays quiet while it keeps appearing, and a clean scan
+        // clears the set so anything that reappears later speaks again.
+        let fresh = suspicious;
+        if (suspicious.length > 0) {
+          let reported = new Set<string>();
+          try { reported = new Set(JSON.parse(getRouterState('sentry:reported') || '[]')); } catch { /* fresh set */ }
+          fresh = suspicious.filter((f) => !reported.has(f));
+          if (fresh.length > 0) {
+            reported = new Set([...reported, ...fresh]);
+            setRouterState('sentry:reported', JSON.stringify([...reported].slice(-200)));
+            const text = `🛡 Security scan found something new:\n${fresh.map((f) => `• ${f}`).join('\n')}`;
+            const messageId = `sentry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            storeMessage({
+              id: messageId,
+              chat_jid: OWNER_JID,
+              sender: 'assistant:sentry',
+              sender_name: '🛡 Sentry',
+              content: text,
+              timestamp: nowIso,
+              is_from_me: false,
+              is_bot_message: true,
+            });
+            await Promise.allSettled(
+              channels.map((ch) =>
+                ch.sendMessage(OWNER_JID, text).catch((err) =>
+                  logger.warn({ channel: ch.name, err }, 'Failed to deliver Sentry finding to channel'),
+                ),
+              ),
+            );
+          }
+        } else {
+          setRouterState('sentry:reported', '[]');
+        }
+
+        const verdictText =
+          verdict === 'CLEAN'
+            ? `CLEAN — ${checked} items checked, nothing looked wrong.`
+            : `FINDINGS — ${suspicious.length} item(s) flagged${fresh.length < suspicious.length ? ` (${fresh.length} new)` : ''}: ${suspicious.join('; ').slice(0, 400)}`;
+        return { ok: true, verdict: verdictText };
+      } catch (err: any) {
+        logger.warn({ err }, 'sentry_report: failed');
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
     // Oculus watch-out-for match: copy the latest fetched frame into the owner's
     // uploads tree (groups/owner/oculus/<ts>.jpg) so the user can review it later,
     // and return the uploads path. Silent — no message to the user. Called by the
@@ -2133,6 +2214,10 @@ async function processOwnerMessages(): Promise<void> {
     // local:subagent_model).
     irisModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
     artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
+    // Sentry (software-security scanner) has its own model row; blank inherits
+    // the ORCHESTRATOR model (not the shared toolcall wire — Sentry is meant
+    // to run on the big resident model, and only diverges if explicitly set).
+    sentryModel: (getRouterState('sentry:model') || getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     drivingForce: getRouterState('orchestrator:driving_force') || '',
     contextClearAt: getRouterState('orchestrator:context_clear_at') || '',
     councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
@@ -2255,7 +2340,7 @@ const IRIS_DIGEST_TASKS = [
   {
     id: 'iris-digest-weekly',
     cron: '30 20 * * 0',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 200, preview_only true). Do not invent your own timestamps. Pick the 6-10 most relevant.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 200, preview_only true). Do not invent your own timestamps. Pick the 6-10 most relevant. For each picked email, write its list item from that email\'s actual snippet/body in the read_emails result — one short line saying what the email is about, grounded in its content. Do not invent details the email does not contain.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing). Every "items" entry in every block is ONE plain string — never an object, never a nested list:\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>) — <one short line saying what the email says, from its snippet/body>"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
 ];
 
@@ -2575,6 +2660,162 @@ async function checkDigestsDue(): Promise<void> {
   }
 }
 
+// ── Sentry: scheduled software-security scans ──────────────────────────────
+// Sentry (reborn 2026-09-08 — the old webcam-awareness Sentry died with the
+// oculus consolidation) is the antivirus-like background scanner: hourly PEEK
+// (listening sockets, established connections, running services) + daily DEEP
+// (adds autostart, user crontab, enabled user units, rc-file/process audit).
+// It runs with NO elevated permissions — every scan command is user-readable.
+// The agent runs the commands, JUDGES the output itself (it's an
+// orchestrator-class model that knows what a normal Linux desktop looks like),
+// and submits once via sentry_report with its suspicious flags; THAT HOST
+// CALLBACK logs the scan row to sentry_scans and relays the flags, posting a
+// chat message ONLY when something's wrong. No baseline, no host-side diff.
+// Scheduled
+// scans bypass the chat pipeline exactly like the iris digests: scheduled_tasks
+// rows (visibility + cron editing in the Sched UI) fired by checkSentryDue()
+// on the poll loop, spawning the sentry child directly. Clean scans are silent.
+
+function resolveSentryModel(): string {
+  // Sentry has its own model wire (sentry:model — the dashboard Sentry row).
+  // Unset, it inherits the ORCHESTRATOR model — never the shared toolcall
+  // wire, which is the small model this setting exists to get away from.
+  return (getRouterState('sentry:model') || getRouterState('orchestrator:model') || '')
+    .trim().replace(/^local:/, '');
+}
+
+const SENTRY_TASK_DEFS = [
+  { id: 'sentry-peek', mode: 'peek' as const, cron: '23 * * * *', prompt: 'Run a PEEK (fast) security scan of the PC: listening sockets, established connections, running services. Collect every category, then submit the inventory once with sentry_report.' },
+  { id: 'sentry-deep', mode: 'deep' as const, cron: '17 4 * * *', prompt: 'Run a DEEP (full) security scan of the PC: listening sockets, established connections, running services, autostart entries, user crontab, enabled user units, shell rc files, and a process audit. Collect every category, then submit the inventory once with sentry_report.' },
+];
+
+function seedSentryTasks(): void {
+  const existing = new Map((getAllTasks() ?? []).map((t) => [t.id, t]));
+  for (const t of SENTRY_TASK_DEFS) {
+    const found = existing.get(t.id);
+    // Same re-sync policy as the Iris digests: prompt fixes propagate, the
+    // cron does NOT (the user customizes it in the Sched UI and a re-seed
+    // would revert their chosen time on every restart).
+    if (found) {
+      if (found.prompt !== t.prompt) {
+        updateTask(t.id, { prompt: t.prompt });
+        logger.info({ taskId: t.id }, 'updated Sentry scan task prompt');
+      }
+      continue;
+    }
+    createTask({
+      id: t.id,
+      chat_jid: OWNER_JID,
+      prompt: t.prompt,
+      schedule_type: 'cron',
+      schedule_value: t.cron,
+      context_mode: 'isolated',
+      next_run: computeNextRun({
+        id: t.id, chat_jid: OWNER_JID, prompt: t.prompt,
+        schedule_type: 'cron', schedule_value: t.cron,
+        context_mode: 'isolated', next_run: null,
+        last_run: null, last_result: null, status: 'active', created_at: '',
+      }),
+      status: 'active',
+      created_at: new Date().toISOString(),
+    });
+    logger.info({ taskId: t.id, cron: t.cron }, 'seeded Sentry scan task');
+  }
+}
+
+let sentryScanBusy = false;
+
+/** Fire a Sentry scan (peek or deep) as a direct background child spawn — no
+ *  orchestrator, no chat pipeline. Used by checkSentryDue() for the scheduled
+ *  scans; also exported so an API route / future automation can trigger one. */
+export function runSentryScan(mode: 'peek' | 'deep'): { ok: boolean; error?: string } {
+  const model = resolveSentryModel();
+  if (!model) {
+    logger.warn({ mode }, 'runSentryScan: no sentry model configured (sentry:model) — skipping');
+    return { ok: false, error: 'no sentry model configured (set sentryModel in the Agents panel)' };
+  }
+  const baked = SENTRY_TASK_DEFS.find((t) => t.mode === mode);
+  const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
+  // Already-announced findings (sentry:reported) go to the model verbatim so a
+  // recurring item can be phrased EXACTLY the same — the host silences exact
+  // repeats, and paraphrases would defeat that. The host only relays; the
+  // model stays the analyst.
+  let alreadyReported = '';
+  try {
+    const reported = JSON.parse(getRouterState('sentry:reported') || '[]');
+    if (Array.isArray(reported) && reported.length) {
+      alreadyReported =
+        `\nFindings already announced to the user (they stay silenced unless your wording matches exactly — if one of these is still present, re-flag it VERBATIM from this list; only list it again if it got worse):\n` +
+        reported.map((r: string) => `- ${r}`).join('\n') + '\n\n';
+    }
+  } catch { /* unparseable dedup state — scan without it */ }
+  const task =
+    `Current local time is ${localNow} (timezone ${tz}).\n\n` +
+    `${baked?.prompt ?? 'Run a security scan of the PC, then submit the inventory once with sentry_report.'}\n\n` +
+    alreadyReported +
+    `This is a scheduled ${mode} scan. Submit your inventory with sentry_report and stop.`;
+  logger.info({ mode, model }, 'runSentryScan: spawning sentry directly');
+  runSubAgentBackground({
+    agent: 'sentry',
+    prompt: task,
+    model,
+    sessionId: 'owner',
+    workspaceRoot: WORKSPACE_ROOT,
+    chatJid: OWNER_JID,
+    groupFolder: 'owner',
+    isMain: true,
+    timeoutMs: 10 * 60 * 1000, // deep scans run many read commands; generous but bounded
+    callbacks: buildAgentCallbacks(),
+  } as any);
+  return { ok: true };
+}
+
+/** Scheduled-scan monitor, riding the same poll loop as checkDigestsDue().
+ *  Fires runSentryScan(mode) when the live cron (from the scheduled_tasks row,
+ *  so the user can edit it in the Sched UI) is due. Pause/resume via the row
+ *  status. Never throws, never blocks message pickup. */
+function checkSentryDue(): void {
+  if (sentryScanBusy) return;
+  sentryScanBusy = true;
+  try {
+    const now = Date.now();
+    for (const t of SENTRY_TASK_DEFS) {
+      const row = getTaskById(t.id);
+      if (row && row.status !== 'active') continue;
+      const cron = row?.schedule_value || t.cron;
+      const lastrunKey = `sentry:lastrun:${t.mode}`;
+      const last = getRouterState(lastrunKey);
+      if (!last) {
+        // First boot: seed lastrun to now so the first scan fires at the next
+        // cron slot, not immediately on startup.
+        setRouterState(lastrunKey, new Date(now).toISOString());
+        continue;
+      }
+      let nextFireMs: number;
+      try {
+        nextFireMs = CronExpressionParser.parse(cron, {
+          tz: TIMEZONE,
+          currentDate: new Date(last),
+        }).next().getTime();
+      } catch {
+        continue;
+      }
+      if (now >= nextFireMs) {
+        setRouterState(lastrunKey, new Date(now).toISOString());
+        logger.info({ mode: t.mode, cron }, 'checkSentryDue: firing scheduled security scan');
+        try {
+          runSentryScan(t.mode);
+        } catch (err) {
+          logger.warn({ mode: t.mode, err }, 'runSentryScan failed');
+        }
+      }
+    }
+  } finally {
+    sentryScanBusy = false;
+  }
+}
+
 // ── Actionable extraction (part of Iris's hourly digest) ────────────────
 // Iris's hourly digest emits actionable_tasks / actionable_events in its JSON;
 // the host creates real work-task / calendar-event rows from them (see
@@ -2769,6 +3010,10 @@ async function startMessageLoop(): Promise<void> {
       // timer. Fires runDigest(span) directly (Iris, no chat) when a baked-in
       // cron schedule is due. Fire-and-forget; never blocks message pickup.
       void checkDigestsDue();
+      // Sentry schedule monitor: same poll-loop pattern — fires the hourly
+      // peek / daily deep security scans directly as background sentry
+      // spawns (no chat, no orchestrator turn) when their cron is due.
+      void checkSentryDue();
       // Mercury compaction scheduler: same poll loop, time/downtime trigger.
       // Fire-and-forget; idle-gated + shared cleaner lock so it never overlaps
       // a turn or another cleaner.
@@ -2996,32 +3241,26 @@ function startChromeWatchdog(): void {
  */
 function seedPerAgentModelSettings(): void {
   const orch = getRouterState('orchestrator:model') || '';
-  // The five toolcall agents share one model/ctx (local:subagent_model/_ctx),
-  // written by the dashboard "Toolcall model" row. On the first boot after this
-  // consolidation, preserve the user's current toolcall agent model (Iris is the
-  // representative one — typically granite4.1:8b) and ctx so nothing changes.
+  // MODELS ONLY. num_ctx is NEVER seeded or hardcoded here — every ctx value
+  // lives in the settings (router_state local:*_ctx, written by the Agents
+  // panel) and syncAgentCtxEnv copies it to the env verbatim. Baking a ctx
+  // "default" here has repeatedly overridden the user's chosen settings.
   const toolcall = getRouterState('local:subagent_model')
     || getRouterState('iris:model')
     || orch;
-  const toolcallCtx = getRouterState('local:subagent_ctx')
-    || getRouterState('local:iris_ctx')
-    || '';
-  const subagent = toolcall;
   const atlas = getRouterState('atlas:model') || orch;
-  const toolsCtx = toolcallCtx;
-  const atlasCtx = getRouterState('local:atlas_ctx') || '';
   const seed = (key: string, value: string) => {
     if (!getRouterState(key) && value) setRouterState(key, value);
   };
-  // Seed the shared toolcall model/ctx (the real runtime source for the 5 agents).
+  // Seed the shared toolcall model (the real runtime source for the toolcall
+  // agents: Iris, Sentry). ctx is NOT seeded — settings only.
   seed('local:subagent_model', toolcall);
-  seed('local:subagent_ctx', toolcallCtx);
   // Orchestrator has historically been resident (keep_alive -1); materialize that
   // as the default so the checkbox reflects reality. Toolcall/Atlas stay unset →
   // the runner defaults to 300 (their historic sub-agent TTL).
   seed('local:orch_keep_alive', '-1');
   // New per-agent model keys inherit the legacy shared value.
-  seed('iris:model', subagent);
+  seed('iris:model', toolcall);
   seed('artemis:model', atlas);
   // Existing keys that previously fell back to orchestrator at runtime — seed
   // them too so that runtime fallback can be removed without breaking agents.
@@ -3038,13 +3277,6 @@ function seedPerAgentModelSettings(): void {
   // work as stuck. The user can toggle it off or change the interval in settings.
   seed('supervisor:enabled', 'true');
   seed('supervisor:interval_ms', '600000');
-  // ctx — preserve each agent's current effective value.
-  seed('local:iris_ctx', toolsCtx);
-  seed('local:artemis_ctx', atlasCtx);
-  // Oculus bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
-  // materialize that as its ctx setting so the hardcoded bake can be removed.
-  seed('local:oculus_ctx', '8192');
-  // Vulkan had no ctx override (native window) — leave it blank (native).
 }
 
 /**
@@ -3075,6 +3307,8 @@ export function syncAgentCtxEnv(): void {
     getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.OCULUS_NUM_CTX =
     getRouterState('local:oculus_ctx') || getRouterState('local:subagent_ctx') || '';
+  process.env.SENTRY_NUM_CTX =
+    getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
@@ -3120,12 +3354,38 @@ async function warmResidentOllamaModels(): Promise<void> {
   ];
   for (const model of toWarm) {
     try {
+      // Warm at the SAME num_ctx the settings page configures for this model —
+      // a warmup load at Ollama's default ctx creates a resident instance that
+      // the first real request (at the settings ctx) immediately discards and
+      // reloads, defeating the warmup. ctx is 100% settings-derived: no literal.
+      const ctxFor = (m: string): number | undefined => {
+        if (m === (getRouterState('local:subagent_model') || '').replace(/^local:/, '').trim()) {
+          const n = parseInt(getRouterState('local:subagent_ctx') || '', 10);
+          return n > 0 ? n : undefined;
+        }
+        if (m === (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim()) {
+          const n = parseInt(getRouterState('local:orchestrator_ctx') || '', 10);
+          return n > 0 ? n : undefined;
+        }
+        if (m === (getRouterState('atlas:model') || '').replace(/^local:/, '').trim()) {
+          const n = parseInt(getRouterState('local:atlas_ctx') || '', 10);
+          return n > 0 ? n : undefined;
+        }
+        return undefined;
+      };
+      const numCtx = ctxFor(model);
       const res = await fetch(`${OLLAMA_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt: ' ', keep_alive: -1, stream: false }),
+        body: JSON.stringify({
+          model,
+          prompt: ' ',
+          keep_alive: -1,
+          stream: false,
+          ...(numCtx ? { options: { num_ctx: numCtx } } : {}),
+        }),
       });
-      logger.info({ model, ok: res.ok }, 'Warmed resident Ollama model');
+      logger.info({ model, ok: res.ok, numCtx: numCtx || 'native' }, 'Warmed resident Ollama model');
     } catch (err) {
       logger.warn({ model, err }, 'Model warmup failed (non-fatal)');
     }
@@ -3146,6 +3406,10 @@ async function main(): Promise<void> {
   // scheduled_tasks rows so they show in the Sched tab and the host poll loop
   // can fire them. Re-syncs the prompt/cron when the baked values change.
   seedIrisDigestTasks();
+  // Seed the two Sentry security scans (hourly peek / daily deep) the same
+  // way: scheduled_tasks rows for visibility + cron editing, fired by
+  // checkSentryDue() on the poll loop.
+  seedSentryTasks();
   // Materialize a concrete per-agent model + ctx for every agent from the
   // legacy shared values BEFORE any agent runs, so every Agents-panel dropdown
   // is populated (no blank) and the agent-runner never sees an empty key. This

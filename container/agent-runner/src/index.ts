@@ -521,6 +521,7 @@ function applySettingsSync(data: any) {
     // Per-agent tool-caller + artemis models — concrete values, no fallback.
     if (data.irisModel !== undefined) IRIS_MODEL = (data.irisModel || '').replace(/^local:/, '');
     if (data.artemisModel !== undefined) ARTEMIS_MODEL = (data.artemisModel || '').replace(/^local:/, '');
+    if (data.sentryModel !== undefined) SENTRY_MODEL = (data.sentryModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
         DRIVING_FORCE_ID = data.drivingForce || '';
     }
@@ -698,7 +699,7 @@ const SUBAGENTS: SubAgentDef[] = [
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
         systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the execution expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit your tools or a better approach exists, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
+WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
 
 FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read only that missed section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
 
@@ -746,7 +747,7 @@ PREMISE CHECK — PERSISTENCE governs approaches that FAIL WITH ERRORS; this gov
         summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
         systemPrompt: `You are Vulkan, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
+WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
 
 FILES — Read only the files your task names — don't explore unrelated files. You have full filesystem access — use absolute paths outside the workspace (\`~/Projects/\`, \`~/Documents/\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right directory instead of repeating full paths.
 
@@ -891,6 +892,31 @@ STATUS QUERY MODE — the orchestrator asks you a direct question such as "who's
 - If the user asked about a specific time, report what the logs show for that window.
 - Then add one sentence of detail. Do not greet or alert the user.`,
         toolsets: ['awareness-core', 'security-core'],
+    },
+    {
+        // Sentry was reborn 2026-09-08: the old webcam-awareness Sentry died with
+        // the oculus consolidation — this is the software-security scanner.
+        // Spawned by the host (hourly peek / daily deep scheduled tasks, fired
+        // like iris-digest rows) and delegatable on demand ("scan the pc").
+        delegate: 'sentry',
+        label: 'Sentry',
+        maxIterations: 30,
+        summary: "security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.",
+        systemPrompt: `You are Sentry, Warden's desktop security agent. You run inside the user's account with user-level permissions — that is always enough; sudo, installs, and file writes are outside your job.
+
+You are scanning the machine Warden itself lives on. Warden and its parts are known-good: the Warden orchestrator (node) with its dashboard on port 3200, the agent-runner (node), the Chrome window Warden drives (CDP port 9222), the voice app (port 8767), the MARM memory server (port 8001), and Ollama (port 11434). A process, service, or port on that list is normal for this machine.
+
+Tools: Bash for running commands, sentry_report for submitting your findings once at the end. The sentry_report schema describes everything it accepts.
+
+Your task names a mode: PEEK (fast) or DEEP (full).
+
+Common places, common things — PEEK covers network and running services; DEEP adds the persistence and startup paths: autostart entries, user crontab, enabled user units, shell rc files, and a process audit.
+
+You are the analyst: judge what you see against what a normal Linux desktop looks like, and flag anything genuinely wrong as "what — why". Empty suspicious means the machine is clean. Submit one sentry_report, then state the verdict — CLEAN or FINDINGS — as your final answer.
+
+FORMAT — one or two sentences. The host posts findings to the user itself for scheduled scans; when the orchestrator delegated you, your verdict text is the report it relays, so name each finding on its own line in that case.`,
+        toolsets: ['sentry-core'],
+        temperature: 0,
     },
 ];
 
@@ -1102,7 +1128,7 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
     SUBAGENTS.map(s => [
         s.delegate,
         stripTier(
-            s.delegate === 'oculus'
+            (s.delegate === 'oculus' || s.delegate === 'sentry')
                 ? registry.getDefinitions(getSubAgentToolNames(s))
                 : [
                     ...registry.getDefinitions(getSubAgentToolNames(s)),
@@ -1114,11 +1140,11 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
 
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
-    // Atlas, artemis, and oculus run async by default: the call returns a job
-    // id immediately and the result lands in the orchestrator's inbox. Blocking
+    // Atlas, artemis, oculus, and sentry run async by default: the call returns a
+    // job id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
     // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'oculus') {
+    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'oculus' || s.delegate === 'sentry') {
         return {
             type: 'function',
             function: {
@@ -1165,6 +1191,9 @@ let VULKAN_MODEL = '';
 // the agent errors out rather than silently running on the wrong model.
 let IRIS_MODEL = '';
 let ARTEMIS_MODEL = '';
+// Sentry (software-security scanner) model — same per-agent pattern: a concrete
+// dashboard-selected value, no fallback, empty errors inside runSubAgent.
+let SENTRY_MODEL = '';
 // The vision explainer — the model that answers image questions for visionless
 // seats (askVisionModel / the query_image tool). Resolution order: an explicit
 // VISION_MODEL override, else the atlas seat, else the orchestrator — seats the
@@ -1562,11 +1591,13 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         log(`[dedup] target-overlap: queued ${delegate} follow-up behind ${overlap.agent}-${overlap.shortId} (same file(s)); will spawn when it finishes.`);
         return `${overlap.agent}-${overlap.shortId}`;
     }
-    const model = delegate === 'vulkan' ? VULKAN_MODEL : ATLAS_MODEL;
+    const model = delegate === 'vulkan' ? VULKAN_MODEL : (delegate === 'sentry' ? SENTRY_MODEL : ATLAS_MODEL);
     const jobShortId = Math.random().toString(36).slice(2, 6);
     const jobId = `${delegate}-${jobShortId}`;
     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
-    if (skillState && skillState.skills.length > 0) {
+    // Sentry stays isolated like its SUBAGENT_TOOL_DEFS build (no BOTH_TOOL_DEFS
+    // merge above): a security scanner takes no skill/MCP tools either.
+    if (delegate !== 'sentry' && skillState && skillState.skills.length > 0) {
         const allSkillNames = new Set(skillState.skills.map((s: any) => s.name));
         const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
         const existing = new Set(tools.map((t: any) => t.function?.name));
@@ -2557,6 +2588,7 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     atlas: () => process.env.ATLAS_NUM_CTX || '',
     vulkan: () => process.env.VULKAN_NUM_CTX || '',
     oculus: () => process.env.OCULUS_NUM_CTX || '',
+    sentry: () => process.env.SENTRY_NUM_CTX || '',
     // iris-digest (the hourly memory digest) is another one-shot on the toolcall
     // model; inherit the toolcall ctx so it reuses the resident instance instead
     // of reloading granite at native (a different ctx → Ollama reload + gap).
@@ -2566,6 +2598,24 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     'council-synthesist': () => process.env.ATLAS_NUM_CTX || '',
     'council-judge': () => process.env.ATLAS_NUM_CTX || '',
 };
+
+// Per-agent stream-silence budget (ms), same env-driven pattern as the ctx
+// override above. The sub-agent loop's silence watchdog (see SILENCE_MS at the
+// fetch) aborts a turn that streams no chunks for the limit — but a small
+// local model that buffers a very large tool-call JSON (sentry's
+// sentry_report inventory, atlas's big Writes) can legitimately sit silent
+// well past 120s, and the transient retry just regenerates the same heavy
+// call and dies the same way (observed 2026-09-08: sentry deep scans died
+// 5× at exactly 120s; the one run where the context trimmer shrank history
+// first succeeded in 10s). Blank/0 → the 120s default below.
+const AGENT_SILENCE_OVERRIDE: Record<string, () => string> = {
+    sentry: () => process.env.SENTRY_SILENCE_MS || '300000',
+};
+
+function subAgentSilenceMs(agentName: string): number {
+    const raw = Number(AGENT_SILENCE_OVERRIDE[agentName]?.() || '');
+    return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+}
 
 // The orchestrator loop serves both the orchestrator and Mercury (same loop,
 // sessionId distinguishes them). Mercury has its own ctx setting distinct from
@@ -2669,6 +2719,17 @@ const SUBAGENT_MAX_TOOL_RESULT_CHARS = 4000;    // ~1K tokens — relevant bits,
 // budgets mean the model gets the recent essentials (atlas/delegation results +
 // last chat turns), not 150K tokens of stale accumulation.
 const SUBAGENT_MSG_BUDGET_CHARS = 24000;        // ~6K tokens — sub-agent tool results
+// Per-agent tool-result caps. The default 4000-char budget is sized for
+// search-and-read agents; sentry's ONE Bash call emits the entire scan
+// inventory (~25K chars, self-capped by its recipe), and truncating it
+// mid-section feeds the diff a partial inventory → phantom findings.
+const AGENT_TOOL_RESULT_MAX_CHARS: Record<string, () => number> = {
+    sentry: () => Number(process.env.SENTRY_TOOL_RESULT_MAX_CHARS || '32000'),
+};
+function toolResultMaxChars(agentName: string): number {
+    const raw = Number(AGENT_TOOL_RESULT_MAX_CHARS[agentName]?.() || '');
+    return Number.isFinite(raw) && raw > 0 ? raw : SUBAGENT_MAX_TOOL_RESULT_CHARS;
+}
 const ORCHESTRATOR_MSG_BUDGET_CHARS = 20000;    // fallback / floor when the model's window is unknown. In practice the budget is scaled to the orchestrator's real num_ctx (orchestratorMsgBudgetChars) — the pinned head alone (system prompt + mercury slot + first ask) is ~23K chars, so a flat 20K cap left the tail with NEGATIVE headroom and every mid-turn trim collapsed to the last message group (the "lost the emails answer" failure: user's question + Iris's results dropped mid-turn).
 
 /** Orchestrator message budget scaled to the model's actual num_ctx, mirroring
@@ -2690,11 +2751,11 @@ function orchestratorMsgBudgetChars(model: string, headChars: number, toolsChars
     return Math.min(availTokens * 3, 600000);     // ~3 chars/token (conservative)
 }
 
-function truncateToolResult(toolName: string, result: string): string {
+function truncateToolResult(toolName: string, result: string, maxChars: number = SUBAGENT_MAX_TOOL_RESULT_CHARS): string {
     if (typeof result !== 'string') result = String(result ?? '');
-    if (result.length <= SUBAGENT_MAX_TOOL_RESULT_CHARS) return result;
-    const head = result.slice(0, SUBAGENT_MAX_TOOL_RESULT_CHARS - 400);
-    return `${head}\n\n[…truncated ${result.length - SUBAGENT_MAX_TOOL_RESULT_CHARS + 400} chars by context budget…]`;
+    if (result.length <= maxChars) return result;
+    const head = result.slice(0, maxChars - 400);
+    return `${head}\n\n[…truncated ${result.length - maxChars + 400} chars by context budget…]`;
 }
 
 // Image payloads (base64 in `images`, queued by Read/webcam_capture) count
@@ -2984,13 +3045,15 @@ async function runSubAgent(
         // is self-evidently alive and never brushes a fixed-duration wall. The
         // old non-streaming provider.chat carried a 20-min hard abort that
         // killed legitimate ~5-min generations (see memory atlas-fetch-failed-5min).
-        // A silence watchdog replaces the hard abort: each chunk resets a 120s
-        // timer; a genuinely stuck/silent socket aborts at 120s and the transient
+        // A silence watchdog replaces the hard abort: each chunk resets the
+        // timer; a genuinely stuck/silent socket aborts and the transient
         // retry below handles it. An active generation (chunks every ~25ms)
-        // resets the timer forever and never aborts. Declared outside the try so
-        // the catch can clear the timer on error (no dangling 120s timer).
+        // resets the timer forever and never aborts. The budget is per-agent
+        // (AGENT_SILENCE_OVERRIDE above) — agents that emit large buffered
+        // tool calls on small local models need more than the 120s default.
+        // Declared outside the try so the catch can clear the timer on error.
         const silenceController = new AbortController();
-        const SILENCE_MS = 120_000;
+        const SILENCE_MS = subAgentSilenceMs(agentName);
         let silenceTimer: any;
         const resetSilence = () => {
             if (silenceTimer) clearTimeout(silenceTimer);
@@ -3105,7 +3168,7 @@ async function runSubAgent(
                         })();
                         try {
                             const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
-                            const truncated = truncateToolResult(name, result);
+                            const truncated = truncateToolResult(name, result, toolResultMaxChars(agentName));
                             lastToolResult = truncated;
                             messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
                             if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
@@ -3119,7 +3182,7 @@ async function runSubAgent(
                     } else {
                         try {
                             const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
-                            const truncated = truncateToolResult(name, result);
+                            const truncated = truncateToolResult(name, result, toolResultMaxChars(agentName));
                             lastToolResult = truncated;
                             messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
                             if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
@@ -3303,6 +3366,7 @@ interface ContainerInput {
     // runtime fallback). The host resolves each from its router_state key.
     irisModel?: string;
     artemisModel?: string;
+    sentryModel?: string;
     drivingForce?: string;
     contextClearAt?: string;
     orchestratorModel?: string;
@@ -3585,9 +3649,11 @@ try {
 // driving force changes HOW the orchestrator thinks, not WHO it delegates to.
 const DEFAULT_PREAMBLE = `# ROLE
 
-You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain. The captain gives orders; you run the ship. Your job is a loop: understand what the captain actually wants (voice input rambles — extract the intent, hold the goal, anticipate the obvious next need), decompose it into clean briefs for the crew below, watch their work while it runs, and report back only what matters. You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".
+You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain: Riker to their Picard. The captain gives orders; you run the ship. Your objective is to understand exactly what the captain wants and relay it — turn each order into clean briefs for the crew below, watch their work while it runs, and report back only what matters (voice input rambles — extract the intent, hold the goal). You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".
 
-The captain is an elderly person talking to you by voice. So: speak plainly — short sentences, no jargon, no tech-speak, one thing at a time. Never dump walls of text or lists of options; give the answer, then stop. Patience is absolute — a repeated question gets answered again, identically kindly, never "as I said". Rambled, half-stated, or meandering asks get gently confirmed in one short question rather than guessed wrong. Names, numbers, and times get stated clearly and repeated once if they matter (a reminder time, an appointment). The captain doesn't know or care HOW the ship works — never burden them with mechanism; just say what was done or what you need.`;
+ANTICIPATE — a good first officer sees the need before the captain voices it. Think one step ahead of every order: if this booking will obviously need a reminder, if this fix will obviously need a check that it worked, if the captain's next question is plainly going to be "so did it happen?" — have the crew already moving on it, or the answer already in hand, before the captain asks.
+
+BE PROACTIVE — when you see something you can act on, act. A finished job the captain hasn't heard about, a failed result you can re-route to the right specialist, a small task plainly in line with what the captain wants: dispatch the crew on it yourself, then tell the captain what you did in one short line. Proactivity is delegating real work, never narrating plans — a first officer gives orders to the crew, not intentions to the air.`;
 
 // MARM recall layer — active only when the marm MCP server is enabled in
 // data/mcp-servers.json, so the prompt never references tools that don't
@@ -3630,6 +3696,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
+- **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
 
 # ROUTING
 
@@ -3640,6 +3707,7 @@ Cue words:
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
 - "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
 - "open X so I can see it", "show me the page/file" → **atlas** (opens local files via open_app, web pages in the real browser).
+- "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
 - Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **iris**, same as scheduling. One call with the title and required fields (blockers: title + description; financials: amount + category).
 - Diagnosis — any "why/what happened" about something Warden did or didn't do (stalled/failed/never-finished job, "did you get that right", "double-check") → **artemis**. Never answer from your own memory — artemis reads logs and databases.
@@ -3762,21 +3830,16 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         if (!preamble) preamble = DEFAULT_PREAMBLE;
         return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine + marmRecallSection + marmRecalledSection;
     };
-    // Auto-recall: pull MARM memories relevant to this ask into the prompt —
-    // recall that does not depend on the model choosing to call the tool.
-    // Fail-open by contract: any error, timeout, or down MARM yields ''.
-    if (marmEnabled) {
-        marmRecalledSection = await marmAutoRecall(String(input.prompt || ''));
-    }
-    messages.push({ role: 'system', content: buildSystemPrompt() });
-    let prompt = input.prompt;
-    lastUserAsk = String(input.prompt || '').replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400);
     // Per-agent model system — every agent has its own concrete model from
     // dashboard settings, re-synced each turn via applySettingsSync(). No
     // hardcoded fallbacks: a missing setting is surfaced as an error instead of
     // silently swapped for a baked-in model. The host's seedPerAgentModelSettings
     // materializes a value for every key on first boot, so these are never empty
     // in normal use; a manually-cleared key errors loudly.
+    // DRIVING_FORCE_ID must be assigned BEFORE buildSystemPrompt() below —
+    // the first system message is the only one ever composed (it is rebuilt
+    // only on a context-clear), so reading the driving force after the push
+    // made the selected preamble silently never apply on a fresh child.
     let model = (input.orchestratorModel || '').replace(/^local:/, '');
     if (!model) {
         writeOutput({ status: 'error', result: null, error: 'No orchestrator model configured in dashboard settings (set orchestrator:model). Refusing to fall back to a hardcoded default.' });
@@ -3793,6 +3856,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     }
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
     ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
+    SENTRY_MODEL = (input.sentryModel || '').replace(/^local:/, '');
     DRIVING_FORCE_ID = input.drivingForce || '';
     CONTEXT_CLEAR_AT = input.contextClearAt || '';
     lastContextClearAt = CONTEXT_CLEAR_AT; // first sight — don't arm a clear
@@ -3800,6 +3864,15 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     COUNCIL_MODEL_PRAGMATIST = (input.councilPragmatistModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
     const toolContext = { chatJid: input.chatJid, groupFolder: input.groupFolder, isMain: input.isMain, userId: process.env.WARDEN_USER_ID || '' };
+    // Auto-recall: pull MARM memories relevant to this ask into the prompt —
+    // recall that does not depend on the model choosing to call the tool.
+    // Fail-open by contract: any error, timeout, or down MARM yields ''.
+    if (marmEnabled) {
+        marmRecalledSection = await marmAutoRecall(String(input.prompt || ''));
+    }
+    messages.push({ role: 'system', content: buildSystemPrompt() });
+    let prompt = input.prompt;
+    lastUserAsk = String(input.prompt || '').replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400);
 
     if (input.activeIdea) {
         const ideaDir = path.join(process.cwd(), 'ideas', input.activeIdea);
@@ -5601,6 +5674,21 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 result = `Vulkan ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
             }
         }
+    } else if (toolName === 'sentry') {
+        // Async sentry: an on-demand scan requested by the user ("scan the pc").
+        // The scheduled scans run through the host-spawned child branch; this
+        // path is the orchestrator's delegate tool. spawnBackgroundJob resolves
+        // SENTRY_MODEL + the isolated sentry toolset; the sentry_report host
+        // callback logs the scan, and the verdict text lands in the inbox.
+        const task = args.task as string;
+        const urgent = args.urgent === true;
+        if (!task) {
+            result = 'Error: task is required';
+        } else {
+            const jobId = spawnBackgroundJob('sentry', task, context, urgent);
+            const jobShortId = jobId.slice('sentry-'.length);
+            result = `Sentry ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the scan result will arrive in your inbox. (job id: ${jobId})`;
+        }
     } else if (toolName === 'atlas_direct') {
         // Enter direct Atlas passthrough mode. The orchestrator speaks a short
         // "you're now talking to Atlas directly" line and ends its turn. After
@@ -5919,10 +6007,10 @@ async function main() {
             }
             // Track the oculus model so unloadModel keeps it consistent.
             ORCHESTRATOR_MODEL = model;
-            // Oculus's num_ctx comes from its own setting (local:oculus_ctx, seeded
-            // to 8192 on first boot so granite4.1:8b's 9 tool schemas + system
-            // prompt don't overflow the 2048 default). getNumCtx picks it up via
-            // the AGENT_CTX_OVERRIDE['oculus'] entry — no hardcoded bake here.
+            // Oculus's num_ctx comes from its Agents-panel setting
+            // (local:oculus_ctx) — settings only, nothing seeded or baked
+            // anywhere. getNumCtx picks it up via the AGENT_CTX_OVERRIDE['oculus']
+            // entry; blank = the model's native window.
             // Load the user-editable rules from security/oculus.md and inject them
             // as trusted instructions. The user writes freeform notes like "I will
             // be out all day, anyone is an alert". Treat those notes as the primary
@@ -5930,7 +6018,11 @@ async function main() {
             let systemPrompt = def.systemPrompt;
             try {
                 const oculusMdPath = path.join(containerInput.workspaceRoot || '', 'security', 'oculus.md');
-                const oculusMd = fs.existsSync(oculusMdPath) ? fs.readFileSync(oculusMdPath, 'utf8') : '';
+                // The repo's live rules file lives at eyes_ears/oculus.md (security/
+                // is a dead dir); fall back to it so the rules load on this box.
+                const oculusMd = fs.existsSync(oculusMdPath)
+                    ? fs.readFileSync(oculusMdPath, 'utf8')
+                    : (fs.existsSync('/opt/Warden/eyes_ears/oculus.md') ? fs.readFileSync('/opt/Warden/eyes_ears/oculus.md', 'utf8') : '');
                 if (oculusMd) {
                     systemPrompt = `${systemPrompt}\n\n# YOUR USER'S OCULUS NOTES — FOLLOW THESE\n${oculusMd}`;
                 }
@@ -5945,6 +6037,48 @@ async function main() {
         } catch (err: any) {
             log(`[oculus] error: ${err.message}`);
             writeOutput({ status: 'error', result: null, error: `Oculus error: ${err.message}` });
+        }
+        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
+        process.exit(0);
+    }
+
+    // Sentry run-mode: the host spawns this process with agent:'sentry' (the
+    // hourly peek / daily deep scheduled scans, fired by the host's sentry
+    // scheduler exactly like the iris-digest rows) to run the software-security
+    // scanner directly — NOT the orchestrator loop. The agent collects the
+    // inventory with Bash and submits once via sentry_report; that host
+    // callback logs the scan row and relays the model's findings
+    // to chat when something's wrong. The child's own output is just the
+    // verdict text, for the log.
+    if (containerInput.agent === 'sentry') {
+        try {
+            const def = SUBAGENT_BY_DELEGATE.get('sentry');
+            if (!def) throw new Error('sentry sub-agent not defined');
+            const tools = SUBAGENT_TOOL_DEFS.get('sentry') || [];
+            const ctx = {
+                chatJid: containerInput.chatJid || 'owner@local',
+                groupFolder: containerInput.groupFolder || 'owner',
+                isMain: containerInput.isMain ?? true,
+                userId: process.env.WARDEN_USER_ID || '',
+            };
+            // The host resolves the model (sentry:model router key, seeded on
+            // first boot) and passes it in containerInput.model. No hardcoded
+            // fallback: an empty model errors out instead of silently running
+            // on a baked-in model.
+            const model = (containerInput.model || '').replace(/^local:/, '');
+            if (!model) {
+                writeOutput({ status: 'error', result: null, error: 'No sentry model configured (set sentryModel in the Agents panel). Refusing to fall back to a hardcoded default.' });
+                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
+                process.exit(0);
+            }
+            ORCHESTRATOR_MODEL = model;
+            log(`[sentry] starting security scan: model=${model}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
+            // temperature 0 — structured inventory collection on a tool-calling model.
+            const sa = await runSubAgent('sentry', model, def.systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations, undefined, undefined, 0);
+            writeOutput({ status: 'success', result: sa.content || 'Sentry: scan complete.', error: null });
+        } catch (err: any) {
+            log(`[sentry] error: ${err.message}`);
+            writeOutput({ status: 'error', result: null, error: `Sentry error: ${err.message}` });
         }
         if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
         process.exit(0);
@@ -6021,6 +6155,52 @@ Call read_emails once if the task needs recent inbox activity, then output the J
                     try { JSON.parse(slice); publishedText = slice; } catch { /* not JSON; post raw */ }
                 }
             }
+            // The digest UI renders every list item as a plain string, but models
+            // occasionally emit objects instead (the 2026-08-31 weekly digest had
+            // {"from","subject","date"} email items, which rendered as literal
+            // "[object Object]" lines). Normalize before publishing: coerce any
+            // object item into a readable string built from its own fields, in
+            // the shape the prompts ask for ("From: <sender>: <subject> (<date>)
+            // — <what the email says>"). Non-JSON or string-only digests pass
+            // through untouched.
+            publishedText = ((text: string): string => {
+                try {
+                    const obj = JSON.parse(text);
+                    if (!obj || typeof obj !== 'object' || !Array.isArray(obj.blocks)) return text;
+                    let coerced = 0;
+                    for (const b of obj.blocks) {
+                        if (!b || typeof b !== 'object' || !Array.isArray(b.items)) continue;
+                        b.items = b.items.map((it: any) => {
+                            if (typeof it === 'string') return it;
+                            if (it && typeof it === 'object') {
+                                // Key lookup is case-insensitive: models emit
+                                // "From"/"Subject"/"Time" as often as lowercase.
+                                const pick = (...names: string[]): string => {
+                                    const keys = Object.keys(it);
+                                    for (const n of names) {
+                                        const k = keys.find((kk) => kk.toLowerCase() === n);
+                                        const v = k ? it[k] : undefined;
+                                        if (typeof v === 'string' && v.trim()) return v.trim();
+                                    }
+                                    return '';
+                                };
+                                const from = pick('from', 'sender');
+                                const subject = pick('subject', 'title');
+                                const when = pick('date', 'time', 'when');
+                                const gist = pick('snippet', 'body', 'summary', 'text', 'content').replace(/\s+/g, ' ').slice(0, 200);
+                                let out = `${from ? from + ': ' : ''}${subject}`;
+                                if (when) out += ` (${when})`;
+                                if (gist) out += ` — ${gist}`;
+                                if (out.trim()) { coerced++; return out; }
+                                try { coerced++; return JSON.stringify(it); } catch { coerced++; return String(it); }
+                            }
+                            return it == null ? '' : String(it);
+                        });
+                    }
+                    if (coerced) log(`[iris-digest] normalized ${coerced} object list item(s) to strings before publishing`);
+                    return coerced ? JSON.stringify(obj) : text;
+                } catch { return text; }
+            })(publishedText);
             if (publishedText) {
                 let published = false;
                 try {

@@ -77,6 +77,23 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    -- Sentry (the software-security scanner): one row per scan, clean or not.
+    -- The MODEL is the analyst — it judges the scan output itself and flags
+    -- what's wrong; the host only logs the row and relays the flags. No
+    -- baseline, no host-side diff.
+    -- Local tables (store/messages.db), not the satellite log store — these are
+    -- host-computed facts, not camera events.
+    CREATE TABLE IF NOT EXISTS sentry_scans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      summary TEXT,
+      raw_json TEXT,
+      findings_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_sentry_scans_ts ON sentry_scans(ts);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -969,6 +986,38 @@ export function pruneTaskRunLogs(keep = 100): number {
   `,
   ).run(keep);
   return result.changes;
+}
+
+// --- Sentry (software-security scanner) helpers ------------------------------
+// The MODEL is the analyst: it judges the scan output itself (a smart model
+// knows what a normal Linux desktop looks like) and flags what's wrong. The
+// host only logs the row and relays the flags — no baseline, no host-side
+// diff, nothing mechanical to get wrong.
+
+export function logSentryScan(row: {
+  ts: string;
+  mode: string;
+  verdict: string;
+  summary?: string;
+  rawJson?: string;
+  findingsJson?: string;
+}): void {
+  db.prepare(
+    `INSERT INTO sentry_scans (ts, mode, verdict, summary, raw_json, findings_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(row.ts, row.mode, row.verdict, row.summary ?? null, row.rawJson ?? null, row.findingsJson ?? null);
+}
+
+export function getRecentSentryScans(limit = 20): Array<{
+  id: number; ts: string; mode: string; verdict: string; summary: string | null;
+}> {
+  return db
+    .prepare(
+      `SELECT id, ts, mode, verdict, summary FROM sentry_scans ORDER BY ts DESC LIMIT ?`,
+    )
+    .all(Math.max(1, limit)) as Array<{
+    id: number; ts: string; mode: string; verdict: string; summary: string | null;
+  }>;
 }
 
 // --- V2 query functions ---
