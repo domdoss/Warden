@@ -17,13 +17,10 @@ const { registry } = await import(url('tool-registry.js'));
 
 // Register the tool modules that define iris's tools. Each imports
 // writeCallbackAsync from ../index.js (stubbed by the loader).
+// 2026-09-09 collapse: iris is 4 merged action tools (email/task/calendar/
+// alarm) — project management, work tasks, and admin were dropped entirely.
 const mods = [
-  'project-tools.js',  // projects, worktasks, deliverables, blockers, priorities, financials
-  'tracking-tools.js', // log_time, start_timer, stop_timer
-  'email-tools.js',    // read_emails, send_email, get_email, refresh_email_cache, get_cached_emails
-  'task-tools.js',     // schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task
-  'calendar-tools.js', // create_calendar_event, list_calendar_events, update/delete_calendar_event
-  'admin-tools.js',    // register_group, list_api_keys, api_request, post_summary
+  'iris-tools.js',     // email, task, calendar, alarm (action-parameterized)
 ];
 for (const m of mods) await import(url('tools/' + m));
 

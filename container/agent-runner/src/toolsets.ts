@@ -15,30 +15,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // and read_image stay orchestrator-only (in `capture` below).
     'desktop-vision': { name: 'desktop-vision', tools: ['desktop_screenshot'], tier: 'public' },
     capture:   { name: 'capture',   tools: ['desktop_screenshot', 'webcam_capture', 'read_image'], tier: 'public' },
-    projects:  { name: 'projects',  tools: ['create_project','get_project','update_project','archive_project',
-                                             'complete_project','delete_project','list_projects'], tier: 'public' },
-    worktasks: { name: 'worktasks', tools: ['create_work_task','list_work_tasks','update_work_task',
-                                             'delete_work_task'], tier: 'public' },
-    tasks:     { name: 'tasks',     tools: ['schedule_task','list_tasks','pause_task','resume_task',
-                                             'cancel_task','update_task'], tier: 'public' },
-    deliverables: { name: 'deliverables', tools: ['add_deliverable','toggle_deliverable','delete_deliverable'], tier: 'public' },
-    blockers:  { name: 'blockers',  tools: ['add_blocker','delete_blocker','add_priority','delete_priority',
-                                             'update_financials'], tier: 'public' },
-    tracking:  { name: 'tracking',  tools: ['log_time','start_timer','stop_timer'], tier: 'public' },
-    email:     { name: 'email',     tools: ['read_emails','send_email','get_email','refresh_email_cache',
-                                             'get_cached_emails'], tier: 'private' },
-    calendar:  { name: 'calendar',  tools: ['create_calendar_event','list_calendar_events',
-                                             'update_calendar_event','delete_calendar_event'], tier: 'private' },
-    alarms:    { name: 'alarms',    tools: ['create_alarm','list_alarms','update_alarm','delete_alarm'], tier: 'private' },
-    sms:       { name: 'sms',       tools: ['send_sms','read_sms'], tier: 'private' },
-    chat:      { name: 'chat',      tools: ['get_chat_history','attach_file','set_user_email','tell_oculus'], tier: 'both' },
-    // admin tools must be listed explicitly — resolveToolset() only walks the
-    // `tools` array + `includes`, NOT the `toolset` property tools are
-    // registered with. post_summary was registered with toolset:'admin' but
-    // must be listed here to be reachable.
-    // (add_digest_note was removed — the digest-notes expiry system is gone;
-    // a time-bound reminder is just a calendar event.)
-    admin:     { name: 'admin',     tools: ['register_group','list_api_keys','api_request','post_summary'], tier: 'public' },
+    // Iris's merged action tools (2026-09-09 collapse): one tool per noun,
+    // `action` param selects the operation. Project management + admin were
+    // dropped from iris entirely — email, scheduled tasks, calendar, and
+    // alarms are the core.
+    tasks:     { name: 'tasks',     tools: ['task'], tier: 'public' },
+    email:     { name: 'email',     tools: ['email'], tier: 'private' },
+    calendar:  { name: 'calendar',  tools: ['calendar'], tier: 'private' },
+    alarms:    { name: 'alarms',    tools: ['alarm'], tier: 'private' },
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
@@ -67,9 +51,9 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // a security scanner gets no fabric/MCP/web/browser tools.
     'sentry-core': { name: 'sentry-core', tools: ['Bash', 'sentry_report'], tier: 'public' },
 
-    // Byte was merged into iris (2026-09-05, one toolcall agent / one fine-tuned
-    // model): iris-core below carries the work-management toolsets byte-core had.
     // Media (speaker/mic volume + playback) — atlas drives the hardware.
+    // (Byte was merged into iris 2026-09-05; its work-management toolsets were
+    // dropped entirely in the 2026-09-09 collapse.)
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
     'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','desktop-vision','media'] },
     // Vulkan — the coding specialist, coding-only. Read/Write/Edit/Glob/Grep
@@ -83,18 +67,13 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // merge active skill tools at spawn, so the data/skills/ library is inherited.
     'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
-    // Iris — the single toolcall agent (byte merged in 2026-09-05). Email
-    // (read/send/get/cache) + admin (post_summary, list_api_keys, api_request)
-    // + tasks (schedule/list/pause/resume/cancel/update) + calendar
-    // (create/list/update/delete) + work management inherited from byte-core
-    // (projects, worktasks, deliverables, blockers/priorities/financials,
-    // time tracking). Iris is single-shot (one tool call per delegation); the
-    // orchestrator drives any multi-step flow (list → id → act) by calling
-    // iris once per step. The digest INPUT (calendar/tasks from DB) is still
-    // built host-side and passed in the prompt; iris does not need
-    // calendar/tasks tools for the digest itself, but owns them for explicit
-    // scheduling requests.
-    'iris-core':     { name: 'iris-core',     includes: ['email','admin','tasks','calendar','projects','worktasks','deliverables','blockers','tracking'] },
+    // Iris — single toolcall agent (byte merged in 2026-09-05). 2026-09-09
+    // collapse: 4 merged action tools (email/task/calendar/alarm), one per
+    // noun with an `action` param. Project management, work tasks, and admin
+    // were dropped entirely. Iris is single-shot (one tool call per
+    // delegation); the orchestrator drives any multi-step flow by calling
+    // iris once per step.
+    'iris-core':     { name: 'iris-core',     tools: ['email','task','calendar','alarm'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };
 

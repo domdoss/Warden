@@ -522,6 +522,7 @@ function applySettingsSync(data: any) {
     if (data.irisModel !== undefined) IRIS_MODEL = (data.irisModel || '').replace(/^local:/, '');
     if (data.artemisModel !== undefined) ARTEMIS_MODEL = (data.artemisModel || '').replace(/^local:/, '');
     if (data.sentryModel !== undefined) SENTRY_MODEL = (data.sentryModel || '').replace(/^local:/, '');
+    if (data.sentryModel !== undefined) SENTRY_MODEL = (data.sentryModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
         DRIVING_FORCE_ID = data.drivingForce || '';
     }
@@ -627,7 +628,7 @@ function drainIpcResults() {
                         messages.push(`[System: Failed to get cached emails - ${data.error}]`);
                     }
                     else if (data.emails?.length === 0) {
-                        messages.push('[System: No cached emails found. Use refresh_email_cache first.]');
+                        messages.push('[System: No cached emails found. Use email(action="refresh") first.]');
                     }
                     else {
                         const summary = data.emails.map((e) => `From: ${e.from}
@@ -777,44 +778,46 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // Single-shot: one tool call, then the output is handed straight back
         // to the orchestrator. Iris doesn't loop on follow-up calls — if the
         // one shot wasn't right, the orchestrator sends a fresh request.
-        // (byte merged in 2026-09-05; core-only redesign 2026-09-09 per Steve:
-        // alarms, reminders/cron, calendar, email — no projects/work-tasks/
-        // admin/API, no BOTH-tier/skill/MCP merges, terse structured prompt,
-        // no examples.)
+        // (byte merged in 2026-09-05; core-only redesign 2026-09-09 per Steve;
+        // 2026-09-09 collapse: 41 flat schemas → 4 merged action tools —
+        // alarm, task, calendar, email — one tool per noun, `action` selects
+        // the operation. Projects, work tasks, and admin dropped entirely.
+        // No BOTH-tier/skill/MCP merges, terse structured prompt, no examples.)
         maxIterations: 1,
         summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email. Use for inbox tasks, alarm and scheduling requests.',
         systemPrompt: `You are Iris: alarms, reminders, calendar, email.
 
 CONTRACT: one request → one tool call → one result line.
 
-TOOLS
-- alarms: create_alarm, list_alarms, update_alarm, delete_alarm
-- reminders: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task
-- calendar: create_calendar_event, list_calendar_events, update_calendar_event, delete_calendar_event
-- email: read_emails, get_email, send_email, refresh_email_cache, get_cached_emails
+TOOLS — one tool per noun; the 'action' parameter selects the operation.
+- alarm: action=create (label + alarm_time HH:MM; alarm_date, repeat_type none/daily/weekdays/custom, repeat_days), action=list, action=update (alarm_id + fields), action=delete (alarm_id)
+- task: action=schedule (prompt + schedule_type + schedule_value), action=list, action=update (task_id + fields), action=pause, action=resume, action=cancel (task_id)
+- calendar: action=create (title + start_time), action=list (start/end range), action=update (event_id + fields), action=delete (event_id)
+- email: action=read (recent emails; since/before for a date range), action=get (email_id), action=send (to, subject, body), action=refresh, action=cached
 
 INPUT
 Line 1 of the task is the local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)" — compute every timestamp from it.
 
-schedule_value
+schedule_value (task action=schedule or update)
 - once, relative ("in 2 minutes", "tomorrow"): ISO-8601 duration — PT2M, PT1H30M, P1D
 - once, absolute ("at 3pm today"): local YYYY-MM-DDTHH:MM:SS
 - interval ("every 5 minutes"): milliseconds string — 300000
 - recurring ("every weekday at 9am"): 5-field cron — 0 9 * * 1-5
 
 RULES
-- Manage an existing record by the id given in the request; list tools only for list requests.
+- Manage an existing record by the id given in the request; list actions only for list requests.
 - Reminder and calendar event both named: both calls in one turn.
 - Time given but no content: one short line asking for the content.
-- Inbox scan: read_emails, then report, marking actionable vs non-actionable (newsletters, confirmations, receipts, shipping notices, ads).
+- Content given but no time (a plain to-do): one short line asking for a time, then it becomes a scheduled reminder.
+- Inbox scan: email action=read with the window the request names, then report, marking actionable vs non-actionable (newsletters, confirmations, receipts, shipping notices, ads).
 - Use only ids and data your tools return. Keep real email addresses.
 
 OUTPUT
 One plain-text line naming the ids returned, or the result found.`,
         toolsets: ['alarms', 'tasks', 'calendar', 'email'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
-        // structured tool use (so Iris reliably calls post_summary / schedule_task
-        // rather than emitting free text and skipping the tool call).
+        // structured tool use (so Iris reliably calls the email/task/calendar/alarm
+        // tools rather than emitting free text and skipping the tool call).
         temperature: 0,
     },
     {
@@ -3709,6 +3712,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
 - **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
+- **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
 
 # ROUTING
 
@@ -3720,6 +3724,7 @@ Cue words:
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
 - "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
 - "open X so I can see it", "show me the page/file" → **atlas** (opens local files via open_app, web pages in the real browser).
+- "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
 - "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
 - Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **iris**, same as scheduling. One call with the title and required fields (blockers: title + description; financials: amount + category).
@@ -3740,7 +3745,7 @@ NEVER DROP A FACT THE CAPTAIN ALREADY GAVE. If the target is a specific artifact
 
 NEVER ASK THE CAPTAIN FOR A FACT YOUR CREW CAN FIND. A missing path, id, name, or value is not a question — it's a discovery step you own. If the exact location isn't in your context, delegate the find first ("locate the memory-map page — it's a user deliverable, so check ~/Warden/data/work first"), take the location from the result, then delegate the real task with it. The captain names intent; you supply the facts and instruct the crew. A question back to the captain is reserved for genuinely ambiguous INTENT — two different plausible goals — never for a missing fact.
 
-Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call read_emails then get_email on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
+Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call email read then email get on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
 
 Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
 
@@ -3869,6 +3874,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     }
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
     ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
+    SENTRY_MODEL = (input.sentryModel || '').replace(/^local:/, '');
     SENTRY_MODEL = (input.sentryModel || '').replace(/^local:/, '');
     DRIVING_FORCE_ID = input.drivingForce || '';
     CONTEXT_CLEAR_AT = input.contextClearAt || '';
@@ -6099,23 +6105,65 @@ async function main() {
         process.exit(0);
     }
 
+    // Sentry run-mode: the host spawns this process with agent:'sentry' (the
+    // hourly peek / daily deep scheduled scans, fired by the host's sentry
+    // scheduler exactly like the iris-digest rows) to run the software-security
+    // scanner directly — NOT the orchestrator loop. The agent collects the
+    // inventory with Bash and submits once via sentry_report; that host
+    // callback logs the scan row and relays the model's findings
+    // to chat when something's wrong. The child's own output is just the
+    // verdict text, for the log.
+    if (containerInput.agent === 'sentry') {
+        try {
+            const def = SUBAGENT_BY_DELEGATE.get('sentry');
+            if (!def) throw new Error('sentry sub-agent not defined');
+            const tools = SUBAGENT_TOOL_DEFS.get('sentry') || [];
+            const ctx = {
+                chatJid: containerInput.chatJid || 'owner@local',
+                groupFolder: containerInput.groupFolder || 'owner',
+                isMain: containerInput.isMain ?? true,
+                userId: process.env.WARDEN_USER_ID || '',
+            };
+            // The host resolves the model (sentry:model router key, seeded on
+            // first boot) and passes it in containerInput.model. No hardcoded
+            // fallback: an empty model errors out instead of silently running
+            // on a baked-in model.
+            const model = (containerInput.model || '').replace(/^local:/, '');
+            if (!model) {
+                writeOutput({ status: 'error', result: null, error: 'No sentry model configured (set sentryModel in the Agents panel). Refusing to fall back to a hardcoded default.' });
+                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
+                process.exit(0);
+            }
+            ORCHESTRATOR_MODEL = model;
+            log(`[sentry] starting security scan: model=${model}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
+            // temperature 0 — structured inventory collection on a tool-calling model.
+            const sa = await runSubAgent('sentry', model, def.systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations, undefined, undefined, 0);
+            writeOutput({ status: 'success', result: sa.content || 'Sentry: scan complete.', error: null });
+        } catch (err: any) {
+            log(`[sentry] error: ${err.message}`);
+            writeOutput({ status: 'error', result: null, error: `Sentry error: ${err.message}` });
+        }
+        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
+        process.exit(0);
+    }
+
     // Iris digest run-mode: the host spawns this process with agent:'iris-digest-<span>'
     // (from the hardcoded runDigest(span) host function, fired by the dashboard
     // "Generate" button or the host poll loop's schedule monitor) to compile a
     // grounded hourly/daily/weekly digest and publish it to the dashboard. This
     // is a direct one-shot Iris sub-agent run — NOT the orchestrator loop, NOT the
     // chat pipeline. Iris compiles from INPUT (buildDigestContext, handed in the
-    // prompt) + read_emails and outputs the digest as its FINAL TEXT; this branch
-    // then publishes that text directly to /api/summaries (keyless loopback). We
-    // do NOT rely on the model calling a publish tool — a small model often stops
-    // after one tool call, so the runner publishing the final text is the 100%
-    // path. Iris sees only the read_emails tool here; nothing is written to chat.
+    // prompt) + the email tool and outputs the digest as its FINAL TEXT; this
+    // branch then publishes that text directly to /api/summaries (keyless loopback).
+    // We do NOT rely on the model calling a publish tool — a small model often
+    // stops after one tool call, so the runner publishing the final text is the
+    // 100% path. Iris sees only the email tool here; nothing is written to chat.
     if (containerInput.agent && containerInput.agent.startsWith('iris-digest-')) {
         const span = containerInput.agent.slice('iris-digest-'.length);
         try {
             const def = SUBAGENT_BY_DELEGATE.get('iris');
             if (!def) throw new Error('iris sub-agent not defined');
-            // Only read_emails — Iris compiles + outputs text; it does not publish.
+            // Only email — Iris compiles + outputs text; it does not publish.
             const tools = (SUBAGENT_TOOL_DEFS.get('iris') || []).filter(
                 (t: any) => t?.function?.name === 'read_emails',
             );
@@ -6132,20 +6180,20 @@ async function main() {
                 process.exit(0);
             }
             ORCHESTRATOR_MODEL = model;
-            const digestSystemPrompt = `Scan the INPUT block (current time, user bio, calendar events, work tasks, weather — pulled from the local DB) and, optionally, recent emails from the read_emails tool. Output the structured JSON object the task specifies.
+            const digestSystemPrompt = `Scan the INPUT block (current time, user bio, calendar events, work tasks, weather — pulled from the local DB) and, optionally, recent emails from the email tool. Output the structured JSON object the task specifies.
 
-GROUNDING: Use only facts that appear in INPUT or read_emails output. If a section has no data, use the empty-state value the task shows. Something not in INPUT or read_emails is a bug — do not add it.
+GROUNDING: Use only facts that appear in INPUT or email tool output. If a section has no data, use the empty-state value the task shows. Something not in INPUT or email output is a bug — do not add it.
 
-Call read_emails once if the task needs recent inbox activity, then output the JSON object as your final message. No commentary, no markdown, just the JSON.`;
+Call email(action="read") once if the task needs recent inbox activity, then output the JSON object as your final message. No commentary, no markdown, just the JSON.`;
             log(`[iris-digest] starting digest compiler: span=${span}, model=${model}, tools=${tools.length}, prompt=${(containerInput.prompt || '').slice(0, 80)}…`);
             // NOT def.maxIterations (=1, the single-shot iris delegate cap): the
-            // digest is a 2-step job — read_emails once with the INPUT window,
-            // then the JSON object as final text. With cap 1 the run returns right
-            // after the read_emails call and the raw email listing gets published
-            // to /api/summaries as the "digest" (the prompts below instruct the
-            // model to call read_emails FIRST, so cap 1 made that failure the
-            // steady state). Small explicit cap: read once (maybe retry once),
-            // then final text.
+            // digest is a 2-step job — email(action="read") once with the INPUT
+            // window, then the JSON object as final text. With cap 1 the run
+            // returns right after the email call and the raw email listing gets
+            // published to /api/summaries as the "digest" (the prompts below
+            // instruct the model to call email FIRST, so cap 1 made that failure
+            // the steady state). Small explicit cap: read once (maybe retry
+            // once), then final text.
             const sa = await runSubAgent('iris', model, digestSystemPrompt, tools, containerInput.prompt || '', ctx, 4, undefined, undefined, 0);
             // Publish the structured JSON directly to the dashboard. This is the
             // 100% path — we do not depend on the model calling a publish tool.

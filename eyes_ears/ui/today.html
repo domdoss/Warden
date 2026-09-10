@@ -204,6 +204,8 @@
   .feed-row .fk.done{border-color:rgba(0,255,170,0.4);color:#00ffaa}
   .feed-row .fp{color:rgba(0,255,170,0.55);margin-right:3px}
   .feed-row .fl{color:rgba(220,255,240,0.85)}
+  .feed-row .fn{display:inline-block;font-size:7px;color:rgba(0,255,170,0.45);
+    border:1px solid rgba(0,255,170,0.25);border-radius:2px;padding:0 2px;margin-left:4px}
   .feed-empty{color:rgba(0,255,170,0.3);font-style:italic;font-size:9px}
 
   .empty{font-size:10px;color:rgba(0,255,170,0.3);font-style:italic}
@@ -551,6 +553,27 @@
   function feedTag(k){
     return k==='supervisor'?'SUP':k==='error'?'ERR':k==='done'?'DONE':'OK';
   }
+  // Coalesce consecutive streaming ticks. The runner throttles generation
+  // status to one progress event per 400ms, each carrying the output-so-far
+  // tail — those ticks are ONE logical activity, not N feed rows (a 30s
+  // generation flooded the 40-slot ring with ~75 rows and scrolled every real
+  // event away). Collapse CONSECUTIVE events sharing the same phase AND label
+  // prefix (label up to the first ' — ', i.e. "agent: iteration N"); the
+  // newest event wins (its preview is the fullest tail), with a ×N badge.
+  // Identical consecutive labels (e.g. a read-only command churn loop) fold
+  // the same way. Interleaved events from other agents stay separate rows.
+  function coalesceFeed(rows){
+    var out=[], keyOf=function(p){
+      return (p.phase||'')+'|'+String(p.label||'').split(' — ')[0];
+    };
+    for(var i=0;i<rows.length;i++){
+      var p=rows[i], last=out.length?out[out.length-1]:null;
+      if(last && keyOf(last.p)===keyOf(p)){
+        last.n++; last.p=p;
+      } else { out.push({p:p,n:1}); }
+    }
+    return out;
+  }
   function renderFeed(d){
     // current "now" line from the active group's live status
     var groups=d.groups||[], act=groups.filter(function(g){return g.active;})[0];
@@ -564,12 +587,14 @@
     var prog=d.progress||[];
     if(feedCnt) feedCnt.textContent=prog.length;
     if(!prog.length){ feedLog.innerHTML='<div class="feed-empty">awaiting activity…</div>'; return; }
-    feedLog.innerHTML=prog.map(function(p){
-      var k=p.kind||'status';
+    var rows=coalesceFeed(prog);
+    feedLog.innerHTML=rows.map(function(r){
+      var p=r.p, k=p.kind||'status';
       return '<div class="feed-row"><span class="ft">'+fmtFeedTs(p.ts)+'</span>'+
         '<span class="fk '+k+'">'+feedTag(k)+'</span>'+
         '<span class="fp">'+esc(p.phase||'')+'</span>'+
-        '<span class="fl">'+esc(p.label||'')+'</span></div>';
+        '<span class="fl">'+esc(p.label||'')+'</span>'+
+        (r.n>1?'<span class="fn">×'+r.n+'</span>':'')+'</div>';
     }).join('');
     feedLog.scrollTop=feedLog.scrollHeight;
   }
