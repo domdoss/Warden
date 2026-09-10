@@ -84,7 +84,7 @@ import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.j
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
 import { CronExpressionParser } from 'cron-parser';
-import { computeNextRun, buildDigestContext, startSchedulerLoop } from './task-scheduler.js';
+import { computeNextRun, buildDeterministicDigest, startSchedulerLoop } from './task-scheduler.js';
 import { runMemoryWriteback } from './memory-writeback.js';
 import { startCalendarSyncPoller } from './calendar-sync.js';
 import { startStatusServer, pushNotification, pushActivityLine, getCachedInboxEmails } from './status-server.js';
@@ -692,16 +692,20 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
         const sinceMs = args?.since ? new Date(args.since).getTime() : NaN;
         const beforeMs = args?.before ? new Date(args.before).getTime() : NaN;
         const previewOnly = args?.preview_only === true;
-        // The agent doesn't supply an accountId. Try each enabled account until
-        // one connects, so a broken OAuth-linked account (dangling
-        // oauth_account_id — the oauth_accounts row was deleted but the
-        // email_accounts row still references it) no longer masks a working
-        // IMAP/password account that sorts after it.
+        // The agent doesn't supply an accountId. Aggregate EVERY enabled
+        // account — the first-success-wins loop read only the newest-linked
+        // account's mailbox (getEmailAccounts orders created_at DESC), so the
+        // digest and iris never saw mail from the other accounts at all.
+        // A dangling oauth_account_id (oauth_accounts row deleted but the
+        // email_accounts row still references it) is skipped per-account, not
+        // allowed to abort the rest.
         const accounts = getEmailAccounts(null).filter((a) => a.enabled);
         if (accounts.length === 0) {
           return { ok: false, error: 'no enabled email account' };
         }
         const errors: string[] = [];
+        const merged: any[] = [];
+        let anyAccountServed = false;
         for (const account of accounts) {
           if (account.oauth_account_id && !getOAuthAccount(account.oauth_account_id)) {
             errors.push(`${account.email}: linked OAuth account was deleted, skipping`);
@@ -723,6 +727,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
             } else {
               emails = await fetchEmails(account.id, folder, limit, search, previewOnly);
             }
+            anyAccountServed = true;
             // Client-side date-range filter — fetchEmails' 4th param is a text
             // search, not a date filter, so the providers can't do this.
             const filtered = (Number.isNaN(sinceMs) && Number.isNaN(beforeMs))
@@ -735,12 +740,21 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
                   if (!Number.isNaN(beforeMs) && t >= beforeMs) return false;
                   return true;
                 });
-            return { ok: true, emails: filtered };
+            merged.push(...filtered);
           } catch (err: any) {
             errors.push(`${account.email}: ${String(err?.message ?? err)}`);
           }
         }
-        return { ok: false, error: `all email accounts failed — ${errors.join('; ')}` };
+        if (!anyAccountServed && errors.length > 0) {
+          return { ok: false, error: `all email accounts failed — ${errors.join('; ')}` };
+        }
+        // Newest first across all mailboxes, capped at the caller's limit.
+        merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        return {
+          ok: true,
+          emails: merged.slice(0, limit),
+          ...(errors.length > 0 ? { account_errors: errors } : {}),
+        };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }
@@ -2471,43 +2485,38 @@ async function runDigest(span: string, manual = false): Promise<{ ok: boolean; e
   if (!DIGEST_SPANS.includes(span as DigestSpan)) {
     return { ok: false, error: `invalid span: ${span}` };
   }
-  // Iris digest is a granite toolcall agent — use the shared Toolcall model
-  // (local:subagent_model), falling back to the legacy iris:model key only if
-  // the shared key is unset. The ctx/keep_alive/temp come from the toolcall
-  // settings in the runner (IRIS_NUM_CTX / TOOLCALL_KEEP_ALIVE / temp 0), so
-  // only the model identity is resolved here.
-  const irisModel = (getRouterState('local:subagent_model') || getRouterState('iris:model') || '').replace(/^local:/, '');
-  if (!irisModel) {
-    logger.warn({ span }, 'runDigest: no toolcall/iris model configured (local:subagent_model or iris:model) — skipping');
-    return { ok: false, error: 'no toolcall model configured (set the Toolcall model in the Agents panel)' };
-  }
-  const baked = IRIS_DIGEST_TASKS.find((x) => x.id === `iris-digest-${span}`);
-  if (!baked) return { ok: false, error: `no baked digest prompt for ${span}` };
-  // Read the live cron from the scheduled_tasks row if it exists; otherwise use
-  // the baked default. This lets the user edit the digest schedule in the UI.
-  const cron = getDigestTaskCron(span);
-  const t = { ...baked, cron };
-  let prompt = t.prompt;
+  // Deterministic digest (2026-09-09): built by code from real data — the
+  // host's own read_emails, calendar, work tasks, wttr.in weather, and
+  // LOOK_OUT_FOR.md — with NO model in the loop. The granite toolcall model
+  // authored the digest before and fabricated emails/events to fill blocks
+  // with no data ("Ollama Team plan", "DeepSeek price drop" — none real).
+  // runDigest assembles the JSON the dashboard renders and publishes it to
+  // /api/summaries over the same keyless loopback the agent-runner used, then
+  // runs the digest_complete callback (hourly actionable extraction + the
+  // digest:talk voice path) so spoken digests keep working.
+  logger.info({ span, manual }, 'runDigest: building deterministic digest (no model)');
   try {
-    const ctx = await buildDigestContext(span);
-    if (ctx) prompt = `${ctx}\n\n---\n\n${prompt}`;
+    const base = buildAgentCallbacks();
+    const digest = await buildDeterministicDigest(span as DigestSpan, base.read_emails!);
+    const text = JSON.stringify(digest);
+    const port = process.env.STATUS_PORT || '3200';
+    const res = await fetch(`http://127.0.0.1:${port}/api/summaries?span=${encodeURIComponent(span)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      logger.warn({ span, status: res.status }, 'runDigest: publish to /api/summaries failed');
+      return { ok: false, error: `publish failed: HTTP ${res.status}` };
+    }
+    logger.info({ span, status: res.status }, 'runDigest: published deterministic digest to /api/summaries');
+    await digestCallbacks(span).digest_complete({ text });
+    return { ok: true };
   } catch (err: any) {
-    logger.warn({ span, err }, 'runDigest: buildDigestContext failed — running ungrounded');
+    logger.warn({ span, err }, 'runDigest: deterministic digest failed');
+    return { ok: false, error: String(err?.message ?? err) };
   }
-  logger.info({ span, model: irisModel, manual }, 'runDigest: spawning iris-digest directly');
-  runSubAgentBackground({
-    agent: `iris-digest-${span}`,
-    prompt,
-    model: irisModel,
-    sessionId: 'owner',
-    workspaceRoot: WORKSPACE_ROOT,
-    chatJid: OWNER_JID,
-    groupFolder: 'owner',
-    isMain: true,
-    timeoutMs: 5 * 60 * 1000,
-    callbacks: digestCallbacks(span),
-  } as any);
-  return { ok: true };
 }
 
 function digestTalk(span: string): boolean {

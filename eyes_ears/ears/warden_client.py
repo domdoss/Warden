@@ -287,7 +287,11 @@ class WardenClient:
                     "GET",
                     "/api/notifications",
                     headers=self._auth_headers(),
-                    timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0),
+                    # read=60, not None: the server sends a : keepalive every
+                    # 30s, so 60s of read silence means the stream is dead
+                    # (e.g. Warden restarted). read=None wedged the reader on
+                    # a half-closed socket forever — replies went unspoken.
+                    timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
                 ) as event_source:
                     if event_source.response.status_code in (401, 403):
                         raise WardenAuthError(

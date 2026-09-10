@@ -194,37 +194,8 @@ export async function buildDigestContext(span = 'hourly'): Promise<string> {
   } catch (err) { lines.push(`\nActive work tasks: unavailable (${String((err as any)?.message ?? err)})`); }
 
   // Weather via keyless wttr.in, only if the bio names a location
-  const locMatch = bio.match(/^Location:\s*(.+)$/m);
-  const loc = locMatch?.[1]?.replace(/#.*$/, '').trim();
-  if (loc) {
-    try {
-      const r = await fetch(`https://wttr.in/${encodeURIComponent(loc)}?format=j1`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (r.ok) {
-        const w = (await r.json()) as any;
-        const parts: string[] = [];
-        const cur = w.current_condition?.[0];
-        if (cur) parts.push(`Now: ${cur.temp_C}°C, ${(cur.weatherDesc?.[0]?.value || '').trim()}, humidity ${cur.humidity}%`);
-        const allHours: any[] = (w.weather || []).flatMap((d: any) => d.hourly || []);
-        const curHour = now.getHours();
-        let idx = allHours.findIndex(h => Math.floor(parseInt(h.time, 10) / 100) >= curHour);
-        if (idx < 0) idx = 0;
-        const next = allHours.slice(idx, idx + 3);
-        if (next.length) {
-          const peak = next.reduce((a, b) => (parseInt(b.tempC, 10) > parseInt(a.tempC, 10) ? b : a));
-          const hh = (t: string) => String(parseInt(t, 10) / 100).padStart(2, '0') + ':00';
-          const rain = next.find(h => parseInt(h.chanceofrain, 10) > 40);
-          parts.push(
-            `Next hours: ${next.map(h => `${hh(h.time)} ${h.tempC}°C`).join(', ')}` +
-            (parseInt(peak.tempC, 10) >= 28 ? ` — peaks at ${peak.tempC}°C around ${hh(peak.time)}` : '') +
-            (rain ? ` — rain ${rain.chanceofrain}% around ${hh(rain.time)}` : ''),
-          );
-        }
-        if (parts.length) lines.push(`\nWeather (${loc}):\n${parts.join('\n')}`);
-      }
-    } catch (err) { lines.push(`\nWeather: unavailable (${String((err as any)?.message ?? err)})`); }
-  }
+  const parts = await fetchWeatherLines(bio, now);
+  if (parts.length) lines.push(`\nWeather (${bio.match(/^Location:\s*(.+)$/m)?.[1]?.replace(/#.*$/, '').trim()}):\n${parts.join('\n')}`);
 
   // "Look Out For" — free-text notes the user maintains from the digest panel
   // (LOOK_OUT_FOR.md in the workspace root): things they're watching for (a
@@ -249,6 +220,225 @@ export async function buildDigestContext(span = 'hourly'): Promise<string> {
   } catch { /* no lookout file */ }
 
   return lines.join('\n');
+}
+
+/**
+ * Weather via keyless wttr.in, only if the bio names a location. Returns the
+ * rendered parts ("Now: …" / "Next hours: …"), empty when there is no location
+ * or the fetch fails. Shared by buildDigestContext (prompt INPUT) and
+ * buildDeterministicDigest (digest weather block) so both show the same data.
+ */
+async function fetchWeatherLines(bio: string, now: Date): Promise<string[]> {
+  const locMatch = bio.match(/^Location:\s*(.+)$/m);
+  const loc = locMatch?.[1]?.replace(/#.*$/, '').trim();
+  if (!loc) return [];
+  try {
+    const r = await fetch(`https://wttr.in/${encodeURIComponent(loc)}?format=j1`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return [];
+    const w = (await r.json()) as any;
+    const parts: string[] = [];
+    const cur = w.current_condition?.[0];
+    if (cur) parts.push(`Now: ${cur.temp_C}°C, ${(cur.weatherDesc?.[0]?.value || '').trim()}, humidity ${cur.humidity}%`);
+    const allHours: any[] = (w.weather || []).flatMap((d: any) => d.hourly || []);
+    const curHour = now.getHours();
+    let idx = allHours.findIndex(h => Math.floor(parseInt(h.time, 10) / 100) >= curHour);
+    if (idx < 0) idx = 0;
+    const next = allHours.slice(idx, idx + 3);
+    if (next.length) {
+      const peak = next.reduce((a, b) => (parseInt(b.tempC, 10) > parseInt(a.tempC, 10) ? b : a));
+      const hh = (t: string) => String(parseInt(t, 10) / 100).padStart(2, '0') + ':00';
+      const rain = next.find(h => parseInt(h.chanceofrain, 10) > 40);
+      parts.push(
+        `Next hours: ${next.map(h => `${hh(h.time)} ${h.tempC}°C`).join(', ')}` +
+        (parseInt(peak.tempC, 10) >= 28 ? ` — peaks at ${peak.tempC}°C around ${hh(peak.time)}` : '') +
+        (rain ? ` — rain ${rain.chanceofrain}% around ${hh(rain.time)}` : ''),
+      );
+    }
+    return parts;
+  } catch { return []; }
+}
+
+/**
+ * Build the digest JSON deterministically from real data — no LLM anywhere.
+ * Same sources buildDigestContext feeds the model (read_emails, calendar,
+ * work tasks, wttr.in weather, LOOK_OUT_FOR.md), but assembled by code into
+ * the exact shape the dashboard digest panel renders. A block with no data
+ * gets its empty-state value; nothing is ever invented.
+ */
+export async function buildDeterministicDigest(
+  span: 'hourly' | 'daily' | 'weekly',
+  readEmails: (args: any) => Promise<any>,
+): Promise<Record<string, any>> {
+  const now = new Date();
+  const winMs = span === 'hourly' ? 3600_000 : span === 'daily' ? 24 * 3600_000 : 7 * 24 * 3600_000;
+  const sinceIso = new Date(now.getTime() - winMs).toISOString();
+  const beforeIso = now.toISOString();
+
+  // ── Emails (the same read_emails the agents use) ─────────────────────────
+  let emailItems: string[] = [];
+  let emailFailed = false;
+  try {
+    const res = await readEmails({ since: sinceIso, before: beforeIso, limit: 200, preview_only: true });
+    if (res?.ok && Array.isArray(res.emails)) {
+      const cap = span === 'hourly' ? 10 : span === 'daily' ? 20 : 25;
+      emailItems = res.emails.slice(0, cap).map((e: any) => {
+        const base = `From: ${e.from || '?'}: ${e.subject || '(no subject)'}`;
+        const t = new Date(e.date).getTime();
+        return Number.isNaN(t)
+          ? base
+          : `${base} (${new Date(t).toLocaleString('en-US', { timeZone: TIMEZONE })})`;
+      });
+    } else {
+      emailFailed = true;
+      emailItems = [`Email unavailable: ${String(res?.error || 'fetch failed')}`];
+    }
+  } catch (err: any) {
+    emailFailed = true;
+    emailItems = [`Email unavailable: ${String(err?.message ?? err)}`];
+  }
+  const nEmails = emailFailed ? 0 : emailItems.length;
+  const inboxItems = emailFailed
+    ? emailItems
+    : (nEmails ? emailItems : ['No new mail.']);
+
+  // ── Calendar ──────────────────────────────────────────────────────────────
+  let calItems: string[] = [];
+  try {
+    const start = span === 'hourly'
+      ? now.toISOString()
+      : span === 'daily'
+        ? new Date(now.getTime() - 6 * 3600_000).toISOString()
+        : new Date(now.getTime() - winMs).toISOString();
+    const end = span === 'hourly'
+      ? new Date(now.getTime() + 2 * 3600_000).toISOString()
+      : span === 'daily'
+        ? new Date(now.getTime() + 48 * 3600_000).toISOString()
+        : new Date(now.getTime() + winMs).toISOString();
+    calItems = listCalendarEvents({ start, end }).slice(0, 25)
+      .map(e => `${e.start_time} → ${e.end_time || '?'}: ${e.title}${e.location ? ' @ ' + e.location : ''}`);
+  } catch { calItems = []; }
+  const nCal = calItems.length;
+  const calBlock = nCal
+    ? calItems
+    : [span === 'hourly' ? 'Nothing in the next 2 hours.' : span === 'daily' ? 'Nothing on the calendar today.' : 'Nothing on the calendar this week.'];
+
+  // ── Active work tasks ─────────────────────────────────────────────────────
+  let taskItems: string[] = [];
+  try {
+    taskItems = getWorkTasks().filter(t => t.status !== 'done').slice(0, 25)
+      .map(t => `[${t.status || 'todo'}] ${t.title}${t.project_id ? ' (project ' + t.project_id + ')' : ''}`);
+  } catch { taskItems = []; }
+  const nTasks = taskItems.length;
+  const taskBlock = nTasks ? taskItems : ['No active tasks.'];
+
+  // ── Weather (only if the bio names a location) ─────────────────────────────
+  let bio = '';
+  try {
+    const bioPath = path.join(
+      WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? ''),
+      'USER_BIO.md',
+    );
+    bio = fs.readFileSync(bioPath, 'utf-8').trim();
+  } catch { /* no bio file */ }
+  const weatherLines = await fetchWeatherLines(bio, now);
+  const weatherText = weatherLines.join('\n');
+
+  // ── Look Out For: substring match against real data ────────────────────────
+  const alerts: string[] = [];
+  try {
+    const lookoutPath = path.join(
+      WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? ''),
+      'LOOK_OUT_FOR.md',
+    );
+    const lookout = fs.existsSync(lookoutPath)
+      ? fs.readFileSync(lookoutPath, 'utf-8').trim()
+      : '';
+    for (const item of lookout.split('\n').map(l => l.trim()).filter(Boolean)) {
+      const needles = [...emailItems, ...calItems, ...taskItems, weatherText]
+        .find(s => s.toLowerCase().includes(item.toLowerCase()));
+      if (needles) alerts.push(`${item} - matched by ${needles}`);
+    }
+  } catch { /* no lookout file */ }
+
+  // ── Title ──────────────────────────────────────────────────────────────────
+  const dateStr = now.toLocaleDateString('en-CA', { timeZone: TIMEZONE }); // YYYY-MM-DD
+  const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: TIMEZONE });
+  const title = span === 'hourly'
+    ? `${dateStr} ${timeStr}`
+    : span === 'daily'
+      ? dateStr
+      : `Week of ${new Date(now.getTime() - winMs).toLocaleDateString('en-CA', { timeZone: TIMEZONE })}`;
+
+  // ── Summary (templated, grounded) ─────────────────────────────────────────
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  let summary = '';
+  let review = '';
+  let tomorrow = '';
+  if (span === 'hourly') {
+    const bits: string[] = [];
+    if (nEmails) bits.push(`${plural(nEmails, 'new email')} this hour.`);
+    if (nCal) bits.push(`${plural(nCal, 'calendar event')} in the next 2 hours.`);
+    summary = bits.length ? bits.join(' ') : 'Quiet hour — no new email.';
+  } else if (span === 'daily') {
+    const bits: string[] = [];
+    if (emailFailed) bits.push('Email is unavailable.');
+    else if (nEmails) bits.push(`${plural(nEmails, 'email')} since yesterday.`);
+    else bits.push('The inbox is quiet.');
+    if (nCal) bits.push(`${plural(nCal, 'calendar event')} today.`);
+    if (nTasks) bits.push(`${plural(nTasks, 'active task')}.`);
+    summary = `Good morning. ${bits.join(' ')}`;
+    review = (nEmails || nCal || nTasks)
+      ? `${emailFailed ? 'Email unavailable' : plural(nEmails, 'email')}, ${plural(nCal, 'calendar event')}, ${plural(nTasks, 'active task')}.`
+      : '';
+    const tomorrowEvents = calItems.filter(e => {
+      const t = new Date(e.split(' → ')[0]).getTime();
+      const tomorrow = new Date(now.getTime() + 24 * 3600_000).toLocaleDateString('en-CA', { timeZone: TIMEZONE });
+      return !Number.isNaN(t) && new Date(t).toLocaleDateString('en-CA', { timeZone: TIMEZONE }) === tomorrow;
+    });
+    if (tomorrowEvents.length) {
+      const titles = tomorrowEvents.map(e => e.split(': ').slice(1).join(': '));
+      tomorrow = `Tomorrow: ${titles.join(', ')}.`;
+    }
+  } else {
+    const bits: string[] = [];
+    if (nEmails) bits.push(`${plural(nEmails, 'email')} this week.`);
+    else bits.push('A quiet week — no new email.');
+    if (nCal) bits.push(`${plural(nCal, 'calendar event')}.`);
+    if (nTasks) bits.push(`${plural(nTasks, 'active task')}.`);
+    summary = bits.join(' ');
+    review = (nEmails || nCal || nTasks)
+      ? `${emailFailed ? 'Email unavailable' : plural(nEmails, 'email')}, ${plural(nCal, 'calendar event')}, ${plural(nTasks, 'active task')}.`
+      : '';
+  }
+
+  const inboxLabel = span === 'weekly' ? 'Email Activity' : 'Recent Emails';
+  const tasksLabel = span === 'weekly' ? 'Tasks' : 'Active Tasks';
+  const blocks: Record<string, any>[] = [];
+  if (span !== 'hourly') {
+    blocks.push({ icon: 'review', label: span === 'daily' ? 'Day in Review' : 'Week in Review', type: 'prose', text: review });
+  }
+  blocks.push({ icon: 'inbox', label: inboxLabel, type: 'list', items: inboxItems });
+  blocks.push({ icon: 'calendar', label: 'Calendar', type: 'list', items: calBlock });
+  blocks.push({ icon: 'tasks', label: tasksLabel, type: 'list', items: taskBlock });
+  blocks.push({ icon: 'weather', label: 'Weather', type: 'prose', text: weatherText });
+  if (span === 'daily') {
+    blocks.push({ icon: 'tomorrow', label: 'Tomorrow', type: 'prose', text: tomorrow });
+  }
+  blocks.push({ icon: 'nudge', label: 'Nudge', type: 'prose', text: '' });
+
+  const digest: Record<string, any> = {
+    title,
+    summary,
+    alerts,
+    blocks,
+  };
+  if (span === 'hourly') {
+    digest.actionable_tasks = [];
+    digest.actionable_events = [];
+  }
+  return digest;
 }
 
 async function runTask(

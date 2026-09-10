@@ -79,6 +79,9 @@ unset EE_SITE_PKGS d
 # --password-store=basic skip slow kwallet/keyring probes; --allow-file-access-
 # from-files lets the combined panels host share its JS bridge with file:// iframes.
 export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---no-sandbox --password-store=basic --allow-file-access-from-files}"
+# Line-buffered stdout so the redirected log (/tmp/warden_ears.log) shows
+# [bridge]/[Jarvis] lines as they happen, not in 4KB blocks after the fact.
+export PYTHONUNBUFFERED=1
 
 # ── TUI presentation (ANSI — strictly cosmetic, no behavior change) ──────────
 if [ -t 1 ]; then

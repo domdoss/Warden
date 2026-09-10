@@ -21,22 +21,10 @@ if [ ! -f "$ADAPTER/adapter_model.safetensors" ]; then
   exit 1
 fi
 
-# venv with torch/transformers/peft — reuse training/.venv if present.
-PY="${VENV_PY:-$WORK/.venv/bin/python}"
-if [ ! -x "$PY" ]; then
-  echo "==> no training venv — creating a CPU-only one at $WORK/.venv-merge (uv)"
-  PY="$WORK/.venv-merge/bin/python"
-  if [ ! -x "$PY" ]; then
-    uv venv --python python3.12 "$WORK/.venv-merge"
-    # torch from the CPU wheel index (small download, no CUDA needed for a
-    # merge); everything else from PyPI. Two installs — uv takes only one
-    # --index-url per command.
-    uv pip install --python "$PY" --index-url https://download.pytorch.org/whl/cpu torch
-    uv pip install --python "$PY" "transformers>=4.53,<5" "peft>=0.10" accelerate
-  fi
-fi
+# Warden venv — torch is installed there.
+PY="$HOME/.venv/bin/python"
 
-echo "==> merging $ADAPTER into $BASE → $OUT (fp32, CPU is fine)"
+echo "==> merging $ADAPTER into $BASE → $OUT (bf16, CPU is fine)"
 "$PY" - "$BASE" "$ADAPTER" "$OUT" <<'EOF'
 import sys
 import torch
@@ -44,7 +32,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 base_id, adapter_dir, out_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-model = AutoModelForCausalLM.from_pretrained(base_id, dtype=torch.float32, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(base_id, dtype=torch.bfloat16, device_map="cpu", trust_remote_code=True)
 model = PeftModel.from_pretrained(model, adapter_dir)
 model = model.merge_and_unload()
 model.save_pretrained(out_dir)
