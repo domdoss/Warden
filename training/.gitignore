@@ -10,4 +10,4 @@ Modelfile.*
 *.log
 dryfire_*.txt
 # - venv + scratch
-.venv/
+.venv/!Modelfile.toolcall-ft
