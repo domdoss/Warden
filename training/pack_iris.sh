@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Pack the fine-tuned toolcall model for Ollama:
 #   merged HF model → GGUF (f16) → quantized (Q4_K_M) → Ollama model (default
-#   "dexter-ft"; run.sh passes "toolcall-ft" — the single merged-iris model).
+#   "toolcall-ft"; run.sh passes "toolcall-ft" — the single merged-iris model).
 #
 # Reuses the EXACT TEMPLATE + PARAMETER block from the stock granite4.1:3b so
 # the fine-tune renders tool calls the same way Ollama already parses. Requires
 # a built llama.cpp (convert_hf_to_gguf.py + llama-quantize).
 #
 #   export LLAMA_CPP=~/src/llama.cpp   # path to a built llama.cpp checkout
-#   ./pack_dexter.sh
+#   ./pack_iris.sh
 set -euo pipefail
 
-MERGED="${1:-$(dirname "$0")/dexter-lora-merged}"
-NAME="${2:-dexter-ft}"
+MERGED="${1:-$(dirname "$0")/toolcall-lora-merged}"
+NAME="${2:-toolcall-ft}"
 LLAMA_CPP="${LLAMA_CPP:-$HOME/src/llama.cpp}"
 WORK="$(dirname "$0")"
 # convert_hf_to_gguf.py imports torch/transformers/numpy/gguf — use the venv
@@ -24,13 +24,13 @@ Q4="$WORK/$NAME.q4_k_m.gguf"
 MODFILE="$WORK/Modelfile.$NAME"
 
 if [ ! -d "$MERGED" ]; then
-  echo "ERROR: merged model not found at $MERGED — run train_dexter_lora.py first." >&2
+  echo "ERROR: merged model not found at $MERGED — run train_iris_lora.py first." >&2
   exit 1
 fi
 if [ ! -f "$LLAMA_CPP/convert_hf_to_gguf.py" ] || [ ! -x "$LLAMA_CPP/llama-quantize" ]; then
   echo "ERROR: llama.cpp not found/built at LLAMA_CPP=$LLAMA_CPP" >&2
   echo "  git clone https://github.com/ggerganov/llama.cpp && cd llama.cpp && make" >&2
-  echo "  then: export LLAMA_CPP=/path/to/llama.cpp && ./pack_dexter.sh" >&2
+  echo "  then: export LLAMA_CPP=/path/to/llama.cpp && ./pack_iris.sh" >&2
   exit 1
 fi
 

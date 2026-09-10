@@ -7,7 +7,7 @@
 #
 # then pack as usual:
 #   export LLAMA_CPP=~/src/llama.cpp
-#   ./pack_dexter.sh "$WORK/toolcall-lora-merged" toolcall-ft
+#   ./pack_iris.sh "$WORK/toolcall-lora-merged" toolcall-ft
 #
 #   ./merge_lora.sh [ADAPTER] [OUT] [BASE]
 set -euo pipefail
@@ -41,4 +41,4 @@ print(f"[merge_lora] merged model saved → {out_dir}", flush=True)
 EOF
 
 echo "DONE: $OUT"
-echo "Next: LLAMA_CPP=$HOME/src/llama.cpp ./pack_dexter.sh \"$OUT\" toolcall-ft"
+echo "Next: LLAMA_CPP=$HOME/src/llama.cpp ./pack_iris.sh \"$OUT\" toolcall-ft"
