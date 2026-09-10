@@ -2733,6 +2733,11 @@ function seedSentryTasks(): void {
 }
 
 let sentryScanBusy = false;
+// True once checkSentryDue has run at least once this process lifetime. The
+// first check after boot SKIPS overdue catch-up: a scan slot missed while
+// Warden was down has nothing to report the next slot won't, and firing it on
+// restart made every mid-hour restart trigger an immediate scan.
+let sentryBootChecked = false;
 
 /** Fire a Sentry scan (peek or deep) as a direct background child spawn — no
  *  orchestrator, no chat pipeline. Used by checkSentryDue() for the scheduled
@@ -2787,6 +2792,8 @@ export function runSentryScan(mode: 'peek' | 'deep'): { ok: boolean; error?: str
 function checkSentryDue(): void {
   if (sentryScanBusy) return;
   sentryScanBusy = true;
+  const firstCheck = !sentryBootChecked;
+  sentryBootChecked = true;
   try {
     const now = Date.now();
     for (const t of SENTRY_TASK_DEFS) {
@@ -2812,6 +2819,12 @@ function checkSentryDue(): void {
       }
       if (now >= nextFireMs) {
         setRouterState(lastrunKey, new Date(now).toISOString());
+        if (firstCheck) {
+          // Overdue slot missed while Warden was down — advance the schedule
+          // and wait for the next slot instead of catch-up firing on boot.
+          logger.info({ mode: t.mode }, 'checkSentryDue: overdue slot missed while Warden was down — skipping catch-up scan, next scan at the next cron slot');
+          continue;
+        }
         logger.info({ mode: t.mode, cron }, 'checkSentryDue: firing scheduled security scan');
         try {
           runSentryScan(t.mode);
