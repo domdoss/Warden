@@ -65,11 +65,15 @@ class ToolRegistry {
     }
 
     resolveToolset(name: string): string[] {
-        const seen = new Set<string>();
+        // Two separate sets: a toolset name and a tool name can legitimately be
+        // the same string (toolset 'email' contains tool 'email') — sharing one
+        // `seen` set made the tool look already-visited and silently dropped it.
+        const seenSets = new Set<string>();
+        const seenTools = new Set<string>();
         const result: string[] = [];
         const visit = (n: string) => {
-            if (seen.has(n)) return;
-            seen.add(n);
+            if (seenSets.has(n)) return;
+            seenSets.add(n);
             const ts = this.toolsets.get(n);
             if (!ts) return;
             if (ts.includes) {
@@ -77,8 +81,8 @@ class ToolRegistry {
             }
             if (ts.tools) {
                 for (const t of ts.tools) {
-                    if (!seen.has(t)) {
-                        seen.add(t);
+                    if (!seenTools.has(t)) {
+                        seenTools.add(t);
                         result.push(t);
                     }
                 }
