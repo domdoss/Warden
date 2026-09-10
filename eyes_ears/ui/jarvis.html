@@ -492,8 +492,12 @@
                 this.renderer = new THREE.WebGLRenderer({
                     canvas: this.canvas,
                     alpha: true,
-                    antialias: true
+                    // No AA + half-res backbuffer: the hologram is a glow orb, not
+                    // line art — it looks the same at 0.5 pixel ratio but renders
+                    // a quarter of the pixels, which this PC's iGPU can hold.
+                    antialias: false
                 });
+                this.renderer.setPixelRatio(0.5);
 
                 this.audioLevel = 0;
                 this.targetAudioLevel = 0;
@@ -513,7 +517,9 @@
             }
 
             init() {
-                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                // updateStyle=false: CSS keeps the canvas stretched to the full
+                // window while the backbuffer stays at the 0.5 pixel ratio above.
+                this.renderer.setSize(window.innerWidth, window.innerHeight, false);
                 this.renderer.setClearColor(0x000000, 0);
                 this.camera.aspect = window.innerWidth / window.innerHeight;
                 this.camera.updateProjectionMatrix();
@@ -839,7 +845,7 @@
             }
 
             onResize() {
-                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setSize(window.innerWidth, window.innerHeight, false);
                 this.camera.aspect = window.innerWidth / window.innerHeight;
                 this.camera.updateProjectionMatrix();
             }

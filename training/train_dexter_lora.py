@@ -21,6 +21,7 @@ The merge + disk writes run on the main process only; other ranks wait at the
 barrier, so no races and no duplicate artifacts.
 """
 import argparse
+import gc
 import json
 import os
 import sys
@@ -33,10 +34,17 @@ from torch.utils.data import Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     Trainer,
     TrainingArguments,
 )
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import (
+    LoraConfig,
+    PeftModel,
+    TaskType,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+)
 from accelerate import PartialState
 
 
@@ -170,6 +178,11 @@ def main():
     ap.add_argument("--grad-accum", type=int, default=2)
     ap.add_argument("--grad-ckpt", action=argparse.BooleanOptionalAction, default=True,
                     help="gradient checkpointing (on by default; --no-grad-ckpt disables)")
+    ap.add_argument("--qlora", action="store_true",
+                    help="QLoRA: load base in 4-bit NF4 (bitsandbytes). For 12 GB "
+                         "cards where the fp16 base + logits upcast peak OOMs. The "
+                         "merge at the end reloads the base in fp16 so the saved "
+                         "merged model is a normal HF model, not a 4-bit one.")
     ap.add_argument("--max-len", type=int, default=6144,
                     help="cap rendered seq length; longer examples are left-truncated "
                          "(keep last N) so the assistant labels at the tail are preserved. "
@@ -193,10 +206,22 @@ def main():
 
     # fp16 — RTX 5000 (Turing) has no native bf16, so use fp16 not bf16.
     # Load on the rank's own GPU; under torchrun DDP each rank loads its copy.
+    quant = None
+    if args.qlora:
+        quant = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
     model = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=torch.float16, trust_remote_code=True,
+        quantization_config=quant,
     )
     model.config.use_cache = False
+    if args.qlora:
+        # Frozen 4-bit base: upcast norms, enable grads for checkpointed inputs.
+        model = prepare_model_for_kbit_training(model)
     # Gradient checkpointing ON by default: the tools block makes sequences
     # ~2K tokens, so batch>2 with no checkpointing OOMs a 16 GB card. Checkpointing
     # trades recompute for memory, letting a bigger batch fill the cards.
@@ -259,7 +284,19 @@ def main():
         tokenizer.save_pretrained(args.out)
         print(f"[dexter-sft] adapter saved → {args.out}", flush=True)
 
-        merged = model.merge_and_unload()
+        if args.qlora:
+            # Don't merge into the 4-bit weights — the result would stay in
+            # bitsandbytes format, unreadable by GGUF conversion, and the LoRA
+            # deltas would be re-quantized to 4-bit. Reload the base in fp16
+            # and merge into that instead: plain merge, no training state.
+            del model
+            gc.collect()
+            torch.cuda.empty_cache()
+            base = AutoModelForCausalLM.from_pretrained(
+                args.model, dtype=torch.float16, trust_remote_code=True)
+            merged = PeftModel.from_pretrained(base, args.out).merge_and_unload()
+        else:
+            merged = model.merge_and_unload()
         merged.save_pretrained(args.merged_out)
         tokenizer.save_pretrained(args.merged_out)
         print(f"[dexter-sft] merged model saved → {args.merged_out}", flush=True)

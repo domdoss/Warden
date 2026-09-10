@@ -777,48 +777,41 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // Single-shot: one tool call, then the output is handed straight back
         // to the orchestrator. Iris doesn't loop on follow-up calls — if the
         // one shot wasn't right, the orchestrator sends a fresh request.
-        // (byte merged in 2026-09-05: iris is the single toolcall agent and
-        // carries the work-management role byte had.)
+        // (byte merged in 2026-09-05; core-only redesign 2026-09-09 per Steve:
+        // alarms, reminders/cron, calendar, email — no projects/work-tasks/
+        // admin/API, no BOTH-tier/skill/MCP merges, terse structured prompt,
+        // no examples.)
         maxIterations: 1,
-        summary: 'email, digests, scheduling/reminders, calendar, and work management — read/send email, compile grounded hourly/daily/weekly digests, create/list/manage reminders, scheduled tasks, and calendar events, and manage projects, work tasks, to-dos, deliverables, blockers, priorities, financials, and time tracking. Use for inbox tasks, scheduling requests, work-task requests, and the scheduled digest prompts.',
-        systemPrompt: `You are Iris, the personal information, scheduling, and work-management agent: email, tasks, calendar, projects, and work tracking.
+        summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email. Use for inbox tasks, alarm and scheduling requests.',
+        systemPrompt: `You are Iris: alarms, reminders, calendar, email.
 
-# Role
-You execute exactly one tool call per request, then return the result. The orchestrator supplies ids and calls you again for the next step.
+CONTRACT: one request → one tool call → one result line.
 
-# Capabilities
-- Email: read_emails, get_email, send_email, refresh_email_cache, get_cached_emails.
-- Scheduled tasks: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task.
-- Calendar: create_calendar_event, list_calendar_events, update_calendar_event, delete_calendar_event.
-- Work management: projects, work tasks, deliverables, blockers, priorities, financials, and time tracking (create/list/update/delete tools).
-- API: list_api_keys, api_request.
-- Digests run on dedicated scheduled background jobs, not through you.
+TOOLS
+- alarms: create_alarm, list_alarms, update_alarm, delete_alarm
+- reminders: schedule_task, list_tasks, pause_task, resume_task, cancel_task, update_task
+- calendar: create_calendar_event, list_calendar_events, update_calendar_event, delete_calendar_event
+- email: read_emails, get_email, send_email, refresh_email_cache, get_cached_emails
 
-# Guidelines
-- The first line of the task is the current local time in the form "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)." Compute every absolute timestamp from this.
-- schedule_task schedule_value forms:
-  - once, relative time ("in 2 minutes", "tomorrow"): ISO-8601 duration (PT2M, PT1H30M, P1D).
-  - once, absolute clock time ("at 3pm today"): local YYYY-MM-DDTHH:MM:SS.
-  - interval ("every 5 minutes"): milliseconds as a string (300000).
-  - recurring schedule ("every weekday at 9am"): 5-field cron, local time (0 9 * * 1-5).
-- A to-do with no time trigger is a work task (create_work_task); an item that fires on a clock is a scheduled task (schedule_task).
-- Supply required fields — blockers: title + description; work tasks and deliverables: title; financials: amount + category. Infer reasonable values when the task omits them.
-- create_work_task needs project_id: "personal" (the permanent Personal project) when the task names no project; the named project's ID when one is. priority is low | medium | high | urgent (default medium).
-- To manage an existing task, calendar event, project, or work task, use the id supplied in the request; call the list tools only when the request is to list records.
-- When the request names both a reminder and a calendar event, make both tool calls in one turn.
-- When the request gives a time but no content, reply in one short line asking for the content.
-- Use only IDs and data your tools return.
-- Email: keep real addresses (on-device).
-- For an inbox scan, call read_emails with the window the request names and return what you find, marking which messages look actionable (newsletters, confirmations, receipts, shipping notices, and ads are non-actionable).
+INPUT
+Line 1 of the task is the local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)" — compute every timestamp from it.
 
-Example:
-Task: "add 'fix the login bug' to my list"
-→ create_work_task(title="Fix the login bug", project_id="personal")
+schedule_value
+- once, relative ("in 2 minutes", "tomorrow"): ISO-8601 duration — PT2M, PT1H30M, P1D
+- once, absolute ("at 3pm today"): local YYYY-MM-DDTHH:MM:SS
+- interval ("every 5 minutes"): milliseconds string — 300000
+- recurring ("every weekday at 9am"): 5-field cron — 0 9 * * 1-5
 
-# Format
-One plain-text line naming the ids you returned, or the published span.`,
-        toolsets: ['iris-core'],
-        mcpServers: ['tasks', 'mcp-server-time'],
+RULES
+- Manage an existing record by the id given in the request; list tools only for list requests.
+- Reminder and calendar event both named: both calls in one turn.
+- Time given but no content: one short line asking for the content.
+- Inbox scan: read_emails, then report, marking actionable vs non-actionable (newsletters, confirmations, receipts, shipping notices, ads).
+- Use only ids and data your tools return. Keep real email addresses.
+
+OUTPUT
+One plain-text line naming the ids returned, or the result found.`,
+        toolsets: ['alarms', 'tasks', 'calendar', 'email'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
         // structured tool use (so Iris reliably calls post_summary / schedule_task
         // rather than emitting free text and skipping the tool call).
@@ -1124,11 +1117,15 @@ const BOTH_TOOL_DEFS = stripTier(registry.getDefinitions(
 // Each sub-agent's actual tool defs: its toolsets' tools + shared 'both' tools,
 // EXCEPT for Oculus, which gets only its explicit toolsets to prevent
 // fabric/MCP/web noise from derailing its narrow background job.
+// Iris is exempt too (2026-09-09): the toolcall-ft fine-tune was trained on
+// EXACTLY the iris-core 41 tools (tool_schemas.json) — extra tools in the
+// schema (Read etc.) are off-distribution and it grabs them instead of the
+// trained pick ("check emails" → Read(".mail") bug).
 const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
     SUBAGENTS.map(s => [
         s.delegate,
         stripTier(
-            (s.delegate === 'oculus' || s.delegate === 'sentry')
+            (s.delegate === 'oculus' || s.delegate === 'sentry' || s.delegate === 'iris')
                 ? registry.getDefinitions(getSubAgentToolNames(s))
                 : [
                     ...registry.getDefinitions(getSubAgentToolNames(s)),
@@ -1597,7 +1594,8 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
     // Sentry stays isolated like its SUBAGENT_TOOL_DEFS build (no BOTH_TOOL_DEFS
     // merge above): a security scanner takes no skill/MCP tools either.
-    if (delegate !== 'sentry' && skillState && skillState.skills.length > 0) {
+    // Iris stays isolated too (2026-09-09): trained on its exact 41 tools only.
+    if (delegate !== 'sentry' && delegate !== 'iris' && skillState && skillState.skills.length > 0) {
         const allSkillNames = new Set(skillState.skills.map((s: any) => s.name));
         const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
         const existing = new Set(tools.map((t: any) => t.function?.name));
@@ -3717,6 +3715,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
 
 Cue words:
+- Before delegating any search, lookup, or find to atlas, check \`marm_smart_recall\` first — if memory can answer it, no delegation. atlas opens and does; it does not rediscover what memory already knows.
 - "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot or webcam for an email request.
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
 - "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
@@ -5737,7 +5736,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // Merge in this sub-agent's allow-listed MCP server tools (e.g.
             // iris → kmail + tasks). Execution routes through the
             // shared executeXmlTool mcp__ dispatch, so schemas are all it needs.
-            const mcpExtra = mcpToolDefsForServers(def.mcpServers);
+            // Iris is EXEMPT (2026-09-09): the toolcall-ft fine-tune was trained
+            // on exactly the iris-core 41 tools — mcp__ extras are off-distribution.
+            const mcpExtra = toolName === 'iris' ? [] : mcpToolDefsForServers(def.mcpServers);
             if (mcpExtra.length > 0) {
                 const existing = new Set(tools.map((t: any) => t.function?.name));
                 tools = [...tools, ...mcpExtra.filter((t: any) => !existing.has(t.function?.name))];
