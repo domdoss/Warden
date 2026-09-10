@@ -145,6 +145,8 @@ The schedule-value format is where scheduling breaks in every system that has on
 
 > 🪨 **The toolcall agents (Iris, Oculus, Sentry) are prompted for `granite4.1:3b`.** Their system prompts are tuned to that 3B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 3B local one.
 
+> ⚠️ **Stock granite doesn't cut it — the fine-tuned `toolcall-ft` model is effectively required.** The toolcall agents need the LoRA fine-tune built from `training/` (`toolcall-ft` in Ollama; see `training/README` / `Modelfile.toolcall-ft` for building it). Reliable tool-call transcription on this 41-tool surface was trained in — a stock model won't reproduce it. On a fresh install without the LoRA weights it just wouldn't work, even with the 8B stock model swapped in.
+
 ### Persistent Runner
 
 > 🔥 **The agent-runner is a persistent child process** — no Docker, no containers, no cold starts between messages. It stays warm for hours (configurable `IDLE_TIMEOUT`), keeping MCP servers connected and skills loaded. Follow-up messages route over IPC in milliseconds.

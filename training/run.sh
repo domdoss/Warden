@@ -97,16 +97,16 @@ fi
 
 phase "training LoRA across $NPROC GPU(s)"
 if [ "$NPROC" -gt 1 ]; then
-  "$VENV/bin/torchrun" --nproc_per_node="$NPROC" train_dexter_lora.py
+  "$VENV/bin/torchrun" --nproc_per_node="$NPROC" train_iris_lora.py
 else
-  "$PY" train_dexter_lora.py
+  "$PY" train_iris_lora.py
 fi
 
 # ---- 4. pack to Ollama ---------------------------------------------------
 if [ "$SKIP_PACK" = "1" ]; then
   phase "SKIP_PACK=1 — stopping after training"
   echo "Merged model at: $WORK/toolcall-lora-merged"
-  echo "Pack later: LLAMA_CPP=$LLAMA_CPP ./pack_dexter.sh \"\$WORK/toolcall-lora-merged\" toolcall-ft"
+  echo "Pack later: LLAMA_CPP=$LLAMA_CPP ./pack_iris.sh \"\$WORK/toolcall-lora-merged\" toolcall-ft"
   exit 0
 fi
 
@@ -120,13 +120,13 @@ if [ ! -x "$LLAMA_CPP/llama-quantize" ] || [ ! -f "$LLAMA_CPP/convert_hf_to_gguf
   cmake -S "$LLAMA_CPP" -B "$LLAMA_CPP/build" \
     -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF
   cmake --build "$LLAMA_CPP/build" --config Release -j"$(nproc)" --target llama-quantize
-  # expose at repo root so pack_dexter.sh ($LLAMA_CPP/llama-quantize) finds it
+  # expose at repo root so pack_iris.sh ($LLAMA_CPP/llama-quantize) finds it
   ln -sf "$LLAMA_CPP/build/bin/llama-quantize" "$LLAMA_CPP/llama-quantize"
 fi
 export LLAMA_CPP
 
 phase "packing → Ollama model toolcall-ft"
-./pack_dexter.sh "$WORK/toolcall-lora-merged" toolcall-ft
+./pack_iris.sh "$WORK/toolcall-lora-merged" toolcall-ft
 
 # ---- done ----------------------------------------------------------------
 phase "DONE"
