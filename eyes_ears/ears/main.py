@@ -884,7 +884,10 @@ class JarvisApp:
             self._chat_turn(text), self.loop
         )
         try:
-            return future.result(timeout=60)
+            # Local qwen turns with subagent delegation can run for minutes —
+            # keep the wait generous so a slow-but-healthy turn doesn't come
+            # back as a timeout error. The UI shim in chat.html matches this.
+            return future.result(timeout=300)
         except concurrent.futures.TimeoutError:
             return "[response timed out]"
         except Exception as e:

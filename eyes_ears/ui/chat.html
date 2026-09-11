@@ -133,13 +133,7 @@
           var args=Array.prototype.slice.call(arguments);
           return new Promise(function(resolve,reject){
             var id='pm-'+Math.random().toString(36).slice(2);
-            // chat_send blocks up to 60s server-side (ears/main.py future
-            // timeout) — a 30s shim timeout rejects it mid-turn and the
-            // catch in doSend prints a misleading [unavailable]. Long-wait
-            // calls get a timeout that outlives the server-side one; every
-            // other call stays at 30s.
-            var tmo=method==='chat_send'?95000:30000;
-            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},tmo);
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
             _pending[id]={resolve:resolve,reject:reject,timer:timer};
             window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
           });
@@ -278,16 +272,21 @@
     var text=input.value.trim();if(!text)return;
     addMessage('user',text);input.value='';sendBtn.disabled=true;
     try{
-      if(window.pywebview&&window.pywebview.api&&window.pywebview.api.chat_send){
-        var resp=await window.pywebview.api.chat_send(text);
-        if(resp)addMessage('jarvis',resp);
+      // Ingest only — POST /api/messages stores the message and the
+      // orchestrator's server-side loop picks it up. The reply renders via
+      // the history poll below, so there's no bridge call to block on and
+      // no timeout window to hit. (The old chat_send round-trip rejected
+      // after 30s in the shim while the turn was still running → the
+      // intermittent [unavailable].)
+      if(window.pywebview&&window.pywebview.api&&window.pywebview.api.warden_api){
+        var raw=await window.pywebview.api.warden_api('/api/messages','POST',JSON.stringify({text:text}));
+        if(!raw) addMessage('jarvis','[unavailable]');
       }else if(config&&config.warden_url){
-        var r=await fetch(config.warden_url.replace(/\/+$/,'')+'/api/chat',{
+        var r=await fetch(config.warden_url.replace(/\/+$/,'')+'/api/messages',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({message:text}),signal:AbortSignal.timeout(30000)
+          body:JSON.stringify({text:text}),signal:AbortSignal.timeout(30000)
         });
-        if(r.ok){var d=await r.json();addMessage('jarvis',d.reply||d.text||d.response||'')}
-        else addMessage('jarvis','[unavailable]');
+        if(!r.ok) addMessage('jarvis','[unavailable]');
       }else{
         addMessage('jarvis','[Set Warden URL in hologram settings ⚙]');
       }
