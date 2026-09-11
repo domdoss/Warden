@@ -88,8 +88,7 @@ MEM_MODEL = "granite4.1:8b"
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 MEM_CACHE = os.path.expanduser("~/.local/state/steve/last_scan")
 MARM_URL = os.environ.get("MARM_URL", "http://127.0.0.1:8001/mcp")
-MARM_SESSION = "steve memory"
-MARM_PREFIX = "steve memory — "
+MARM_SESSION = "memory"
 MEM_MAX_FILES = 300            # .md files per scan
 MEM_MAX_FILE_BYTES = 200_000   # skip huge files
 MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc first)
@@ -249,14 +248,13 @@ def marm_tool_call(name: str, args: dict) -> dict | None:
 
 def marm_load_facts() -> list[str]:
     """The remembered facts, read back out of MARM — the ONLY memory store.
-    Empty when MARM has no session yet (fresh install, before first scan);
-    raises when MARM itself is unreachable."""
+    Empty when MARM has no session yet (fresh install, before first scan)."""
     r = marm_tool_call("marm_log_show", {"session_name": MARM_SESSION})
     facts = []
     for entry in ((r or {}).get("entries") or []):
-        c = str(entry.get("full_entry") or "")
-        if c.startswith(MARM_PREFIX):
-            facts.append(c[len(MARM_PREFIX):].strip())
+        c = str(entry.get("full_entry") or "").strip()
+        if c:
+            facts.append(c)
     return facts
 
 
@@ -364,7 +362,7 @@ def memory_startup_check(set_state, set_note, on_ready) -> None:
             if fresh:
                 prev = set(marm_load_facts())
                 new = [f for f in fresh if f not in prev]
-                if marm_log_entries([f"{MARM_PREFIX}{f}" for f in new]):
+                if marm_log_entries(new):
                     print(f"[steve] filed {len(new)} new facts into MARM", file=sys.stderr)
                 write_scan_ts()
     facts = marm_load_facts()
