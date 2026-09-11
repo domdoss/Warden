@@ -26,6 +26,7 @@
  * MARM, so filed facts show up as the tree filling in.
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { OLLAMA_URL, DATA_DIR } from './config.js';
 import { getDb, getRouterState, setRouterState } from './db.js';
@@ -407,6 +408,67 @@ export async function maybeBackfillTreeFacts(): Promise<void> {
 // its durable facts get curated from docs, not from Warden's own chatter.
 const SKIP_PATHS = new Set(['Projects > AI & Tools > MARM Memory']);
 
+// Claude Code's persistent memories are a FIRST-CLASS classifier source, not
+// a skipped dir: ~/.claude/projects/*/memory/*.md frontmatter is one
+// curated fact-line each. Scanned once per process, first classification run
+// after boot (idle-gated with the rest), on every machine Warden runs on —
+// a fresh install picks up whatever .claude memories exist there.
+const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+let claudeScanTried = false;
+function claudeMemoryLines(): string[] {
+  const lines: string[] = [];
+  let projects: string[] = [];
+  try { projects = fs.readdirSync(CLAUDE_PROJECTS_DIR); } catch { return lines; /* no .claude — nothing to scan */ }
+  for (const proj of projects.sort()) {
+    const memDir = path.join(CLAUDE_PROJECTS_DIR, proj, 'memory');
+    let files: string[] = [];
+    try { files = fs.readdirSync(memDir); } catch { continue; }
+    for (const f of files.sort()) {
+      if (!f.endsWith('.md') || f === 'MEMORY.md') continue; // the index, not a fact
+      try {
+        const md = fs.readFileSync(path.join(memDir, f), 'utf-8');
+        const desc = (md.match(/^description:\s*"?(.+?)"?\s*$/m) || [])[1]?.trim();
+        if (desc) lines.push(`persistent memory ${f.replace(/\.md$/, '')}: ${desc}`);
+      } catch { /* unreadable memory — skip */ }
+    }
+  }
+  return lines;
+}
+
+// Dedup + persist a classified batch: drops skipped paths, near-identical
+// repeats, and paraphrase restatements — of facts already on file and of
+// each other — then files the fresh facts into MARM + the fact index.
+// Returns the count filed, or -1 on MARM failure (caller aborts the run).
+async function fileFacts(found: Fact[], state: { topicSent: boolean }): Promise<number> {
+  const sigs = loadFactSigs();
+  const onFile = loadFiledFacts();
+  const fresh: Fact[] = [];
+  for (const f of found) {
+    if (SKIP_PATHS.has(f.path)) continue;
+    if (sigs.has(factSig(f.path, f.fact))) continue;
+    // Path-agnostic: the same text under two paths is the same fact
+    // (the ---WARDEN_STATUS--- fact filed under Build & Deploy AND
+    // Agent Runner) — the taxonomy offers many homes for one truth.
+    if (onFile.some((r) => sameFact(r.f, f.fact))) continue;
+    if (fresh.some((r) => sameFact(r.fact, f.fact))) continue;
+    fresh.push(f);
+  }
+  if (!fresh.length) return 0;
+  // First write of the run opens the topic; the rest ride the same session.
+  const entries = [
+    ...(state.topicSent ? [] : ['Topic: memory tree']),
+    ...fresh.map((f) => `memory tree — ${f.path}: ${f.fact}`),
+  ];
+  state.topicSent = true;
+  const ok = await marmLogEntries(entries);
+  if (!ok) return -1;
+  recordTreeFacts(fresh);
+  rememberFactSigs(fresh.map((f) => factSig(f.path, f.fact)));
+  rememberFiledFacts(fresh.map((f) => ({ p: f.path, f: f.fact })));
+  fresh.forEach((f) => noteTreeActivity({ kind: 'write', path: f.path, fact: f.fact }));
+  return fresh.length;
+}
+
 // Word-overlap paraphrase filter: the model restates the same fact in new
 // wording across (and within) batches — "resides at /x" vs "is located at
 // /x" — and text signatures can't catch that. Two facts with the same path
@@ -528,12 +590,16 @@ export interface ClassifyResult { ok: boolean; reason?: string; batches: number;
  *  machine is claimed again. */
 export async function runMemoryClassification(force = false): Promise<ClassifyResult> {
   if (running) return { ok: false, reason: 'already running', batches: 0, facts: 0 };
-  if (!fs.existsSync(LOG_PATH)) return { ok: false, reason: 'no log file', batches: 0, facts: 0 };
   // Snapshot: classify exactly what existed when the run began.
-  const target = fs.statSync(LOG_PATH).size;
+  let target = 0;
+  if (fs.existsSync(LOG_PATH)) target = fs.statSync(LOG_PATH).size;
   let cursor0 = Number(getRouterState(CURSOR_KEY) || 0);
   if (target < cursor0) cursor0 = 0; // rotated/truncated
-  if (target <= cursor0) return { ok: false, reason: 'no backlog', batches: 0, facts: 0 };
+  const hasBacklog = target > cursor0;
+  // No work for this run at all — claude memories already scanned this
+  // process AND no log backlog. (The scan is once per process so a fresh
+  // install with an empty log still classifies its .claude memories.)
+  if (!hasBacklog && claudeScanTried) return { ok: false, reason: 'no backlog', batches: 0, facts: 0 };
   if (!force) {
     // Idle-gated: a big model loaded means the machine is in use — stay off.
     const busy = await bigModelsLoaded();
@@ -547,70 +613,81 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
   let batches = 0;
   let facts = 0;
   let aborted: string | undefined;
-  let topicSent = false;
-  logger.info({ model: MTREE_MODEL, backlog: target - cursor0 }, 'memory-tree: classification run starting (dump period)');
+  const state = { topicSent: false };
+  logger.info({ model: MTREE_MODEL, backlog: target - cursor0, claude: !claudeScanTried }, 'memory-tree: classification run starting (dump period)');
   try {
-    let cursor = cursor0;
-    for (;;) {
-      const batch = readBatch(cursor, target);
-      if (!batch) break; // snapshot fully classified — run finished
-      if (batch.lines.length === 0) {
-        // Only blank lines in this window — advance past them, nothing to classify.
-        setRouterState(CURSOR_KEY, String(batch.nextCursor));
-        cursor = batch.nextCursor;
-        continue;
-      }
-      const found = await classifyBatch(
-        batch.lines,
-        loadFiledFacts().slice(-FILED_PROMPT_MAX).map((r) => r.p + ': ' + r.f),
-      );
-      if (found == null) {
-        aborted = 'model failed mid-run — resumes next dump period';
-        break;
-      }
-      if (found.length) {
-        // Drop skipped paths, near-identical repeats, and paraphrase
-        // restatements — of facts already on file and of each other.
-        const sigs = loadFactSigs();
-        const onFile = loadFiledFacts();
-        const fresh: Fact[] = [];
-        for (const f of found) {
-          if (SKIP_PATHS.has(f.path)) continue;
-          if (sigs.has(factSig(f.path, f.fact))) continue;
-          // Path-agnostic: the same text under two paths is the same fact
-          // (the ---WARDEN_STATUS--- fact filed under Build & Deploy AND
-          // Agent Runner) — the taxonomy offers many homes for one truth.
-          if (onFile.some((r) => sameFact(r.f, f.fact))) continue;
-          if (fresh.some((r) => sameFact(r.fact, f.fact))) continue;
-          fresh.push(f);
+    // Claude-memory source first (once per process): the .claude lines ride
+    // the same loaded 30b, chunked under the same batch limits as log lines.
+    if (!claudeScanTried) {
+      claudeScanTried = true;
+      const lines = claudeMemoryLines();
+      if (lines.length) {
+        const onFile = () => loadFiledFacts().slice(-FILED_PROMPT_MAX).map((r) => r.p + ': ' + r.f);
+        const chunks: string[][] = [];
+        let cur: string[] = [];
+        let curChars = 0;
+        for (const ln of lines) {
+          const t = ln.slice(0, LINE_TRUNC);
+          if (cur.length >= BATCH_LINES || curChars + t.length > MAX_BATCH_CHARS) { chunks.push(cur); cur = []; curChars = 0; }
+          cur.push(t);
+          curChars += t.length;
         }
-        if (fresh.length) {
-          // First write of the run opens the topic; the rest ride the same session.
-          const entries = [
-            ...(topicSent ? [] : ['Topic: memory tree']),
-            ...fresh.map((f) => `memory tree — ${f.path}: ${f.fact}`),
-          ];
-          topicSent = true;
-          const ok = await marmLogEntries(entries);
-          if (!ok) {
+        if (cur.length) chunks.push(cur);
+        for (const chunk of chunks) {
+          const found = await classifyBatch(chunk, onFile());
+          if (found == null) {
+            aborted = 'claude memory scan: model failed — retries next process';
+            break;
+          }
+          if (found.length) {
+            const n = await fileFacts(found, state);
+            if (n < 0) {
+              aborted = 'claude memory scan: MARM failed — retries next process';
+              break;
+            }
+            facts += n;
+          }
+          batches++;
+        }
+      }
+    }
+    // Log-backlog classification.
+    if (!aborted && hasBacklog) {
+      let cursor = cursor0;
+      for (;;) {
+        const batch = readBatch(cursor, target);
+        if (!batch) break; // snapshot fully classified — run finished
+        if (batch.lines.length === 0) {
+          // Only blank lines in this window — advance past them, nothing to classify.
+          setRouterState(CURSOR_KEY, String(batch.nextCursor));
+          cursor = batch.nextCursor;
+          continue;
+        }
+        const found = await classifyBatch(
+          batch.lines,
+          loadFiledFacts().slice(-FILED_PROMPT_MAX).map((r) => r.p + ': ' + r.f),
+        );
+        if (found == null) {
+          aborted = 'model failed mid-run — resumes next dump period';
+          break;
+        }
+        if (found.length) {
+          const n = await fileFacts(found, state);
+          if (n < 0) {
             aborted = 'MARM failed mid-run — resumes next dump period';
             break;
           }
-          facts += fresh.length;
-          recordTreeFacts(fresh);
-          rememberFactSigs(fresh.map((f) => factSig(f.path, f.fact)));
-          rememberFiledFacts(fresh.map((f) => ({ p: f.path, f: f.fact })));
-          fresh.forEach((f) => noteTreeActivity({ kind: 'write', path: f.path, fact: f.fact }));
+          facts += n;
         }
-      }
-      batches++;
-      cursor = batch.nextCursor;
-      setRouterState(CURSOR_KEY, String(cursor));
-      // The machine is needed again — a big model (not ours) got loaded.
-      const busy = await bigModelsLoaded();
-      if (busy.length) {
-        aborted = 'gpu claimed by ' + busy.join(',');
-        break;
+        batches++;
+        cursor = batch.nextCursor;
+        setRouterState(CURSOR_KEY, String(cursor));
+        // The machine is needed again — a big model (not ours) got loaded.
+        const busy = await bigModelsLoaded();
+        if (busy.length) {
+          aborted = 'gpu claimed by ' + busy.join(',');
+          break;
+        }
       }
     }
   } finally {
