@@ -5,18 +5,16 @@ Completely independent of the main voice app: no control server, no shared
 process, no bridge to the main UI. This process owns its own mic (VAD
 record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
 
-- Horizontal strip, bottom-left, always on top: big RED TALK on the left,
-  red VOICE pad (25% the stop sign's size), yellow STOP SIGN on the far
-  right, thin status line under the row.
-  TALK records until silence → transcribe → POST to Warden /api/messages
-  as a plain message with the Steve prompt block and the remembered facts
-  prepended — Warden itself has no Steve code, everything Steve-specific
-  lives in this app → poll for the reply → speak it.
-  STOP flashes while a turn is running; click stops whatever is in flight —
-  recording, waiting, or speaking.
-- VOICE pad: one push starts VOICE MODE — record until silence, send,
-  speak the reply, listen again, back and forth — until the stop sign is
-  pressed or he says "that's all for now".
+- Horizontal strip, bottom-left, always on top: red PUSH TO TALK on the
+  left (25% the stop sign's size), big yellow STOP SIGN on the right,
+  thin status line under the row.
+- PUSH TO TALK starts the conversation: record until silence → transcribe
+  → POST to Warden /api/messages as a plain message with the Steve prompt
+  block and the remembered facts prepended — Warden itself has no Steve
+  code, everything Steve-specific lives in this app → poll for the reply →
+  speak it → listen again. Back and forth until the stop sign is pressed
+  (stops everything — recording, waiting, or speaking; voice out) or he
+  says "that's all for now". The stop sign flashes the whole time it runs.
 - Audible cues for a blind user: short high beep when listening starts,
   low beep when the turn finishes, long buzz if it failed.
 
@@ -501,15 +499,7 @@ class SteveApp:
             time.sleep(2)
         return None
 
-    # ----- Turn workers -----
-    def _turn(self) -> None:
-        self.player.play_bytes(self.beeps.start_beep())
-        wav = self.recorder.record_until_silence()
-        if self._stop.is_set() or not wav:
-            self._finish_turn(False)
-            return
-        self._pipeline(wav)
-
+    # ----- Turn worker -----
     def _voice_loop(self) -> None:
         """Voice mode: back and forth — listen, send, speak the reply —
         until the stop sign is pressed or he says 'that's all for now'."""
@@ -545,31 +535,6 @@ class SteveApp:
         finally:
             self._finish_turn(failed)
 
-    def _pipeline(self, wav: bytes) -> None:
-        """Everything after the mic stops, shared by both buttons."""
-        failed = False
-        try:
-            text = (self.stt.transcribe(wav) or "").strip()
-            if self._stop.is_set() or not text:
-                return
-            my_id = self._send(text)
-            if self._stop.is_set():
-                return
-            reply = self._await_reply(my_id)
-            if self._stop.is_set():
-                return
-            if reply:
-                audio = self.tts.synthesize(reply)
-                if audio and not self._stop.is_set():
-                    self.player.play_bytes(audio)
-            else:
-                failed = True  # asked, but no answer came back
-        except Exception as e:
-            failed = True
-            print(f"[steve] turn failed: {e}", file=sys.stderr)
-        finally:
-            self._finish_turn(failed)
-
     def _finish_turn(self, failed: bool) -> None:
         try:
             if failed and not self._stop.is_set():
@@ -582,15 +547,6 @@ class SteveApp:
             self._worker = None
 
     # ----- pywebview JS bridge -----
-    def talk(self) -> str:
-        with self._lock:
-            if self._worker is not None:
-                return json.dumps({"ok": True, "busy": True})
-            self._stop.clear()
-            self._worker = threading.Thread(target=self._turn, daemon=True)
-            self._worker.start()
-        return json.dumps({"ok": True, "busy": True})
-
     def voice_start(self) -> str:
         with self._lock:
             if self._worker is not None:
