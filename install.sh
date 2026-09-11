@@ -288,7 +288,10 @@ Before=warden.service
 After=network.target
 
 [Service]
-ExecStart=${MARM_BIN} http
+# --profile trusted: rate limiting off (rpm 0) — loopback-only local
+# service; the default 80 rpm limiter throttled local bulk callers
+# (e.g. steve.py fact filing) into 429s.
+ExecStart=${MARM_BIN} http --profile trusted
 Restart=always
 RestartSec=5
 
