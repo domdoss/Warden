@@ -5,23 +5,18 @@ Completely independent of the main voice app: no control server, no shared
 process, no bridge to the main UI. This process owns its own mic (VAD
 record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
 
-- Big RED button (TALK), top of the window: record until silence →
-  transcribe → POST to Warden /api/messages as a plain message with the
-  Steve prompt block and the remembered facts prepended — Warden itself
-  has no Steve code, everything Steve-specific lives in this app → poll
-  for the reply → speak it.
-- Big YELLOW STOP SIGN, pinned to the far bottom edge — a wide gap and the
-  status strip sit between it and TALK so the two can't be confused. It
-  FLASHES while a turn is running; click stops whatever is in flight —
+- Horizontal strip, bottom-left, always on top: big RED TALK on the left,
+  red VOICE pad (25% the stop sign's size), yellow STOP SIGN on the far
+  right, thin status line under the row.
+  TALK records until silence → transcribe → POST to Warden /api/messages
+  as a plain message with the Steve prompt block and the remembered facts
+  prepended — Warden itself has no Steve code, everything Steve-specific
+  lives in this app → poll for the reply → speak it.
+  STOP flashes while a turn is running; click stops whatever is in flight —
   recording, waiting, or speaking.
-- Red VOICE pad to the LEFT of the stop sign, 25% its size: one push starts
-  VOICE MODE — record until silence, send, speak the reply, listen again,
-  back and forth — until the stop sign is pressed or he says
-  "that's all for now".
-- The window parks in the bottom-left corner and stays on top (always
-  visible).
-- Status strip between the buttons: idle when empty, short status text
-  otherwise.
+- VOICE pad: one push starts VOICE MODE — record until silence, send,
+  speak the reply, listen again, back and forth — until the stop sign is
+  pressed or he says "that's all for now".
 - Audible cues for a blind user: short high beep when listening starts,
   low beep when the turn finishes, long buzz if it failed.
 
@@ -642,8 +637,8 @@ def main() -> None:
         "Steve",
         os.path.join(HERE, "ui", "ptt.html"),
         js_api=app,
-        width=420, height=760,
-        x=scr.x, y=scr.y + scr.height - 760,
+        width=880, height=200,  # horizontal strip: TALK | VOICE | STOP in a row
+        x=scr.x, y=scr.y + scr.height - 200,
         on_top=True,  # always visible
         resizable=True,
         background_color="#050508",
