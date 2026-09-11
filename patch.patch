@@ -1,0 +1,2513 @@
+diff --git a/container/agent-runner/src/index.ts b/container/agent-runner/src/index.ts
+index 7124416..0def32e 100644
+--- a/container/agent-runner/src/index.ts
++++ b/container/agent-runner/src/index.ts
+@@ -453,8 +453,8 @@ function applySettingsSync(data: any) {
+     if (data.model !== undefined) {
+         ATLAS_MODEL = (data.model || '').replace(/^local:/, '');
+     }
+-    if (data.hephaestusModel !== undefined) {
+-        HEPHAESTUS_MODEL = (data.hephaestusModel || '').replace(/^local:/, '');
++    if (data.vulkanModel !== undefined) {
++        VULKAN_MODEL = (data.vulkanModel || '').replace(/^local:/, '');
+     }
+     // Per-agent tool-caller + artemis models — concrete values, no fallback.
+     if (data.byteModel !== undefined) BYTE_MODEL = (data.byteModel || '').replace(/^local:/, '');
+@@ -487,7 +487,7 @@ function applySettingsSync(data: any) {
+     if (data.dexterCtx !== undefined) process.env.DEXTER_NUM_CTX = data.dexterCtx ? String(data.dexterCtx) : '';
+     if (data.irisCtx !== undefined) process.env.IRIS_NUM_CTX = data.irisCtx ? String(data.irisCtx) : '';
+     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
+-    if (data.hephaestusCtx !== undefined) process.env.HEPHAESTUS_NUM_CTX = data.hephaestusCtx ? String(data.hephaestusCtx) : '';
++    if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
+     if (data.sentryCtx !== undefined) process.env.SENTRY_NUM_CTX = data.sentryCtx ? String(data.sentryCtx) : '';
+ }
+ 
+@@ -726,11 +726,11 @@ PERSISTENCE — never call a task "impossible", "not supported", or "limited by
+         toolsets: ['atlas-core'],
+     },
+     {
+-        delegate: 'hephaestus',
+-        label: 'Hephaestus',
++        delegate: 'vulkan',
++        label: 'Vulkan',
+         maxIterations: 200,
+         summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
+-        systemPrompt: `You are Hephaestus, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
++        systemPrompt: `You are Vulkan, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
+ 
+ WARDEN ITSELF — Warden's own source lives at \`/home/dominic/Projects/Warden\` (repo root): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`security/\` (detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
+ 
+@@ -748,7 +748,7 @@ FINISHING — you declare done, not a timer or tool cap (you have up to 100 roun
+ - **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
+ 
+ PERSISTENCE — never call a task "impossible" or "not supported" until you've tried at least three distinct approaches that all failed with concrete errors. If one approach fails, try another (different file, different API, a workaround). If you truly can't finish after three attempts, report what each returned and what the next would be.`,
+-        toolsets: ['hephaestus-core'],
++        toolsets: ['vulkan-core'],
+     },
+     {
+         delegate: 'iris',
+@@ -1080,7 +1080,7 @@ function delegateToolDef(s: SubAgentDef) {
+     // id immediately and the result lands in the orchestrator's inbox. Blocking
+     // mode remains for quick lookups the orchestrator cannot proceed without
+     // mid-turn.
+-    if (s.delegate === 'atlas' || s.delegate === 'hephaestus' || s.delegate === 'artemis' || s.delegate === 'sentry') {
++    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry') {
+         return {
+             type: 'function',
+             function: {
+@@ -1118,10 +1118,10 @@ let ORCHESTRATOR_MODEL = '';
+ // Atlas model — from its own dashboard dropdown (input.model). No hardcoded
+ // fallback: when unset the agent errors (the host seeds it on first boot).
+ let ATLAS_MODEL = '';
+-// Hephaestus (coding specialist) model — from its own dashboard dropdown
+-// (input.hephaestusModel). No hardcoded fallback: when unset the agent errors
++// Vulkan (coding specialist) model — from its own dashboard dropdown
++// (input.vulkanModel). No hardcoded fallback: when unset the agent errors
+ // (seedPerAgentModelSettings on the host materializes a value on first boot).
+-let HEPHAESTUS_MODEL = '';
++let VULKAN_MODEL = '';
+ // Per-agent models for the tool callers + artemis. Each is a concrete value
+ // selected from the Agents-panel dropdown (no blank, no `||` fallback). Empty →
+ // the agent errors out rather than silently running on the wrong model.
+@@ -1202,12 +1202,12 @@ function emitJobsStatus() {
+ // the user is dropped back to normal orchestrator chat.
+ let atlasDirect: { active: boolean; messages: { role: string; content: string }[] } | null = null;
+ 
+-// Spawn a background job for an async delegate (atlas or hephaestus). Used by
++// Spawn a background job for an async delegate (atlas or vulkan). Used by
+ // the delegate tool handlers and by the "go" exit from direct Atlas
+ // passthrough. Returns the job id.
+ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent: boolean): string {
+     const def = SUBAGENT_BY_DELEGATE.get(delegate)!;
+-    const model = delegate === 'hephaestus' ? HEPHAESTUS_MODEL : ATLAS_MODEL;
++    const model = delegate === 'vulkan' ? VULKAN_MODEL : ATLAS_MODEL;
+     const jobShortId = Math.random().toString(36).slice(2, 6);
+     const jobId = `${delegate}-${jobShortId}`;
+     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
+@@ -1345,7 +1345,7 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
+     iris: () => process.env.IRIS_NUM_CTX || '',
+     artemis: () => process.env.ARTEMIS_NUM_CTX || '',
+     atlas: () => process.env.ATLAS_NUM_CTX || '',
+-    hephaestus: () => process.env.HEPHAESTUS_NUM_CTX || '',
++    vulkan: () => process.env.VULKAN_NUM_CTX || '',
+     sentry: () => process.env.SENTRY_NUM_CTX || '',
+     'council-skeptic': () => process.env.ATLAS_NUM_CTX || '',
+     'council-pragmatist': () => process.env.ATLAS_NUM_CTX || '',
+@@ -1523,6 +1523,7 @@ async function runSubAgent(
+     abortFlag?: { aborted: boolean },
+     onToolCall?: (toolName: string, argsSummary: string, resultPreview?: string) => void,
+     temperature = 1,
++    format?: Record<string, any>,
+ ): Promise<{ content: string; modifiedFiles: string[] }> {
+     const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+     // No hardcoded fallback: if this agent's model is empty (a manually-cleared
+@@ -1654,6 +1655,7 @@ async function runSubAgent(
+                 // Only send think:true for models that support it — Ollama returns
+                 // an error for non-thinking models (e.g. granite) with think:true.
+                 think: modelRequiresThink(model),
++                ...(format !== undefined ? { format } : {}),
+             });
+ 
+             const data = { message: chatResult.message, usage: chatResult.usage } as any;
+@@ -1774,7 +1776,7 @@ interface ContainerInput {
+     voiceAttachments?: Array<{ relativePath: string; mediaType: string }>;
+     imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+     model?: string;
+-    hephaestusModel?: string;
++    vulkanModel?: string;
+     // Per-agent models — every agent has its own concrete model (no blank, no
+     // runtime fallback). The host resolves each from its router_state key.
+     byteModel?: string;
+@@ -2030,7 +2032,7 @@ const ROUTING_CORE = `# THE ROSTER
+ Each specialist is a separate model with its own tools and its own context — it can't see this conversation and you can't see its tools. You reach one by calling its delegate tool with a \`{task}\` string; it returns a short result. atlas and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn later — call it and move on, never block waiting for it.
+ 
+ - **atlas** — execution: shell, browser, desktop, web search/fetch, files, documents. Anything hands-on that touches the internet or runs a command.
+-- **hephaestus** — coding, scripting, building, heavy bash: editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like atlas.
++- **vulkan** — coding, scripting, building, heavy bash: editing source, running builds and tests, refactoring, complex shell pipelines. Runs in the background like atlas.
+ - **iris** — email, calendar, contacts, todos, digests. If what the user wants lives in an email — even when the ask is "find", "extract", "save", or "pull out" — it's iris. Compiling a digest/summary of recent activity and POSTing it to /api/summaries is iris's job.
+ - **dexter** — scheduling, reminders, alarms. It creates schedule entries only; it never runs the scheduled work, and it can't tell you why one did or didn't fire.
+ - **byte** — projects, deliverables, blockers, financials, work tasks, time tracking.
+@@ -2040,16 +2042,16 @@ Each specialist is a separate model with its own tools and its own context — i
+ 
+ # ROUTING
+ 
+-Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts you already know, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user actually wants something done or looked up. When work is needed, route by what they want, not the verb — the roster above is the map, the cue words below just point intent at the right seat, and the recurring gotchas below that are the ones that actually trip routing. When in doubt, delegate to atlas — except coding, building, and heavy scripting, which go to hephaestus.
++Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts you already know, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user actually wants something done or looked up. When work is needed, route by what they want, not the verb — the roster above is the map, the cue words below just point intent at the right seat, and the recurring gotchas below that are the ones that actually trip routing. When in doubt, delegate to atlas — except coding, building, and heavy scripting, which go to vulkan.
+ 
+ Cue words:
+-- "write/fix/refactor/build/test X" (code, scripts, builds) → **hephaestus** with the file or feature and the goal as plain English intent, never a shell command or step list.
++- "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file or feature and the goal as plain English intent, never a shell command or step list.
+ - "play X on youtube", "youtube X", "put on X", "play that song", "change/skip the song/video" → **atlas** with the song/artist as plain English intent (e.g. "Play chillstep on YouTube"), never a shell command — atlas finds it on YouTube and sets playback.
+ - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
+ - Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **byte**. Delegate in one call with the item's title and required fields, then report the result.
+ - "did you get that right", "double-check what we did" → **artemis**.
+ - "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it and end your turn telling them they're with Atlas now; from then on their messages go straight to Atlas and you don't relay them. Only for an explicit handoff request, not ordinary work.
+-- A message that starts with a name and a colon — "Iris:", "Byte:", "Dexter:", "Hephaestus:" — goes to that agent. The rest of the message is the task.
++- A message that starts with a name and a colon — "Iris:", "Byte:", "Dexter:", "Vulkan:" — goes to that agent. The rest of the message is the task.
+ 
+ Recurring gotchas:
+ - Task vs schedule — the #1 routing mistake. A work task or to-do has no time trigger ("create a task", "I need to X", a deliverable, a blocker) → byte (create_work_task), defaulting to the Personal project. A schedule fires on a clock ("remind me", "every morning", "on Mondays", "schedule X") → dexter (schedule_task). "Create a task" with no time → byte; the moment a time or recurrence is named → dexter.
+@@ -2064,7 +2066,7 @@ The delegates are tools you call with \`{task}\` — they are not skills; never
+ 
+ The \`{task}\` string is all the specialist sees — no chat history. Give it the facts it can't guess (paths, URLs, names, dates, values, the exact outcome wanted) as one or two clean sentences, then stop. State the WHAT, never the HOW: no shell commands, no step lists, no tool names, no "first do X then check Y", no implementation plan. It is the expert on its own domain; the instant you prescribe method you make it follow your worse plan. If the system blocks your task for containing a shell command, that guard is right — rephrase the goal in plain English and re-call.
+ 
+-Keep personal info local. Atlas and Hephaestus may run on a cloud model, so keep people's names, email addresses, phone numbers, and other identifying details out of any task you send either — describe the work without them and hold the local context yourself. The on-device specialists (iris, byte, dexter) need real names and addresses to do their jobs, so include those there.
++Keep personal info local. Atlas and Vulkan may run on a cloud model, so keep people's names, email addresses, phone numbers, and other identifying details out of any task you send either — describe the work without them and hold the local context yourself. The on-device specialists (iris, byte, dexter) need real names and addresses to do their jobs, so include those there.
+ 
+ If you're not sure what the user actually wants, or you're missing a fact the specialist would need (which file, which account, which date, which of two options), don't guess and don't forward a vague task — ask one short question and wait. The user often rambles (voice, not typing): extract the real intent and compose a clean task; never forward the raw words. If a relevant pattern from the list below fits, call \`fabric_pattern(name)\` and weave its framing into your own clear words — don't paste it.
+ 
+@@ -2170,7 +2172,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
+     }
+     ORCHESTRATOR_MODEL = model;
+     ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
+-    HEPHAESTUS_MODEL = (input.hephaestusModel || '').replace(/^local:/, '');
++    VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
+     BYTE_MODEL = (input.byteModel || '').replace(/^local:/, '');
+     DEXTER_MODEL = (input.dexterModel || '').replace(/^local:/, '');
+     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
+@@ -3471,7 +3473,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
+     // delegate task, bounce it back instead of dispatching (and before the
+     // task is spoken to the user). The task is English intent, not a command
+     // line — see looksLikeCommandPrescription above.
+-    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'hephaestus', 'iris', 'dexter', 'byte', 'artemis', 'council']);
++    const DELEGATE_TOOL_NAMES = new Set(['atlas', 'atlas_background', 'vulkan', 'iris', 'dexter', 'byte', 'artemis', 'council']);
+     if (DELEGATE_TOOL_NAMES.has(toolName) && args.task && looksLikeCommandPrescription(String(args.task))) {
+         log(`[guard] blocked over-prompted ${toolName} task (contains shell command): ${String(args.task).slice(0, 120)}`);
+         return `STOP — you put a shell command in the task. That is over-prompting and the user has told you repeatedly to stop. A delegate task is plain-English INTENT for the specialist, not a command line. Do NOT include \`grep\`, \`curl\`, \`ollama list\`, \`systemctl\`, \`npx\`, \`npm\`, or any other shell command — those are the specialist's calls to make, not yours. State the GOAL and the facts (paths, URLs, names, what's wrong) in normal English and let ${toolName} decide how to investigate. Re-call ${toolName} now with intent only.`;
+@@ -3710,7 +3712,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
+             const jobShortId = jobId.slice('atlas-'.length);
+             result = `Atlas ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
+         }
+-    } else if (toolName === 'hephaestus') {
++    } else if (toolName === 'vulkan') {
+         // Async coding specialist: start the job, return immediately, result
+         // lands in the inbox just like atlas.
+         const task = args.task as string;
+@@ -3718,9 +3720,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
+         if (!task) {
+             result = 'Error: task is required';
+         } else {
+-            const jobId = spawnBackgroundJob('hephaestus', task, context, urgent);
+-            const jobShortId = jobId.slice('hephaestus-'.length);
+-            result = `Hephaestus ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
++            const jobId = spawnBackgroundJob('vulkan', task, context, urgent);
++            const jobShortId = jobId.slice('vulkan-'.length);
++            result = `Vulkan ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
+         }
+     } else if (toolName === 'atlas_direct') {
+         // Enter direct Atlas passthrough mode. The orchestrator speaks a short
+@@ -4030,6 +4032,185 @@ async function main() {
+         process.exit(0);
+     }
+ 
++    // Iris digest run-mode: the host spawns this process with agent:'iris-digest-<span>'
++    // (from the hardcoded runDigest(span) host function, fired by the dashboard
++    // "Generate" button or the host poll loop's schedule monitor) to compile a
++    // grounded hourly/daily/weekly digest and publish it to the dashboard. This
++    // is a direct one-shot Iris sub-agent run — NOT the orchestrator loop, NOT the
++    // chat pipeline. Iris compiles from INPUT (buildDigestContext, handed in the
++    // prompt) + read_emails and outputs the digest as its FINAL TEXT; this branch
++    // then publishes that text directly to /api/summaries (keyless loopback). We
++    // do NOT rely on the model calling a publish tool — a small model often stops
++    // after one tool call, so the runner publishing the final text is the 100%
++    // path. Iris sees only the read_emails tool here; nothing is written to chat.
++    if (containerInput.agent && containerInput.agent.startsWith('iris-digest-')) {
++        const span = containerInput.agent.slice('iris-digest-'.length);
++        try {
++            const def = SUBAGENT_BY_DELEGATE.get('iris');
++            if (!def) throw new Error('iris sub-agent not defined');
++            // Only read_emails — Iris compiles + outputs text; it does not publish.
++            const tools = (SUBAGENT_TOOL_DEFS.get('iris') || []).filter(
++                (t: any) => t?.function?.name === 'read_emails',
++            );
++            const ctx = {
++                chatJid: containerInput.chatJid || 'owner@local',
++                groupFolder: containerInput.groupFolder || 'owner',
++                isMain: containerInput.isMain ?? true,
++                userId: process.env.WARDEN_USER_ID || '',
++            };
++            const model = (containerInput.model || '').replace(/^local:/, '');
++            if (!model) {
++                writeOutput({ status: 'error', result: null, error: 'No iris model configured (set iris:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
++                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
++                process.exit(0);
++            }
++            ORCHESTRATOR_MODEL = model;
++            const digestSystemPrompt = `Scan the INPUT block (current time, user bio, calendar events, work tasks, weather — pulled from the local DB) and, optionally, recent emails from the read_emails tool. Output the structured JSON object the task specifies.
++
++GROUNDING: Use only facts that appear in INPUT or read_emails output. If a section has no data, use the empty-state value the task shows. Something not in INPUT or read_emails is a bug — do not add it.
++
++Call read_emails once if the task needs recent inbox activity, then output the JSON object as your final message. No commentary, no markdown, just the JSON.`;
++            log(`[iris-digest] starting digest compiler: span=${span}, model=${model}, tools=${tools.length}, prompt=${(containerInput.prompt || '').slice(0, 80)}…`);
++            const sa = await runSubAgent('iris', model, digestSystemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations, undefined, undefined, 0);
++            // Publish the structured JSON directly to the dashboard. This is the
++            // 100% path — we do not depend on the model calling a publish tool.
++            // Iris outputs a JSON object; the dashboard panel does all formatting.
++            // Extract the JSON (the model may wrap it in prose/code fences); if
++            // extraction fails, post the raw text and the UI falls back to
++            // markdown rendering.
++            let publishedText = (sa.content || '').trim();
++            const jsonMatch = publishedText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
++            if (jsonMatch) publishedText = jsonMatch[1].trim();
++            else {
++                const start = publishedText.indexOf('{');
++                const end = publishedText.lastIndexOf('}');
++                if (start >= 0 && end > start) {
++                    const slice = publishedText.slice(start, end + 1);
++                    try { JSON.parse(slice); publishedText = slice; } catch { /* not JSON; post raw */ }
++                }
++            }
++            if (publishedText) {
++                try {
++                    const port = process.env.STATUS_PORT || '3200';
++                    const res = await fetch(`http://127.0.0.1:${port}/api/summaries?span=${encodeURIComponent(span)}`, {
++                        method: 'POST',
++                        headers: { 'Content-Type': 'application/json' },
++                        body: JSON.stringify({ text: publishedText }),
++                        signal: AbortSignal.timeout(30000),
++                    });
++                    log(`[iris-digest] published ${span} digest to /api/summaries (HTTP ${res.status}, ${publishedText.length} chars)`);
++                } catch (pubErr: any) {
++                    log(`[iris-digest] FAILED to publish ${span} digest: ${pubErr?.message ?? pubErr}`);
++                }
++            } else {
++                log(`[iris-digest] no digest text — nothing published for ${span}`);
++            }
++            writeOutput({ status: 'success', result: sa.content || 'Iris digest: done.', error: null });
++        } catch (err: any) {
++            log(`[iris-digest] error: ${err.message}`);
++            writeOutput({ status: 'error', result: null, error: `Iris digest error: ${err.message}` });
++        }
++        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
++        process.exit(0);
++    }
++
++    // ── chat-scan ──────────────────────────────────────────────────────────
++    // One-shot actionable-items scanner. The host (runScan) already gathers the
++    // email + chat-log content for the window and packs it into the prompt;
++    // this branch just runs one model call with NO tools and returns the JSON
++    // {tasks,events} the model emits. The host parses it, dedups, and creates
++    // tasks/events (or queues them for confirmation). Nothing is published here.
++    if (containerInput.agent === 'chat-scan') {
++        try {
++            const model = (containerInput.model || '').replace(/^local:/, '');
++            if (!model) {
++                writeOutput({ status: 'error', result: null, error: 'No scan model configured (set iris:model or scan:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
++                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
++                process.exit(0);
++            }
++            ORCHESTRATOR_MODEL = model;
++            const chatScanSystemPrompt = `You are an actionable-items extractor. You read recent EMAIL and CHAT messages and output the tasks and events the user actually committed to or was asked to commit to.
++
++A task is a concrete to-do that the user must do, expressed as an action the user performs: prepare, make sure, get ready, confirm, review, send, schedule, fix, follow up, deliver, pay, book, submit. Put "due" in ISO only when the message states a deadline; leave "due" empty otherwise.
++
++An event is a scheduled meeting, appointment, or dated occasion that the user will attend, where the date and start time are stated inside the message content. Title the event with the scheduled thing itself — the name of what happens at that time (a demo, a review, an appointment). Put "start" in ISO using that stated meeting time. Put "end" in ISO when the message states an end time; leave it empty otherwise. The "received" date on an email is metadata about when it arrived — it is never an event start time. Promotional emails, receipts, newsletters, account alerts, shipping notices, and automated reminders are not events.
++
++A single message often yields both an event and a task. The scheduled thing (the meeting or appointment at a stated time) is an event. A readiness or follow-up action around it is a task — the words "prepare", "make sure", "get ready", "beforehand", "confirm", or "follow up" signal a task the user must do, separate from the event. Extract the event and the task as two separate items, and title the event with what happens at the stated time, not the preparation.
++
++Set "source" to "email" or "chat" matching where the item came from.
++Set "project_hint" to "personal", "work", or a project name when the item clearly belongs to one; leave it empty otherwise.
++
++Extract only items explicitly stated in the input. Greetings, questions, opinions, status updates, and automated or bot-sent messages are not items. An empty result is the correct answer when nothing is actionable.
++
++Your output is constrained to a JSON object with two keys: "tasks" and "events". Output the JSON object only.`;
++            // Ollama structured outputs: grammar-constrain the response to the
++            // {tasks, events} schema so the small model cannot drift into the
++            // Iris-digest shape (recent_emails/upcoming_events/active_tasks/...),
++            // which it defaults to without a schema constraint.
++            const scanSchema = {
++                type: 'object',
++                properties: {
++                    tasks: {
++                        type: 'array',
++                        items: {
++                            type: 'object',
++                            properties: {
++                                title: { type: 'string' },
++                                due: { type: 'string' },
++                                project_hint: { type: 'string' },
++                                source: { type: 'string', enum: ['email', 'chat'] },
++                            },
++                            required: ['title', 'due', 'project_hint', 'source'],
++                        },
++                    },
++                    events: {
++                        type: 'array',
++                        items: {
++                            type: 'object',
++                            properties: {
++                                title: { type: 'string' },
++                                start: { type: 'string' },
++                                end: { type: 'string' },
++                                source: { type: 'string', enum: ['email', 'chat'] },
++                            },
++                            required: ['title', 'start', 'end', 'source'],
++                        },
++                    },
++                },
++                required: ['tasks', 'events'],
++            };
++            const ctx = {
++                chatJid: containerInput.chatJid || 'owner@local',
++                groupFolder: containerInput.groupFolder || 'owner',
++                isMain: containerInput.isMain ?? true,
++                userId: process.env.WARDEN_USER_ID || '',
++            };
++            log(`[chat-scan] starting scanner: model=${model}, tools=0, maxIter=1, prompt=${(containerInput.prompt || '').slice(0, 80)}…`);
++            const sa = await runSubAgent('chat-scan', model, chatScanSystemPrompt, [], containerInput.prompt || '', ctx, 1, undefined, undefined, 0, scanSchema);
++            // Recover the JSON object the model emitted (it may wrap it in a
++            // code fence or surround it with stray prose). Pass the clean JSON
++            // back to the host in result; the host parses + dedups + creates.
++            let jsonText = (sa.content || '').trim();
++            const fence = jsonText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
++            if (fence) jsonText = fence[1].trim();
++            else {
++                const s = jsonText.indexOf('{');
++                const e = jsonText.lastIndexOf('}');
++                if (s >= 0 && e > s) {
++                    const slice = jsonText.slice(s, e + 1);
++                    try { JSON.parse(slice); jsonText = slice; } catch { /* not JSON; keep raw */ }
++                }
++            }
++            log(`[chat-scan] complete: ${jsonText.length} chars JSON returned`);
++            writeOutput({ status: 'success', result: jsonText, error: null });
++        } catch (err: any) {
++            log(`[chat-scan] error: ${err.message}`);
++            writeOutput({ status: 'error', result: null, error: `chat-scan error: ${err.message}` });
++        }
++        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
++        process.exit(0);
++    }
++
+     log(`Using Ollama runner for model: ${containerInput.model || 'default'}`);
+     try {
+         await runNativeOllama(containerInput);
+diff --git a/container/agent-runner/src/providers/ollama.ts b/container/agent-runner/src/providers/ollama.ts
+index 89af78d..2263be4 100644
+--- a/container/agent-runner/src/providers/ollama.ts
++++ b/container/agent-runner/src/providers/ollama.ts
+@@ -22,6 +22,7 @@ export class OllamaProvider implements ChatProvider {
+                     options: request.options || {},
+                     ...(request.keep_alive !== undefined ? { keep_alive: request.keep_alive } : {}),
+                     ...(request.think !== undefined ? { think: request.think } : {}),
++                    ...(request.format !== undefined ? { format: request.format } : {}),
+                 }),
+                 signal: controller.signal,
+             });
+diff --git a/container/agent-runner/src/providers/types.ts b/container/agent-runner/src/providers/types.ts
+index 7137d08..c6398ae 100644
+--- a/container/agent-runner/src/providers/types.ts
++++ b/container/agent-runner/src/providers/types.ts
+@@ -13,6 +13,9 @@ export interface ChatRequest {
+     options?: Record<string, any>;
+     keep_alive?: number;
+     think?: boolean;
++    /** Ollama structured-outputs JSON schema (passed as the `format` field).
++     *  When set, the model's output is grammar-constrained to this schema. */
++    format?: Record<string, any>;
+ }
+ 
+ export interface ChatResult {
+diff --git a/container/agent-runner/src/tools/email-tools.ts b/container/agent-runner/src/tools/email-tools.ts
+index 4782b46..1b66780 100644
+--- a/container/agent-runner/src/tools/email-tools.ts
++++ b/container/agent-runner/src/tools/email-tools.ts
+@@ -11,22 +11,33 @@ async function callHost(tool: string, args: any, timeoutMs = 30000): Promise<any
+ 
+ registry.register({
+     name: 'read_emails',
+-    description: "Read emails from the user's connected email account. Account is resolved automatically from the user's identity.",
++    description: "Read emails from the user's connected email account. Account is resolved automatically from the user's identity. Use `since` (and optionally `before`) to fetch emails in a specific date range — both are ISO 8601 timestamps (e.g. \"2026-08-01T00:00:00Z\"). Use this when the user asks to look up emails from a past period (\"my emails from last week\", \"anything from August\"). Leave both empty for just the most recent emails.",
+     schema: {
+         type: 'object',
+         properties: {
+-            limit: { type: 'number', description: 'Max emails (default: 500)' },
++            limit: { type: 'number', description: 'Max emails to fetch before date filtering (default: 500)' },
+             preview_only: { type: 'boolean', description: 'Return previews only (default: true)' },
+             folder: { type: 'string', description: 'Mail folder (default: INBOX)' },
+-            search: { type: 'string' },
++            search: { type: 'string', description: 'Optional text search (provider query, e.g. Gmail q=)' },
++            since: { type: 'string', description: 'ISO 8601 timestamp — only return emails received at/after this' },
++            before: { type: 'string', description: 'ISO 8601 timestamp — only return emails received before this' },
+         },
+     },
+     handler: async (args, context) => {
++        const limit = Math.min(parseInt(args.limit) || 500, 500);
++        // A date-range lookup (since/before) with a large limit can take well
++        // over the default 30s — fetching hundreds of emails from Gmail/Graph
++        // is slow. Give read_emails a 90s ceiling so Iris/Byte don't get a
++        // spurious timeout on a week-long range. Plain recent-email reads still
++        // finish in a few seconds.
+         const resp = await callHost('read_emails', {
+             userId: context.userId, folder: args.folder || 'INBOX',
+-            limit: Math.min(parseInt(args.limit) || 500, 500), search: args.search || undefined,
++            limit,
++            search: typeof args.search === 'string' ? args.search : undefined,
++            since: typeof args.since === 'string' ? args.since : undefined,
++            before: typeof args.before === 'string' ? args.before : undefined,
+             preview_only: args.preview_only !== false && args.preview_only !== 'false',
+-        });
++        }, 90000);
+         if (resp?.ok) {
+             const emails = resp.emails || [];
+             if (emails.length === 0) return 'No emails found.';
+diff --git a/container/agent-runner/src/toolsets.ts b/container/agent-runner/src/toolsets.ts
+index a4df655..6c9bf1b 100644
+--- a/container/agent-runner/src/toolsets.ts
++++ b/container/agent-runner/src/toolsets.ts
+@@ -42,7 +42,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
+     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
+     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
+     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
+-    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','hephaestus','artemis','iris'], tier: 'public' },
++    agent:     { name: 'agent',     tools: ['byte','dexter','atlas','vulkan','artemis','iris'], tier: 'public' },
+ 
+     // Security tools — used by Sentry (the single background security agent) to
+     // send alerts, open/dismiss detector alerts, arm/disarm, and log events.
+@@ -60,14 +60,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
+     // user asks in chat.
+     'byte-core':     { name: 'byte-core',     includes: ['projects','worktasks','deliverables','blockers','tracking','admin','email'] },
+     'dexter-core':   { name: 'dexter-core',   includes: ['tasks'] },
+-    // Media (speaker/mic volume + playback) — atlas/hephaestus drive the hardware.
++    // Media (speaker/mic volume + playback) — atlas/vulkan drive the hardware.
+     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
+     'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','admin','desktop-vision','media'] },
+-    // Hephaestus — the coding specialist. Like atlas-core but adds `file`
++    // Vulkan — the coding specialist. Like atlas-core but adds `file`
+     // (Read/Write/Edit/Glob/Grep) so it can edit source, plus browser +
+-    // desktop-vision for webapp/UI testing. Both Atlas and Hephaestus merge
++    // desktop-vision for webapp/UI testing. Both Atlas and Vulkan merge
+     // active skill tools at spawn, so the data/skills/ library is inherited.
+-    'hephaestus-core': { name: 'hephaestus-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
++    'vulkan-core': { name: 'vulkan-core', includes: ['file','web','browser','terminal','documents','admin','desktop-vision','media'] },
+     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
+     // Iris (digest compiler) — email (IMAP read_emails, works) + admin
+     // (post_summary, list_api_keys, api_request). Contacts/todos toolsets were
+diff --git a/public/app.js b/public/app.js
+index b38272f..4f04394 100644
+--- a/public/app.js
++++ b/public/app.js
+@@ -918,11 +918,11 @@
+           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
+           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+         </div>
+-        <div class="setting-row"><label>Hephaestus</label>
+-          <select class="select" id="sHephaestus">${anyModelHtml}</select>
++        <div class="setting-row"><label>Vulkan</label>
++          <select class="select" id="sVulkan">${anyModelHtml}</select>
+         </div>
+-        <div class="setting-row"><label>Hephaestus Ollama</label>
+-          <select class="select" id="sHephaestusOllamaServer"></select>
++        <div class="setting-row"><label>Vulkan Ollama</label>
++          <select class="select" id="sVulkanOllamaServer"></select>
+           <span class="dim mono" style="font-size:10px">blank = default server</span>
+         </div>
+         <div class="setting-row" style="align-items:flex-start">
+@@ -1045,7 +1045,7 @@
+     };
+     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
+     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
+-    setSelect('sHephaestus', (d.hephaestusModel || '').replace(/^local:/, ''));
++    setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
+     setSelect('sDrivingForce', d.drivingForce || '');
+     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
+     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
+@@ -1107,7 +1107,7 @@
+     };
+     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
+     fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
+-    fillAgentServerSelect('sHephaestusOllamaServer', d.hephaestusOllamaServer || '');
++    fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
+     fillAgentServerSelect('sSentryOllamaServer', d.sentryOllamaServer || '');
+ 
+     // Friendly names list
+@@ -1201,7 +1201,7 @@
+       const body = {
+         globalDefaultModel: stripLocal($('sOrchestrator').value),
+         atlasModel: stripLocal($('sAtlas').value),
+-        hephaestusModel: stripLocal($('sHephaestus').value),
++        vulkanModel: stripLocal($('sVulkan').value),
+         drivingForce: $('sDrivingForce').value,
+         councilSkepticModel: stripLocal($('sSkeptic').value),
+         councilPragmatistModel: stripLocal($('sPragmatist').value),
+@@ -1218,7 +1218,7 @@
+         ollamaUrl: $('sOllamaUrl').value,
+         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
+         atlasOllamaServer: $('sAtlasOllamaServer').value,
+-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
++        vulkanOllamaServer: $('sVulkanOllamaServer').value,
+         sentryOllamaServer: $('sSentryOllamaServer').value,
+       };
+       await postJson('/api/settings', body);
+@@ -1272,7 +1272,7 @@
+         ollamaServers,
+         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
+         atlasOllamaServer: $('sAtlasOllamaServer').value,
+-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
++        vulkanOllamaServer: $('sVulkanOllamaServer').value,
+         sentryOllamaServer: $('sSentryOllamaServer').value,
+       };
+       await postJson('/api/settings', body);
+diff --git a/public/help/settings.html b/public/help/settings.html
+index 00e9850..6c6b70e 100644
+--- a/public/help/settings.html
++++ b/public/help/settings.html
+@@ -54,7 +54,7 @@
+   <div class="help-section-label"><span>01</span> Models</div>
+   <div class="setting-grid">
+     <div class="setting-tile"><h3>Orchestrator</h3><div class="where">Settings → Model Configuration</div><p>The model that replies to you. Pick a strong cloud model — this is where most of the thinking happens.</p></div>
+-    <div class="setting-tile info"><h3>Per-agent models</h3><div class="where">Settings → Model Configuration</div><p>Atlas, Artemis, Byte, Dexter, Iris, Hephaestus, Mercury, and Sentry each have their own model. No sharing, no fallback — every agent always runs on the model you pick. Settable here or per-agent from the Agents panel.</p></div>
++    <div class="setting-tile info"><h3>Per-agent models</h3><div class="where">Settings → Model Configuration</div><p>Atlas, Artemis, Byte, Dexter, Iris, Vulkan, Mercury, and Sentry each have their own model. No sharing, no fallback — every agent always runs on the model you pick. Settable here or per-agent from the Agents panel.</p></div>
+     <div class="setting-tile violet"><h3>Council Seats × 3</h3><div class="where">Settings → Model Configuration → Council</div><p>Skeptic, Pragmatist, Synthesist. Different models = genuinely different perspectives.</p></div>
+   </div>
+ 
+diff --git a/public/index.html b/public/index.html
+index 6e610cf..62ab1a0 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -1143,7 +1143,7 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
+       <div class="help-section-label"><span>06</span> Settings worth knowing</div>
+       <div class="settings-grid">
+         <div class="settings-tile"><h4>Orchestrator</h4><p>The model that replies to you. Pick a strong one.</p></div>
+-        <div class="settings-tile"><h4>Per-agent models</h4><p>Atlas, Artemis, Byte, Dexter, Iris, Hephaestus, Mercury, Sentry — each has its own model + ctx. No sharing, no fallback.</p></div>
++        <div class="settings-tile"><h4>Per-agent models</h4><p>Atlas, Artemis, Byte, Dexter, Iris, Vulkan, Mercury, Sentry — each has its own model + ctx. No sharing, no fallback.</p></div>
+         <div class="settings-tile"><h4>Council Seats</h4><p>Skeptic / Pragmatist / Synthesist. Different models = different perspectives.</p></div>
+         <div class="settings-tile"><h4>num_ctx overrides</h4><p>Per-agent. Blank = model default (native window).</p></div>
+         <div class="settings-tile"><h4>Thinking</h4><p>On / Max / Off. Global default, no per-chat override.</p></div>
+diff --git a/public/js/app.js b/public/js/app.js
+index 1cb0a05..7bd74a1 100644
+--- a/public/js/app.js
++++ b/public/js/app.js
+@@ -896,7 +896,7 @@
+ 
+       <div class="setting-card">
+         <h3>Model Configuration</h3>
+-        <div class="hint">Every agent has its own model + ctx, selectable per-agent. Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Byte/Dexter/Iris execute fast tool calls. Hephaestus codes. The Council uses three separate seats.</div>
++        <div class="hint">Every agent has its own model + ctx, selectable per-agent. Orchestrator replies to you. Atlas does browser/research/review. Artemis is the read-only audit seat. Byte/Dexter/Iris execute fast tool calls. Vulkan codes. The Council uses three separate seats.</div>
+         <div class="setting-row"><label>Orchestrator</label>
+           <select class="select" id="sOrchestrator">${orchHtml}</select>
+         </div>
+@@ -930,15 +930,15 @@
+           <select class="select small" id="sArtemisCtx">${buildCtxOptions(d.artemisCtx)}</select>
+           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+         </div>
+-        <div class="setting-row"><label>Hephaestus</label>
+-          <select class="select" id="sHephaestus">${orchHtml}</select>
++        <div class="setting-row"><label>Vulkan</label>
++          <select class="select" id="sVulkan">${orchHtml}</select>
+         </div>
+-        <div class="setting-row"><label>Hephaestus Ollama</label>
+-          <select class="select" id="sHephaestusOllamaServer"></select>
++        <div class="setting-row"><label>Vulkan Ollama</label>
++          <select class="select" id="sVulkanOllamaServer"></select>
+           <span class="dim mono" style="font-size:10px">blank = default server</span>
+         </div>
+-        <div class="setting-row"><label>Hephaestus ctx</label>
+-          <select class="select small" id="sHephaestusCtx">${buildCtxOptions(d.hephaestusCtx)}</select>
++        <div class="setting-row"><label>Vulkan ctx</label>
++          <select class="select small" id="sVulkanCtx">${buildCtxOptions(d.vulkanCtx)}</select>
+           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
+         </div>
+         <div class="setting-row" style="align-items:flex-start">
+@@ -1091,7 +1091,7 @@
+     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
+     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
+     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
+-    setSelect('sHephaestus', (d.hephaestusModel || '').replace(/^local:/, ''));
++    setSelect('sVulkan', (d.vulkanModel || '').replace(/^local:/, ''));
+     setSelect('sByte', (d.byteModel || '').replace(/^local:/, ''));
+     setSelect('sDexter', (d.dexterModel || '').replace(/^local:/, ''));
+     setSelect('sIris', (d.irisModel || '').replace(/^local:/, ''));
+@@ -1119,7 +1119,7 @@
+     setSelect('sOrchestratorCtx', d.orchestratorCtx || '');
+     setSelect('sAtlasCtx', d.atlasCtx || '');
+     setSelect('sArtemisCtx', d.artemisCtx || '');
+-    setSelect('sHephaestusCtx', d.hephaestusCtx || '');
++    setSelect('sVulkanCtx', d.vulkanCtx || '');
+     setSelect('sByteCtx', d.byteCtx || '');
+     setSelect('sDexterCtx', d.dexterCtx || '');
+     setSelect('sIrisCtx', d.irisCtx || '');
+@@ -1161,7 +1161,7 @@
+     };
+     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
+     fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
+-    fillAgentServerSelect('sHephaestusOllamaServer', d.hephaestusOllamaServer || '');
++    fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
+     fillAgentServerSelect('sSentryOllamaServer', d.sentryOllamaServer || '');
+ 
+     // Friendly names list
+@@ -1256,7 +1256,7 @@
+         globalDefaultModel: stripLocal($('sOrchestrator').value),
+         atlasModel: stripLocal($('sAtlas').value),
+         artemisModel: stripLocal($('sArtemis').value),
+-        hephaestusModel: stripLocal($('sHephaestus').value),
++        vulkanModel: stripLocal($('sVulkan').value),
+         byteModel: stripLocal($('sByte').value),
+         dexterModel: stripLocal($('sDexter').value),
+         irisModel: stripLocal($('sIris').value),
+@@ -1273,7 +1273,7 @@
+         orchestratorCtx: $('sOrchestratorCtx').value,
+         atlasCtx: $('sAtlasCtx').value,
+         artemisCtx: $('sArtemisCtx').value,
+-        hephaestusCtx: $('sHephaestusCtx').value,
++        vulkanCtx: $('sVulkanCtx').value,
+         byteCtx: $('sByteCtx').value,
+         dexterCtx: $('sDexterCtx').value,
+         irisCtx: $('sIrisCtx').value,
+@@ -1281,7 +1281,7 @@
+         ollamaUrl: $('sOllamaUrl').value,
+         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
+         atlasOllamaServer: $('sAtlasOllamaServer').value,
+-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
++        vulkanOllamaServer: $('sVulkanOllamaServer').value,
+         sentryOllamaServer: $('sSentryOllamaServer').value,
+       };
+       await postJson('/api/settings', body);
+@@ -1335,7 +1335,7 @@
+         ollamaServers,
+         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
+         atlasOllamaServer: $('sAtlasOllamaServer').value,
+-        hephaestusOllamaServer: $('sHephaestusOllamaServer').value,
++        vulkanOllamaServer: $('sVulkanOllamaServer').value,
+         sentryOllamaServer: $('sSentryOllamaServer').value,
+       };
+       await postJson('/api/settings', body);
+diff --git a/src/agent-spawn.ts b/src/agent-spawn.ts
+index 3de6de6..29cb58e 100644
+--- a/src/agent-spawn.ts
++++ b/src/agent-spawn.ts
+@@ -826,7 +826,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
+             verbose: input.verbose,
+             orchestratorModel: input.orchestratorModel,
+             model: input.model,
+-            hephaestusModel: input.hephaestusModel,
++            vulkanModel: input.vulkanModel,
+             byteModel: input.byteModel,
+             dexterModel: input.dexterModel,
+             irisModel: input.irisModel,
+@@ -846,7 +846,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
+             dexterCtx: process.env.DEXTER_NUM_CTX || '',
+             irisCtx: process.env.IRIS_NUM_CTX || '',
+             artemisCtx: process.env.ARTEMIS_NUM_CTX || '',
+-            hephaestusCtx: process.env.HEPHAESTUS_NUM_CTX || '',
++            vulkanCtx: process.env.VULKAN_NUM_CTX || '',
+             sentryCtx: process.env.SENTRY_NUM_CTX || '',
+           }),
+         );
+@@ -883,7 +883,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
+       prompt: input.prompt,
+       orchestratorModel: input.orchestratorModel,
+       model: input.model,
+-      hephaestusModel: input.hephaestusModel,
++      vulkanModel: input.vulkanModel,
+       byteModel: input.byteModel,
+       dexterModel: input.dexterModel,
+       irisModel: input.irisModel,
+diff --git a/src/channels/slack.ts b/src/channels/slack.ts
+index 0c82cb2..e4476ff 100644
+--- a/src/channels/slack.ts
++++ b/src/channels/slack.ts
+@@ -175,6 +175,7 @@ export class SlackChannel implements Channel {
+           content,
+           timestamp,
+           is_from_me: false,
++          channel: 'slack',
+         });
+         logger.info(
+           { sender: senderName, content: content.slice(0, 80) },
+diff --git a/src/channels/telegram.ts b/src/channels/telegram.ts
+index 6f620d1..256e799 100644
+--- a/src/channels/telegram.ts
++++ b/src/channels/telegram.ts
+@@ -162,6 +162,7 @@ export class TelegramChannel implements Channel {
+       content,
+       timestamp: new Date().toISOString(),
+       is_from_me: false,
++      channel: 'telegram',
+     };
+     this.startTyping(chatId); // agent is about to think — show it
+     this.inbound(JID_PREFIX + chatId, msg);
+diff --git a/src/channels/whatsapp.ts b/src/channels/whatsapp.ts
+index d6bc37f..802393d 100644
+--- a/src/channels/whatsapp.ts
++++ b/src/channels/whatsapp.ts
+@@ -231,6 +231,7 @@ export class WhatsAppChannel implements Channel {
+             timestamp,
+             is_from_me: fromMe,
+             is_bot_message: isBotMessage,
++            channel: 'whatsapp',
+           });
+         }
+       }
+diff --git a/src/db.ts b/src/db.ts
+index 647b82f..ba36331 100644
+--- a/src/db.ts
++++ b/src/db.ts
+@@ -40,12 +40,14 @@ function createSchema(database: Database.Database): void {
+       is_from_me INTEGER,
+       is_bot_message INTEGER DEFAULT 0,
+       idea TEXT DEFAULT '',
++      channel TEXT,
+       PRIMARY KEY (id, chat_jid),
+       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+     );
+     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
+     CREATE INDEX IF NOT EXISTS idx_messages_chat_jid_timestamp ON messages(chat_jid, timestamp);
+     CREATE INDEX IF NOT EXISTS idx_messages_chat_bot ON messages(chat_jid, is_bot_message, timestamp);
++    CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp);
+ 
+     CREATE TABLE IF NOT EXISTS scheduled_tasks (
+       id TEXT PRIMARY KEY,
+@@ -341,6 +343,13 @@ export function initDatabase(): void {
+   // backed up and dropped before the new canonical schema is applied.
+   migrateToDesktopSchema(db);
+ 
++  // The messages.channel column must exist BEFORE createSchema runs, because
++  // createSchema creates idx_messages_channel ON messages(channel, timestamp)
++  // — on a DB where the messages table predates the column, that index would
++  // throw "no such column: channel" before the post-createSchema migration
++  // could add it. ALTER fails harmlessly if the column already exists.
++  try { db.exec(`ALTER TABLE messages ADD COLUMN channel TEXT`); } catch { /* already exists */ }
++
+   createSchema(db);
+ 
+   // Idempotent column migrations for DBs created before a column was added.
+@@ -349,6 +358,13 @@ export function initDatabase(): void {
+   for (const [table, col, def] of [
+     ['email_accounts', 'oauth_account_id', 'TEXT'],
+     ['oauth_accounts', 'hidden_calendars', "TEXT DEFAULT '[]'"],
++    // Actionable-scanner items land directly in the real stores now (no queue
++    // file). `confirmed` flags scanned rows that the user hasn't green-checked
++    // yet (0 = awaiting review in Ops → Inbox, 1 = confirmed). Existing rows
++    // default to confirmed=1 so a migration doesn't surface old tasks/events as
++    // "needs review".
++    ['user_work_tasks', 'confirmed', 'INTEGER DEFAULT 1'],
++    ['calendar_events', 'confirmed', 'INTEGER DEFAULT 1'],
+   ] as const) {
+     try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
+   }
+@@ -585,7 +601,7 @@ export function deleteWhatsappChats(): void {
+  */
+ export function storeMessage(msg: NewMessage): void {
+   db.prepare(
+-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, idea) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, idea, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   ).run(
+     msg.id,
+     OWNER_JID,
+@@ -596,6 +612,7 @@ export function storeMessage(msg: NewMessage): void {
+     msg.is_from_me ? 1 : 0,
+     msg.is_bot_message ? 1 : 0,
+     msg.idea || '',
++    msg.channel || null,
+   );
+ }
+ 
+@@ -663,6 +680,32 @@ export function getChatHistory(
+   return (rows as any[]).reverse();
+ }
+ 
++/**
++ * Recent inbound (non-bot) messages since `sinceISO`, optionally restricted to
++ * a set of source channels. Used by the Actionable scanner to mine chat history.
++ * Empty/null `channels` = all channels. Returns oldest-first.
++ */
++export function getRecentInboundMessages(
++  sinceISO: string,
++  channels?: string[] | null,
++  limit = 500,
++): Array<{ sender_name: string; content: string; timestamp: string; channel: string | null }> {
++  const chanFilter =
++    channels && channels.length
++      ? `AND channel IN (${channels.map(() => '?').join(',')})`
++      : '';
++  const sql = `
++    SELECT sender_name, content, timestamp, channel FROM (
++      SELECT sender_name, content, timestamp, channel FROM messages
++      WHERE chat_jid = ? AND timestamp > ? AND is_bot_message = 0
++        AND content != '' AND content IS NOT NULL ${chanFilter}
++      ORDER BY timestamp DESC LIMIT ?
++    ) ORDER BY timestamp
++  `;
++  const args: any[] = [OWNER_JID, sinceISO, ...(channels && channels.length ? channels : []), limit];
++  return db.prepare(sql).all(...args) as any[];
++}
++
+ export function getLastBotMessageTimestamp(_chatJid: string): string | null {
+   const row = db
+     .prepare(
+@@ -1110,6 +1153,7 @@ export interface WorkTask {
+   project_id: string | null;
+   created_at: string;
+   updated_at: string;
++  confirmed: number;
+ }
+ 
+ export function getWorkTasks(userId?: string): WorkTask[] {
+@@ -1138,12 +1182,13 @@ export function createWorkTask(task: {
+   created_by: string;
+   due_date?: string;
+   project_id?: string;
++  confirmed?: number;
+ }): WorkTask {
+   const id = `wtask-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+   const now = new Date().toISOString();
+   db.prepare(
+-    'INSERT INTO user_work_tasks (id, title, description, notes, priority, assigned_to, created_by, due_date, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+-  ).run(id, task.title, task.description || '', task.notes || '', task.priority || 'medium', task.assigned_to || null, task.created_by, task.due_date || null, task.project_id || null, now, now);
++    'INSERT INTO user_work_tasks (id, title, description, notes, priority, assigned_to, created_by, due_date, project_id, created_at, updated_at, confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
++  ).run(id, task.title, task.description || '', task.notes || '', task.priority || 'medium', task.assigned_to || null, task.created_by, task.due_date || null, task.project_id || null, now, now, task.confirmed ?? 1);
+   return getWorkTask(id)!;
+ }
+ 
+@@ -1160,6 +1205,7 @@ export function updateWorkTask(taskId: string, updates: Partial<WorkTask>): Work
+   if (updates.assigned_to !== undefined) { fields.push('assigned_to = ?'); values.push(updates.assigned_to); }
+   if (updates.due_date !== undefined) { fields.push('due_date = ?'); values.push(updates.due_date); }
+   if (updates.project_id !== undefined) { fields.push('project_id = ?'); values.push(updates.project_id); }
++  if (updates.confirmed !== undefined) { fields.push('confirmed = ?'); values.push(updates.confirmed ? 1 : 0); }
+   if (fields.length === 0) return existing;
+   fields.push('updated_at = ?');
+   values.push(new Date().toISOString());
+@@ -2178,6 +2224,7 @@ export interface CalendarEvent {
+   provider_calendar_name: string;
+   created_at: string;
+   updated_at: string;
++  confirmed: number;
+ }
+ 
+ export function getCalendarEvent(id: string): CalendarEvent | undefined {
+@@ -2225,12 +2272,13 @@ export function createCalendarEvent(event: {
+   ical_uid?: string;
+   provider_calendar_id?: string;
+   provider_calendar_name?: string;
++  confirmed?: number;
+ }): CalendarEvent {
+   const id = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+   const now = new Date().toISOString();
+   db.prepare(
+-    `INSERT INTO calendar_events (id, title, description, start_time, end_time, all_day, location, recurrence, color, assigned_to, created_by, work_task_id, calendar_source, ical_uid, provider_calendar_id, provider_calendar_name, created_at, updated_at)
+-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
++    `INSERT INTO calendar_events (id, title, description, start_time, end_time, all_day, location, recurrence, color, assigned_to, created_by, work_task_id, calendar_source, ical_uid, provider_calendar_id, provider_calendar_name, created_at, updated_at, confirmed)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   ).run(
+     id,
+     event.title,
+@@ -2250,6 +2298,7 @@ export function createCalendarEvent(event: {
+     event.provider_calendar_name || '',
+     now,
+     now,
++    event.confirmed ?? 1,
+   );
+   return getCalendarEvent(id)!;
+ }
+@@ -2261,7 +2310,7 @@ export function updateCalendarEvent(id: string, updates: Partial<CalendarEvent>)
+   const fields: string[] = [];
+   const values: unknown[] = [];
+ 
+-  const allowedFields = ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'recurrence', 'color', 'assigned_to', 'work_task_id', 'calendar_source', 'ical_uid', 'provider_calendar_id', 'provider_calendar_name'] as const;
++  const allowedFields = ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'recurrence', 'color', 'assigned_to', 'work_task_id', 'calendar_source', 'ical_uid', 'provider_calendar_id', 'provider_calendar_name', 'confirmed'] as const;
+   for (const f of allowedFields) {
+     if (updates[f] !== undefined) {
+       fields.push(`${f} = ?`);
+diff --git a/src/index.ts b/src/index.ts
+index b1dc9d8..870e94d 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -31,6 +31,7 @@ import {
+   getMessagesForDashboard,
+   getMessagesSince,
+   getNewMessages,
++  getRecentInboundMessages,
+   initDatabase,
+   storeMessage,
+   setRouterState,
+@@ -72,7 +73,8 @@ import { fetchEmails, sendEmail } from './email.js';
+ import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
+ import { findChannel, formatMessages, formatOutbound } from './router.js';
+ import { formatLocalTime } from './timezone.js';
+-import { computeNextRun, runDigestNow, startSchedulerLoop } from './task-scheduler.js';
++import { CronExpressionParser } from 'cron-parser';
++import { computeNextRun, buildDigestContext, startSchedulerLoop } from './task-scheduler.js';
+ import { runMemoryWriteback } from './memory-writeback.js';
+ import { startCalendarSyncPoller } from './calendar-sync.js';
+ import { startStatusServer, pushNotification, pushActivityLine } from './status-server.js';
+@@ -593,11 +595,15 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
+     read_emails: async (args: any) => {
+       try {
+         const folder = typeof args?.folder === 'string' ? args.folder : 'INBOX';
+-        const limit = typeof args?.limit === 'number' ? args.limit : 20;
+-        // Iris sends `search`; older callers sent `since`. Accept both so the
+-        // search filter is no longer silently dropped.
+-        const search = typeof args?.search === 'string' ? args.search
+-                     : typeof args?.since === 'string' ? args.since : undefined;
++        const limit = typeof args?.limit === 'number' ? Math.min(args.limit, 500) : 500;
++        // `search` is a provider text query (Gmail q= / MS $search). `since` and
++        // `before` are ISO 8601 timestamps for date-range filtering, which the
++        // providers do NOT support via the search param — so we filter those
++        // client-side after fetching. Keep them distinct from `search` so a
++        // date range doesn't get fed to the provider as a text query.
++        const search = typeof args?.search === 'string' && args.search ? args.search : undefined;
++        const sinceMs = args?.since ? new Date(args.since).getTime() : NaN;
++        const beforeMs = args?.before ? new Date(args.before).getTime() : NaN;
+         // The agent doesn't supply an accountId. Try each enabled account until
+         // one connects, so a broken OAuth-linked account (dangling
+         // oauth_account_id — the oauth_accounts row was deleted but the
+@@ -615,7 +621,19 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
+           }
+           try {
+             const emails = await fetchEmails(account.id, folder, limit, search);
+-            return { ok: true, emails };
++            // Client-side date-range filter — fetchEmails' 4th param is a text
++            // search, not a date filter, so the providers can't do this.
++            const filtered = (Number.isNaN(sinceMs) && Number.isNaN(beforeMs))
++              ? emails
++              : (emails as any[]).filter((e: any) => {
++                  if (!e.date) return false;
++                  const t = new Date(e.date).getTime();
++                  if (Number.isNaN(t)) return false;
++                  if (!Number.isNaN(sinceMs) && t < sinceMs) return false;
++                  if (!Number.isNaN(beforeMs) && t >= beforeMs) return false;
++                  return true;
++                });
++            return { ok: true, emails: filtered };
+           } catch (err: any) {
+             errors.push(`${account.email}: ${String(err?.message ?? err)}`);
+           }
+@@ -1772,7 +1790,7 @@ async function processOwnerMessages(): Promise<void> {
+     memoryContext,
+     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
+     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
+-    hephaestusModel: (getRouterState('hephaestus:model') || '').replace(/^local:/, '') || undefined,
++    vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
+     byteModel: (getRouterState('byte:model') || '').replace(/^local:/, '') || undefined,
+     dexterModel: (getRouterState('dexter:model') || '').replace(/^local:/, '') || undefined,
+     irisModel: (getRouterState('iris:model') || '').replace(/^local:/, '') || undefined,
+@@ -1869,20 +1887,17 @@ const IRIS_DIGEST_TASKS = [
+   {
+     id: 'iris-digest-hourly',
+     cron: '7 * * * *',
+-    prompt:
+-      'You are Iris, the digest compiler.\n\nCRITICAL RULE — NO FABRICATION: Every fact you report MUST appear verbatim in INPUT (above) or in read_emails output. If INPUT says "none" for a section, write "none." NEVER invent meetings, tasks, emails, projects, proposals, or events. If you catch yourself writing about something not explicitly in INPUT or read_emails, STOP — delete it. A blank digest is better than a fabricated one.\n\nCAPABILITIES: You compile short, useful digests from local data (calendar, work tasks, weather, user bio) and recent emails, then publish them to the dashboard.\n\nGUIDELINES: INPUT (above) is your single source for calendar, tasks, weather, and bio — it is pulled from the local DB. Report only what INPUT or read_emails returns; if a section is empty, say so plainly. You may call read_emails once for recent inbox activity. Be concise and specific. Do not add sections beyond those listed in FORMAT.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails for recent emails.\n2. Compose the digest in the FORMAT below. Cover the present and the next ~2h.\n3. Call the post_summary tool with span="hourly" and text=<your markdown digest>. This is your final action — end your turn with that call.\n\nFORMAT (markdown):\n- Title: **🕒 Hourly Digest — <current date/time>**\n- **📦 Recent Emails** — one bullet per email: `- From: <sender>: <subject> (<time>)`. If none, "Inbox quiet this hour."\n- **📅 Calendar** — events in the next ~2h. If none, "Nothing in the next 2 hours."\n- **✅ Active Tasks** — work tasks in progress. If none, "No active tasks."\n- **🌤️ Weather** — one line from INPUT.\n- **💡 Nudge** — one short nudge based ONLY on time of day or weather from INPUT (e.g. late night → "Time to wind down"; rain coming → "Close the windows"). Do not base nudges on invented tasks or events. Omit if nothing is relevant.',
++    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 50, preview_only true). Use only emails whose Date is within the last hour.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown summarizing this hour, from INPUT/emails>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+   },
+   {
+     id: 'iris-digest-daily',
+     cron: '17 21 * * *',
+-    prompt:
+-      'You are Iris, the digest compiler.\n\nCRITICAL RULE — NO FABRICATION: Every fact you report MUST appear verbatim in INPUT (above) or in read_emails output. If INPUT says "none" for a section, write "none." NEVER invent meetings, tasks, emails, projects, proposals, or events. If you catch yourself writing about something not explicitly in INPUT or read_emails, STOP — delete it. A blank digest is better than a fabricated one.\n\nCAPABILITIES: You compile a concise end-of-day digest from local data (calendar, work tasks, weather, user bio) and recent emails, then publish it to the dashboard.\n\nGUIDELINES: INPUT (above) is your single source for calendar, tasks, weather, and bio — it is pulled from the local DB. Report only what INPUT or read_emails returns; if a section is empty, say so plainly. You may call read_emails once for recent inbox activity. Be concise and specific. Do not add sections beyond those listed in FORMAT.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails for recent emails.\n2. Compose the digest in the FORMAT below. Cover the past (today), the present (still active), and the future (tomorrow).\n3. Call the post_summary tool with span="daily" and text=<your markdown digest>. This is your final action — end your turn with that call.\n\nFORMAT (markdown):\n- Title: **📋 Daily Digest — <date>**\n- **📝 Day in Review** — one or two sentences summarizing the shape of today BASED ON INPUT (what got done, what dominated, what slipped). If INPUT has no data, say "A quiet day with little activity."\n- **📦 Recent Emails (last 24h)** — one bullet per email: `- From: <sender>: <subject> (<time>)`. If none, "Inbox quiet today."\n- **📅 Calendar** — today\'s events, past and remaining. If none, "Nothing on the calendar today."\n- **✅ Active Tasks** — work tasks in progress FROM INPUT. If none, "No active tasks."\n- **🌤️ Weather** — one line from INPUT.\n- **👀 Tomorrow** — one line on the next notable calendar event or task FROM INPUT. Omit if nothing is coming.\n- **💡 Nudge** — one short nudge based ONLY on time of day or weather from INPUT. Do not base nudges on invented tasks or events. Omit if nothing fits.',
++    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 100, preview_only true). Use only emails whose Date is within the last 24 hours (today).\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<one or two sentences in markdown summarizing the shape of today, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on the shape of today from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+   },
+   {
+     id: 'iris-digest-weekly',
+     cron: '30 20 * * 0',
+-    prompt:
+-      'You are Iris, the digest compiler.\n\nCRITICAL RULE — NO FABRICATION: Every fact you report MUST appear verbatim in INPUT (above) or in read_emails output. If INPUT says "none" for a section, write "none." NEVER invent meetings, tasks, emails, projects, proposals, or events. If you catch yourself writing about something not explicitly in INPUT or read_emails, STOP — delete it. A blank digest is better than a fabricated one.\n\nCAPABILITIES: You compile a weekly roundup from local data (calendar, work tasks, weather, user bio) and recent emails, then publish it to the dashboard.\n\nGUIDELINES: INPUT (above) is your single source for calendar, tasks, weather, and bio — it is pulled from the local DB. Report only what INPUT or read_emails returns; if a section is empty, say so plainly. You may call read_emails once for recent inbox activity. Be thorough: a weekly roundup covers seven days, so list the notable emails and threads (aim for the 6–10 most relevant) and call out any recurring theme FROM THE DATA. Do not add sections beyond those listed in FORMAT.\n\nWORKFLOW:\n1. Read INPUT (above). Optionally call read_emails for recent emails.\n2. Compose the roundup in the FORMAT below. Cover the past (last week) and the future (this week).\n3. Call the post_summary tool with span="weekly" and text=<your markdown roundup>. This is your final action — end your turn with that call.\n\nFORMAT (markdown):\n- Title: **🗓️ Weekly Roundup — week of <date>**\n- **📝 Week in Review** — two or three sentences on the shape of the week BASED ON INPUT: what dominated, what slipped, and one thread worth carrying into next week. If INPUT has no data, say "A quiet week with little activity."\n- **📦 Email Activity (past 7 days)** — group emails by theme when several relate; use a bold sub-heading per theme, then one bullet per email: `**<theme>**\\n- From: <sender>: <subject> (<date>)`. If none, "Inbox was quiet this week."\n- **📅 Calendar** — past and upcoming events this week FROM INPUT. If none, "Nothing on the calendar this week."\n- **✅ Tasks** — work tasks worked on or due this week FROM INPUT, one bullet each with status in brackets: `- [status] <title>`. If none, "No active tasks this week."\n- **🌤️ Weather** — one line from INPUT.\n- **💡 Nudge** — one short nudge based ONLY on time of day or weather from INPUT. Do not base nudges on invented tasks or events. Omit if nothing fits.',
++    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails (limit 200, preview_only true). Use only emails whose Date is within the last 7 days. Pick the 6-10 most relevant.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+   },
+ ];
+ 
+@@ -1923,6 +1938,478 @@ function seedIrisDigestTasks(): void {
+   }
+ }
+ 
++// ── Iris digest: direct Iris spawn (no orchestrator, no chat pipeline) ──────
++// runDigest(span) spawns the Iris sub-agent DIRECTLY with a grounded prompt
++// (buildDigestContext + the baked digest prompt). Iris compiles the digest and
++// publishes it to the dashboard via post_summary (keyless loopback to
++// /api/summaries). Nothing is written to the chat and the orchestrator model is
++// never involved — this is a hardcoded function, not a routed task. Fired by
++// checkDigestsDue() (the host poll loop's schedule monitor) and by the dashboard
++// "Generate" button (deps.triggerDigest). The three schedules + prompts live in
++// IRIS_DIGEST_TASKS above, baked into TS — no scheduled_tasks DB rows.
++const DIGEST_SPANS = ['hourly', 'daily', 'weekly'] as const;
++type DigestSpan = (typeof DIGEST_SPANS)[number];
++
++function digestCallbacks(): CallbackMap {
++  // Minimal: only read_emails (Iris may call it once for recent inbox
++  // activity). Iris compiles + outputs the digest as its final text and the
++  // agent-runner publishes that text to /api/summaries directly — so there is
++  // no post_summary/ipc callback here, and no send_message (a digest must not
++  // write to the chat).
++  const base = buildAgentCallbacks();
++  return { read_emails: base.read_emails! };
++}
++
++async function runDigest(span: string): Promise<{ ok: boolean; error?: string }> {
++  if (!DIGEST_SPANS.includes(span as DigestSpan)) {
++    return { ok: false, error: `invalid span: ${span}` };
++  }
++  const irisModel = (getRouterState('iris:model') || '').replace(/^local:/, '');
++  if (!irisModel) {
++    logger.warn({ span }, 'runDigest: no iris model configured (iris:model) — skipping');
++    return { ok: false, error: 'no iris model configured (set iris:model in the Agents panel)' };
++  }
++  const t = IRIS_DIGEST_TASKS.find((x) => x.id === `iris-digest-${span}`);
++  if (!t) return { ok: false, error: `no baked digest prompt for ${span}` };
++  let prompt = t.prompt;
++  try {
++    const ctx = await buildDigestContext(span);
++    if (ctx) prompt = `${ctx}\n\n---\n\n${prompt}`;
++  } catch (err: any) {
++    logger.warn({ span, err }, 'runDigest: buildDigestContext failed — running ungrounded');
++  }
++  logger.info({ span, model: irisModel }, 'runDigest: spawning iris-digest directly');
++  runSubAgentBackground({
++    agent: `iris-digest-${span}`,
++    prompt,
++    model: irisModel,
++    sessionId: 'owner',
++    workspaceRoot: WORKSPACE_ROOT,
++    chatJid: OWNER_JID,
++    groupFolder: 'owner',
++    isMain: true,
++    timeoutMs: 5 * 60 * 1000,
++    callbacks: digestCallbacks(),
++  } as any);
++  return { ok: true };
++}
++
++// The host poll loop (startMessageLoop) calls this every tick. It checks the
++// baked-in cron schedules against each span's last-run timestamp (kept in
++// router_state) and fires runDigest when one is due. No separate timer thread
++// — this rides the existing 2s poll. Each span fires once per due slot then
++// advances lastrun to now, so missed slots do NOT catch up in a storm.
++let digestMonitorBusy = false;
++async function checkDigestsDue(): Promise<void> {
++  if (digestMonitorBusy) return;
++  digestMonitorBusy = true;
++  try {
++    const now = Date.now();
++    for (const t of IRIS_DIGEST_TASKS) {
++      const span = t.id.replace('iris-digest-', '');
++      const lastrunKey = `digest:lastrun:${span}`;
++      const last = getRouterState(lastrunKey);
++      if (!last) {
++        // First boot: seed lastrun to now so the first digest fires at the next
++        // cron slot, not immediately on startup.
++        setRouterState(lastrunKey, new Date(now).toISOString());
++        continue;
++      }
++      let nextFireMs: number;
++      try {
++        // Next cron occurrence AFTER lastrun — currentDate is the reference.
++        // CronDate wraps Luxon (not a real Date); use getTime() directly.
++        nextFireMs = CronExpressionParser.parse(t.cron, {
++          tz: TIMEZONE,
++          currentDate: new Date(last),
++        }).next().getTime();
++      } catch {
++        continue;
++      }
++      if (now >= nextFireMs) {
++        setRouterState(lastrunKey, new Date(now).toISOString());
++        logger.info({ span, cron: t.cron }, 'checkDigestsDue: firing scheduled digest');
++        void runDigest(span).catch((err) => logger.warn({ span, err }, 'runDigest failed'));
++      }
++    }
++  } finally {
++    digestMonitorBusy = false;
++  }
++}
++
++// ── Actionable Items Scanner ─────────────────────────────────────────────
++// Scans recent email (all enabled accounts) + chat logs (allowed channels)
++// for actionable tasks/events, then either creates them immediately (auto-
++// accept on) or queues them for manual confirmation. Mirrors the digest
++// architecture: a scheduled run rides the poll loop, the model is the same
++// Granite used by Iris, and the extraction is a one-shot model call with NO
++// tools — the host gathers all content and packs it into the prompt.
++
++const SCAN_SPANS = ['hourly', 'daily', 'weekly'] as const;
++type ScanSpan = (typeof SCAN_SPANS)[number];
++const SPAN_WINDOW_MS: Record<ScanSpan, number> = {
++  hourly: 3600_000,
++  daily: 24 * 3600_000,
++  weekly: 7 * 24 * 3600_000,
++};
++// Every 20 min (off the :00/:30 marks to avoid the global rush).
++const SCAN_CRON = '13,33,53 * * * *';
++const SCAN_MSG_LIMIT = 400;       // cap inbound chat rows fed to the model
++const SCAN_EMAIL_LIMIT = 40;      // cap emails per account fed to the model
++
++// An item the model extracted from email/chat. The scanner creates a real row
++// (work task or calendar event) for each of these immediately — there is no
++// separate confirmation queue. `confirmed` flags rows the user hasn't green-
++// checked yet (0 = awaiting review in Ops -> Inbox, 1 = confirmed).
++interface ExtractedItem {
++  kind: 'task' | 'event';
++  title: string;
++  due?: string;          // task
++  start?: string;        // event
++  end?: string;          // event
++  project_hint?: string; // task
++  source: string;        // 'email' | 'chat'
++  span: string;
++}
++
++interface ScanInbox {
++  tasks: any[];           // unconfirmed user_work_tasks rows (confirmed = 0)
++  events: any[];          // unconfirmed calendar_events rows (confirmed = 0)
++  autoConfirm: boolean;
++  allowedChats: string;
++  model: string;
++  lastrun: string | null;
++}
++
++function scanModel(): string {
++  // Optional per-scan model override; falls back to the Iris model (same
++  // Granite that powers the digest). Never falls back to a hardcoded default.
++  return (getRouterState('scan:model') || getRouterState('iris:model') || '').replace(/^local:/, '');
++}
++
++function scanAutoAccept(): boolean {
++  return getRouterState('scan:auto_accept') === 'true';
++}
++
++function scanAllowedChannels(): string[] | null {
++  // Comma-separated channel names in router_state scan:allowed_chats
++  // (e.g. "telegram,slack"). Empty/unset → all channels (no filter).
++  const raw = (getRouterState('scan:allowed_chats') || '').trim();
++  if (!raw) return null;
++  return raw.split(',').map((s) => s.trim()).filter(Boolean);
++}
++
++// Build the INPUT block the model scans: recent emails (every enabled account)
++// + recent inbound chat messages (allowed channels) within the window.
++async function buildScanInput(span: ScanSpan): Promise<string> {
++  const now = Date.now();
++  const sinceMs = now - SPAN_WINDOW_MS[span];
++  const sinceISO = new Date(sinceMs).toISOString();
++  const lines: string[] = [];
++  lines.push(`Scan window: ${span} (since ${sinceISO}). Current local time: ${new Date().toLocaleString('en-US', { timeZone: TIMEZONE })} (${TIMEZONE}).`);
++  lines.push('Extract ONLY actionable items — concrete tasks the user committed to / was asked to do, and events with a clear date/time. Ignore greetings, questions, opinions, status updates, and bot-sent messages.');
++
++  // ── Email: every enabled account ──
++  // fetchEmails' 4th param is a TEXT search (Gmail q= / MS $search), NOT a date
++  // filter — so we can't filter by date at the provider. Instead we fetch the N
++  // most recent emails (N scales with the window so a weekly catch-up pulls
++  // more than an hourly tick) and keep only those whose `date` falls inside the
++  // window. This is what actually makes "hourly = last hour only" true.
++  const SPAN_EMAIL_LIMIT: Record<ScanSpan, number> = { hourly: 40, daily: 200, weekly: 500 };
++  const emailBlocks: string[] = [];
++  const accounts = getEmailAccounts(null).filter((a) => a.enabled);
++  for (const account of accounts) {
++    try {
++      const fetched = await fetchEmails(account.id, 'INBOX', SPAN_EMAIL_LIMIT[span], undefined);
++      const inWindow = (fetched as any[]).filter((e: any) => {
++        if (!e.date) return false;
++        const t = new Date(e.date).getTime();
++        return !Number.isNaN(t) && t >= sinceMs;
++      });
++      const items = inWindow.map((e: any) => {
++        const from = e.from || e.sender || '';
++        const subj = e.subject || '';
++        const snippet = (e.snippet || e.preview || '').slice(0, 400);
++        // Deliberately DO NOT render the email's receive/arrival date. The
++        // window filtering already happened above (client-side, on e.date), so
++        // the date is not needed here — and an 8B extractor will grab any bare
++        // timestamp as an event start / task due, turning every promotional
++        // email and receipt into a bogus calendar event. Dates the model SHOULD
++        // use (a stated meeting time, a stated deadline) live in the subject
++        // and snippet, which we keep. With no date in the envelope, "expires
++        // Aug 20" in the body still works, but the receive date cannot leak in.
++        return `from: ${from}\nsubject: ${subj}\n${snippet}`;
++      });
++      if (items.length) emailBlocks.push(`### Inbox: ${account.email} (${items.length} in window)\n${items.join('\n\n')}`);
++    } catch (err: any) {
++      emailBlocks.push(`### Inbox: ${account.email} — unreadable (${String(err?.message ?? err)})`);
++    }
++  }
++  lines.push(emailBlocks.length ? `\nEMAILS:\n${emailBlocks.join('\n\n')}` : '\nEMAILS: none');
++
++  // ── Chat logs: allowed channels, within the window ──
++  let chats = '';
++  try {
++    const rows = getRecentInboundMessages(sinceISO, scanAllowedChannels(), SCAN_MSG_LIMIT);
++    if (rows.length) {
++      const rendered = rows.map((r) => {
++        const chan = r.channel ? `[${r.channel}]` : '[chat]';
++        return `${r.timestamp} ${chan} ${r.sender_name}: ${r.content}`;
++      });
++      chats = rendered.join('\n');
++    }
++  } catch (err: any) {
++    chats = `chat logs unavailable (${String(err?.message ?? err)})`;
++  }
++  lines.push(chats ? `\nCHAT LOGS:\n${chats}` : '\nCHAT LOGS: none');
++
++  lines.push('\n=== INSTRUCTIONS ===\nExtract the actionable tasks and events from the messages above. Output only the JSON object (keys: tasks, events).');
++  return lines.join('\n');
++}
++
++// Dedup guard: skip a task whose title already exists (case-insensitive,
++// trimmed) in the work-task table — regardless of confirmed state, so a re-scan
++// never stacks a duplicate on top of an unconfirmed row awaiting review.
++function taskAlreadyExists(title: string): boolean {
++  const norm = title.trim().toLowerCase();
++  if (!norm) return true;
++  try {
++    return getWorkTasks().some((t) => (t.title || '').trim().toLowerCase() === norm);
++  } catch { return false; }
++}
++
++// Dedup guard for events: same title + same start time already on the local
++// calendar (any confirmed state).
++function eventAlreadyExists(title: string, start: string): boolean {
++  const norm = title.trim().toLowerCase();
++  if (!norm) return true;
++  try {
++    return listCalendarEvents({ start, end: start }).some(
++      (e) => (e.title || '').trim().toLowerCase() === norm && (e.start_time || '') === start,
++    );
++  } catch { return false; }
++}
++
++// Create a real work task from an extracted item. project_hint resolves to
++// an existing project by name; anything that doesn't match lands in the
++// Personal catch-all (never fails). `confirmed` is 0 for scanned rows awaiting
++// user review, 1 when auto-confirm is on.
++function createTaskFromItem(item: ExtractedItem, confirmed: number): { ok: boolean; id?: string; error?: string } {
++  try {
++    const title = (item.title || '').trim();
++    if (!title) return { ok: false, error: 'missing title' };
++    const hint = (item.project_hint || '').trim();
++    let projectId = '';
++    if (hint) {
++      const resolved = resolveProjectId(hint) || hint;
++      if (getProject(resolved)) projectId = resolved;
++    }
++    if (!projectId) projectId = PERSONAL_PROJECT_ID;
++    const task = createWorkTask({
++      title,
++      description: `Extracted by Actionable scan (${item.source}, ${item.span} window).`,
++      priority: 'medium',
++      created_by: OWNER_JID,
++      due_date: item.due || undefined,
++      project_id: projectId,
++      confirmed,
++    });
++    return { ok: true, id: task.id };
++  } catch (err: any) {
++    return { ok: false, error: String(err?.message ?? err) };
++  }
++}
++
++// Create a local-only calendar event from an extracted item.
++function createEventFromItem(item: ExtractedItem, confirmed: number): { ok: boolean; id?: string; error?: string } {
++  try {
++    const title = (item.title || '').trim();
++    const start = item.start || '';
++    if (!title || !start) return { ok: false, error: 'missing title/start' };
++    const icalUid = `scan-evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++    const ev = createCalendarEvent({
++      title,
++      description: `Extracted by Actionable scan (${item.source}, ${item.span} window).`,
++      start_time: start,
++      end_time: item.end || undefined,
++      all_day: false,
++      calendar_source: 'local',
++      ical_uid: icalUid,
++      confirmed,
++    });
++    return { ok: true, id: String(ev.id) };
++  } catch (err: any) {
++    return { ok: false, error: String(err?.message ?? err) };
++  }
++}
++
++// Process the JSON the model returned: dedup against the real tables, then
++// create a real work task / calendar event row for each new item. There is no
++// queue — every item lands in the store immediately. Rows are created with
++// confirmed=0 (awaiting review in Ops -> Inbox) unless auto-confirm is on,
++// in which case confirmed=1. `pending` counts the rows created unconfirmed.
++function processScanResult(span: ScanSpan, jsonText: string): { created: number; pending: number; skipped: number } {
++  let parsed: { tasks?: any[]; events?: any[] };
++  try {
++    parsed = JSON.parse(jsonText);
++  } catch {
++    logger.warn({ span, jsonText: jsonText.slice(0, 300) }, 'processScanResult: model output not valid JSON — skipping');
++    return { created: 0, pending: 0, skipped: 0 };
++  }
++  logger.info({ span, rawLen: jsonText.length, keys: Object.keys(parsed||{}), tasks: (parsed?.tasks||[]).length, events: (parsed?.events||[]).length, snippet: jsonText.slice(0, 120) }, 'processScanResult: parsed model output');
++  const confirmed = scanAutoAccept() ? 1 : 0;
++  let created = 0, pending = 0, skipped = 0;
++
++  const addTask = (t: any) => {
++    const title = String(t?.title || '').trim();
++    if (!title) { skipped++; return; }
++    if (taskAlreadyExists(title)) { skipped++; return; }
++    const item: ExtractedItem = {
++      kind: 'task', title, due: t?.due || undefined,
++      project_hint: t?.project_hint || undefined,
++      source: String(t?.source || 'chat'), span,
++    };
++    const r = createTaskFromItem(item, confirmed);
++    if (r.ok) { created++; if (!confirmed) pending++; }
++    else { logger.warn({ err: r.error, title }, 'processScanResult: create task failed'); skipped++; }
++  };
++  const addEvent = (e: any) => {
++    const title = String(e?.title || '').trim();
++    const start = String(e?.start || '').trim();
++    if (!title || !start) { skipped++; return; }
++    if (eventAlreadyExists(title, start)) { skipped++; return; }
++    const item: ExtractedItem = {
++      kind: 'event', title, start, end: e?.end || undefined,
++      source: String(e?.source || 'chat'), span,
++    };
++    const r = createEventFromItem(item, confirmed);
++    if (r.ok) { created++; if (!confirmed) pending++; }
++    else { logger.warn({ err: r.error, title }, 'processScanResult: create event failed'); skipped++; }
++  };
++  (parsed.tasks || []).forEach(addTask);
++  (parsed.events || []).forEach(addEvent);
++  return { created, pending, skipped };
++}
++
++async function runScan(span: string): Promise<{ ok: boolean; error?: string; created?: number; pending?: number; skipped?: number }> {
++  if (!SCAN_SPANS.includes(span as ScanSpan)) return { ok: false, error: `invalid span: ${span}` };
++  const model = scanModel();
++  if (!model) {
++    logger.warn({ span }, 'runScan: no scan model configured (scan:model or iris:model) — skipping');
++    return { ok: false, error: 'no scan model configured (set iris:model or scan:model in the Agents panel)' };
++  }
++  let prompt: string;
++  try {
++    prompt = await buildScanInput(span as ScanSpan);
++  } catch (err: any) {
++    logger.warn({ span, err }, 'runScan: buildScanInput failed — aborting scan');
++    return { ok: false, error: `scan input failed: ${String(err?.message ?? err)}` };
++  }
++  logger.info({ span, model, promptChars: prompt.length }, 'runScan: spawning chat-scan (sync)');
++  let content = '';
++  try {
++    const r = await runSubAgentSync({
++      agent: 'chat-scan',
++      prompt,
++      model,
++      sessionId: 'owner',
++      workspaceRoot: WORKSPACE_ROOT,
++      chatJid: OWNER_JID,
++      groupFolder: 'owner',
++      isMain: true,
++      timeoutMs: 4 * 60 * 1000,
++    } as any);
++    content = (r.content || '').trim();
++  } catch (err: any) {
++    logger.warn({ span, err }, 'runScan: chat-scan child failed');
++    return { ok: false, error: `scan child failed: ${String(err?.message ?? err)}` };
++  }
++  if (!content) {
++    logger.warn({ span }, 'runScan: chat-scan returned no output');
++    return { ok: false, error: 'scan returned no output' };
++  }
++  const counts = processScanResult(span as ScanSpan, content);
++  setRouterState('scan:lastrun', new Date().toISOString());
++  logger.info({ span, ...counts }, 'runScan: complete');
++  return { ok: true, ...counts };
++}
++
++// Scheduled-scan monitor — rides the existing poll loop (no separate timer),
++// the same pattern as checkDigestsDue. Fires runScan at SCAN_CRON cadence.
++// First boot seeds lastrun=now so the first scan waits for the next slot
++// (no backlog dump), matching the digest's skip-on-boot behaviour.
++let scanMonitorBusy = false;
++async function checkScanDue(): Promise<void> {
++  if (scanMonitorBusy) return;
++  scanMonitorBusy = true;
++  try {
++    const now = Date.now();
++    const last = getRouterState('scan:lastrun');
++    if (!last) { setRouterState('scan:lastrun', new Date(now).toISOString()); return; }
++    let nextFireMs: number;
++    try {
++      nextFireMs = CronExpressionParser.parse(SCAN_CRON, {
++        tz: TIMEZONE,
++        currentDate: new Date(last),
++      }).next().getTime();
++    } catch { return; }
++    if (now >= nextFireMs) {
++      setRouterState('scan:lastrun', new Date(now).toISOString());
++      // Auto cadence scans ONLY the last hour (hourly window) — it never
++      // backfills missed time. Reading a 24h/7d window on every cron tick would
++      // re-process everything and be too much info. The user manually triggers
++      // daily/weekly scans from the Actionable tab to catch up on missed spans.
++      logger.info({ cron: SCAN_CRON }, 'checkScanDue: firing scheduled hourly scan');
++      void runScan('hourly').catch((err) => logger.warn({ err }, 'scheduled runScan failed'));
++    }
++  } finally {
++    scanMonitorBusy = false;
++  }
++}
++
++// ── Inbox + confirm exposed to the API (deps callbacks) ──────────────────
++// Scanned items live in the real tables with confirmed=0 until the user green-
++// checks them in Ops -> Inbox. "Confirm" flips confirmed to 1 (the row stays in
++// the table, it just graduates out of the Inbox). "Delete" is the existing
++// DELETE /api/work-tasks/:id or /api/calendar/events/:id, fired from the UI.
++
++function getScanInbox(): ScanInbox {
++  let tasks: any[] = [];
++  let events: any[] = [];
++  try { tasks = getWorkTasks().filter((t) => !t.confirmed); } catch { /* ignore */ }
++  try { events = listCalendarEvents().filter((e) => !e.confirmed); } catch { /* ignore */ }
++  return {
++    tasks,
++    events,
++    autoConfirm: scanAutoAccept(),
++    allowedChats: getRouterState('scan:allowed_chats') || '',
++    model: scanModel(),
++    lastrun: getRouterState('scan:lastrun') || null,
++  };
++}
++
++function confirmScanItem(kind: 'task' | 'event', id: string): { ok: boolean; error?: string; result_id?: string } {
++  try {
++    if (kind === 'task') {
++      const t = updateWorkTask(id, { confirmed: 1 });
++      if (!t) return { ok: false, error: 'task not found' };
++      return { ok: true, result_id: id };
++    } else {
++      const e = updateCalendarEvent(id, { confirmed: 1 } as any);
++      if (!e) return { ok: false, error: 'event not found' };
++      return { ok: true, result_id: id };
++    }
++  } catch (err: any) {
++    return { ok: false, error: String(err?.message ?? err) };
++  }
++}
++
++function setScanConfig(cfg: { autoAccept?: boolean; allowedChats?: string; model?: string }): void {
++  if (cfg.autoAccept !== undefined) setRouterState('scan:auto_accept', cfg.autoAccept ? 'true' : 'false');
++  if (cfg.allowedChats !== undefined) setRouterState('scan:allowed_chats', cfg.allowedChats);
++  if (cfg.model !== undefined && cfg.model.trim()) setRouterState('scan:model', cfg.model.trim());
++}
++
+ async function startMessageLoop(): Promise<void> {
+   if (messageLoopRunning) {
+     logger.debug('Message loop already running, skipping duplicate start');
+@@ -1969,6 +2456,13 @@ async function startMessageLoop(): Promise<void> {
+           .catch((err) => logger.error({ err }, 'Error in message loop'))
+           .finally(() => { agentRunInFlight = false; });
+       }
++      // Digest schedule monitor: rides the existing poll loop — no separate
++      // timer. Fires runDigest(span) directly (Iris, no chat) when a baked-in
++      // cron schedule is due. Fire-and-forget; never blocks message pickup.
++      void checkDigestsDue();
++      // Actionable-items scanner monitor — same fire-and-forget poll-loop
++      // pattern as the digest monitor. Never blocks message pickup.
++      void checkScanDue();
+     } catch (err) {
+       logger.error({ err }, 'Error in message loop');
+     }
+@@ -2164,7 +2658,7 @@ function seedPerAgentModelSettings(): void {
+   // Existing keys that previously fell back to orchestrator at runtime — seed
+   // them too so that runtime fallback can be removed without breaking agents.
+   seed('atlas:model', orch);
+-  seed('hephaestus:model', orch);
++  seed('vulkan:model', orch);
+   seed('mercury:model', orch);
+   seed('sentry:model', orch);
+   // ctx — preserve each agent's current effective value.
+@@ -2175,7 +2669,7 @@ function seedPerAgentModelSettings(): void {
+   // Sentry bakes in 8192 today (granite4.1:8b overflows at the 2048 default) —
+   // materialize that as its ctx setting so the hardcoded bake can be removed.
+   seed('local:sentry_ctx', '8192');
+-  // Hephaestus had no ctx override (native window) — leave it blank (native).
++  // Vulkan had no ctx override (native window) — leave it blank (native).
+ }
+ 
+ /**
+@@ -2195,7 +2689,7 @@ function syncAgentCtxEnv(): void {
+   process.env.DEXTER_NUM_CTX = getRouterState('local:dexter_ctx') || '';
+   process.env.IRIS_NUM_CTX = getRouterState('local:iris_ctx') || '';
+   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
+-  process.env.HEPHAESTUS_NUM_CTX = getRouterState('local:hephaestus_ctx') || '';
++  process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
+   process.env.SENTRY_NUM_CTX = getRouterState('local:sentry_ctx') || '';
+ }
+ 
+@@ -2333,7 +2827,11 @@ async function main(): Promise<void> {
+         return false;
+       }
+     },
+-    triggerDigest: (span: string) => runDigestNow(span, schedulerDeps),
++    triggerDigest: (span: string) => runDigest(span),
++    triggerScan: (span: string) => runScan(span),
++    getScanInbox: () => getScanInbox(),
++    confirmScanItem: (kind: 'task' | 'event', id: string) => confirmScanItem(kind, id),
++    setScanConfig: (cfg: any) => { setScanConfig(cfg); },
+   });
+ 
+   // Start the scheduled-task loop. The scheduler no longer runs agents — it
+@@ -2345,11 +2843,18 @@ async function main(): Promise<void> {
+   startSchedulerLoop(schedulerDeps);
+ 
+   // ── Iris digest tasks (hourly / daily / weekly) ───────────────────────
+-  // Three recurring tasks whose prompts the scheduler injects into the
+-  // owner chat. The orchestrator routes each to Iris, who compiles a digest
+-  // and POSTs it to /api/summaries — feeding the dashboard digest panel.
+-  // Idempotent: seeded only if a task with the stable id doesn't yet exist.
+-  seedIrisDigestTasks();
++  // Digests no longer use the scheduler/scheduled_tasks DB or the chat
++  // pipeline. The three schedules + prompts are baked into IRIS_DIGEST_TASKS
++  // (TS constants); checkDigestsDue() — riding the message poll loop above —
++  // fires runDigest(span) directly, spawning Iris with a grounded prompt,
++  // and Iris publishes via post_summary → /api/summaries. The dashboard
++  // "Generate" button calls the same runDigest via deps.triggerDigest.
++  // Purge any stale iris-digest-* rows so the old scheduler path can't
++  // double-fire them through the chat.
++  for (const t of (getAllTasks() ?? []).filter((x) => x.id.startsWith('iris-digest-'))) {
++    deleteTask(t.id);
++    logger.info({ taskId: t.id }, 'removed stale Iris digest scheduled task (digests now run via direct Iris spawn)');
++  }
+ 
+   // ── Personal catch-all project ────────────────────────────────────────
+   // The system requires every work task to belong to a project. Personal is
+diff --git a/src/ollama-servers.ts b/src/ollama-servers.ts
+index f290549..42a9e3b 100644
+--- a/src/ollama-servers.ts
++++ b/src/ollama-servers.ts
+@@ -2,7 +2,7 @@
+ // The consolidated settings store for Ollama endpoints. Named servers (up to 3)
+ // live as JSON in router_state 'ollama:servers', with 'ollama:default_server'
+ // naming the default. Per-headline-agent overrides live in
+-// 'orchestrator:ollama_server' / 'atlas:ollama_server' / 'hephaestus:ollama_server'
++// 'orchestrator:ollama_server' / 'atlas:ollama_server' / 'vulkan:ollama_server'
+ // / 'sentry:ollama_server'. Kept in a standalone module (importing only db +
+ // config) so any host-side caller can use it without pulling in status-server
+ // (which would create import cycles).
+diff --git a/src/status-server.ts b/src/status-server.ts
+index e7ea863..d304292 100644
+--- a/src/status-server.ts
++++ b/src/status-server.ts
+@@ -239,6 +239,11 @@ interface StatusDeps {
+   // grounded runTask path as the cron (buildDigestContext: real calendar,
+   // tasks, bio, weather, notes). Wired in src/index.ts.
+   triggerDigest?: (span: string) => Promise<{ ok: boolean; error?: string }>;
++  // Actionable-items scanner (email + chat → tasks/events). Wired in src/index.ts.
++  triggerScan?: (span: string) => Promise<{ ok: boolean; error?: string; created?: number; pending?: number; skipped?: number }>;
++  getScanInbox?: () => any;
++  confirmScanItem?: (kind: 'task' | 'event', id: string) => { ok: boolean; error?: string; result_id?: string };
++  setScanConfig?: (cfg: { autoAccept?: boolean; allowedChats?: string; model?: string }) => void;
+ }
+ 
+ let deps: StatusDeps;
+@@ -1003,6 +1008,7 @@ async function handleMessages(
+       is_from_me: true,
+       is_bot_message: false,
+       idea: body.idea || '',
++      channel: 'web',
+     };
+     deps.storeMessage(msg);
+ 
+@@ -1484,7 +1490,7 @@ function handleSettings(res: http.ServerResponse): void {
+     defaultModelMode: DEFAULT_MODEL_MODE,
+     orchestratorModel: getRouterState('orchestrator:model') || '',
+     atlasModel: getRouterState('atlas:model') || '',
+-    hephaestusModel: getRouterState('hephaestus:model') || '',
++    vulkanModel: getRouterState('vulkan:model') || '',
+     // Per-agent models — each agent has its own concrete model (no blank/inherit).
+     byteModel: getRouterState('byte:model') || '',
+     dexterModel: getRouterState('dexter:model') || '',
+@@ -1510,7 +1516,7 @@ function handleSettings(res: http.ServerResponse): void {
+     ollamaDefaultServerId: getRouterState('ollama:default_server') || '',
+     orchestratorOllamaServer: getRouterState('orchestrator:ollama_server') || '',
+     atlasOllamaServer: getRouterState('atlas:ollama_server') || '',
+-    hephaestusOllamaServer: getRouterState('hephaestus:ollama_server') || '',
++    vulkanOllamaServer: getRouterState('vulkan:ollama_server') || '',
+     sentryOllamaServer: getRouterState('sentry:ollama_server') || '',
+     sentryMd,
+     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
+@@ -1531,7 +1537,7 @@ function handleSettings(res: http.ServerResponse): void {
+     dexterCtx: getRouterState('local:dexter_ctx') || '',
+     irisCtx: getRouterState('local:iris_ctx') || '',
+     artemisCtx: getRouterState('local:artemis_ctx') || '',
+-    hephaestusCtx: getRouterState('local:hephaestus_ctx') || '',
++    vulkanCtx: getRouterState('local:vulkan_ctx') || '',
+     sentryCtx: getRouterState('local:sentry_ctx') || '',
+     mercuryMode: getRouterState('mercury:mode') || 'full',
+     mercuryModel: getRouterState('mercury:model') || '',
+@@ -1582,8 +1588,8 @@ async function handleSettingsSave(
+   if (body.atlasModel !== undefined) {
+     setRouterState('atlas:model', String(body.atlasModel));
+   }
+-  if (body.hephaestusModel !== undefined) {
+-    setRouterState('hephaestus:model', String(body.hephaestusModel || ''));
++  if (body.vulkanModel !== undefined) {
++    setRouterState('vulkan:model', String(body.vulkanModel || ''));
+   }
+   // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
+   if (body.byteModel !== undefined) {
+@@ -1679,8 +1685,8 @@ async function handleSettingsSave(
+   if (body.atlasOllamaServer !== undefined) {
+     setRouterState('atlas:ollama_server', String(body.atlasOllamaServer || ''));
+   }
+-  if (body.hephaestusOllamaServer !== undefined) {
+-    setRouterState('hephaestus:ollama_server', String(body.hephaestusOllamaServer || ''));
++  if (body.vulkanOllamaServer !== undefined) {
++    setRouterState('vulkan:ollama_server', String(body.vulkanOllamaServer || ''));
+   }
+   if (body.sentryOllamaServer !== undefined) {
+     setRouterState('sentry:ollama_server', String(body.sentryOllamaServer || ''));
+@@ -1719,8 +1725,8 @@ async function handleSettingsSave(
+   if (body.artemisCtx !== undefined) {
+     setRouterState('local:artemis_ctx', String(body.artemisCtx || ''));
+   }
+-  if (body.hephaestusCtx !== undefined) {
+-    setRouterState('local:hephaestus_ctx', String(body.hephaestusCtx || ''));
++  if (body.vulkanCtx !== undefined) {
++    setRouterState('local:vulkan_ctx', String(body.vulkanCtx || ''));
+   }
+   if (body.sentryCtx !== undefined) {
+     setRouterState('local:sentry_ctx', String(body.sentryCtx || ''));
+@@ -1746,12 +1752,12 @@ async function handleSettingsSave(
+   // Track whether any router-state settings were saved
+   const hadRouterState = body.globalDefaultModel !== undefined ||
+     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
+-    body.atlasModel !== undefined || body.hephaestusModel !== undefined || body.drivingForce !== undefined ||
++    body.atlasModel !== undefined || body.vulkanModel !== undefined || body.drivingForce !== undefined ||
+     body.byteModel !== undefined || body.dexterModel !== undefined ||
+     body.irisModel !== undefined || body.artemisModel !== undefined ||
+     body.byteCtx !== undefined || body.dexterCtx !== undefined ||
+     body.irisCtx !== undefined || body.artemisCtx !== undefined ||
+-    body.hephaestusCtx !== undefined || body.sentryCtx !== undefined ||
++    body.vulkanCtx !== undefined || body.sentryCtx !== undefined ||
+     body.councilSkepticModel !== undefined ||
+     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
+     body.sentryModel !== undefined ||
+@@ -1765,7 +1771,7 @@ async function handleSettingsSave(
+     body.ollamaServers !== undefined ||
+     body.ollamaDefaultServerId !== undefined ||
+     body.orchestratorOllamaServer !== undefined || body.atlasOllamaServer !== undefined ||
+-    body.hephaestusOllamaServer !== undefined || body.sentryOllamaServer !== undefined;
++    body.vulkanOllamaServer !== undefined || body.sentryOllamaServer !== undefined;
+ 
+   const vars: Record<string, string> = {};
+   for (const [key, envKey] of Object.entries(envMap)) {
+@@ -3855,6 +3861,59 @@ export function startStatusServer(d: StatusDeps): void {
+           return json(res, { error: String(err?.message ?? err) }, 500);
+         }
+       }
++      // ── Actionable Items Scanner ──
++      // POST /api/scan/run?span=hourly|daily|weekly — run the chat-scan one-shot
++      // now (gathers emails + chat logs for the window, extracts, dedups, and
++      // creates real task/event rows). Returns counts { created, pending, skipped }.
++      if (req.method === 'POST' && pathname === '/api/scan/run') {
++        const span = (params.get('span') || 'daily').toLowerCase();
++        if (!['hourly', 'daily', 'weekly'].includes(span)) {
++          return json(res, { error: 'invalid span (use hourly, daily, or weekly)' }, 400);
++        }
++        if (!deps.triggerScan) return json(res, { error: 'scan trigger unavailable' }, 503);
++        try {
++          const r = await deps.triggerScan(span);
++          return json(res, r, r.ok ? 200 : 404);
++        } catch (err: any) {
++          return json(res, { error: String(err?.message ?? err) }, 500);
++        }
++      }
++      // GET /api/scan/inbox — unconfirmed work tasks + calendar events (the Ops
++      // Inbox), plus scanner config (autoConfirm, allowedChats, model, lastrun).
++      if (req.method === 'GET' && pathname === '/api/scan/inbox') {
++        if (!deps.getScanInbox) return json(res, { error: 'scan inbox unavailable' }, 503);
++        try { return json(res, deps.getScanInbox()); }
++        catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
++      }
++      // POST /api/scan/confirm { kind, id } — green-check an unconfirmed item:
++      // flip confirmed=1 so it graduates out of the Inbox (the row stays in the
++      // table). kind is 'task' or 'event'.
++      if (req.method === 'POST' && pathname === '/api/scan/confirm') {
++        if (!deps.confirmScanItem) return json(res, { error: 'scan confirm unavailable' }, 503);
++        try {
++          const body = parseJson(await parseBody(req)) as { kind?: string; id?: string };
++          if (!body.kind || !body.id) return json(res, { error: 'missing kind or id' }, 400);
++          if (body.kind !== 'task' && body.kind !== 'event') return json(res, { error: 'kind must be task or event' }, 400);
++          const r = deps.confirmScanItem(body.kind as 'task' | 'event', body.id);
++          return json(res, r, r.ok ? 200 : 404);
++        } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
++      }
++      // GET/POST /api/scan/config — read or update { autoAccept, allowedChats, model }.
++      if (pathname === '/api/scan/config') {
++        if (!deps.setScanConfig || !deps.getScanInbox) return json(res, { error: 'scan config unavailable' }, 503);
++        if (req.method === 'POST') {
++          try {
++            const body = parseJson(await parseBody(req)) as { autoAccept?: boolean; allowedChats?: string; model?: string };
++            deps.setScanConfig(body);
++            const s = deps.getScanInbox();
++            return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, lastrun: s.lastrun });
++          } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
++        }
++        try {
++          const s = deps.getScanInbox();
++          return json(res, { ok: true, autoAccept: s.autoConfirm, allowedChats: s.allowedChats, model: s.model, lastrun: s.lastrun });
++        } catch (err: any) { return json(res, { error: String(err?.message ?? err) }, 500); }
++      }
+       if (pathname === '/api/process-logs' && req.method === 'GET') {
+         try {
+           const lines = Math.min(parseInt(params.get('lines') || '200', 10) || 200, 2000);
+@@ -3920,6 +3979,35 @@ export function startStatusServer(d: StatusDeps): void {
+           }
+         }
+       }
++      // "Look Out For" notes (LOOK_OUT_FOR.md in the workspace root) — free-text
++      // the user maintains from the digest panel listing things they're watching
++      // for (a specific event, a pending reply, a package, etc.). The iris-digest
++      // agent-runner branch appends this verbatim to the bottom of every
++      // published digest (## 👀 Look Out For) so it shows under each
++      // hourly/daily/weekly summary with zero model involvement.
++      if (pathname === '/api/lookout') {
++        const lookoutPath = path.join(WORKSPACE_ROOT, 'LOOK_OUT_FOR.md');
++        if (req.method === 'GET') {
++          try {
++            const text = fs.existsSync(lookoutPath) ? fs.readFileSync(lookoutPath, 'utf-8') : '';
++            return json(res, { ok: true, text });
++          } catch (err: any) {
++            return json(res, { ok: false, error: String(err?.message ?? err) });
++          }
++        }
++        if (req.method === 'POST') {
++          try {
++            const body = parseJson(await parseBody(req)) as { text?: string };
++            const text = String(body?.text ?? '');
++            fs.mkdirSync(path.dirname(lookoutPath), { recursive: true });
++            fs.writeFileSync(lookoutPath, text, 'utf-8');
++            logger.info('Look Out For notes updated via dashboard');
++            return json(res, { ok: true });
++          } catch (err: any) {
++            return json(res, { ok: false, error: String(err?.message ?? err) });
++          }
++        }
++      }
+       if (pathname === '/api/messages')
+         return await handleMessages(req, res, params);
+       if (pathname === '/api/awareness' && req.method === 'POST') {
+diff --git a/src/task-scheduler.ts b/src/task-scheduler.ts
+index 9eb4af9..56b6f23 100644
+--- a/src/task-scheduler.ts
++++ b/src/task-scheduler.ts
+@@ -101,7 +101,7 @@ export interface SchedulerDependencies {
+  * location). Injected into the prompt so the digest is grounded in real data
+  * rather than invented.
+  */
+-async function buildDigestContext(span = 'hourly'): Promise<string> {
++export async function buildDigestContext(span = 'hourly'): Promise<string> {
+   const lines: string[] = [];
+   const now = new Date();
+   lines.push(`Current local time: ${now.toLocaleString('en-US', { timeZone: TIMEZONE })} (timezone ${TIMEZONE})`);
+@@ -178,6 +178,28 @@ async function buildDigestContext(span = 'hourly'): Promise<string> {
+     } catch (err) { lines.push(`\nWeather: unavailable (${String((err as any)?.message ?? err)})`); }
+   }
+ 
++  // "Look Out For" — free-text notes the user maintains from the digest panel
++  // (LOOK_OUT_FOR.md in the workspace root): things they're watching for (a
++  // specific event, a pending reply, a package). Fed into INPUT so Iris can
++  // compare each item against the calendar/tasks/emails/weather above and flag
++  // matches at the top of the digest. The verbatim note is ALSO appended to the
++  // published digest by the agent-runner (## 👀 Look Out For) — this INPUT copy
++  // is for match-detection, the appended copy is for display.
++  try {
++    const lookoutPath = path.join(
++      WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? ''),
++      'LOOK_OUT_FOR.md',
++    );
++    const lookout = fs.existsSync(lookoutPath)
++      ? fs.readFileSync(lookoutPath, 'utf-8').trim()
++      : '';
++    lines.push(
++      lookout
++        ? `\nLook Out For (things the user is watching for — flag any match in the digest):\n${lookout}`
++        : '\nLook Out For: none',
++    );
++  } catch { /* no lookout file */ }
++
+   return lines.join('\n');
+ }
+ 
+diff --git a/src/types.ts b/src/types.ts
+index 29202d8..13632c9 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -40,7 +40,7 @@ export interface AgentInput {
+   prompt: string;
+   orchestratorModel?: string; // Warden (orchestrator) model
+   model?: string;             // Atlas model
+-  hephaestusModel?: string;    // Hephaestus (coding) model
++  vulkanModel?: string;    // Vulkan (coding) model
+   // Per-agent models — every agent has its own concrete model selected from the
+   // Agents-panel dropdown (no blank, no runtime fallback). The host resolves each
+   // from its router_state key; the agent-runner uses it directly and errors if empty.
+@@ -80,6 +80,8 @@ export interface NewMessage {
+   is_from_me?: boolean;
+   is_bot_message?: boolean;
+   idea?: string;
++  /** Source channel that delivered this message: 'telegram' | 'whatsapp' | 'slack' | 'web'. */
++  channel?: string;
+ }
+ 
+ export interface ScheduledTask {
+diff --git a/voice/ui/digest.html b/voice/ui/digest.html
+index f7f8a96..6f0e798 100644
+--- a/voice/ui/digest.html
++++ b/voice/ui/digest.html
+@@ -119,10 +119,106 @@
+   }
+   .footer .ts{text-transform:uppercase}
+ 
++  /* ── Look Out For editor ── */
++  .lookout{
++    flex-shrink:0;padding:8px 16px 8px;border-top:1px solid rgba(199,125,255,0.12);
++    display:flex;flex-direction:column;gap:4px;background:rgba(0,0,0,0.18);
++  }
++  .lookout-head{display:flex;align-items:baseline;gap:8px}
++  .lookout-label{font-size:9px;font-weight:600;letter-spacing:1.5px;color:#c77dff;
++    text-transform:uppercase;text-shadow:0 0 6px rgba(199,125,255,0.4)}
++  .lookout-hint{font-size:8px;color:rgba(199,125,255,0.25);letter-spacing:0.5px}
++  .lookout-input{
++    width:100%;resize:vertical;min-height:34px;max-height:160px;
++    background:rgba(199,125,255,0.04);border:1px solid rgba(199,125,255,0.18);
++    border-radius:4px;padding:6px 8px;font-family:inherit;font-size:12px;line-height:1.5;
++    color:rgba(240,225,255,0.92);outline:none;user-select:text;-webkit-user-select:text;
++    transition:border-color 0.15s,background 0.15s;
++  }
++  .lookout-input:focus{border-color:rgba(199,125,255,0.5);background:rgba(199,125,255,0.07)}
++  .lookout-input::placeholder{color:rgba(199,125,255,0.22);font-style:italic}
++  .lookout-status{font-size:8px;color:rgba(199,125,255,0.3);letter-spacing:0.5px;height:10px}
++
++  /* ── structured JSON digest rendering (UI formats; model only emits JSON) ── */
++  .body .summary-text .digest-title{display:block;color:#f0e0ff;font-size:15px;
++    letter-spacing:0.3px;margin:0 0 4px;text-shadow:0 0 10px rgba(199,125,255,0.6);
++    font-weight:700;text-transform:none}
++  .body .summary-text .digest-summary{font-size:13px;color:rgba(240,225,255,0.78);
++    border-left:2px solid rgba(199,125,255,0.4);padding:2px 0 2px 10px;margin:0 0 14px;
++    background:rgba(199,125,255,0.03);border-radius:0 4px 4px 0}
++  .body .summary-text .alerts{border:1px solid rgba(255,170,0,0.4);border-radius:5px;
++    background:rgba(255,170,0,0.07);padding:8px 10px 10px;margin:0 0 14px}
++  .body .summary-text .alerts-head{font-size:11px;font-weight:700;letter-spacing:1px;
++    color:#ffaa00;text-transform:uppercase;margin-bottom:6px;text-shadow:0 0 6px rgba(255,170,0,0.4)}
++  .body .summary-text .alerts ul{margin:0;padding-left:18px}
++  .body .summary-text .alerts li{font-size:13px;color:#ffd070;margin-bottom:4px}
++  .body .summary-text .alerts li::before{content:'⚠';color:#ffaa00}
++
+   /* scrollbar */
+   .body::-webkit-scrollbar{width:3px}
+   .body::-webkit-scrollbar-track{background:transparent}
+   .body::-webkit-scrollbar-thumb{background:rgba(199,125,255,0.15);border-radius:2px}
++
++  /* ── Actionable scanner panel ── */
++  .scan-panel.body{padding:0;display:flex;flex-direction:column}
++  .scan-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
++    padding:8px 12px;border-bottom:1px solid rgba(199,125,255,0.12);
++    font-size:11px;color:rgba(230,210,255,0.85)}
++  .scan-toolbar .seg{display:inline-flex;border:1px solid rgba(199,125,255,0.25);
++    border-radius:4px;overflow:hidden}
++  .scan-toolbar .seg button{background:transparent;border:none;color:rgba(230,210,255,0.7);
++    font-family:inherit;font-size:10px;letter-spacing:0.5px;padding:3px 8px;cursor:pointer;
++    text-transform:uppercase;transition:background 0.15s,color 0.15s}
++  .scan-toolbar .seg button.active{background:rgba(199,125,255,0.18);color:#e8d4ff}
++  .scan-toolbar .seg button:hover:not(.active){background:rgba(199,125,255,0.07)}
++  .scan-btn{background:rgba(199,125,255,0.12);border:1px solid rgba(199,125,255,0.35);
++    color:#e8d4ff;font-family:inherit;font-size:10px;letter-spacing:0.5px;padding:3px 10px;
++    border-radius:4px;cursor:pointer;text-transform:uppercase}
++  .scan-btn:hover{background:rgba(199,125,255,0.22)}
++  .scan-btn.busy{opacity:0.6;pointer-events:none}
++  .scan-toggle{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
++  .scan-toggle .sw{width:28px;height:14px;border-radius:8px;background:rgba(199,125,255,0.15);
++    border:1px solid rgba(199,125,255,0.3);position:relative;transition:background 0.15s}
++  .scan-toggle .sw::after{content:'';position:absolute;top:1px;left:1px;width:10px;height:10px;
++    border-radius:50%;background:#c77dff;transition:left 0.15s}
++  .scan-toggle.on .sw{background:rgba(120,255,160,0.25);border-color:rgba(120,255,160,0.4)}
++  .scan-toggle.on .sw::after{left:15px;background:#a0ffc0}
++  .scan-toggle .lbl{font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:rgba(230,210,255,0.7)}
++  .scan-chats{flex:1;min-width:120px;background:rgba(199,125,255,0.04);
++    border:1px solid rgba(199,125,255,0.18);border-radius:4px;padding:3px 7px;
++    font-family:inherit;font-size:10px;color:rgba(240,225,255,0.85);outline:none}
++  .scan-chats:focus{border-color:rgba(199,125,255,0.5)}
++  .scan-chats::placeholder{color:rgba(199,125,255,0.22)}
++  .scan-meta{font-size:8px;color:rgba(199,125,255,0.3);letter-spacing:0.5px;margin-left:auto}
++  .scan-section{padding:10px 12px 4px}
++  .scan-section h3{font-size:9px;font-weight:700;letter-spacing:1.2px;color:#c77dff;
++    text-transform:uppercase;margin:0 0 8px;text-shadow:0 0 6px rgba(199,125,255,0.4)}
++  .scan-item{display:flex;flex-direction:column;gap:3px;padding:8px 10px;margin-bottom:7px;
++    border:1px solid rgba(199,125,255,0.14);border-radius:5px;
++    background:rgba(199,125,255,0.03)}
++  .scan-item .si-top{display:flex;align-items:baseline;gap:6px}
++  .scan-item .si-kind{font-size:8px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;
++    padding:1px 5px;border-radius:3px;flex-shrink:0}
++  .scan-item .si-kind.task{background:rgba(120,180,255,0.15);color:#9cc4ff;border:1px solid rgba(120,180,255,0.3)}
++  .scan-item .si-kind.event{background:rgba(120,255,160,0.15);color:#a0ffc0;border:1px solid rgba(120,255,160,0.3)}
++  .scan-item .si-title{font-size:12px;color:rgba(240,225,255,0.95);flex:1;word-break:break-word}
++  .scan-item .si-src{font-size:8px;color:rgba(199,125,255,0.35);letter-spacing:0.5px;
++    text-transform:uppercase;flex-shrink:0}
++  .scan-item .si-meta{font-size:10px;color:rgba(199,125,255,0.5);padding-left:2px}
++  .scan-item .si-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-left:2px}
++  .scan-item input,.scan-item select{background:rgba(199,125,255,0.05);
++    border:1px solid rgba(199,125,255,0.2);border-radius:3px;padding:2px 6px;
++    font-family:inherit;font-size:10px;color:rgba(240,225,255,0.9);outline:none;max-width:100%}
++  .scan-item input:focus,.scan-item select:focus{border-color:rgba(199,125,255,0.5)}
++  .scan-item .si-acts{display:flex;gap:6px;margin-left:auto}
++  .scan-item .si-btn{font-family:inherit;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;
++    padding:2px 8px;border-radius:3px;cursor:pointer;border:1px solid transparent}
++  .scan-item .si-btn.confirm{background:rgba(120,255,160,0.15);color:#a0ffc0;border-color:rgba(120,255,160,0.35)}
++  .scan-item .si-btn.confirm:hover{background:rgba(120,255,160,0.25)}
++  .scan-item .si-btn.dismiss{background:rgba(255,100,100,0.1);color:#ff9090;border-color:rgba(255,100,100,0.25)}
++  .scan-item .si-btn.dismiss:hover{background:rgba(255,100,100,0.2)}
++  .scan-empty{font-size:11px;color:rgba(199,125,255,0.3);padding:14px 12px;font-style:italic}
++  .scan-done{opacity:0.45}
+ </style>
+ </head>
+ <body>
+@@ -139,8 +235,32 @@
+     <div class="tab active" data-span="hourly">Hourly</div>
+     <div class="tab" data-span="daily">Daily</div>
+     <div class="tab" data-span="weekly">Weekly</div>
++    <div class="tab" data-span="actionable">Actionable</div>
++  </div>
++  <div class="body" id="digest-body"><div class="empty">No digest yet — Iris compiles these automatically.</div></div>
++  <div class="body scan-panel" id="scan-panel" style="display:none">
++    <div class="scan-toolbar">
++      <span class="seg" id="scan-span-seg">
++        <button data-span="hourly">1h</button>
++        <button data-span="daily" class="active">24h</button>
++        <button data-span="weekly">7d</button>
++      </span>
++      <button class="scan-btn" id="scan-now-btn">Scan now</button>
++      <label class="scan-toggle" id="scan-auto-toggle"><span class="sw"></span><span class="lbl">Auto-accept</span></label>
++      <input class="scan-chats" id="scan-chats" placeholder="allowed chats: telegram,slack (blank = all)" title="Which chat channels to scan — comma-separated (telegram, slack, whatsapp, web). Blank = all.">
++      <span class="scan-meta" id="scan-meta"></span>
++    </div>
++    <div class="scan-section" id="scan-pending"></div>
++    <div class="scan-section" id="scan-decided" style="display:none"></div>
++  </div>
++  <div class="lookout" id="lookout">
++    <div class="lookout-head">
++      <span class="lookout-label">👀 Look Out For</span>
++      <span class="lookout-hint">appended to the bottom of every digest</span>
++    </div>
++    <textarea class="lookout-input" id="lookout-input" placeholder="Things you're watching for — a specific event, a pending reply, a package arriving…"></textarea>
++    <div class="lookout-status" id="lookout-status"></div>
+   </div>
+-  <div class="body"><div class="empty">No digest yet — Iris compiles these automatically.</div></div>
+   <div class="footer"><span></span><span class="ts"></span></div>
+ </div>
+ <script>
+@@ -169,7 +289,20 @@
+   }
+ 
+   var body=document.querySelector('.body'),footerTs=document.querySelector('.footer .ts'),
+-      tabs=document.querySelectorAll('.tab'),config=null,activeSpan='hourly',interval=null;
++      tabs=document.querySelectorAll('.tab'),config=null,activeSpan='hourly',interval=null,
++      lookoutInput=document.getElementById('lookout-input'),
++      lookoutStatus=document.getElementById('lookout-status');
++  // ── Actionable scanner ──
++  var scanPanel=document.getElementById('scan-panel'),
++      digestBody=document.getElementById('digest-body'),
++      scanPending=document.getElementById('scan-pending'),
++      scanDecided=document.getElementById('scan-decided'),
++      scanNowBtn=document.getElementById('scan-now-btn'),
++      scanAutoToggle=document.getElementById('scan-auto-toggle'),
++      scanChatsInput=document.getElementById('scan-chats'),
++      scanMeta=document.getElementById('scan-meta'),
++      scanSpanSeg=document.getElementById('scan-span-seg'),
++      scanSpan='daily',scanState=null,scanChatsTimer=null;
+ 
+   async function loadConfig(){
+     // The pywebview bridge (window.pywebview.api) is injected into the host
+@@ -178,14 +311,16 @@
+     // quickly until the bridge is ready, then start the slow poll.
+     var tries=0;
+     function whenReady(){
+-      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ fetchDigest(); }
++      if(window.pywebview && window.pywebview.api && window.pywebview.api.warden_api){ refresh(); loadLookout(); }
+       else if(tries++ < 60){ setTimeout(whenReady, 250); }
+     }
+     whenReady();
+     // Hourly digests land on the cron, so poll often enough that a freshly
+-    // generated summary shows up without a manual refresh.
+-    interval=setInterval(fetchDigest,20000);
++    // generated summary shows up without a manual refresh. The unified refresh
++    // dispatches to the scan panel when the Actionable tab is active.
++    interval=setInterval(refresh,20000);
+   }
++  function refresh(){ if(activeSpan==='actionable') fetchScan(); else fetchDigest(); }
+ 
+   // Fetch a digest. span (optional) overrides the mutable activeSpan — the
+   // Generate poll passes the span captured at click time so a mid-poll tab
+@@ -194,6 +329,7 @@
+   // defaults to true for tab clicks / interval / focus refreshes.
+   async function fetchDigest(span, render){
+     var useSpan=span||activeSpan, doRender=render!==false;
++    if(activeSpan==='actionable'){ return ''; }
+     try{
+       if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api){if(doRender)showEmpty();return ''}
+       var raw=await window.pywebview.api.warden_api('/api/summaries?span='+useSpan);
+@@ -202,7 +338,7 @@
+       if(!d||!d.summaries||!d.summaries.length){if(doRender)showEmpty();return ''}
+       var s=d.summaries[0];
+       if(doRender){
+-        body.innerHTML='<div class="summary-text">'+renderMd(s.text)+'</div>';
++        body.innerHTML='<div class="summary-text">'+renderDigestOrMd(s.text)+'</div>';
+         footerTs.textContent=s.generated_at||'';
+       }
+       return s.generated_at||'';
+@@ -214,12 +350,56 @@
+     footerTs.textContent='';
+   }
+ 
++  // ── Look Out For editor ── loads/saves LOOK_OUT_FOR.md via /api/lookout.
++  // The note is also baked into every published digest by the agent-runner
++  // (## 👀 Look Out For), so it appears inside the rendered digest above AND in
++  // this editor below. Loaded once at startup; we deliberately do NOT reload on
++  // focus/visibility because that would clobber unsaved edits. Autosave is
++  // debounced on input + immediate on blur.
++  async function loadLookout(){
++    try{
++      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
++      var raw=await window.pywebview.api.warden_api('/api/lookout');
++      var d=raw?JSON.parse(raw):null;
++      if(d&&typeof d.text==='string'){ lookoutInput.value=d.text; }
++    }catch(e){}
++  }
++  var lookoutSaveTimer=null;
++  function scheduleLookoutSave(){
++    if(lookoutSaveTimer)clearTimeout(lookoutSaveTimer);
++    lookoutSaveTimer=setTimeout(saveLookout,800);
++  }
++  async function saveLookout(){
++    if(lookoutSaveTimer){clearTimeout(lookoutSaveTimer);lookoutSaveTimer=null;}
++    try{
++      if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api)return;
++      lookoutStatus.textContent='saving…';
++      await window.pywebview.api.warden_api('/api/lookout','POST',JSON.stringify({text:lookoutInput.value}));
++      lookoutStatus.textContent='saved';
++      setTimeout(function(){if(lookoutStatus.textContent==='saved')lookoutStatus.textContent='';},1500);
++    }catch(e){ lookoutStatus.textContent='save failed'; }
++  }
++  if(lookoutInput){
++    lookoutInput.addEventListener('input',scheduleLookoutSave);
++    lookoutInput.addEventListener('blur',saveLookout);
++  }
++
+   tabs.forEach(function(t){
+     t.addEventListener('click',function(){
+       tabs.forEach(function(x){x.classList.remove('active')});
+       t.classList.add('active');
+       activeSpan=t.dataset.span;
+-      fetchDigest();
++      var isScan=activeSpan==='actionable';
++      // The Actionable tab swaps the digest body for the scanner panel and
++      // hides the Look-Out-For editor (it belongs to the digest). The Generate
++      // button is digest-only — hide it on the scanner tab.
++      scanPanel.style.display=isScan?'flex':'none';
++      digestBody.style.display=isScan?'none':'block';
++      var lookout=document.getElementById('lookout');
++      if(lookout) lookout.style.display=isScan?'none':'flex';
++      var genBtn=document.getElementById('gen-btn');
++      if(genBtn) genBtn.style.visibility=isScan?'hidden':'visible';
++      refresh();
+     });
+   });
+ 
+@@ -230,9 +410,9 @@
+   // Generate now: POST /api/digest/generate?span=X — triggers the SAME grounded
+   // path as the cron (buildDigestContext: real calendar/tasks/bio/weather/notes),
+   // not a free-form chat that lets Iris fabricate items (the "10 AM sync" was
+-  // invented because the chat path skipped grounding). Iris compiles async and
+-  // POSTs to /api/summaries, so poll until the fresh digest lands (timestamp
+-  // changes), up to ~90s.
++  // invented because the chat path skipped grounding). The model compiles async
++  // and the runner POSTs to /api/summaries, so poll until the fresh digest lands
++  // (timestamp changes). No time cap — it waits until the result is in.
+   var genBtn=document.getElementById('gen-btn');
+   if(genBtn)genBtn.addEventListener('click',async function(){
+     if(genBtn.classList.contains('busy'))return;
+@@ -245,7 +425,6 @@
+         await window.pywebview.api.warden_api('/api/digest/generate?span='+span,'POST','{}');
+       }
+     }catch(e){}
+-    var polls=0;
+     function wait(){
+       setTimeout(async function(){
+         // Fetch the span captured at click time, WITHOUT rendering — we only
+@@ -260,8 +439,7 @@
+           if(activeSpan===span) await fetchDigest(span,true);
+           genBtn.classList.remove('busy'); genBtn.textContent='Generate'; return;
+         }
+-        if(polls++<22){ wait(); }
+-        else{ genBtn.classList.remove('busy'); genBtn.textContent='Generate'; }
++        wait();
+       },4000);
+     }
+     wait();
+@@ -328,6 +506,127 @@
+     flushTable();closeList();flush();
+     return out.join('');
+   }
++  // Structured JSON digest renderer. The model emits a JSON object
++  // {title, summary, alerts, blocks:[{icon,label,type,items|text}]}; the UI
++  // owns all formatting. Icon keys map to emoji here so the model never has to
++  // reproduce emoji (small models mangle them). Falls back to renderMd if the
++  // text isn't JSON (legacy digest, or a model that ignored the schema).
++  var SPAN_ICON={hourly:'🕒',daily:'📋',weekly:'🗓️'};
++  var SPAN_TITLE={hourly:'Hourly Digest',daily:'Daily Digest',weekly:'Weekly Roundup'};
++  var ICONS={inbox:'📦',calendar:'📅',tasks:'✅',weather:'🌤️',nudge:'💡',review:'📝',tomorrow:'👀'};
++  function inlineMd(h){
++    h=h.replace(/`([^`]+)`/g,'<code>$1</code>');
++    h=h.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
++    h=h.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
++    return h;
++  }
++  function badgeFrom(s){
++    return s.replace(/^\[([a-zA-Z -]+)\]\s*/,function(m,stat){
++      var c=stat.toLowerCase().replace(/\s/g,'-');
++      return '<span class="badge '+c+'">'+stat+'</span> ';
++    });
++  }
++  // Lenient digest parser. The small model sometimes emits "blocks" as several
++  // separate top-level "blocks": {…} keys (one per block) instead of a single
++  // "blocks": [ … ] array. JSON.parse silently keeps only the last duplicate
++  // key, so the renderer would lose every block but one and then crash on the
++  // non-array. This scans the raw text for every "blocks" value (array OR
++  // object), balanced over braces/brackets and string-aware, and collects them
++  // into a single array — so both shapes render the same. title/summary/alerts
++  // come from JSON.parse when the whole blob is valid, else a regex fallback.
++  function _balanced(raw,j,open,close){
++    var depth=0,inStr=false,esc=false;
++    for(var p=j;p<raw.length;p++){
++      var c=raw.charAt(p);
++      if(inStr){ if(esc)esc=false; else if(c==='\\')esc=true; else if(c==='"')inStr=false; continue; }
++      if(c==='"'){inStr=true;continue;}
++      if(c===open)depth++;
++      else if(c===close){depth--; if(depth===0)return p;}
++    }
++    return -1;
++  }
++  function parseDigestLoose(raw){
++    var blocks=[], i=0;
++    while(true){
++      var k=raw.indexOf('"blocks"', i);
++      if(k<0) break;
++      var j=k+8;
++      while(j<raw.length && /[\s:]/.test(raw.charAt(j))) j++;
++      var ch=raw.charAt(j);
++      if(ch!=='[' && ch!=='{'){ i=k+8; continue; }
++      var end=_balanced(raw, j, ch, ch==='['?']':'}');
++      if(end<0){ i=k+8; continue; }
++      try{
++        var val=JSON.parse(raw.slice(j, end+1));
++        if(Array.isArray(val)){ for(var x=0;x<val.length;x++) blocks.push(val[x]); }
++        else blocks.push(val);
++      }catch(e){}
++      i=end+1;
++    }
++    var title='', summary='', alerts=[];
++    var full=null;
++    try{ full=JSON.parse(raw); }catch(e){}
++    if(full){
++      title=full.title||'';
++      summary=full.summary||'';
++      if(Array.isArray(full.alerts)) alerts=full.alerts;
++      else if(typeof full.alerts==='string') alerts=[full.alerts];
++    } else {
++      var tm=raw.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
++      if(tm){ try{ title=JSON.parse('"'+tm[1]+'"'); }catch(e){ title=tm[1]; } }
++      var sm=raw.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
++      if(sm){ try{ summary=JSON.parse('"'+sm[1]+'"'); }catch(e){ summary=sm[1]; } }
++      var am=raw.match(/"alerts"\s*:\s*\[([\s\S]*?)\]/);
++      if(am){ var ss=am[1].match(/"((?:[^"\\]|\\.)*)"/g); if(ss){ for(var y=0;y<ss.length;y++){ try{ alerts.push(JSON.parse(ss[y])); }catch(e){} } } }
++    }
++    if(!blocks.length && full){
++      if(Array.isArray(full.blocks)) blocks=full.blocks.slice();
++      else if(full.blocks && typeof full.blocks==='object') blocks=[full.blocks];
++    }
++    return {title:title, summary:summary, alerts:alerts, blocks:blocks};
++  }
++  function renderDigest(d){
++    var out='';
++    var alerts=d.alerts;
++    if(typeof alerts==='string') alerts=[alerts];
++    if(Array.isArray(alerts) && alerts.length){
++      out+='<div class="alerts"><div class="alerts-head">⚠️ Alerts</div><ul>';
++      alerts.forEach(function(a){ out+='<li>'+inlineMd(esc(a))+'</li>'; });
++      out+='</ul></div>';
++    }
++    if(d.title) out+='<div class="digest-title">'+esc((SPAN_ICON[activeSpan]||'')+' '+(SPAN_TITLE[activeSpan]||'')+' — '+d.title)+'</div>';
++    if(d.summary && String(d.summary).trim()) out+='<div class="digest-summary">'+inlineMd(esc(d.summary))+'</div>';
++    var blocks=Array.isArray(d.blocks)?d.blocks:(d.blocks?[d.blocks]:[]);
++    blocks.forEach(function(b){
++      var icon=ICONS[b.icon]||'';
++      var label=esc(b.label||'');
++      if(b.type==='list'){
++        var items=(b.items||[]).filter(function(x){return x && String(x).trim().length;});
++        if(!items.length)return;
++        out+='<div class="block"><strong>'+(icon?icon+' ':'')+label+'</strong><ul>';
++        items.forEach(function(it){ out+='<li>'+badgeFrom(inlineMd(esc(it)))+'</li>'; });
++        out+='</ul></div>';
++      } else {
++        var t=(b.text||'').trim();
++        if(!t)return;
++        var cls=/review/i.test(b.label||'')?' class="review"':'';
++        out+='<div class="block"><strong>'+(icon?icon+' ':'')+label+'</strong><p'+cls+'>'+inlineMd(esc(t))+'</p></div>';
++      }
++    });
++    return out;
++  }
++  function renderDigestOrMd(text){
++    if(text){
++      var s=String(text).trim();
++      var fenced=s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
++      if(fenced) s=fenced[1].trim();
++      if(s.charAt(0)==='{'){
++        var d=parseDigestLoose(s);
++        if(d && (d.blocks.length || d.title || d.alerts.length || d.summary)) return renderDigest(d);
++      }
++    }
++    return renderMd(text);
++  }
+   // Host-driven refresh: panels.html polls /api/summaries itself (its timers
+   // are reliable where this iframe's setInterval stalled) and pushes the
+   // fresh JSON here. Render only the active span so a background tab's data
+@@ -340,15 +639,94 @@
+       if(!parsed || !parsed.summaries || !parsed.summaries.length) return;
+       var s = parsed.summaries[0];
+       if(s.span !== activeSpan) return;
+-      body.innerHTML = '<div class="summary-text">' + renderMd(s.text) + '</div>';
++      body.innerHTML = '<div class="summary-text">' + renderDigestOrMd(s.text) + '</div>';
+       footerTs.textContent = s.generated_at || '';
+     } catch(e){}
+   });
+ 
+   // Refresh when the panel becomes visible again (user switches back to the
+   // dashboard tab / window), so a digest that landed while hidden shows up.
+-  document.addEventListener('visibilitychange', function(){ if(!document.hidden) fetchDigest(); });
+-  window.addEventListener('focus', function(){ fetchDigest(); });
++  document.addEventListener('visibilitychange', function(){ if(!document.hidden) refresh(); });
++  window.addEventListener('focus', function(){ refresh(); });
++
++  // ── Actionable scanner logic ─────────────────────────────────────────
++  async function api(path, method, body){
++    if(!window.pywebview||!window.pywebview.api||!window.pywebview.api.warden_api) return null;
++    return await window.pywebview.api.warden_api(path, method||'GET', body||null);
++  }
++  async function fetchScan(){
++    if(activeSpan!=='actionable') return;
++    try{
++      var raw=await api('/api/scan/inbox');
++      if(!raw){ renderScan(null); return; }
++      scanState=JSON.parse(raw);
++      renderScan(scanState);
++    }catch(e){ renderScan(null); }
++  }
++  function fmtWhen(iso){
++    if(!iso) return '';
++    try{ var d=new Date(iso); return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
++    catch(e){ return iso; }
++  }
++  function renderScan(st){
++    if(!st){
++      scanPending.innerHTML='<div class="scan-empty">Scanner unavailable.</div>';
++      scanMeta.textContent='';
++      return;
++    }
++    // Toolbar config state
++    scanAutoToggle.classList.toggle('on', !!st.autoConfirm);
++    scanChatsInput.value=st.allowedChats||'';
++    var last=st.lastrun?('last run '+fmtWhen(st.lastrun)):('not run yet');
++    scanMeta.textContent=(st.model?('model '+(st.model.slice(0,24))+' · '):'')+last;
++    // Scanned items now land directly in the real stores (Ops -> Inbox) as
++    // unconfirmed rows — the confirmation queue is gone. Show a status summary +
++    // a pointer to Ops -> Inbox where the user green-checks / deletes.
++    var tasks=(st.tasks||[]).length, events=(st.events||[]).length;
++    var pend=tasks+events;
++    var h='<div class="scan-empty">'
++      +'<div style="font-size:12px;color:rgba(0,255,200,0.7);margin-bottom:8px">'+pend+' item'+(pend===1?'':'s')+' awaiting review</div>'
++      +(pend?('<div style="font-size:10px;color:rgba(230,210,255,0.6);margin-bottom:6px">'+tasks+' task'+(tasks===1?'':'s')+' &middot; '+events+' event'+(events===1?'':'s')+' (unconfirmed)</div>'):'')
++      +'<div style="font-size:10px;color:rgba(199,125,255,0.5)">Confirm or delete them in <b style="color:#c77dff">Ops &rarr; Inbox</b>.</div>'
++      +'<div style="font-size:9px;color:rgba(199,125,255,0.35);margin-top:8px">Auto-confirm is '+(st.autoConfirm?'ON':'OFF')+' &mdash; '+(st.autoConfirm?'scanned items land confirmed':'scanned items land here for review')+'.</div>'
++      +'</div>';
++    scanPending.innerHTML=h;
++  }
++  if(scanNowBtn) scanNowBtn.addEventListener('click',async function(){
++    if(scanNowBtn.classList.contains('busy'))return;
++    scanNowBtn.classList.add('busy'); scanNowBtn.textContent='Scanning…';
++    try{
++      var raw=await api('/api/scan/run?span='+scanSpan,'POST','{}');
++      var r=raw?JSON.parse(raw):null;
++      if(r&&r.ok){
++        scanMeta.textContent='scan done: '+(r.created||0)+' created, '+(r.pending||0)+' pending review, '+(r.skipped||0)+' skipped';
++      }else{
++        scanMeta.textContent='scan failed: '+(r&&r.error||'unknown');
++      }
++    }catch(e){ scanMeta.textContent='scan failed: '+e; }
++    finally{ scanNowBtn.classList.remove('busy'); scanNowBtn.textContent='Scan now'; fetchScan(); }
++  });
++  // Window selector (1h / 24h / 7d) — sets which window "Scan now" uses.
++  if(scanSpanSeg) scanSpanSeg.querySelectorAll('button').forEach(function(b){
++    b.addEventListener('click',function(){
++      scanSpanSeg.querySelectorAll('button').forEach(function(x){x.classList.remove('active')});
++      b.classList.add('active'); scanSpan=b.dataset.span;
++    });
++  });
++  // Auto-accept toggle — persisted via /api/scan/config.
++  if(scanAutoToggle) scanAutoToggle.addEventListener('click',async function(){
++    var on=!scanAutoToggle.classList.contains('on');
++    scanAutoToggle.classList.toggle('on',on);
++    try{ await api('/api/scan/config','POST',JSON.stringify({autoAccept:on})); }catch(e){}
++  });
++  // Allowed-chats input — debounced save.
++  if(scanChatsInput) scanChatsInput.addEventListener('input',function(){
++    if(scanChatsTimer)clearTimeout(scanChatsTimer);
++    scanChatsTimer=setTimeout(async function(){
++      try{ await api('/api/scan/config','POST',JSON.stringify({allowedChats:scanChatsInput.value})); }catch(e){}
++    },800);
++  });
++  function cssEsc(s){ return String(s||'').replace(/"/g,'\\"'); }
+   if(document.readyState==='complete')loadConfig();else window.addEventListener('load',loadConfig);
+ })();
+ </script>
+diff --git a/voice/ui/tasks.html b/voice/ui/tasks.html
+index a038414..0c33108 100644
+--- a/voice/ui/tasks.html
++++ b/voice/ui/tasks.html
+@@ -50,6 +50,15 @@
+   .act-btn:hover{color:#cc88ff;border-color:rgba(204,136,255,0.5)}
+   .act-btn.del{color:rgba(255,68,68,0.6);border-color:rgba(255,68,68,0.2)}
+   .act-btn.del:hover{color:#ff4444;border-color:rgba(255,68,68,0.5)}
++  .act-btn.confirm{color:rgba(0,255,136,0.7);border-color:rgba(0,255,136,0.25)}
++  .act-btn.confirm:hover{color:#00ff88;border-color:rgba(0,255,136,0.55)}
++  /* Unconfirmed scanned items stand out so the user spots what needs a ✓/✕. */
++  .item.unconfirmed{background:rgba(0,255,200,0.05);border:1px solid rgba(0,255,200,0.22);box-shadow:0 0 10px rgba(0,255,200,0.08)}
++  .item.unconfirmed .it-title{color:#9ffece}
++  .badge-unconfirmed{background:rgba(0,255,200,0.12);color:#00ffcc;border:1px solid rgba(0,255,200,0.3);animation:pulsef 2.4s ease-in-out infinite}
++  @keyframes pulsef{0%,100%{opacity:1}50%{opacity:0.55}}
++  .inbox-empty{text-align:center;padding:30px 20px;font-size:10px;color:rgba(204,136,255,0.25);font-family:'Courier New',monospace;line-height:1.6}
++  .inbox-empty b{color:rgba(0,255,200,0.4);font-weight:400}
+   .del-x{position:absolute;top:4px;right:5px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;
+     font-size:11px;color:rgba(255,68,68,0.35);cursor:pointer;border-radius:3px;line-height:1;transition:color .15s,background .15s;user-select:none}
+   .del-x:hover{color:#ff4444;background:rgba(255,68,68,0.12)}
+@@ -83,6 +92,7 @@
+     <div class="header-btn" id="refresh-btn" title="Refresh">↻</div>
+   </div>
+   <div class="tabs">
++    <div class="tab" data-tab="inbox">Inbox <span class="count" id="inbox-count"></span></div>
+     <div class="tab active" data-tab="work">Work <span class="count" id="work-count"></span></div>
+     <div class="tab" data-tab="tasks">Scheduled <span class="count" id="tasks-count"></span></div>
+     <div class="tab" data-tab="projects">Projects <span class="count" id="projects-count"></span></div>
+@@ -131,6 +141,7 @@
+   }
+ 
+   async function load(){
++    if(activeTab==='inbox') return loadInbox();
+     if(activeTab==='tasks') return loadTasks();
+     if(activeTab==='work') return loadWork();
+     return loadProjects();
+@@ -255,6 +266,75 @@
+     }catch(e){body.innerHTML='<div class="empty">Unable to load projects.</div>'}
+   }
+ 
++  // ── Inbox ── unconfirmed scanned items (work tasks + calendar events) that
++  // the Actionable scanner dropped into the real stores with confirmed=0. They
++  // stand out here so the user can green-check (✓ confirm → confirmed=1, stays in
++  // the table, graduates out of the Inbox) or red-X (✕ delete → row removed).
++  function fmtDT(iso){
++    if(!iso) return '';
++    try{ var d=new Date(iso); if(isNaN(d)) return esc(iso);
++      return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
++    catch(e){ return esc(iso); }
++  }
++  async function loadInbox(){
++    try{
++      var raw=await api('/api/scan/inbox');
++      var st=raw?JSON.parse(raw):null;
++      var tasks=(st&&st.tasks)||[], events=(st&&st.events)||[];
++      var n=tasks.length+events.length;
++      document.getElementById('inbox-count').textContent=n||'';
++      if(!n){
++        body.innerHTML='<div class="inbox-empty">Inbox clear — no items awaiting review.<br><br>Scanned tasks &amp; events land here <b>unconfirmed</b> for a ✓ or ✕.<br>Run a scan from the digest Actionable tab.</div>';
++        return;
++      }
++      var h='';
++      tasks.forEach(function(t){
++        h+='<div class="item unconfirmed" data-kind="inbox-task" data-id="'+esc(t.id)+'">'
++          +'<div class="del-x" data-act="del" title="Delete">✕</div>'
++          +'<div class="it-title">'+esc(t.title)+'</div>'
++          +'<div class="it-sub">'+esc(t.due_date?('due '+fmtDT(t.due_date)):'to-do')+(t.description?(' · '+esc(t.description).slice(0,80)):'')+'</div>'
++          +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · task</span>'
++          +'<span class="act-btn confirm" data-act="confirm" title="Confirm">✓ Confirm</span></div>'
++          +'</div>';
++      });
++      events.forEach(function(e){
++        h+='<div class="item unconfirmed" data-kind="inbox-event" data-id="'+esc(e.id)+'">'
++          +'<div class="del-x" data-act="del" title="Delete">✕</div>'
++          +'<div class="it-title">'+esc(e.title)+'</div>'
++          +'<div class="it-sub">'+esc(fmtDT(e.start_time))+(e.end_time?(' → '+esc(fmtDT(e.end_time))):'')+(e.location?(' · '+esc(e.location)):'')+'</div>'
++          +'<div class="it-row"><span class="it-badge badge-unconfirmed">unconfirmed · event</span>'
++          +'<span class="act-btn confirm" data-act="confirm" title="Confirm">✓ Confirm</span></div>'
++          +'</div>';
++      });
++      body.innerHTML=h;
++    }catch(e){body.innerHTML='<div class="empty">Unable to load inbox.</div>'}
++  }
++  // Always refresh the Inbox count badge so the user sees pending review items
++  // even from another tab. Skipped when the Inbox tab is active (loadInbox just
++  // set it) to avoid a double fetch.
++  async function refreshInboxCount(){
++    if(activeTab==='inbox') return;
++    try{
++      var raw=await api('/api/scan/inbox');
++      var st=raw?JSON.parse(raw):null;
++      var n=((st&&st.tasks)||[]).length+((st&&st.events)||[]).length;
++      document.getElementById('inbox-count').textContent=n||'';
++    }catch(e){}
++  }
++  async function confirmInboxItem(kind,id){
++    try{
++      var raw=await api('/api/scan/confirm','POST',JSON.stringify({kind:kind,id:id}));
++      var r=raw?JSON.parse(raw):null;
++      if(!r||!r.ok) return;
++    }catch(e){}
++    await loadInbox();
++  }
++  async function delInboxItem(kind,id){
++    var ep=kind==='inbox-event'?('/api/calendar/events/'+encodeURIComponent(id)):('/api/work-tasks/'+encodeURIComponent(id));
++    try{ await api(ep,'DELETE'); }catch(e){}
++    await loadInbox();
++  }
++
+   async function createProject(name){
+     var addBtn=document.getElementById('add-btn');
+     addBtn.classList.add('busy');addBtn.textContent='Working…';
+@@ -303,7 +383,10 @@
+     var addBtn=document.getElementById('add-btn');
+     var sched=document.getElementById('new-sched');
+     var name=document.getElementById('new-name');
+-    if(tab==='tasks'){
++    addBtn.style.display='';
++    if(tab==='inbox'){
++      addBtn.style.display='none';
++    }else if(tab==='tasks'){
+       addBtn.textContent='New Task';addBtn.title='New task';
+       name.placeholder='New task prompt…';sched.style.display='';
+     }else if(tab==='work'){
+@@ -377,9 +460,15 @@
+     var item=el.closest('.item'); if(!item)return;
+     var kind=item.getAttribute('data-kind'),id=item.getAttribute('data-id'),act=el.getAttribute('data-act');
+     if(act==='del'){
++      if(kind==='inbox-task'){delInboxItem('inbox-task',id);return;}
++      if(kind==='inbox-event'){delInboxItem('inbox-event',id);return;}
+       if(kind==='project'){if(confirm('Delete this project?'))delProject(id);}
+       else if(kind==='worktask'){delWorkTask(id);}
+       else delTask(id);
++    }else if(act==='confirm'){
++      // Inbox ✓ — confirm a scanned task/event (flip confirmed=1).
++      var ck=kind==='inbox-event'?'event':'task';
++      confirmInboxItem(ck,id);
+     }else if(act==='toggle'){
+       toggleTask(id,el.getAttribute('data-status'));
+     }
+@@ -387,6 +476,7 @@
+ 
+   async function tick(){
+     await load();
++    refreshInboxCount();
+     footerTs.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+   }
+   tick();
