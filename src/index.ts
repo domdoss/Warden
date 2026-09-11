@@ -20,7 +20,7 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
-import { maybeClassifyMemoryTree, readClaudeMemories } from './memory-tree.js';
+import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
   getAllTasks,
@@ -2184,16 +2184,8 @@ async function processOwnerMessages(): Promise<void> {
   }
 
   const steveMode = pending.some((m) => (m as any).idea === 'steve');
-  // Steve-mode turns carry what Warden remembers about him (from the Claude
-  // memory scan) so the conversation actually knows him.
-  const memories = steveMode ? readClaudeMemories() : [];
-  const steveBlock = STEVE_MODE_BLOCK +
-    (memories.length
-      ? '\n\n[ABOUT THE USER — what you remember about him]\n' +
-        memories.map((m) => `- ${m.name}: ${m.description}`).join('\n')
-      : '');
   const prompt = steveMode
-    ? steveBlock + '\n\n' + buildPrompt(pending)
+    ? STEVE_MODE_BLOCK + '\n\n' + buildPrompt(pending)
     : buildPrompt(pending);
 
   // Advance cursor before invoking the agent so a crash between cursor advance

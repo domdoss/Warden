@@ -26,7 +26,6 @@
  * MARM, so filed facts show up as the tree filling in.
  */
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { OLLAMA_URL, DATA_DIR } from './config.js';
 import { getDb, getRouterState, setRouterState } from './db.js';
@@ -367,42 +366,10 @@ function seedSkillsFacts(): void {
   if (facts.length) recordTreeFacts(facts);
 }
 
-// Personal memories live in Claude Code's persistent memory for this project
-// (~/.claude/projects/-opt-Warden/memory/*.md) — frontmatter carries a name
-// and a one-line description. Two consumers: seeded into the fact index
-// under Personal (so the galaxy shows what Warden knows about the user) and
-// injected into Steve-mode turns (see processOwnerMessages).
-export interface ClaudeMemory { name: string; description: string }
-const CLAUDE_MEMORY_DIR = path.join(os.homedir(), '.claude', 'projects', '-opt-Warden', 'memory');
-export function readClaudeMemories(): ClaudeMemory[] {
-  const out: ClaudeMemory[] = [];
-  let files: string[] = [];
-  try { files = fs.readdirSync(CLAUDE_MEMORY_DIR); } catch { return out; /* no memory dir — nothing to scan */ }
-  for (const f of files.sort()) {
-    if (!f.endsWith('.md') || f === 'MEMORY.md') continue; // MEMORY.md is the index, not a fact
-    try {
-      const md = fs.readFileSync(path.join(CLAUDE_MEMORY_DIR, f), 'utf-8');
-      const name = (md.match(/^name:\s*(.+)\s*$/m) || [])[1]?.trim() || f.replace(/\.md$/, '');
-      const rawDesc = (md.match(/^description:\s*"?(.+?)"?\s*$/m) || [])[1]?.trim() || '';
-      if (rawDesc) out.push({ name, description: rawDesc.slice(0, 220) });
-    } catch { /* unreadable memory — skip */ }
-  }
-  return out;
-}
-
-const PERSONAL_PATH = 'Personal';
-function seedClaudeFacts(): void {
-  const facts: Fact[] = readClaudeMemories().map((m) => ({
-    path: PERSONAL_PATH, fact: `${m.name}: ${m.description}`,
-  }));
-  if (facts.length) recordTreeFacts(facts);
-}
-
 export async function maybeBackfillTreeFacts(): Promise<void> {
   if (backfillTried) return;
   backfillTried = true;
   try { seedSkillsFacts(); } catch (err) { logger.warn({ err }, 'memory-tree: skills seeding failed'); }
-  try { seedClaudeFacts(); } catch (err) { logger.warn({ err }, 'memory-tree: claude-memory seeding failed'); }
   try {
     const row = getDb().prepare('SELECT COUNT(*) AS c FROM memory_tree_facts').get() as { c: number };
     if (row.c > 0) return;
