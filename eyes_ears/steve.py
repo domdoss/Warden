@@ -103,7 +103,7 @@ MEM_SYSTEM = (
     "- A fact: people, family, routines, accounts, health, preferences, projects, environment\n"
     "- One short sentence per fact, plain text\n"
     "- Keep a fact only if it stays true over months\n"
-    "Output: the facts."
+    'Output: ONLY the JSON {"facts": ["fact", ...]} — no other text.'
 )
 # Plan-narrative the 8b keeps and a memory is not (verified against its
 # dry-run output: "will be built", "wants Mercury to run", "will rely on").
@@ -202,7 +202,8 @@ def _classify_chunk(chunk: list[str]) -> list[str]:
                 {"role": "user", "content": "Lines:\n" + "\n".join(chunk)},
             ],
             "think": False,  # cloud qwen is a thinking model; extraction doesn't need it
-            "options": {"temperature": 0},
+            # Qwen3.5 documented non-thinking sampling (model card: general tasks)
+            "options": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
         })
         content = (data.get("message") or {}).get("content") or ""
         s, e = content.find("{"), content.rfind("}")
