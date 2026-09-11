@@ -6,8 +6,10 @@ process, no bridge to the main UI. This process owns its own mic (VAD
 record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
 
 - Big RED button (TALK), top of the window: record until silence →
-  transcribe → POST to Warden /api/messages tagged idea="steve" (the
-  Steve-mode prompt block) → poll for the reply → speak it.
+  transcribe → POST to Warden /api/messages as a plain message with the
+  Steve prompt block and the remembered facts prepended — Warden itself
+  has no Steve code, everything Steve-specific lives in this app → poll
+  for the reply → speak it.
 - Big YELLOW STOP SIGN, pinned to the far bottom edge — a wide gap and the
   status strip sit between it and TALK so the two can't be confused. It
   FLASHES while a turn is running; click stops whatever is in flight —
@@ -16,6 +18,13 @@ record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
   otherwise.
 - Audible cues for a blind user: short high beep when listening starts,
   low beep when the turn finishes, long buzz if it failed.
+
+MEMORIES — this app owns them too (Warden knows nothing about Steve):
+at startup it scans ~/.claude (every .md: memory.md, journal.md, all
+related files), extracts the durable facts about him with local
+granite 8b via Ollama, caches them, and injects them into every turn
+as spoken context ("what you remember about him"). No brain, no
+visualization — he can't see it. Rescans daily.
 
 Run with the eyes_ears venv:
 
@@ -27,6 +36,7 @@ warden.base_url, else http://127.0.0.1:3200.
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -49,6 +59,178 @@ from ears.tts import TTS  # noqa: E402
 
 DEFAULT_WARDEN = "http://127.0.0.1:3200"
 REPLY_TIMEOUT_S = 300  # how long to wait for the orchestrator's reply
+
+# The Steve persona lives HERE — the standalone app owns it completely.
+# Warden itself has zero Steve knowledge (other people run Warden): this
+# block is prepended to every message so the orchestrator converses
+# instead of acting on rambling or nonsensical requests, and replies in
+# a form that works spoken aloud.
+STEVE_PROMPT = """[STEVE MODE]
+This turn is voice input from a blind user (Steve) using a single big-button interface. He rambles, changes topics mid-sentence, and sometimes asks for nonsensical or impossible things. Your reply is spoken aloud.
+
+PERSONA — you are a warm Northern companion in the Donna Noble mould: kind, a bit cheeky, reassuring. Call him "petal" or "sweety" naturally now and then — not every sentence. You KNOW him: the ABOUT THE USER block below is what you remember about him and his life — use it in conversation like an old friend would, without listing it back at him.
+
+- Reply conversationally and briefly, in plain short sentences. No lists, no markdown, no emoji — the reply goes through text-to-speech.
+- Do NOT act on vague or rambling requests: no tasks, projects, reminders, jobs, messages, or file changes unless the request is explicit and unambiguous.
+- Nonsensical or impossible requests: respond gently and briefly; do not attempt to fulfill them.
+- If the intent is unclear, ask ONE short clarifying question instead of acting.
+- Small talk and stories are fine — engage naturally."""
+
+# ---------- Steve's own memories (scanned from ~/.claude, local 8b) ----------
+OLLAMA_URL = "http://127.0.0.1:11434"
+MEM_MODEL = "granite4.1:8b"
+CLAUDE_DIR = os.path.expanduser("~/.claude")
+MEM_CACHE = os.path.expanduser("~/.local/state/steve/memory.json")
+MEM_SCAN_INTERVAL_S = 24 * 3600
+MEM_MAX_FILES = 300            # .md files per scan
+MEM_MAX_FILE_BYTES = 200_000   # skip huge files
+MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc first)
+MEM_LINE_TRUNC = 200
+MEM_BATCH_CHARS = 9_000        # classifier batch size
+MEM_FACTS_MAX = 400
+MEM_FACTS_PROMPT_MAX = 60      # injected into a turn
+
+MEM_SYSTEM = (
+    "Role: you extract lasting facts about the user from their personal memory files.\n\n"
+    "Input: lines from memory files.\n\n"
+    "Rules:\n"
+    "- A fact: people, family, routines, accounts, health, preferences, projects, environment\n"
+    "- One short sentence per fact, plain text\n"
+    "- Keep a fact only if it stays true over months\n"
+    "Output: the facts."
+)
+MEM_FORMAT = {
+    "type": "object",
+    "properties": {"facts": {"type": "array", "items": {"type": "string"}}},
+    "required": ["facts"],
+}
+
+
+def _ollama_chat(body: dict, timeout: int = 180) -> dict:
+    req = urllib.request.Request(
+        OLLAMA_URL + "/api/chat", data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode() or "{}")
+
+
+def scan_claude_lines() -> list[str]:
+    """Every .md under ~/.claude — memory.md, journal.md, CLAUDE.md, all of
+    it — one 'path: line' per interesting line, bounded."""
+    files: list[str] = []
+    for root, dirs, names in os.walk(CLAUDE_DIR):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        for n in names:
+            if n.endswith(".md"):
+                files.append(os.path.join(root, n))
+    lines: list[str] = []
+    for p in sorted(files)[:MEM_MAX_FILES]:
+        try:
+            if os.path.getsize(p) > MEM_MAX_FILE_BYTES:
+                continue
+            with open(p, encoding="utf-8", errors="replace") as f:
+                md = f.read()
+        except OSError:
+            continue
+        rel = os.path.relpath(p, CLAUDE_DIR)
+        desc = (re.search(r'^description:\s*"?(.+?)"?\s*$', md, re.M) or [None, ""])[1].strip()
+        out = [f"{rel}: {desc}"] if desc else []
+        body = re.sub(r"^---[\s\S]*?---", "", md)
+        for raw in body.splitlines():
+            t = raw.strip().lstrip("-*# ").strip()
+            if not t or len(t) < 12:
+                continue
+            out.append(f"{rel}: {t[:MEM_LINE_TRUNC]}")
+            if len(out) > MEM_LINES_PER_FILE:
+                break
+        lines.extend(out)
+    return lines
+
+
+def classify_lines(lines: list[str]) -> list[str]:
+    """Durable facts via local granite 8b, batched under the model's context."""
+    facts: list[str] = []
+    batch: list[str] = []
+    chars = 0
+    for ln in lines:
+        if len(batch) >= 80 or chars + len(ln) > MEM_BATCH_CHARS:
+            facts.extend(_classify_chunk(batch))
+            batch, chars = [], 0
+        batch.append(ln)
+        chars += len(ln)
+    if batch:
+        facts.extend(_classify_chunk(batch))
+    # Dedup by normalized wording.
+    seen: set[str] = set()
+    out: list[str] = []
+    for f in facts:
+        f = f.strip()[:300]
+        key = re.sub(r"[^a-z0-9]+", " ", f.lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(f)
+        if len(out) >= MEM_FACTS_MAX:
+            break
+    return out
+
+
+def _classify_chunk(chunk: list[str]) -> list[str]:
+    try:
+        data = _ollama_chat({
+            "model": MEM_MODEL, "stream": False, "format": MEM_FORMAT,
+            "messages": [
+                {"role": "system", "content": MEM_SYSTEM},
+                {"role": "user", "content": "Lines:\n" + "\n".join(chunk)},
+            ],
+            "options": {"temperature": 0},
+        })
+        content = (data.get("message") or {}).get("content") or ""
+        s, e = content.find("{"), content.rfind("}")
+        if s == -1 or e <= s:
+            return []
+        return [str(f) for f in (json.loads(content[s:e + 1]).get("facts") or []) if str(f).strip()]
+    except Exception as e:
+        print(f"[steve] memory classify failed: {e}", file=sys.stderr)
+        return []
+
+
+def load_cached_facts() -> tuple[list[str], float]:
+    try:
+        with open(MEM_CACHE, encoding="utf-8") as f:
+            d = json.load(f)
+        return [str(x) for x in (d.get("facts") or [])], float(d.get("ts") or 0)
+    except Exception:
+        return [], 0.0
+
+
+def save_cached_facts(facts: list[str]) -> None:
+    os.makedirs(os.path.dirname(MEM_CACHE), exist_ok=True)
+    with open(MEM_CACHE, "w", encoding="utf-8") as f:
+        json.dump({"facts": facts, "ts": time.time()}, f)
+
+
+def memory_scan_loop(get_state, set_state) -> None:
+    """Background: keep the fact list fresh — cached instantly at boot,
+    rescanned when stale, then once a day."""
+    while True:
+        facts, ts = load_cached_facts()
+        set_state(facts)
+        if facts and time.time() - ts < MEM_SCAN_INTERVAL_S:
+            time.sleep(MEM_SCAN_INTERVAL_S - (time.time() - ts))
+            continue
+        try:
+            lines = scan_claude_lines()
+            if lines:
+                fresh = classify_lines(lines)
+                if fresh:
+                    save_cached_facts(fresh)
+                    set_state(fresh)
+                    print(f"[steve] memory scan: {len(lines)} lines -> {len(fresh)} facts", file=sys.stderr)
+        except Exception as e:
+            print(f"[steve] memory scan failed: {e}", file=sys.stderr)
+        time.sleep(MEM_SCAN_INTERVAL_S)
 
 
 def warden_url_from_config() -> str:
@@ -108,6 +290,18 @@ class SteveApp:
         self._lock = threading.Lock()
         self._worker = None  # live turn thread, None when idle
         self._stop = threading.Event()
+        # Steve's remembered facts (scanned from ~/.claude, classified by the
+        # local 8b) — injected into every turn as spoken context.
+        self._facts: list[str] = []
+        threading.Thread(
+            target=memory_scan_loop,
+            args=(lambda: self._facts, self._set_facts),
+            daemon=True,
+        ).start()
+
+    def _set_facts(self, facts: list[str]) -> None:
+        with self._lock:
+            self._facts = facts
 
     # ----- Warden HTTP (urllib — no main-app client) -----
     def _http(self, method: str, path: str, body: dict | None = None, timeout: int = 10):
@@ -120,8 +314,19 @@ class SteveApp:
             return json.loads(resp.read().decode() or "{}")
 
     def _send(self, text: str) -> int:
-        """POST a Steve-tagged message; returns the stored message id."""
-        resp = self._http("POST", "/api/messages", {"text": text, "idea": "steve"})
+        """POST the turn as a plain owner message — the prompt block and the
+        remembered facts ride in the message text, so Warden needs no Steve
+        handling. Returns the stored message id."""
+        parts = [STEVE_PROMPT]
+        with self._lock:
+            facts = list(self._facts)
+        if facts:
+            parts.append(
+                "ABOUT THE USER — what you remember about him:\n"
+                + "\n".join("- " + f for f in facts[-MEM_FACTS_PROMPT_MAX:])
+            )
+        parts.append("He says: " + text)
+        resp = self._http("POST", "/api/messages", {"text": "\n\n".join(parts)})
         return int(resp.get("id") or 0)
 
     def _await_reply(self, my_id: int) -> str | None:

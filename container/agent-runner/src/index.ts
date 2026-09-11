@@ -778,7 +778,7 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // Single-shot: one tool call, then the output is handed straight back
         // to the orchestrator. Iris doesn't loop on follow-up calls — if the
         // one shot wasn't right, the orchestrator sends a fresh request.
-        // (byte merged in 2026-09-05; core-only redesign 2026-09-09 per Steve;
+        // (byte merged in 2026-09-05; core-only redesign 2026-09-09;
         // 2026-09-09 collapse: 41 flat schemas → 4 merged action tools —
         // alarm, task, calendar, email — one tool per noun, `action` selects
         // the operation. Iris's fine-tune is trained on exactly these four
