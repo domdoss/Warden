@@ -101,12 +101,13 @@ MEM_RECALL_FETCH = 24          # over-fetch — document dumps get dropped below
 
 MEM_SYSTEM = (
     "Role: you extract lasting facts about the user from their personal memory files.\n\n"
-    "Input: lines from memory files.\n\n"
+    "Input: lines from memory files — each line starts with its source file path.\n\n"
     "Rules:\n"
     "- A fact: people, family, routines, accounts, health, preferences, projects, environment\n"
     "- One short sentence per fact, plain text\n"
+    "- Source: the file path at the start of the line the fact came from, verbatim\n"
     "- Keep a fact only if it stays true over months\n"
-    'Output: ONLY the JSON {"facts": ["fact", ...]} — no other text.'
+    'Output: ONLY the JSON {"facts": [{"source": "path", "fact": "sentence"}, ...]} — no other text.'
 )
 # Plan-narrative the 8b keeps and a memory is not (verified against its
 # dry-run output: "will be built", "wants Mercury to run", "will rely on").
@@ -116,7 +117,11 @@ FUTURE_RE = re.compile(
 )
 MEM_FORMAT = {
     "type": "object",
-    "properties": {"facts": {"type": "array", "items": {"type": "string"}}},
+    "properties": {"facts": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"source": {"type": "string"}, "fact": {"type": "string"}},
+        "required": ["source", "fact"],
+    }}},
     "required": ["facts"],
 }
 
@@ -219,7 +224,18 @@ def _classify_chunk(chunk: list[str]) -> list[str]:
         s, e = content.find("{"), content.rfind("}")
         if s == -1 or e <= s:
             return []
-        return [str(f) for f in (json.loads(content[s:e + 1]).get("facts") or []) if str(f).strip()]
+        items = json.loads(content[s:e + 1]).get("facts") or []
+        # Each fact carries its source file path — the context reference the
+        # memory keeps in MARM: "(path) fact".
+        out = []
+        for f in items:
+            if not isinstance(f, dict):
+                continue
+            fact = str(f.get("fact") or "").strip()
+            src = str(f.get("source") or "").strip()
+            if fact:
+                out.append(f"({src}) {fact}" if src else fact)
+        return out
     except Exception as e:
         print(f"[steve] memory classify failed: {e}", file=sys.stderr)
         return []
