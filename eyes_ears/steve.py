@@ -637,7 +637,7 @@ def main() -> None:
     url = args.warden or warden_url_from_config() or DEFAULT_WARDEN
 
     app = SteveApp(url)
-    scr = webview.screens()[0]  # primary screen — park bottom-left, on top
+    scr = webview.screens[0]  # property, not a call — park bottom-left, on top
     webview.create_window(
         "Steve",
         os.path.join(HERE, "ui", "ptt.html"),
