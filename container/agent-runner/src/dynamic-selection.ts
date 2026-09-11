@@ -247,7 +247,7 @@ export function buildRelevantPatternsSection(keywords: string[], topK = 5): stri
         const lines = patterns.map((p) => `- ${p.name} — ${p.description || 'expert prompt pattern'}`);
         return `## RELEVANT PATTERNS
 
-The following expert prompt patterns may fit this request. If one of these expert patterns fits the task, call fabric_pattern(name) to load it and follow it. Also use them when DELEGATING: fold the loaded pattern's method into the {task} brief so the specialist works from the expert prompt (specialists cannot load patterns themselves — the brief is the only vehicle).
+The following expert prompt patterns may fit this request. Load one with fabric_pattern(name) and follow it — directly, or folded into a {task} brief when delegating (rule in DELEGATING).
 
 ${lines.join('\n')}
 
