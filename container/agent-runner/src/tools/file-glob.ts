@@ -15,8 +15,6 @@ registry.register({
     },
     handler: async (args, _context) => {
         try {
-            try { fs.writeFileSync('/workspace/ipc/status.json', JSON.stringify({ phase: 'tool', tool: 'Glob', label: `Searching: ${args.pattern}`, ts: Date.now() })); } catch {}
-            try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Glob', label: `Searching: ${args.pattern}`, ts: Date.now() }) + '\n'); } catch {}
             const globModule = await import('glob');
             const searchPath = args.path ? resolveUserPath(args.path) : process.cwd();
             const globFn = (globModule as any).glob || (globModule as any).default || globModule;

@@ -54,8 +54,6 @@ registry.register({
                     return `Error listing directory ${args.file_path}: ${err.message}`;
                 }
             }
-            try { fs.writeFileSync('/workspace/ipc/status.json', JSON.stringify({ phase: 'tool', tool: 'Read', label: `Reading: ${args.file_path}`, ts: Date.now() })); } catch {}
-            try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Read', label: `Reading: ${args.file_path}`, ts: Date.now() }) + '\n'); } catch {}
             const ext = path.extname(filePath).toLowerCase();
             const probe = Buffer.alloc(512);
             const fd = fs.openSync(filePath, 'r');
