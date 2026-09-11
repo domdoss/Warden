@@ -11,7 +11,7 @@ import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { spawnOculusBackground, syncAgentCtxEnv } from './index.js';
 import { parseRelativeDuration } from './task-scheduler.js';
-import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts } from './memory-tree.js';
+import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts, scanConfig, setScanConfig, requestScanAbort } from './memory-tree.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -4438,6 +4438,37 @@ export function startStatusServer(d: StatusDeps): void {
           .then((r) => logger.info(r, 'memory-tree: on-request classify run finished'))
           .catch((err) => logger.warn({ err }, 'memory-tree: on-request classify run failed'));
         return json(res, { ok: true, started: true });
+      }
+
+      // GET/POST /api/memory/scan-config — scan management for the galaxy's
+      // expand panel: which model classifies, whether the idle-gated auto-scan
+      // is paused, and the include/exclude dirs, files and patterns that shape
+      // what gets scanned. GET also reports whether a run is in flight; POST
+      // {stop:true} aborts a live run (it resumes from the cursor next time).
+      if (pathname === '/api/memory/scan-config') {
+        if (req.method === 'GET') {
+          return json(res, { ...scanConfig(), running: memoryTreeRunning() });
+        }
+        if (req.method === 'POST') {
+          try {
+            const body = parseJson(await parseBody(req, 64 * 1024)) as Record<string, unknown>;
+            if (body.stop) {
+              requestScanAbort();
+              return json(res, { ok: true, stopping: true });
+            }
+            const saved = setScanConfig({
+              model: body.model as string | undefined,
+              paused: body.paused as boolean | undefined,
+              includeDirs: body.includeDirs as string[] | undefined,
+              excludeDirs: body.excludeDirs as string[] | undefined,
+              excludeFiles: body.excludeFiles as string[] | undefined,
+              excludePatterns: body.excludePatterns as string[] | undefined,
+            });
+            return json(res, { ...saved, running: memoryTreeRunning() });
+          } catch (e: any) {
+            return error(res, 'bad scan config: ' + e.message);
+          }
+        }
       }
       if (pathname === '/api/search') return await handleSearch(res, params);
       if (pathname === '/api/activity') return handleActivity(res, params);
