@@ -25,8 +25,6 @@ registry.register({
             if (!fs.existsSync(filePath)) {
                 return `Error: File not found: ${args.file_path}`;
             }
-            try { fs.writeFileSync('/workspace/ipc/status.json', JSON.stringify({ phase: 'tool', tool: 'Edit', label: `Editing: ${args.file_path}`, ts: Date.now() })); } catch {}
-            try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Edit', label: `Editing: ${args.file_path}`, ts: Date.now() }) + '\n'); } catch {}
             const content = fs.readFileSync(filePath, 'utf-8');
             if (!content.includes(args.old_string)) {
                 return `Error: old_string not found in file. Make sure it matches exactly.`;

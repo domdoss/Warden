@@ -24,8 +24,6 @@ registry.register({
             return `Error: Cannot delete or clear .md files. Protected file: ${args.file_path}`;
         }
         try {
-            try { fs.writeFileSync('/workspace/ipc/status.json', JSON.stringify({ phase: 'tool', tool: 'Write', label: `Writing: ${args.file_path}`, ts: Date.now() })); } catch {}
-            try { fs.appendFileSync('/workspace/ipc/activity.log', JSON.stringify({ type: 'tool', name: 'Write', label: `Writing: ${args.file_path}`, ts: Date.now() }) + '\n'); } catch {}
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(filePath, args.content);
             // Report the RESOLVED absolute path — the orchestrator's digest
