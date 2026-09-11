@@ -12,9 +12,9 @@
     transition: filter .12s, transform .1s; }
   button:active { transform: scale(.97); }
 
-  /* Horizontal strip: red PUSH TO TALK on the left — one push starts the
-     conversation (back and forth until the stop sign or "that's all for
-     now") — and the yellow stop sign on the right stops everything. */
+  /* Horizontal strip: red TALK on the left — one click (or 3 taps on the
+     mic) starts the conversation, back and forth until the stop sign or
+     "that's all for now" — and the yellow stop sign stops everything. */
   #row { flex: 1; display: flex; gap: 12px; }
   #push { flex: .75; background: #d81b1b; color: #fff; font-size: 24px;
     line-height: 1.15; border-radius: 14px;
@@ -23,7 +23,7 @@
   #push.on { animation: breathe 1.6s infinite; }
   @keyframes breathe { 50% { filter: brightness(.72); } }
 
-  /* Big YELLOW OCTAGON stop sign — 25% bigger than the push pad, far right.
+  /* Big YELLOW OCTAGON stop sign — 25% bigger than the talk pad, far right.
      Dormant when idle; flashes hard the whole time a conversation runs. */
   #stop { flex: 1; background: #f5c400; color: #221800; font-size: 32px;
     border-radius: 16px;
@@ -46,7 +46,7 @@
 <body>
 <div class="wrap">
   <div id="row">
-    <button id="push">PUSH TO TALK</button>
+    <button id="push">TALK</button>
     <button id="stop">STOP</button>
   </div>
   <div id="space"></div>

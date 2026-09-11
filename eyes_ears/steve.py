@@ -5,16 +5,18 @@ Completely independent of the main voice app: no control server, no shared
 process, no bridge to the main UI. This process owns its own mic (VAD
 record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
 
-- Horizontal strip, bottom-left, always on top: red PUSH TO TALK on the
-  left (25% the stop sign's size), big yellow STOP SIGN on the right,
-  thin status line under the row.
-- PUSH TO TALK starts the conversation: record until silence → transcribe
-  → POST to Warden /api/messages as a plain message with the Steve prompt
-  block and the remembered facts prepended — Warden itself has no Steve
-  code, everything Steve-specific lives in this app → poll for the reply →
-  speak it → listen again. Back and forth until the stop sign is pressed
-  (stops everything — recording, waiting, or speaking; voice out) or he
-  says "that's all for now". The stop sign flashes the whole time it runs.
+- Horizontal strip, bottom-left, always on top: red TALK on the left
+  (25% the stop sign's size), big yellow STOP SIGN on the right, thin
+  status line under the row.
+- TALK — one click, or 3 taps on the mic — starts the conversation:
+  record until silence → transcribe → POST to Warden /api/messages as a
+  plain message with the Steve prompt block and the remembered facts
+  prepended (wrapped in a <!--hidden--> block: the orchestrator reads it,
+  the chat view never shows it — only his spoken words appear) → poll for
+  the reply → speak it → listen again. Back and forth until the stop sign
+  is pressed (stops everything — recording, waiting, or speaking; voice
+  out) or he says "that's all for now". The stop sign flashes the whole
+  time it runs.
 - Audible cues for a blind user: short high beep when listening starts,
   low beep when the turn finishes, long buzz if it failed.
 
@@ -59,6 +61,7 @@ from ears.audio import (  # noqa: E402
     BeepGenerator,
     find_device,
 )
+from ears.clap import ClapDetector  # noqa: E402
 from ears.stt import STT  # noqa: E402
 from ears.tts import TTS  # noqa: E402
 
@@ -429,6 +432,15 @@ class SteveApp:
         self._lock = threading.Lock()
         self._worker = None  # live turn thread, None when idle
         self._stop = threading.Event()
+        # 3 taps on the mic wake the conversation — same as the TALK button.
+        # Paused while a conversation runs (the recorder owns the mic then).
+        self.claps = ClapDetector(
+            on_double_clap=lambda: self.voice_start(),
+            can_fire=lambda: self._worker is None,
+            input_device=in_dev,
+            taps=3,
+        )
+        self.claps.start()
         self._note = ""  # status-strip text while the startup scan runs
         threading.Thread(
             target=memory_startup_check,
@@ -468,12 +480,16 @@ class SteveApp:
     def _send(self, text: str) -> str:
         """POST the turn as a plain owner message — the prompt block and what
         MARM recalls about him ride in the message text, so Warden needs no
-        Steve handling. Returns the stored message id (an opaque string)."""
-        parts = [STEVE_PROMPT]
+        Steve handling. The block is wrapped in <!--hidden--> markers: the
+        orchestrator reads the full text, the chat view strips the block and
+        shows only his spoken words. Returns the stored message id (an
+        opaque string)."""
+        parts = ["<!--hidden-->", STEVE_PROMPT]
         about = marm_recall_about(text)
         if about:
             parts.append("ABOUT THE USER — what you remember about him:\n" + about)
-        parts.append("He says: " + text)
+        parts.append("He says:\n<!--/hidden-->")
+        parts.append(text)
         resp = self._http("POST", "/api/messages", {"text": "\n\n".join(parts)})
         return str(resp.get("id") or "")
 
@@ -505,6 +521,7 @@ class SteveApp:
         until the stop sign is pressed or he says 'that's all for now'."""
         failed = False
         try:
+            self.claps.pause()  # recorder owns the mic for the whole loop
             while not self._stop.is_set():
                 self.player.play_bytes(self.beeps.start_beep())
                 wav = self.recorder.record_until_silence()
@@ -534,6 +551,7 @@ class SteveApp:
             print(f"[steve] voice mode failed: {e}", file=sys.stderr)
         finally:
             self._finish_turn(failed)
+            self.claps.resume()
 
     def _finish_turn(self, failed: bool) -> None:
         try:
