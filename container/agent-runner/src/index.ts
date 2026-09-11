@@ -2112,7 +2112,7 @@ async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolC
         ],
         stream: false,
         keep_alive: WATCHDOG_KEEP_ALIVE_S,
-        options: { temperature: 0, num_predict: 512 },
+        options: { temperature: 0, num_predict: 512, ...qwenSampling(model) },
     };
     if (isLocal) body.format = WATCHDOG_FORMAT;
 
@@ -2368,7 +2368,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
         ],
         stream: false,
         keep_alive: WATCHDOG_KEEP_ALIVE_S,
-        options: { temperature: 0, num_predict: 512 },
+        options: { temperature: 0, num_predict: 512, ...qwenSampling(model) },
     };
     if (isLocal) body.format = COMPLETION_VERDICT_FORMAT;
 
@@ -2499,6 +2499,17 @@ function ensureWatchdogTicker(toolContext: any): void {
 const ALWAYS_THINK_MODEL_RE = /^kimi/i;
 function modelRequiresThink(model: string): boolean {
     return ALWAYS_THINK_MODEL_RE.test(model || '');
+}
+
+// Qwen-documented sampling (Qwen3.5 model card): any qwen model gets these;
+// everything else keeps its own settings. Spread AFTER the existing options
+// so qwen's numbers win; num_ctx is never touched — that knob is the user's.
+// Thinking row where think:true, non-thinking (instruct) row otherwise.
+function qwenSampling(model: string, thinking = false): Record<string, number> {
+    if (!/^qwen/i.test(String(model || ''))) return {};
+    return thinking
+        ? { temperature: 1.0, top_p: 0.95, top_k: 20, presence_penalty: 1.5 }
+        : { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5 };
 }
 
 // Per-model native context window, fetched once from Ollama /api/show and
@@ -3124,11 +3135,12 @@ async function runSubAgent(
             const trimmed = trimMessagesToBudget(messages, subAgentMsgBudgetChars(model, ctxOverride, sysChars, toolChars));
             if (trimmed.length !== messages.length) messages.length = 0, messages.push(...trimmed);
             resetSilence();
+            const subThink = ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model);
             const chatResult = await provider.chatStream({
                 model,
                 messages,
                 tools,
-                options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride) },
+                options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride), ...qwenSampling(model, subThink) },
                 keep_alive: subAgentKeepAlive(agentName),
                 // First iteration lets atlas/vulkan think/plan before acting — a
                 // planning step up front stops it diving into a read-edit-read-edit
@@ -3136,7 +3148,7 @@ async function runSubAgent(
                 // file a single time). Later iterations keep think off to preserve
                 // context for the visible answer. kimi and other leak-when-disabled
                 // models keep think on every request.
-                think: ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model),
+                think: subThink,
                 ...(format !== undefined ? { format } : {}),
                 signal: silenceController.signal,
             }, onChunk);
@@ -4191,6 +4203,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     // producing "Empty response." on every turn.
                     requestBody.think = false;
                 }
+                Object.assign(requestBody.options, qwenSampling(model, !!requestBody.think));
                 // AbortController lets the silence timer hard-abort a hung fetch —
                 // reader.cancel() alone doesn't interrupt a low-level TCP read on
                 // a cloud-proxied socket, so a stuck stream would otherwise hang
@@ -4707,7 +4720,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 ],
                                 stream: false,
                                 keep_alive: -1,
-                                options: { num_predict: 1024, temperature: 0.2, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
+                                options: { num_predict: 1024, temperature: 0.2, num_ctx: getNumCtx(model, orchestratorCtxOverride()), ...qwenSampling(model) },
                             }),
                         });
                         if (verifierResp.ok) {
@@ -4759,6 +4772,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                             } else {
                                 retryBody.think = false;
                             }
+                            Object.assign(retryBody.options, qwenSampling(model, !!retryBody.think));
                             const retryController = new AbortController();
                             const retryResp = await fetch(CHAT_URL, {
                                 method: 'POST',
@@ -4889,6 +4903,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
                 if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
+                Object.assign(forcedBody.options, qwenSampling(model, !!forcedBody.think));
                 const forcedController = new AbortController();
                 const forcedResp = await fetch(CHAT_URL, {
                     method: 'POST',
@@ -5162,7 +5177,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 messages: ptMessages,
                                 stream: false,
                                 keep_alive: keepAliveEnv('ATLAS_KEEP_ALIVE', -1),
-                                options: { num_predict: 1024, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL, process.env.ATLAS_NUM_CTX || '') },
+                                options: { num_predict: 8192, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL, process.env.ATLAS_NUM_CTX || ''), ...qwenSampling(ATLAS_MODEL) },
                             }),
                         });
                         if (resp.ok) {
