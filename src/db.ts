@@ -803,12 +803,12 @@ export function getMessagesSince(
   // body.idea from a channel) stay excluded, matching getMessagesForDashboard.
   const ideaFilter = idea !== undefined && idea !== ''
     ? `AND idea = ?`
-    : `AND (idea = '' OR idea IS NULL OR idea = 'scheduled')`;
+    : `AND (idea = '' OR idea IS NULL OR idea = 'scheduled' OR idea = 'steve')`;
   const jids = [OWNER_JID];
   const placeholders = jids.map(() => '?').join(',');
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, idea
       FROM messages
       WHERE chat_jid IN (${placeholders}) AND timestamp > ?
         AND (
@@ -840,7 +840,7 @@ export function getMessagesForDashboard(
   const placeholders = jids.map(() => '?').join(',');
   const ideaFilter = idea !== undefined && idea !== ''
     ? `AND idea = ?`
-    : `AND (idea = '' OR idea IS NULL)`;
+    : `AND (idea = '' OR idea IS NULL OR idea = 'steve')`;
   const sql = `
     SELECT * FROM (
       SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message

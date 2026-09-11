@@ -160,12 +160,18 @@ class WardenClient:
         jid: str,
         sender_name: Optional[str] = None,
         model: Optional[str] = None,
+        idea: Optional[str] = None,
     ) -> dict:
         body = {"text": text, "jid": jid}
         if sender_name:
             body["sender_name"] = sender_name
         if model:
             body["model"] = model
+        if idea:
+            # Per-message scope tag (e.g. "steve" for the Steve-mode PTT panel).
+            # Warden stores it on the message; the orchestrator's pickup reads it
+            # to inject per-mode instructions into the prompt.
+            body["idea"] = idea
         resp = await self._request("POST", "/api/messages", json=body)
         resp.raise_for_status()
         return self._json(resp)
