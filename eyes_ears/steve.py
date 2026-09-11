@@ -213,11 +213,11 @@ def _classify_chunk(chunk: list[str]) -> list[str]:
         return []
 
 
-def _marm_call(session, name: str, args: dict) -> dict | None:
+def _marm_call(session, name: str, args: dict, timeout: int = 10) -> dict | None:
     r, _ = _marm_rpc(session, {
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": name, "arguments": args},
-    })
+    }, timeout=timeout)
     if not r or not r.get("result"):
         return None
     blocks = [c.get("text") for c in (r["result"].get("content") or []) if isinstance(c, dict)]
@@ -251,10 +251,11 @@ def marm_connect():
 
 def marm_recall_about(text: str) -> str:
     """What MARM remembers that's relevant to what he just said — the
-    paste-ready context block straight from smart recall."""
+    paste-ready context block straight from smart recall. Generous timeout:
+    during a scan the filing loop shares MARM, and this just waits its turn."""
     r = _marm_call(marm_connect(), "marm_smart_recall", {
         "query": text, "search_all": True, "limit": MEM_RECALL_LIMIT, "detail": 1,
-    })
+    }, timeout=60)
     return str((r or {}).get("context_summary") or "").strip()
 
 
@@ -268,11 +269,11 @@ def marm_file_new(facts: list[str]) -> int:
         r = _marm_call(session, "marm_smart_recall", {
             "query": f, "search_all": True, "limit": 1, "detail": 3,
             "exact_mode": "exact",  # FTS lane: verbatim presence, no query embedding
-        })
+        }, timeout=60)
         top = ((r or {}).get("results") or [{}])[0]
         if str(top.get("content") or "").strip() == f:
             continue
-        _marm_call(session, "marm_log_entry", {"entry": f})
+        _marm_call(session, "marm_log_entry", {"entry": f}, timeout=60)
         filed += 1
     return filed
 
