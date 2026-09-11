@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Memory Galaxy — Concept Constellation</title>
+<title>Memory Galaxy — The Brain</title>
 <style>
   :root {
     --glass: rgba(8, 12, 28, 0.62);
@@ -84,7 +84,7 @@
   <div id="scene"></div>
 
   <div class="panel search">
-    <input id="search" type="text" placeholder="Search concepts…" autocomplete="off" />
+    <input id="search" type="text" placeholder="Search the brain…" autocomplete="off" />
     <div id="results"></div>
   </div>
 
@@ -92,12 +92,12 @@
     <button class="close-btn" id="closePanel" title="Close">×</button>
     <h2 id="npName"></h2>
     <div class="mini" id="npMini"></div>
-    <h3>Top connections</h3>
+    <h3>Branches</h3>
     <div id="npConns"></div>
     <div class="np-open" id="npOpen" title="Open full details in a separate window">⧉ Open in window</div>
   </div>
 
-  <div class="panel hint" id="hint">Drift the galaxy — hover to trace · click to focus · search to fly</div>
+  <div class="panel hint" id="hint">Drift the brain — hover to trace a branch · click a star to recall its memories · search to fly</div>
   <script>
     // The hint is only useful for the first look — fade it out after 10s.
     setTimeout(() => {
@@ -203,36 +203,17 @@
       return;
     }
 
-    // ---------- Demo dataset ----------
-    const CONCEPTS = [
-      "Neural Networks","Deep Learning","Transformers","Attention","Embeddings","Latent Space",
-      "Memory","Context","Retrieval","Augmented Generation","Knowledge Graphs","Ontologies",
-      "Agents","Tool Use","Reasoning","Planning","World Models","Reinforcement Learning",
-      "Recommender Systems","Recommendations","Forecasting","Time Series","Anomaly Detection",
-      "Clustering","Classification","Regression","Generative AI","Diffusion Models","Vision",
-      "Speech","Multimodal","Fine-tuning","RLHF","Alignment","Safety","Interpretability",
-      "Sparse Models","MoE","Quantization","Inference","Serving","Edge Devices","Batching",
-      "Distributed Training","Gradient","Optimizers","Regularization","Batch Norm","Dropout",
-      "Loss Function","Backpropagation","Convolution","Pooling","Pooling2D","Sequence Models",
-      "RNN","LSTM","GRU","Cyclical Data","Seasonality","Trend","Decomposition","Smoothing",
-      "Kalman Filter","Particle Filter","State Estimation","Control Systems","Feedback",
-      "Optimization","Combinatorics","Search","Scheduling","Routing","Logistics","Supply Chain",
-      "Inventory","Demand","Pricing","Bidding","Auctions","Game Theory","Nash Equilibrium",
-      "Bandits","Exploration","Exploitation","Regret","Multi-armed","Reward Shaping",
-      "Curiosity","Intrinsic Motivation","Goal Setting","Curriculum Learning","Self Play",
-      "Alpha Zero","Monte Carlo","Tree Search","Rollout","Simulation","Physics Engines",
-      "Robotics","Locomotion","Grasping","Manipulation","Perception","SLAM","Mapping",
-      "Localization","Odometry","Sensors","LiDAR","Radar","Cameras","Calibration","Depth",
-      "Segmentation","Detection","Tracking","Pose Estimation","Skeletal","Motion Capture",
-      "Human Motion","Gait","Biomechanics","Physiology","Cognition","Perception-Cognition",
-      "Memory Consolidation","Sleep","Dreaming","Synaptic Plasticity","Hebbian Learning",
-      "STDP","Dendrites","Axons","Neurotransmitters","Dopamine","Serotonin","Neuromodulation",
-      "Cortical Layers","Hippocampus","Prefrontal","Amygdala","Thalamus","Cerebellum",
-      "Spinal Cord","Reflexes","Proprioception","Vestibular","Balance","Coordination",
-      "Motor Learning","Skill Acquisition","Transfer Learning","Meta Learning","Few-shot",
-      "Zero-shot","In-context Learning","Prompting","Chain of Thought","Tree of Thought",
-      "Graph of Thought","ReAct","Reflexion","Self-critique","Planning Horizon","Lookahead"
-    ];
+    // ---------- The brain: taxonomy + fact index ----------
+    // The STRUCTURE comes from Warden (data/memory-tree.json, served at
+    // :3200/api/memory-tree) — a knowledge tree of the user and the machine,
+    // user-side weighted (routines, family, people, projects, preferences
+    // are the point of the system). The DETAILS come from the same call:
+    // the memory-tree log classifier files durable facts as
+    // "memory tree — <path>: <fact>" and records each one in Warden's
+    // memory_tree_facts index at file time, so every star lights from ONE
+    // request — no per-node MARM probing, no rate limits, no semantic
+    // misses. The classifier files new facts → the activity ring flares
+    // → the page re-fetches the index (debounced) and counts update.
 
     // Deterministic RNG
     let seed = 1337;
@@ -266,380 +247,159 @@
       return l;
     }
 
-    function demoGraph() {
-      const labels = CONCEPTS;
-      const n = labels.length;
-      const edgeSet = new Set();
-      const adj = Array.from({length: n}, () => []);
-      function edgeKey(a,b){ return a < b ? a + "-" + b : b + "-" + a; }
-      for (let i = 0; i < n; i++) {
-        const deg = 2 + Math.floor(rnd() * 3);
-        for (let k = 0; k < deg; k++) {
-          let j;
-          if (rnd() < 0.6) {
-            const offset = 1 + Math.floor(rnd() * 8);
-            j = (i + (rnd() < 0.5 ? offset : -offset) + n) % n;
-          } else {
-            j = Math.floor(rnd() * n);
-          }
-          if (j === i) continue;
-          const kk = edgeKey(i, j);
-          if (edgeSet.has(kk)) continue;
-          edgeSet.add(kk);
-          const weight = 0.15 + rnd() * 0.85;
-          adj[i].push({ j, weight });
-          adj[j].push({ j: i, weight });
-        }
+    // Taxonomy fetch. Embedded in the Qt WebEngine voice window, fetch()
+    // from a file:// iframe to :3200 is blocked — route through the host's
+    // warden_api proxy (jarvis_window.py, via the panels.html postMessage
+    // bridge; returns the raw response body string, '' on error).
+    // Standalone (normal browser) it's a direct fetch — status-server sends
+    // Access-Control-Allow-Origin: *.
+    const WARDEN_BASE = 'http://127.0.0.1:3200';
+    async function fetchTaxonomy() {
+      let text = '';
+      if (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.warden_api === 'function') {
+        text = await window.pywebview.api.warden_api('/api/memory-tree', 'GET', '');
+      } else {
+        const r = await fetch(WARDEN_BASE + '/api/memory-tree');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        text = await r.text();
       }
-      const mentions = adj.map((_, i) =>
-        Math.round(20 + adj[i].length * (30 + rnd() * 80) + rnd() * 200));
-      return { labels, mentions, adj };
+      const data = JSON.parse(text);
+      if (!data || !Array.isArray(data.roots) || !data.roots.length) {
+        throw new Error('taxonomy has no roots');
+      }
+      return data;  // { roots, facts }
     }
 
-    // Live feed from MARM (falls back to demo).
-    // MARM is a FastAPI MCP server — JSON-RPC over HTTP at /mcp:
-    //   initialize (yields an Mcp-Session-Id response header)
-    //   → tools/call marm_concept_recall / marm_smart_recall
-    // The concept graph (entities + relationships extracted from stored
-    // memories) is queried with a few broad probes, then one probe per
-    // discovered entity name. Edges are reconstructed only from facts the
-    // API actually walked: direct neighbours of single-label matches and
-    // consecutive nodes on traversal paths.
-    const MARM_BASE = 'http://127.0.0.1:8001';
-    const MARM_TIMEOUT_MS = 8000;
-
-    const mcp = {
-      session: null,
-      nextId: 1,
-      // MARM rate-limits (80 req/min). The old code burst probes in parallel
-      // (Promise.all batches of 8) and tripped 429 storms through the Python
-      // proxy. Serialize every RPC with spacing instead; stretch the gap
-      // whenever a 429 comes back so the client cools down instead of
-      // hammering.
-      rpcChain: null,
-      rpcGapMs: 750,
-      lastRpcAt: 0,
-      rpc(method, params, opts) {
-        if (!this.rpcChain) this.rpcChain = Promise.resolve();
-        const call = () => {
-          const wait = Math.max(0, this.lastRpcAt + this.rpcGapMs - Date.now());
-          return new Promise(res => setTimeout(res, wait)).then(() => {
-            this.lastRpcAt = Date.now();
-            return this._rpcRaw(method, params, opts).catch(err => {
-              if (/\b429\b/.test(String(err && err.message))) {
-                this.rpcGapMs = Math.min(4000, Math.round(this.rpcGapMs * 1.5));
-              }
-              throw err;
-            });
-          });
-        };
-        const next = this.rpcChain.then(call, call);
-        this.rpcChain = next.catch(() => {});
-        return next;
-      },
-      async _rpcRaw(method, params, opts) {
-        const msg = { jsonrpc: '2.0', method, params };
-        if (!(opts && opts.notify)) msg.id = this.nextId++;
-        // Embedded in the Qt WebEngine voice window: fetch() from a file://
-        // iframe to 127.0.0.1:8001 is blocked, so route through the host's
-        // marm_api proxy (jarvis_window.py, reached via the panels.html
-        // postMessage bridge). The proxy returns the envelope
-        // {"ok","status","headers","body"} — the MCP client needs the
-        // mcp-session-id response header for session continuity, so it
-        // can't use the bare warden_api-style body-only proxy.
-        if (window.pywebview && window.pywebview.api &&
-            typeof window.pywebview.api.marm_api === 'function') {
-          const raw = await window.pywebview.api.marm_api(
-            '/mcp', JSON.stringify(msg), this.session || '');
-          const env = JSON.parse(raw);
-          if (!env || !env.ok) throw new Error('MARM proxy: ' + ((env && env.error) || 'unreachable'));
-          if (env.status !== 200 && env.status !== 202) throw new Error('MARM /mcp HTTP ' + env.status);
-          const sid = env.headers && env.headers['mcp-session-id'];
-          if (sid) this.session = sid;
-          const body = env.body ? JSON.parse(env.body) : null;  // notifications: 202 + empty body
-          if (body && body.error) throw new Error('MCP ' + method + ': ' + (body.error.message || 'rpc error'));
-          return body ? body.result : null;
-        }
-        // Standalone browser — direct fetch.
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), MARM_TIMEOUT_MS);
-        try {
-          const headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream'
-          };
-          if (this.session) headers['mcp-session-id'] = this.session;
-          const r = await fetch(MARM_BASE + '/mcp', {
-            method: 'POST', headers,
-            body: JSON.stringify(msg), signal: ctrl.signal
-          });
-          if (!r.ok) throw new Error('MARM /mcp HTTP ' + r.status);
-          const sid = r.headers.get('mcp-session-id');
-          if (sid) this.session = sid;
-          const text = await r.text();      // notifications return 202 + empty body
-          const body = text ? JSON.parse(text) : null;
-          if (body && body.error) throw new Error('MCP ' + method + ': ' + (body.error.message || 'rpc error'));
-          return body ? body.result : null;
-        } finally { clearTimeout(timer); }
-      },
-      async connect() {
-        await this.rpc('initialize', {
-          protocolVersion: '2025-03-26', capabilities: {},
-          clientInfo: { name: 'memory-galaxy', version: '1.0' }
+    // Flatten the taxonomy into render nodes: every node carries its full
+    // path ("User > Preferences > Desktop"), its MARM recall query (defaults
+    // to the path), its parent, its depth and its root index (branch color).
+    function buildTree(roots) {
+      const out = [];
+      const walk = (nd, parentIdx, depth, prefix, rootIdx) => {
+        const p = prefix ? prefix + ' > ' + nd.n : nd.n;
+        const idx = out.length;
+        out.push({
+          id: idx, label: nd.n, path: p, query: nd.q || p,
+          parent: parentIdx, depth, rootIdx,
+          children: [], mention_count: 0, memories: null
         });
-        try { await this.rpc('notifications/initialized', {}, { notify: true }); }
-        catch (e) { /* courtesy notification only */ }
-      },
-      async tool(name, args) {
-        const result = await this.rpc('tools/call', { name, arguments: args });
-        if (!result) throw new Error(name + ': empty result');
-        if (result.isError) throw new Error(name + ' returned an error');
-        const text = (result.content || []).map(c => c && c.text).filter(Boolean).join('\n');
-        if (!text) throw new Error(name + ': no content');
-        return JSON.parse(text);
-      },
-      async conceptRecall(query) {
-        const attempt = () => this.tool('marm_concept_recall', {
-          query, limit: 40, depth: 2, direction: 'both'
-        });
-        let recall;
-        try {
-          recall = await attempt();
-        } catch (e) {
-          // One gentle retry — a 429 here means the paced queue's gap is
-          // still too tight; the rpc() cool-down stretches it for next time.
-          await new Promise(res => setTimeout(res, 3000));
-          recall = await attempt();
-        }
-        return (recall && recall.status === 'available') ? recall : null;
-      }
-    };
-
-    async function marmGraph() {
-      await mcp.connect();
-
-      const nodeInfo = new Map();     // label -> { type }
-      const entMentions = new Map();  // entity id -> { label, mentions } (ids are stable)
-      const edgeObs = new Map();       // "ab" -> observation count
-      const MAX_NODES = 96;
-      const MAX_PROBES = 48;
-      const deadline = Date.now() + 20000;
-
-      // MARM's concept extractor keeps HTML entities from the source text
-      // (&quot;, &amp;, …), which then render literally in node labels and
-      // the detail popup. Unescape them here so every label is clean text
-      // (&amp; LAST so it can't double-decode into a fresh entity).
-      const norm = s => prettyLabel(String(s == null ? '' : s)
-        .replace(/&quot;|&ldquo;|&rdquo;/g, '"')
-        .replace(/&apos;|&lsquo;|&rsquo;/g, "'")
-        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-        .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
-        // NER noun phrases come article-led ("the 2.4GHz band"); a node
-        // title reads better without the leading article.
-        .replace(/^(the|a|an)\s+/i, ''));
-      function addNode(label, type) {
-        // Structural floor only — junk filtering lives in MARM's ingest gate.
-        // A label with no letters is never a concept ("700", "2026-09-08").
-        if (!label || !/[a-z]/i.test(label)) return;
-        const info = nodeInfo.get(label) || { type: type || null };
-        if (type) info.type = type;
-        nodeInfo.set(label, info);
-      }
-      function addEdge(a, b) {
-        if (!a || !b || a === b) return;
-        const key = a < b ? a + '' + b : b + '' + a;
-        edgeObs.set(key, (edgeObs.get(key) || 0) + 1);
-      }
-      function absorbRecall(recall) {
-        if (!recall) return;
-        const ents = recall.entities || [];
-        const rels = recall.related_entities || [];
-        const seedLabels = new Set();
-        ents.forEach(en => {
-          const label = norm(en && en.name);
-          if (!label) return;
-          addNode(label, en.type);
-          if (en.id != null) entMentions.set(en.id, {
-            label,
-            mentions: Math.max(0, Math.round(Number(en.mention_count) || 0))
-          });
-          seedLabels.add(label);
-        });
-        // marm_concept_recall seeds a LIKE '%query%' match: hop-1 neighbours
-        // only attribute cleanly when every matched seed bears one label.
-        const singleSeed = seedLabels.size === 1 ? [...seedLabels][0] : null;
-        rels.forEach(it => {
-          const path = (Array.isArray(it && it.path) ? it.path : [])
-            .map(p => norm(p && p.name)).filter(Boolean);
-          for (let i = 0; i + 1 < path.length; i++) addEdge(path[i], path[i + 1]);
-          const label = norm(it && it.name);
-          if (!label) return;
-          addNode(label, it.type);
-          if (singleSeed && path.length) addEdge(singleSeed, path[0]);
-        });
-      }
-
-      // Phase 1 — discovery: broad letter probes (entity names rarely avoid
-      // every common character) plus a semantic sweep whose graph context is
-      // seeded from the matched memories. Names that dodge both still surface
-      // as neighbours of what did match and get their own probe in phase 2.
-      const letters = ['a', 'e', 'i', 'o', 'n', 'r'];
-      const found = await Promise.all(
-        letters.map(q => mcp.conceptRecall(q).catch(() => null))
-      );
-      found.forEach(absorbRecall);
-      try {
-        const smart = await mcp.tool('marm_smart_recall', {
-          query: 'memory', search_all: true, limit: 20, detail: 1
-        });
-        const gc = smart && smart.graph_context;
-        if (gc && gc.status === 'available') absorbRecall(gc);
-      } catch (e) { /* semantic sweep is a bonus source */ }
-
-      // Phase 2 — one probe per discovered label for clean edges + counts.
-      // Probe the most connected labels first so a probe-budget cut still
-      // covers the graph's hubs.
-      const edgeCount = new Map();
-      edgeObs.forEach((count, key) => {
-        const sep = key.indexOf('');
-        const a = key.slice(0, sep), b = key.slice(sep + 1);
-        edgeCount.set(a, (edgeCount.get(a) || 0) + 1);
-        edgeCount.set(b, (edgeCount.get(b) || 0) + 1);
-      });
-      const names = [...nodeInfo.keys()]
-        .sort((a, b) => (edgeCount.get(b) || 0) - (edgeCount.get(a) || 0))
-        .slice(0, MAX_PROBES);
-      for (let i = 0; i < names.length; i += 8) {
-        if (Date.now() > deadline) break;
-        const batch = names.slice(i, i + 8);
-        const results = await Promise.all(
-          batch.map(q => mcp.conceptRecall(q).catch(() => null))
-        );
-        results.forEach(absorbRecall);
-      }
-
-      // Assemble the visual graph.
-      const labels = [...nodeInfo.keys()].slice(0, MAX_NODES);
-      if (labels.length < 2) throw new Error('MARM concept graph has no nodes');
-      const idx = new Map(labels.map((l, i) => [l, i]));
-      const mentionByLabel = new Map();
-      entMentions.forEach(m => {
-        mentionByLabel.set(m.label, (mentionByLabel.get(m.label) || 0) + m.mentions);
-      });
-      const mentions = labels.map(l => Math.max(0, mentionByLabel.get(l) | 0));
-      const adj = labels.map(() => []);
-      edgeObs.forEach((count, key) => {
-        const sep = key.indexOf('');
-        const a = idx.get(key.slice(0, sep));
-        const b = idx.get(key.slice(sep + 1));
-        if (a == null || b == null) return;
-        const w = Math.min(1, 0.4 + 0.12 * Math.max(0, count - 1));
-        adj[a].push({ j: b, weight: w });
-        adj[b].push({ j: a, weight: w });
-      });
-      console.info('[galaxy] MARM live data — ' + labels.length + ' concepts, ' +
-        adj.reduce((s, l) => s + l.length, 0) / 2 + ' relationships');
-      return { labels, mentions, adj };
+        if (parentIdx != null) out[parentIdx].children.push(idx);
+        (nd.c || []).forEach(ch => walk(ch, idx, depth + 1, p, rootIdx));
+      };
+      roots.forEach((r, ri) => walk(r, null, 0, '', ri));
+      return out;
     }
 
-    let graph, galaxySource = 'demo';
-    // Local page, local data — no cache, ever. The graph is built live from
-    // MARM on every load (~40s of paced probes); if MARM is unreachable the
-    // demo sky renders instead.
+    // Distribute the server's fact index over the tree. A fact filed at a
+    // path belongs to its exact node and rolls up every ancestor — a root
+    // always reads as the sum of its branch. Pure data, no painting, so it
+    // can run at boot before the star geometry exists.
+    function distributeFacts(facts) {
+      const byPath = new Map();
+      for (let i = 0; i < NU; i++) byPath.set(nodes[i].path, i);
+      for (let i = 0; i < NU; i++) { nodes[i].memories = []; nodes[i].mention_count = 0; }
+      for (const f of facts) {
+        const idx = byPath.get(String(f.path || ''));
+        if (idx == null) continue;  // path no longer in the taxonomy
+        const m = { fact: f.fact, ts: f.ts, path: f.path };
+        for (let i = idx; i != null; i = nodes[i].parent) {
+          const nd = nodes[i];
+          if (nd.memories.length < 12) nd.memories.push(m);
+          nd.mention_count++;
+        }
+      }
+    }
+
+    // ---------- Build the brain from the taxonomy ----------
+    // No demo fallback — the tree IS the map. If Warden is unreachable the
+    // page can't render anything meaningful anyway.
+    let nodes;
+    let bootFacts = [];
     try {
-      graph = await marmGraph(); galaxySource = 'marm';
+      const tax = await fetchTaxonomy();
+      nodes = buildTree(tax.roots);
+      bootFacts = Array.isArray(tax.facts) ? tax.facts : [];
     } catch (e) {
-      console.info('[galaxy] MARM unavailable (' + (e && e.message || e) + ') — using demo data');
-      graph = demoGraph();
+      var bel = document.getElementById('bootError');
+      bel.style.display = 'block';
+      bel.textContent = 'Memory tree unavailable.\n\n' + (e && e.message || e) +
+        '\n\nWarden serves the taxonomy at http://127.0.0.1:3200/api/memory-tree' +
+        ' — check warden.service.';
+      return;
     }
-    // Debug handle (matches the window.memoryMap convention below).
-    window.__galaxyGraph = { source: galaxySource, labels: graph.labels, mentions: graph.mentions };
 
-    const N = graph.labels.length;
-    const adj = graph.adj;
-
-    // Central nucleus
-    const NU = N;
-    adj.push([]);
-    const spokes = Array.from({ length: N }, (_, i) => i)
-      .sort((a, b) => adj[b].length - adj[a].length)
-      .slice(0, 14);
-    spokes.forEach((t) => {
-      const weight = 0.85 + rnd() * 0.15;
-      adj[t].push({ j: NU, weight });
-      adj[NU].push({ j: t, weight });
+    // The nucleus: the center of the brain. Every root branches off it.
+    const NU = nodes.length;
+    nodes.push({
+      id: NU, label: 'Memory Nucleus', path: '', query: '',
+      parent: null, depth: -1, rootIdx: -1,
+      children: [], mention_count: 4096, memories: null
     });
+    nodes[NU].children = nodes.filter(n => n.depth === 0).map(n => n.id);
+    distributeFacts(bootFacts);
 
-    const nodes = graph.labels.map((label, i) => ({
-      id: i, label: prettyLabel(label),
-      degree: adj[i].length,
-      mention_count: graph.mentions[i]
-    }));
-    nodes.push({ id: NU, label: "Memory Nucleus", degree: spokes.length, mention_count: 4096 });
-
-    // ---------- Dormant slots ----------
-    // The map opens DENSE: unformed node slots are sprinkled across every
-    // topic cluster, so the galaxy reads as a living system at any memory
-    // size instead of a thin sprinkle in a void. When MARM learns a new
-    // concept, a dormant slot lights up into a real star right where it
-    // sits (then glides into its topic cluster on the next shuffle); a
-    // concept that vanishes demotes its star back to dormant. applyGraph()
-    // below claims and frees these slots.
-    const MIN_TOTAL = 96;        // live + dormant floor at boot
-    const GROWTH_HEADROOM = 24;  // spare slots kept free above the floor
-    const nDorm = Math.max(GROWTH_HEADROOM, MIN_TOTAL - nodes.length);
-    for (let d = 0; d < nDorm; d++) {
-      adj.push([]);
-      nodes.push({ id: nodes.length, label: '', degree: 0, mention_count: 0, dormant: true });
-    }
-
-    // Topic anchors — Fibonacci-sphere directions so the little groups stay
-    // evenly spaced in ALL directions (no shared axes, no crowded ecliptic),
-    // and close to the nucleus so the whole volume reads as one dense galaxy
-    // instead of a mostly-empty shell with distant sprinkle.
-    const TOPIC_ANCHORS = (() => {
-      const M = 8, ga = Math.PI * (3 - Math.sqrt(5));
-      const anchors = [];
-      for (let k = 0; k < M; k++) {
-        const y = 1 - (2 * k + 1) / M;
-        const r = Math.sqrt(Math.max(0, 1 - y * y));
-        const th = ga * k;
-        anchors.push(new THREE.Vector3(Math.cos(th) * r, y, Math.sin(th) * r)
-          .normalize().multiplyScalar(k % 2 ? 54 : 48));
+    // Edges: parent→child streams + root→nucleus spokes. adj[][] drives the
+    // edge rendering, hover highlighting and the branch lists.
+    const adj = nodes.map(() => []);
+    nodes.forEach((n, i) => {
+      if (n.parent != null) {
+        adj[n.parent].push({ j: i, weight: 0.6 });
+        adj[i].push({ j: n.parent, weight: 0.6 });
       }
-      return anchors;
-    })();
+      if (n.depth === 0) {
+        adj[i].push({ j: NU, weight: 0.85 });
+        adj[NU].push({ j: i, weight: 0.85 });
+      }
+      n.degree = adj[i].length;
+    });
+    const N = nodes.length;  // tree nodes + nucleus
 
-    // No keyword→topic matcher: the old demo-era lists were a manually
-    // curated topic list that would rot the first time a real memory
-    // arrived. Topic structure lives in MARM's concept graph (topic nodes
-    // + similarity edges); placement just spreads nodes across the anchors.
-    function topicOf(label, idx) {
-      return idx % TOPIC_ANCHORS.length;
+    // Debug handle (matches the window.memoryMap convention below).
+    window.__galaxyGraph = { source: 'memory tree',
+      labels: nodes.slice(0, NU).map(n => n.path),
+      mentions: nodes.slice(0, NU).map(n => n.mention_count) };
+
+
+    // ---------- Knowledge-tree layout ----------
+    // Roots sit on a Fibonacci sphere around the nucleus (the center of the
+    // brain); branches fan outward with depth — each child's direction is
+    // its own sphere direction pulled toward its branch root's, so a branch
+    // reads as one organ of the brain rather than an undifferentiated star
+    // cloud. shSeed re-deals the per-star jitter (the periodic glide);
+    // branch STRUCTURE never moves.
+    const ROOT_N = nodes.reduce((s, n) => s + (n.depth === 0 ? 1 : 0), 0);
+    function fibDir(k, M) {
+      const ga = Math.PI * (3 - Math.sqrt(5));
+      const y = 1 - (2 * k + 1) / M;
+      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = ga * k;
+      return new THREE.Vector3(Math.cos(th) * r, y, Math.sin(th) * r).normalize();
     }
-
-    // shSeed 0 = the boot arrangement; each auto-shuffle bumps it so a group
-    // keeps its members (topicOf IS the auto-grouping — a new concept lands
-    // in its topic's cluster automatically) but trades anchor spots and
-    // re-deals positions inside the cluster.
+    // deterministic per-star jitter hash: (node, seed, channel) -> [0,1)
+    function jit(i, s, ch) {
+      let x = (i * 374761393 + s * 668265263 + ch * 2246822519) >>> 0;
+      x = Math.imul(x ^ (x >>> 13), 1274126177) >>> 0;
+      return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+    }
+    const DEPTH_R = [74, 118, 152];
+    function branchDir(i) {
+      const nd = nodes[i];
+      const rootDir = fibDir(nd.rootIdx, ROOT_N);
+      if (nd.depth === 0) return rootDir;
+      if (nd.depth === 1) return rootDir.clone().lerp(fibDir(i, NU), 0.42).normalize();
+      return branchDir(nd.parent).lerp(fibDir(i, NU), 0.5).normalize();
+    }
     function position(i, shSeed) {
-      const label = nodes[i].label;
-      const topic = topicOf(label, i);
-      const anchor = TOPIC_ANCHORS[(topic + shSeed) % TOPIC_ANCHORS.length];
-      const golden = (1 + Math.sqrt(5)) / 2;
-      const t = (((i * 7 + shSeed * 31) % N) + 0.5) / N;
-      const inclination = Math.acos(1 - 2 * t);
-      const azimuth = 2 * Math.PI * (t * golden + shSeed * 0.38);
-      // sqrt bias fills the cluster BALL (points inside, not on a shell) so
-      // each little group is a chunky, distinct blob, not a thin sprinkle.
-      const R = 20 * Math.sqrt(rnd());
-      const x = R * Math.sin(inclination) * Math.cos(azimuth);
-      const y = R * Math.cos(inclination) * 0.85;
-      const z = R * Math.sin(inclination) * Math.sin(azimuth);
-      return anchor.clone().add(new THREE.Vector3(
-        x + (rnd() - 0.5) * 8,
-        y + (rnd() - 0.5) * 8,
-        z + (rnd() - 0.5) * 8
+      if (i === NU) return new THREE.Vector3(0, 0, 0);
+      const nd = nodes[i];
+      const R = DEPTH_R[Math.min(nd.depth, DEPTH_R.length - 1)];
+      const amp = nd.depth === 0 ? 5 : 7;
+      const dir = nd.depth === 0 ? fibDir(nd.rootIdx, ROOT_N) : branchDir(i);
+      return dir.clone().multiplyScalar(R).add(new THREE.Vector3(
+        (jit(i, shSeed, 1) - 0.5) * amp,
+        (jit(i, shSeed, 2) - 0.5) * amp,
+        (jit(i, shSeed, 3) - 0.5) * amp
       ));
     }
     const positions = nodes.map((_, i) => position(i, 0));
@@ -672,10 +432,10 @@
     // ---------- Scene ----------
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x020308);
-    scene.fog = new THREE.FogExp2(0x020308, 0.0021);
+    scene.fog = new THREE.FogExp2(0x020308, 0.0015);
 
     const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 6000);
-    camera.position.set(0, 26, 132);
+    camera.position.set(0, 42, 235);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
     renderer.setSize(innerWidth, innerHeight);
@@ -687,17 +447,27 @@
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.03).texture;
 
-    // Controlled bloom — soft neural glow, not white-out
+    // Controlled bloom — soft neural glow, not white-out. The radius is kept
+    // WIDE on purpose: UnrealBloomPass blurs through a halving mip chain,
+    // and a tight radius leaves the deepest (1/32) mips barely blurred — the
+    // upscaled composite then ends in hard-edged SQUARES where each glow
+    // stops instead of fading out. Wide radius + modest strength = round,
+    // soft falloff. The explicit setSize below also rebuilds the bloom
+    // buffers at the real canvas size — if this iframe booted before it was
+    // laid out, the constructor's innerWidth/Height were stale, which is the
+    // other classic square-bloom cause (bloom covering a wrong square region).
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(innerWidth, innerHeight),
-      0.42,   // strength — much lower
-      0.38,   // radius
-      0.78    // higher threshold so only bright cores bloom
+      0.38,   // strength — modest; the starfield shaders are already additive
+      0.85,   // radius — wide so the mip-chain blurs stay round to the edge
+      0.8     // threshold — only bright cores bloom
     );
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
+    if (composer.setPixelRatio) composer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    composer.setSize(innerWidth, innerHeight);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -912,7 +682,10 @@
       0xe8d0ff  // soft violet-white
     ];
 
-    let maxMentions = Math.max(1, ...nodes.map(n => n.mention_count));
+    // Nucleus (4096) excluded — it would flatten every tree star's scale.
+    // Facts were distributed at boot, so this already reflects the index;
+    // refreshFacts() recomputes it on every re-fetch.
+    let maxMentions = Math.max(1, ...nodes.slice(0, NU).map(n => n.mention_count));
     function mentionFactor(mentions) {
       return 0.3 + 0.7 * Math.log1p(mentions) / Math.log1p(maxMentions);
     }
@@ -936,17 +709,19 @@
 
       const mf = mentionFactor(n.mention_count);
       const deg = n.degree;
-      // Dormant slots: dim motes waiting to be filled — real nodes, just not
-      // learned yet. Live stars get brighter/larger with degree and mentions.
-      const baseSize = (i === NU) ? 10.0 : n.dormant ? 1.6 : (3.2 + Math.pow(deg, 0.7) * 1.2 + mf * 1.9);
+      // Roots sit bigger than leaves (degree = child count), and a star
+      // brightens/grows as MARM counts land on its node.
+      const baseSize = (i === NU) ? 10.0 : (3.2 + Math.pow(deg, 0.7) * 1.2 + mf * 1.9);
       starSize[i] = baseSize;
       starPhase[i] = rnd() * Math.PI * 2;
       starSpeed[i] = 0.4 + rnd() * 1.2;
 
-      const c = new THREE.Color(n.dormant ? 0x3c466e : starPalette[i % starPalette.length]);
+      // One color per BRANCH (root) — each organ of the brain reads as a
+      // coherent stream, not confetti.
+      const c = new THREE.Color(starPalette[(n.rootIdx >= 0 ? n.rootIdx : 0) % starPalette.length]);
       // Nucleus is warm galactic core
       if (i === NU) c.set(0xffe8c0);
-      const bright = (i === NU) ? 1.0 : n.dormant ? 0.22 : (0.55 + mf * 0.45);
+      const bright = (i === NU) ? 1.0 : (0.5 + mf * 0.5);
       starCol[i*3] = c.r * bright;
       starCol[i*3+1] = c.g * bright;
       starCol[i*3+2] = c.b * bright;
@@ -962,7 +737,6 @@
         index: i,
         hl: false,
         isNucleus: i === NU,
-        isDormant: !!n.dormant,
         baseSize,
         baseColor: c.clone(),
         twPhase: starPhase[i],
@@ -1160,25 +934,21 @@
     });
     scene.add(new THREE.Points(puGeo, puMat));
 
-    // ---------- Growth: new concepts light up as the memory system grows ------
-    // marmGraph() is a full re-probe (~50 paced calls, ~40s). refreshGraph()
-    // re-runs it periodically and merges the result into the LIVE sky — no
-    // reload, no re-deal: a concept keeps its star; concepts MARM newly
-    // learned claim a dormant slot and bloom in place (gliding into their
-    // topic cluster at the next shuffle); vanished concepts dim back to
-    // dormant; the edge set relinks — surviving streams keep their stars and
-    // brand-new connections fade in. Auto every REFRESH_INTERVAL_S, manual
-    // via memoryMap.refresh().
-    const labelToIdx = new Map();
-    nodes.forEach((n, i) => { if (i !== NU && !n.dormant) labelToIdx.set(n.label, i); });
-
+    // ---------- Fill-in: per-node memory counts from the fact index ----------
+    // Boot already distributed Warden's fact index over the tree (every
+    // star is lit on the first frame — no probe warm-up). This is the
+    // refresh path: re-pull the index, recompute counts, repaint. The
+    // classifier files new facts during dump periods → the activity ring
+    // flares → a debounced refresh lands here within seconds.
     function paintSlot(i) {
       const n = nodes[i];
       const mf = mentionFactor(n.mention_count);
-      const size = (i === NU) ? 10.0 : n.dormant ? 1.6 : (3.2 + Math.pow(n.degree, 0.7) * 1.2 + mf * 1.9);
-      const c = new THREE.Color(n.dormant ? 0x3c466e : starPalette[i % starPalette.length]);
+      const size = (i === NU) ? 10.0 : (3.2 + Math.pow(n.degree, 0.7) * 1.2 + mf * 1.9);
+      // One color per BRANCH (root) — each organ of the brain reads as a
+      // coherent stream, not confetti.
+      const c = new THREE.Color(starPalette[(n.rootIdx >= 0 ? n.rootIdx : 0) % starPalette.length]);
       if (i === NU) c.set(0xffe8c0);
-      const bright = (i === NU) ? 1.0 : n.dormant ? 0.22 : (0.55 + mf * 0.45);
+      const bright = (i === NU) ? 1.0 : (0.5 + mf * 0.5);
       starGeo.attributes.aSize.array[i] = size;
       starGeo.attributes.aColor.array[i*3] = c.r * bright;
       starGeo.attributes.aColor.array[i*3+1] = c.g * bright;
@@ -1186,110 +956,33 @@
       starGeo.attributes.aSize.needsUpdate = true;
       starGeo.attributes.aColor.needsUpdate = true;
       const ud = nodeMeshes[i].userData;
-      ud.isDormant = !!n.dormant;
       ud.baseSize = size;
       ud.baseColor = c.clone();
     }
 
-    function applyGraph(g) {
-      const slotOf = new Array(g.labels.length).fill(null);
-      let activated = 0, skipped = 0;
-      for (let gi = 0; gi < g.labels.length; gi++) {
-        const label = prettyLabel(g.labels[gi]);
-        let slot = labelToIdx.get(label);
-        if (slot == null) {
-          const free = nodes.findIndex(n => n.dormant);
-          if (free === -1) { skipped++; continue; }  // every slot already lit
-          nodes[free] = { id: free, label, degree: g.adj[gi].length,
-            mention_count: Math.max(0, g.mentions[gi] | 0) };
-          labelToIdx.set(label, free);
-          slot = free;
-          nodeMeshes[free].userData.spawnAt = clock.getElapsedTime();
-          activated++;
-        } else {
-          nodes[slot].mention_count = Math.max(0, g.mentions[gi] | 0);
-          nodes[slot].degree = g.adj[gi].length;
-        }
-        slotOf[gi] = slot;
-      }
-      // A live star whose concept vanished from MARM dims back to dormant
-      const kept = new Set(slotOf.filter(s => s != null));
-      let faded = 0;
-      for (const [label, slot] of [...labelToIdx]) {
-        if (!kept.has(slot)) {
-          nodes[slot] = { id: slot, label: '', degree: 0, mention_count: 0, dormant: true };
-          labelToIdx.delete(label);
-          faded++;
-        }
-      }
-      if (activated || faded) {
-        maxMentions = Math.max(1, ...nodes.map(n => n.dormant ? 0 : n.mention_count));
-        nodes.forEach((n, i) => { if (i !== NU) paintSlot(i); });
-      } else {
-        // surviving concepts may have grown — repaint just those
-        for (let gi = 0; gi < g.labels.length; gi++) if (slotOf[gi] != null) paintSlot(slotOf[gi]);
-      }
 
-      // Relink the whole edge set from the fresh graph. Slot identities are
-      // stable, so surviving streams keep their stars; new ones fade in.
-      edgeLines.forEach(l => { edgeGroup.remove(l); l.geometry.dispose(); l.material.dispose(); });
-      edgeLines.length = 0;
-      activeEdges.clear();
-      const linked = new Set();
-      const link = (a, b, weight) => {
-        if (a == null || b == null || a === b) return;
-        const key = a < b ? a + '-' + b : b + '-' + a;
-        if (linked.has(key)) return;
-        linked.add(key);
-        makeEdgeLine(a, b, weight, (a === NU || b === NU) ? 0xe0b870 : 0x90a8e8);
-      };
-      for (let gi = 0; gi < g.labels.length; gi++) {
-        for (const { j, weight } of g.adj[gi]) link(slotOf[gi], slotOf[j], weight);
-      }
-      spokes.forEach(t => { if (!nodes[t].dormant) link(t, NU, 0.85 + rnd() * 0.15); });
-      // mirror the fresh edge set into adj[][] for the panels + hover chip
-      for (let i = 0; i < nodes.length; i++) adj[i] = [];
-      edgeLines.forEach(l => {
-        adj[l.userData.a].push({ j: l.userData.b, weight: l.userData.weight });
-        adj[l.userData.b].push({ j: l.userData.a, weight: l.userData.weight });
-      });
-      nodes[NU].degree = adj[NU].length;
-      const now = clock.getElapsedTime();
-      edgeLines.forEach(l => {
-        l.userData.fadeInAt = now;
-        l.material.opacity = 0;
-        fadingEdges.push(l);
-      });
-      pulses.forEach((p, k) => {
-        p.e = edgeLines[Math.floor(Math.random() * edgeLines.length)] || null;
-        p.t = Math.random();
-        if (p.e) pulseColor(k);
-      });
-      window.__galaxyGraph = { source: 'marm (live)',
-        labels: [...labelToIdx.keys()],
-        mentions: [...labelToIdx.values()].map(i => nodes[i].mention_count) };
-      if (activated || faded || skipped) {
-        console.info('[galaxy] grew — +' + activated + ' new concepts' +
-          (faded ? ', ' + faded + ' faded back to dormant' : '') +
-          (skipped ? ', ' + skipped + ' over capacity' : ''));
-      }
-    }
-
+    // Re-pull the whole fact index and repaint. One cheap HTTP call, no
+    // per-node MARM probes — every star lights from the same response.
     let refreshing = false;
-    async function refreshGraph() {
+    async function refreshFacts() {
       if (refreshing) return false;
       refreshing = true;
       try {
-        const g = await marmGraph();
-        applyGraph(g);
+        const tax = await fetchTaxonomy();
+        distributeFacts(Array.isArray(tax.facts) ? tax.facts : []);
+        maxMentions = Math.max(1, ...nodes.slice(0, NU).map(n => n.mention_count));
+        for (let i = 0; i < NU; i++) paintSlot(i);
+        window.__galaxyGraph = { source: 'memory tree',
+          labels: nodes.slice(0, NU).map(n => n.path),
+          mentions: nodes.slice(0, NU).map(n => n.mention_count) };
         return true;
       } catch (e) {
-        console.info('[galaxy] refresh failed (' + (e && e.message || e) + ') — keeping the current sky');
-        return false;
+        return false;  // Warden momentarily unreachable — next cadence retries
       } finally { refreshing = false; }
     }
-    const REFRESH_INTERVAL_S = 15 * 60;  // full MARM re-probe cadence
-    let nextAutoRefreshAt = 5 * 60;      // first growth check 5 min after boot
+    const REFRESH_INTERVAL_S = 15 * 60;  // fact-index re-fetch cadence
+    let nextAutoRefreshAt = REFRESH_INTERVAL_S; // boot already lit every star
+
 
     // ---------- Interaction ----------
     const raycaster = new THREE.Raycaster();
@@ -1419,8 +1112,243 @@
       highlightTopics: highlightTopics,
       clearActivity: clearActivity,
       shuffle: () => beginShuffle(clock.getElapsedTime()),
-      refresh: refreshGraph
+      refresh: refreshFacts,
+      // Debug/demo handle: fire a brain-scan flare by taxonomy path or free
+      // query — memoryMap.flare('User > Preferences') or
+      // memoryMap.flare('what router did we buy', { recall: true }).
+      flare: (q, opts = {}) => {
+        const outward = !opts.recall;   // default: a write filing in
+        const dur = isFinite(opts.duration) ? opts.duration : 3;
+        if (typeof q === 'number') { brainFlare(q, 1, dur, outward, outward); return 1; }
+        const s = String(q || '').trim().toLowerCase();
+        if (!s) return 0;
+        const idx = nodes.findIndex(nd => nd.path && nd.path.toLowerCase() === s);
+        if (idx >= 0) { brainFlare(idx, 1, dur, outward, outward); return 1; }
+        const regions = regionsForQuery(s);
+        regions.forEach(rg => brainFlare(rg.i, rg.intensity, dur, outward, outward));
+        return regions.length;
+      }
     };
+
+    // ---------- Brain-scan: live write/recall flares ----------
+    // The galaxy polls Warden's memory-activity ring — facts the classifier
+    // files, distiller writes, and every MARM recall the assistant makes —
+    // and lights up the region each event touches, brain-scan style. A WRITE
+    // flares the node's whole pathway with fast white-gold pulses shot FROM
+    // the nucleus outward (a fact being filed); a RECALL flares the matching
+    // regions with branch-colored pulses draining back TO the nucleus (a
+    // region being read out). Events in one poll are staggered so a filed
+    // batch sweeps across the brain instead of strobing everything at once.
+
+    const ACT_POLL_MS = 2000;         // visible cadence
+    const ACT_POLL_HIDDEN_MS = 12000; // the voice window isn't showing the galaxy
+    let actLastTs = -1;               // -1 = baseline on first successful poll
+    let actPollBusy = false;
+    let actTimer = null;
+
+    async function fetchActivity() {
+      let text = '';
+      if (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.warden_api === 'function') {
+        text = await window.pywebview.api.warden_api('/api/memory-tree/activity', 'GET', '');
+      } else {
+        const r = await fetch(WARDEN_BASE + '/api/memory-tree/activity');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        text = await r.text();
+      }
+      const data = JSON.parse(text);
+      return { events: Array.isArray(data.events) ? data.events : [], running: !!data.running };
+    }
+
+    // The pathway from the nucleus down to a node: [NU, root, …, idx]. Roots'
+    // parent is null, so the nucleus caps every chain manually.
+    function chainTo(idx) {
+      const chain = [];
+      for (let i = idx; i != null; i = nodes[i].parent) chain.unshift(i);
+      chain.unshift(NU);
+      return chain;
+    }
+
+    // The edge object connecting two adjacent node indices, if the graph has one.
+    function edgeBetween(a, b) {
+      for (const l of edgeLines) {
+        if ((l.userData.a === a && l.userData.b === b) ||
+            (l.userData.a === b && l.userData.b === a)) return l;
+      }
+      return null;
+    }
+
+    // Send a dedicated signal pulse down one edge, recycled from the ambient
+    // pool. Edges are stored a→b with a<b; a is the parent on tree edges but
+    // the CHILD on nucleus spokes (NU is the highest index) — hence the rev
+    // logic below instead of assuming direction.
+    function injectPulse(edge, outward, hot) {
+      let k = -1;
+      for (let p = 0; p < PULSES; p++) {
+        if (!pulses[p].e || pulses[p].t > 0.85) { k = p; break; }
+      }
+      if (k < 0) return;
+      const p = pulses[k];
+      const ud = edge.userData;
+      const aIsParent = !!nodes[ud.b] && nodes[ud.b].parent === ud.a;
+      p.e = edge;
+      p.t = 0;
+      p.rev = outward ? !aIsParent : aIsParent;
+      p.speed = 60 + rnd() * 30;   // signal pulses are fast — a shot, not a drift
+      const c = hot ? new THREE.Color(0xffedc4) : ud.baseColor.clone().lerp(puStarlight, 0.6);
+      p.r = c.r; p.g = c.g; p.b = c.b;
+      puCol[k*3] = c.r; puCol[k*3+1] = c.g; puCol[k*3+2] = c.b;
+      puGeo.attributes.color.needsUpdate = true;
+    }
+
+    // Light one node's whole pathway — THE brain-scan flare. `outward` shoots
+    // the pulses nucleus→leaf (a write being filed), otherwise leaf→nucleus
+    // (a region being read out); `hot` tints them white-gold instead of the
+    // branch color. Hops are staged ~110 ms apart so the flare RIPPLES down
+    // the branch instead of snapping on, and every hop's glow self-expires
+    // (st.until) so overlapping flares never cancel each other.
+    function brainFlare(idx, intensity, durationS, outward, hot) {
+      if (idx == null || idx < 0 || idx > NU) return;
+      const chain = idx === NU ? [NU] : chainTo(idx);
+      chain.forEach((i, hop) => {
+        // The node itself burns brightest; glow fades half a hop per step
+        // toward the nucleus, which still breathes (it's in every pathway).
+        const k = hop === 0 ? 0.25 : Math.pow(0.55, chain.length - 1 - hop);
+        const inten = Math.max(0.1, intensity * (0.3 + 0.7 * k));
+        setTimeout(() => {
+          const until = clock.getElapsedTime() + durationS;
+          const st = activeNodes.get(i);
+          if (st) {
+            st.target = 1;
+            st.intensity = Math.max(st.intensity || 0, inten);
+            st.until = Math.max(st.until || 0, until);
+          } else {
+            activeNodes.set(i, { level: 0, target: 1, intensity: inten, until });
+          }
+          if (hop > 0) {
+            const edge = edgeBetween(chain[hop - 1], i);
+            if (edge) {
+              const est = activeEdges.get(edge);
+              if (est) {
+                est.target = 1;
+                est.intensity = Math.max(est.intensity || 0, inten * 0.9);
+                est.until = Math.max(est.until || 0, until);
+              } else {
+                activeEdges.set(edge, { level: 0, target: 1, intensity: inten * 0.9, until });
+              }
+              injectPulse(edge, outward, hot);
+            }
+          }
+        }, hop * 110);
+      });
+    }
+
+    // Map a free-text recall query onto the regions it touches: exact label
+    // hits count most, then whole words inside multi-word labels, then
+    // anywhere in the path. Top few regions flare, score-scaled.
+    const QUERY_STOP = new Set(['the','and','for','with','that','this','from','are','was','were',
+      'you','your','what','when','where','how','why','who','about','into','has','have','had','not',
+      'but','all','can','could','will','would','should','its','their','there','them','then','than',
+      'some','just','also','been','being','does','did','doing','any','too','very','which','while',
+      'because','through','during','before','after','again','once','out','off','over','under',
+      'between','against','here','each','other','more','most','such','only','same','now','warden',
+      'memory','system','said','tell','know','need','want','make','made','thing','stuff']);
+    function regionsForQuery(q) {
+      const words = String(q || '').toLowerCase().split(/[^a-z0-9&']+/)
+        .filter(w => w.length > 2 && !QUERY_STOP.has(w));
+      if (!words.length) return [];
+      const hits = [];
+      for (let i = 0; i < NU; i++) {
+        const n = nodes[i];
+        const label = n.label.toLowerCase();
+        const p = n.path.toLowerCase();
+        let score = 0;
+        for (const w of words) {
+          if (label === w) score += 3;
+          else if (label.split(/[^a-z]+/).some(lw => lw === w)) score += 2.5;
+          else if (label.includes(w) || w.includes(label)) score += 1.5;
+          else if (p.includes(w)) score += 1;
+        }
+        if (score > 0) hits.push([i, score]);
+      }
+      if (!hits.length) return [];
+      hits.sort((a, b) => b[1] - a[1]);
+      const maxScore = hits[0][1];
+      return hits.slice(0, 6).map(([i, s]) =>
+        ({ i, intensity: Math.min(1, 0.45 + 0.55 * (s / maxScore)) }));
+    }
+
+    // A write flare means the classifier just filed facts — re-fetch the
+    // index (debounced a few seconds so a filed batch costs ONE fetch).
+    let factsRefreshAt = -1;
+    function queueFactRefresh() {
+      factsRefreshAt = clock.getElapsedTime() + 4;
+    }
+    function runFactRefresh() {
+      if (factsRefreshAt < 0) return;
+      if (clock.getElapsedTime() < factsRefreshAt) return;
+      factsRefreshAt = -1;
+      void refreshFacts();
+    }
+
+    // New ring events → flares. Baselines on the first poll (anything already
+    // in the ring predates this view — no history replay), then dedupes on ts.
+    function onActivityEvents(events) {
+      if (!events.length) return;
+      if (actLastTs < 0) {
+        actLastTs = Math.max(0, ...events.map(e => Number(e.ts) || 0));
+        return;
+      }
+      const fresh = events.filter(e => (Number(e.ts) || 0) > actLastTs);
+      if (!fresh.length) return;
+      actLastTs = Math.max(actLastTs, ...fresh.map(e => Number(e.ts) || 0));
+      // Cap + stagger: a big filed batch sweeps region by region.
+      fresh.slice(-24).forEach((ev, n) => {
+        setTimeout(() => {
+          if (document.visibilityState === 'hidden') return;
+          if (ev.kind === 'write') {
+            const pl = String(ev.path || '').toLowerCase();
+            const idx = pl ? nodes.findIndex(nd => nd.path && nd.path.toLowerCase() === pl) : -1;
+            if (idx >= 0 && idx < NU) {
+              brainFlare(idx, 1, 3.4, true, true);
+              queueFactRefresh();
+            } else {
+              // Distiller write / unknown path — keyword-map the fact text.
+              const regions = regionsForQuery(ev.fact || ev.path || ev.query);
+              regions.forEach(rg => {
+                brainFlare(rg.i, rg.intensity, 3, true, true);
+                queueFactRefresh();
+              });
+            }
+          } else {
+            // A region being read out — branch-colored, draining inward.
+            const regions = regionsForQuery(ev.query || ev.fact || '');
+            regions.forEach(rg => brainFlare(rg.i, rg.intensity, 2.6, false, false));
+          }
+        }, n * 240);
+      });
+    }
+
+    async function activityTick() {
+      if (actPollBusy) return;
+      actPollBusy = true;
+      try {
+        const data = await fetchActivity();
+        onActivityEvents(data.events);
+      } catch (e) { /* Warden momentarily unreachable — next tick retries */ }
+      const hidden = document.visibilityState === 'hidden';
+      runFactRefresh();
+      actPollBusy = false;
+      actTimer = setTimeout(activityTick, hidden ? ACT_POLL_HIDDEN_MS : ACT_POLL_MS);
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && actTimer != null) {
+        clearTimeout(actTimer);
+        actTimer = null;
+        activityTick();
+      }
+    });
+    activityTick();
 
     function onPointerMove(e) {
       mouse.x = (e.clientX / innerWidth) * 2 - 1;
@@ -1436,7 +1364,15 @@
     }
     renderer.domElement.addEventListener('pointermove', onPointerMove);
 
+    // Drag-vs-click guard: OrbitControls owns the pointer for camera motion,
+    // so a "click" that follows a drag is camera movement, not intent. Only
+    // a click that landed within a few px of its pointerdown selects a star.
+    let downX = 0, downY = 0;
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      downX = e.clientX; downY = e.clientY;
+    }, { passive: true });
     renderer.domElement.addEventListener('click', (e) => {
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return;
       mouse.x = (e.clientX / innerWidth) * 2 - 1;
       mouse.y = -(e.clientY / innerHeight) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
@@ -1446,15 +1382,34 @@
 
     // Full node details open in a SEPARATE window (pywebview popup via the
     // host bridge when embedded; window.open when running standalone in a
-    // normal browser). The tiny in-page chip stays as a fallback.
+    // normal browser). The tiny in-page chip stays as a fallback. The body is
+    // the node's ACTUAL recalled memories from MARM — the point of the map:
+    // click a star, read what Warden knows there.
     function openDetailWindow(idx) {
       const n = nodes[idx];
-      if (!n || n.dormant) return;  // unformed slots have no details
+      if (!n) return;
       const esc = s => String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-      const conns = [...adj[idx]].sort((a, b) => b.weight - a.weight);
-      const rows = conns.map(({ j, weight }) =>
-        `<div class="row"><span>${esc(nodes[j].label)}</span><span class="w">${weight.toFixed(2)}</span></div>`).join('');
+      let mini, body;
+      if (idx === NU) {
+        mini = n.children.length + ' branches of the brain';
+        body = '<h3>Branches of the brain</h3>' + n.children.map(j =>
+          `<div class="row"><span>${esc(nodes[j].label)}</span><span class="w">${nodes[j].children.length}</span></div>`).join('');
+      } else {
+        mini = (n.children.length ? n.children.length + (n.children.length === 1 ? ' branch · ' : ' branches · ') : '') +
+          n.mention_count + (n.mention_count === 1 ? ' memory' : ' memories');
+        const memRow = (m) => {
+          const content = String(m.fact || m.content || '').slice(0, 400);
+          const meta = 'filed ' + String(m.ts || '').slice(0, 10);
+          return `<div class="mem"><div class="mc">${esc(content)}</div><div class="mm">${esc(meta)}</div></div>`;
+        };
+        if (!n.memories || !n.memories.length) {
+          body = '<div style="color:#7d8db3;font-size:12px;">nothing filed here yet — the memory-tree classifier has not found facts for this branch.</div>';
+        } else {
+          body = `<div class="mini" style="margin-bottom:6px">${n.mention_count} filed here${n.mention_count > n.memories.length ? ' — showing the latest ' + n.memories.length : ''}</div>` +
+            n.memories.map(memRow).join('');
+        }
+      }
       const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(n.label)}</title><style>
         html,body { background:#020308; height:100%; }
         body { margin:0; color:#e8f0ff; font-family:system-ui,sans-serif; overflow:hidden; }
@@ -1474,6 +1429,10 @@
           border-radius:9px; font-size:13px; }
         .row:hover { background:rgba(78,201,255,.11); }
         .w { color:#4ec9ff; font-variant-numeric:tabular-nums; }
+        .mem { padding:9px 11px; border-radius:9px; font-size:12.5px; line-height:1.45; }
+        .mem:hover { background:rgba(78,201,255,.11); }
+        .mc { color:#cfe0f5; word-break:break-word; }
+        .mm { color:#5d6f96; font-size:10px; margin-top:4px; letter-spacing:.4px; }
         .x { position:absolute; top:12px; right:12px; width:24px; height:24px; line-height:24px;
           text-align:center; border-radius:50%; font-size:14px; color:#7d8db3; cursor:pointer;
           background:rgba(140,180,255,.08); border:none; }
@@ -1484,8 +1443,8 @@
         <div class="card">
           <button class="x" id="x" title="Close">✕</button>
           <h1>${esc(n.label)}</h1>
-          <div class="mini">${n.degree} connections · ${n.mention_count.toLocaleString()} mentions</div>
-          <h3>Connections</h3>${rows || '<div style="color:#7d8db3;font-size:12px;">none</div>'}
+          <div class="mini">${esc(mini)}${idx !== NU ? ' · ' + esc(n.path) : ''}</div>
+          ${body}
         </div>
         <div class="drag">drag anywhere to move this window</div>
         <script>
@@ -1510,24 +1469,18 @@
       selected = idx;
       highlightNode(idx);
       const n = nodes[idx];
-      if (n.dormant) {
-        // An unformed slot — a star that hasn't been learned yet
-        document.getElementById('npName').textContent = 'Unformed memory';
-        document.getElementById('npMini').textContent = 'waiting for Warden to learn a new concept';
-        document.getElementById('npConns').innerHTML = '';
-        document.getElementById('nodePanel').style.display = 'block';
-        return;
-      }
       document.getElementById('npName').textContent = n.label;
-      document.getElementById('npMini').textContent =
-        n.degree + ' connections · ' + n.mention_count.toLocaleString() + ' mentions';
-      const conns = [...adj[idx]].sort((a, b) => b.weight - a.weight).slice(0, 3);
+      document.getElementById('npMini').textContent = idx === NU
+        ? n.children.length + ' branches of the brain'
+        : (n.children.length ? n.children.length + (n.children.length === 1 ? ' branch · ' : ' branches · ') : '') +
+          n.mention_count + (n.mention_count === 1 ? ' memory' : ' memories');
       const list = document.getElementById('npConns');
       list.innerHTML = '';
-      conns.forEach(({ j, weight }) => {
+      n.children.forEach(j => {
         const row = document.createElement('div');
         row.className = 'conn';
-        row.innerHTML = `<span>${nodes[j].label}</span><span class="w">${weight.toFixed(2)}</span>`;
+        row.title = nodes[j].path;
+        row.innerHTML = `<span>${nodes[j].label}</span><span class="w">${nodes[j].mention_count}</span>`;
         row.addEventListener('click', () => selectNode(j));
         list.appendChild(row);
       });
@@ -1560,7 +1513,7 @@
       }
       const matches = nodes
         .map((n, i) => ({ n, i }))
-        .filter(x => x.n.label.toLowerCase().includes(q))
+        .filter(x => x.i !== NU && x.n.path.toLowerCase().includes(q))
         .sort((a, b) => b.n.mention_count - a.n.mention_count)
         .slice(0, 12);
       window.memoryMap.highlightTopics(q);
@@ -1569,7 +1522,8 @@
       matches.forEach(({ n, i }) => {
         const row = document.createElement('div');
         row.className = 'row';
-        row.innerHTML = `<span>${n.label}</span><span class="deg">${n.degree} · ${n.mention_count}</span>`;
+        row.title = n.path;
+        row.innerHTML = `<span>${n.label}</span><span class="deg">${n.mention_count}</span>`;
         row.addEventListener('click', () => {
           window.memoryMap.clearActivity();
           selectNode(i);
@@ -1582,7 +1536,7 @@
 
     function flyTo(target) {
       if (target.lengthSq() < 1) {
-        flyTarget = new THREE.Vector3(0, 26, 132);
+        flyTarget = new THREE.Vector3(0, 42, 235);
       } else {
         flyTarget = target.clone().multiplyScalar(1.35).add(new THREE.Vector3(0, 32, 0));
       }
@@ -1620,11 +1574,11 @@
         for (let ei = 0; ei < edgeLines.length; ei++) updateEdgeGeometry(edgeLines[ei]);
       }
 
-      // Growth cadence: re-probe MARM periodically and merge new concepts
-      // and connections into the live sky (applyGraph). Deferred while hidden.
+      // Fact-index cadence: re-fetch /api/memory-tree periodically and
+      // brighten the tree as the classifier files more facts.
       if (t >= nextAutoRefreshAt) {
-        if (document.visibilityState === 'hidden') nextAutoRefreshAt = t + 90;
-        else { nextAutoRefreshAt = t + REFRESH_INTERVAL_S; refreshGraph(); }
+        nextAutoRefreshAt = t + REFRESH_INTERVAL_S;
+        void refreshFacts();
       }
 
       // Freshly (re)linked streams ramp up to their base opacity
@@ -1651,6 +1605,10 @@
         const st = activeNodes.get(i);
         let act = 0;
         if (st) {
+          // Brain-scan flares carry their own expiry (st.until, seconds on the
+          // scene clock) so many flares can overlap without one global timer
+          // cancelling the others.
+          if (st.until != null && t > st.until) st.target = 0;
           act = _stepLevel(st, dt) * st.intensity * _breath(t);
           if (st.target === 0 && st.level < 0.005) activeNodes.delete(i);
         }
@@ -1680,6 +1638,7 @@
 
       // Active edges
       activeEdges.forEach((st, l) => {
+        if (st.until != null && t > st.until) st.target = 0;
         const lvl = _stepLevel(st, dt);
         if (st.target === 0 && lvl < 0.005) {
           l.material.color.copy(l.userData.baseColor);
@@ -1700,17 +1659,22 @@
         nb.s.material.opacity = nb.base * (0.92 + 0.08 * Math.sin(t * nb.speed + nb.phase));
       });
 
-      // Synaptic pulses
+      // Synaptic pulses (p.rev = travel b→a — the brain-scan signal pulses
+      // use it so writes ripple nucleus→leaf and recalls drain leaf→nucleus)
       for (let k = 0; k < PULSES; k++) {
         const p = pulses[k];
         if (!p.e) { puPos[k*3] = puPos[k*3+1] = puPos[k*3+2] = 0; continue; }
         p.t += (dt * p.speed) / Math.max(1, p.e.userData.len);
         if (p.t > 1) {
+          // Finished (or an injected signal pulse that completed) — rejoin the
+          // ambient pool: random edge, ambient speed, forward direction.
           p.e = edgeLines[Math.floor(Math.random() * edgeLines.length)] || null;
           p.t = 0;
+          p.rev = false;
+          p.speed = 14 + Math.random() * 32;
           if (p.e) pulseColor(k);
         }
-        p.e.userData.curve.getPoint(p.t, puTmp);
+        p.e.userData.curve.getPoint(p.rev ? 1 - p.t : p.t, puTmp);
         puPos[k*3]   = puTmp.x;
         puPos[k*3+1] = puTmp.y;
         puPos[k*3+2] = puTmp.z;
@@ -1732,6 +1696,9 @@
       composer.render();
     }
     animate();
+
+    // Boot already distributed the fact index — every star is lit from the
+    // first frame; refreshFacts() re-pulls on the cadence above.
 
     console.info('[memoryMap] ready — window.memoryMap.highlightTopics(topics, { intensity, duration }) / window.memoryMap.clearActivity()');
 

@@ -11,6 +11,7 @@ import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { spawnOculusBackground, syncAgentCtxEnv } from './index.js';
 import { parseRelativeDuration } from './task-scheduler.js';
+import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts } from './memory-tree.js';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
@@ -4378,6 +4379,66 @@ export function startStatusServer(d: StatusDeps): void {
         return await handleTasksCrud(req, res, pathname);
       if (pathname.startsWith('/api/vault'))
         return await handleVault(req, res, pathname);
+
+      // GET /api/memory-tree — the memory-tree taxonomy (data/memory-tree.json).
+      // Serves the eyes_ears memory galaxy: the STRUCTURE of the brain (28 base
+      // points, user-side weighted, 2-3 branches, two layers deep); the DETAILS
+      // live in MARM, filed there by the log classifier below.
+      if (req.method === 'GET' && pathname === '/api/memory-tree') {
+        try {
+          // One shot = the whole map: taxonomy structure + the durable
+          // per-path fact index (classifier-recorded at file time). The
+          // galaxy lights every node from this single call — no per-node
+          // MARM probes. Kick the one-time backfill if the index is empty.
+          void maybeBackfillTreeFacts();
+          return json(res, { roots: loadMemoryTree(), facts: filedTreeFacts() });
+        } catch (e: any) {
+          return error(res, 'memory-tree.json unreadable: ' + e.message, 500);
+        }
+      }
+
+      // GET /api/memory-tree/activity — the live memory-activity ring (last
+      // ~60 writes/recalls) + whether a classification run is in flight. The
+      // memory galaxy polls this every couple of seconds for its brain-scan
+      // flares: the region a fact lands on lights up.
+      // POST — the agent-runner reports MARM recalls here (auto-recall +
+      // explicit marm_smart_recall tool calls) so the galaxy can light up the
+      // regions being read from, not just the ones being written to.
+      if (pathname === '/api/memory-tree/activity') {
+        if (req.method === 'GET') {
+          return json(res, { events: treeActivity(), running: memoryTreeRunning() });
+        }
+        if (req.method === 'POST') {
+          try {
+            const body = parseJson(await parseBody(req, 64 * 1024)) as {
+              kind?: string; query?: string; path?: string; fact?: string;
+            };
+            const kind = body.kind === 'write' ? 'write' : 'recall';
+            const query = String(body.query || '').slice(0, 400);
+            const path = String(body.path || '').slice(0, 400);
+            const fact = String(body.fact || '').slice(0, 400);
+            if (!query && !path && !fact) return error(res, 'empty activity event');
+            noteTreeActivity(kind === 'write'
+              ? { kind: 'write', ...(path && { path }), ...(fact && { fact }), ...(query && { query }) }
+              : { kind: 'recall', query: query || fact || path });
+            return json(res, { ok: true });
+          } catch (e: any) {
+            return error(res, 'bad activity event: ' + e.message);
+          }
+        }
+      }
+
+      // POST /api/memory/classify — on-request memory-tree classification run.
+      // Kicks the granite4.1:30b log classifier off fire-and-forget (force=true:
+      // bypasses the idle gate); it loops batches until the warden.log backlog
+      // is finished, cursor-persisted, and aborts if the GPU is claimed again.
+      // Progress lands in logs/warden.log ("memory-tree: classification run…").
+      if (req.method === 'POST' && pathname === '/api/memory/classify') {
+        void runMemoryClassification(true)
+          .then((r) => logger.info(r, 'memory-tree: on-request classify run finished'))
+          .catch((err) => logger.warn({ err }, 'memory-tree: on-request classify run failed'));
+        return json(res, { ok: true, started: true });
+      }
       if (pathname === '/api/search') return await handleSearch(res, params);
       if (pathname === '/api/activity') return handleActivity(res, params);
       if (pathname === '/api/oculus/awareness-log') return await handleAwarenessLog(res, params);

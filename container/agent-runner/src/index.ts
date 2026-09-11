@@ -24,7 +24,7 @@ import { setOculusTaskPrompt } from './tools/awareness-tools.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
-import { marmAutoRecall } from './marm-recall.js';
+import { marmAutoRecall, noteMarmActivity } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
 import { createProvider } from './providers/index.js';
@@ -5338,8 +5338,19 @@ function handleBasicFileOp(name: string, args: any): string {
 async function handleMcpToolCall(fullName: string, args: any): Promise<string> {
     const resolved = resolveMcpTool(fullName);
     if (!resolved) return `Error: no MCP client owns tool "${fullName}"`;
+    // MARM activity → the host's brain-scan ring, so the memory galaxy lights
+    // up the regions being read from (smart/concept recall) or written to
+    // (log entry). Best-effort only — the flare must never gate the call.
+    const marmAct =
+        fullName.startsWith('mcp__marm__marm_smart_recall') || fullName.startsWith('mcp__marm__marm_concept_recall') ? 'recall'
+        : fullName.startsWith('mcp__marm__marm_log_entry') ? 'write'
+        : null;
     try {
         const result = await resolved.client.callTool(resolved.tool, args ?? {});
+        if (marmAct) {
+            noteMarmActivity(marmAct as 'write' | 'recall',
+                String(args?.query ?? args?.entry ?? args?.content ?? ''));
+        }
         // MCP results come back as { content: [{ type: 'text', text }, ...] } — flatten to a string.
         // Image blocks are routed into the vision queue instead of being JSON-stringified.
         if (result && Array.isArray(result.content)) {
