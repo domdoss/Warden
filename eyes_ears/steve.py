@@ -88,14 +88,13 @@ MEM_MODEL = "granite4.1:8b"
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 MEM_CACHE = os.path.expanduser("~/.local/state/steve/last_scan")
 MARM_URL = os.environ.get("MARM_URL", "http://127.0.0.1:8001/mcp")
-MARM_SESSION = "memory"
 MEM_MAX_FILES = 300            # .md files per scan
 MEM_MAX_FILE_BYTES = 200_000   # skip huge files
 MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc first)
 MEM_LINE_TRUNC = 200
 MEM_BATCH_CHARS = 9_000        # classifier batch size
 MEM_FACTS_MAX = 400
-MEM_FACTS_PROMPT_MAX = 60      # injected into a turn
+MEM_RECALL_LIMIT = 12          # memories pulled per turn
 
 MEM_SYSTEM = (
     "Role: you extract lasting facts about the user from their personal memory files.\n\n"
@@ -214,19 +213,7 @@ def _classify_chunk(chunk: list[str]) -> list[str]:
         return []
 
 
-def marm_tool_call(name: str, args: dict) -> dict | None:
-    """One MCP tools/call against MARM, parsed (Warden's marmToolCall
-    pattern — newest content block that parses as JSON wins)."""
-    init, session = _marm_rpc(None, {
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-03-26", "capabilities": {},
-            "clientInfo": {"name": "steve-app", "version": "1.0.0"},
-        },
-    })
-    if init is None:
-        raise RuntimeError("MARM initialize failed (not running?)")
-    _marm_rpc(session, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+def _marm_call(session, name: str, args: dict) -> dict | None:
     r, _ = _marm_rpc(session, {
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": name, "arguments": args},
@@ -246,16 +233,47 @@ def marm_tool_call(name: str, args: dict) -> dict | None:
     return None
 
 
-def marm_load_facts() -> list[str]:
-    """The remembered facts, read back out of MARM — the ONLY memory store.
-    Empty when MARM has no session yet (fresh install, before first scan)."""
-    r = marm_tool_call("marm_log_show", {"session_name": MARM_SESSION})
-    facts = []
-    for entry in ((r or {}).get("entries") or []):
-        c = str(entry.get("full_entry") or "").strip()
-        if c:
-            facts.append(c)
-    return facts
+def marm_connect():
+    """Open the MCP connection to MARM (initialize + the courtesy
+    notification). Every memory operation goes through this path."""
+    init, session = _marm_rpc(None, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": "steve-app", "version": "1.0.0"},
+        },
+    })
+    if init is None:
+        raise RuntimeError("MARM initialize failed (not running?)")
+    _marm_rpc(session, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    return session
+
+
+def marm_recall_about(text: str) -> str:
+    """What MARM remembers that's relevant to what he just said — the
+    paste-ready context block straight from smart recall."""
+    r = _marm_call(marm_connect(), "marm_smart_recall", {
+        "query": text, "search_all": True, "limit": MEM_RECALL_LIMIT, "detail": 1,
+    })
+    return str((r or {}).get("context_summary") or "").strip()
+
+
+def marm_file_new(facts: list[str]) -> int:
+    """File facts into MARM as plain entries — MARM's own models classify
+    them. Dedup is MARM's own recall: a fact whose text comes back as the
+    top hit is already filed. Returns how many were filed."""
+    session = marm_connect()
+    filed = 0
+    for f in facts:
+        r = _marm_call(session, "marm_smart_recall", {
+            "query": f, "search_all": True, "limit": 1, "detail": 3,
+        })
+        top = ((r or {}).get("results") or [{}])[0]
+        if str(top.get("content") or "").strip() == f:
+            continue
+        _marm_call(session, "marm_log_entry", {"entry": f})
+        filed += 1
+    return filed
 
 
 def read_scan_ts() -> float:
@@ -299,39 +317,6 @@ def _marm_rpc(session, body, timeout=10):
     return json.loads(text[s:text.rfind("}") + 1]), new_session
 
 
-def marm_log_entries(entries: list[str]) -> bool:
-    """File facts into MARM — the only store. Everything lands in one fixed
-    session (the Topic: opener would date-suffix the name daily)."""
-    if not entries:
-        return True
-    session = None
-    try:
-        init, session = _marm_rpc(None, {
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26", "capabilities": {},
-                "clientInfo": {"name": "steve-app", "version": "1.0.0"},
-            },
-        })
-        if init is None:
-            raise RuntimeError("MARM initialize failed (not running?)")
-        _marm_rpc(session, {"jsonrpc": "2.0", "method": "notifications/initialized"})
-        for e in entries:
-            r, _ = _marm_rpc(session, {
-                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {
-                    "name": "marm_log_entry",
-                    "arguments": {"entry": e, "session_name": MARM_SESSION},
-                },
-            })
-            if not r or not r.get("result"):
-                raise RuntimeError("marm_log_entry returned no result")
-        return True
-    except Exception as e:
-        print(f"[steve] MARM filing failed: {e}", file=sys.stderr)
-        raise
-
-
 def claude_files_changed_since(ts: float) -> bool:
     """Did any .md under ~/.claude change since the last scan? Cheap —
     mtimes only, no reading. The whole startup freshness check."""
@@ -350,25 +335,17 @@ def claude_files_changed_since(ts: float) -> bool:
     return False
 
 
-def memory_startup_check(set_state, set_note, on_ready) -> None:
+def memory_startup_check(set_note, on_ready) -> None:
     """Boot sequence, all by itself: if the memory files changed since the
-    last scan, rescan, classify, and file into MARM — the only store; then
-    load the facts back out of MARM and announce ready."""
+    last scan, rescan, classify, and file the new facts into MARM; then
+    the app announces it's ready (spoken — the user is blind)."""
     if claude_files_changed_since(read_scan_ts()):
         set_note("Updating memories…")
-        lines = scan_claude_lines()
-        if lines:
-            fresh = classify_lines(lines)
-            if fresh:
-                prev = set(marm_load_facts())
-                new = [f for f in fresh if f not in prev]
-                if marm_log_entries(new):
-                    print(f"[steve] filed {len(new)} new facts into MARM", file=sys.stderr)
-                write_scan_ts()
-    facts = marm_load_facts()
-    set_state(facts)
-    if facts:
-        print(f"[steve] {len(facts)} facts loaded from MARM", file=sys.stderr)
+        fresh = classify_lines(scan_claude_lines())
+        if fresh:
+            filed = marm_file_new(fresh)
+            print(f"[steve] filed {filed} new facts into MARM", file=sys.stderr)
+        write_scan_ts()
     set_note("")
     on_ready()
 
@@ -430,19 +407,12 @@ class SteveApp:
         self._lock = threading.Lock()
         self._worker = None  # live turn thread, None when idle
         self._stop = threading.Event()
-        # Steve's remembered facts (scanned from ~/.claude, classified by the
-        # local 8b) — injected into every turn as spoken context.
-        self._facts: list[str] = []
         self._note = ""  # status-strip text while the startup scan runs
         threading.Thread(
             target=memory_startup_check,
-            args=(self._set_facts, self._set_note, self._announce_ready),
+            args=(self._set_note, self._announce_ready),
             daemon=True,
         ).start()
-
-    def _set_facts(self, facts: list[str]) -> None:
-        with self._lock:
-            self._facts = facts
 
     def _set_note(self, note: str) -> None:
         with self._lock:
@@ -474,17 +444,13 @@ class SteveApp:
             return json.loads(resp.read().decode() or "{}")
 
     def _send(self, text: str) -> str:
-        """POST the turn as a plain owner message — the prompt block and the
-        remembered facts ride in the message text, so Warden needs no Steve
-        handling. Returns the stored message id (an opaque string)."""
+        """POST the turn as a plain owner message — the prompt block and what
+        MARM recalls about him ride in the message text, so Warden needs no
+        Steve handling. Returns the stored message id (an opaque string)."""
         parts = [STEVE_PROMPT]
-        with self._lock:
-            facts = list(self._facts)
-        if facts:
-            parts.append(
-                "ABOUT THE USER — what you remember about him:\n"
-                + "\n".join("- " + f for f in facts[-MEM_FACTS_PROMPT_MAX:])
-            )
+        about = marm_recall_about(text)
+        if about:
+            parts.append("ABOUT THE USER — what you remember about him:\n" + about)
         parts.append("He says: " + text)
         resp = self._http("POST", "/api/messages", {"text": "\n\n".join(parts)})
         return str(resp.get("id") or "")
