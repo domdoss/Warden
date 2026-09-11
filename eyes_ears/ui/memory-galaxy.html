@@ -121,6 +121,18 @@
     (function(){
       var btn = document.getElementById('fsBtn');
       btn.addEventListener('click', function(){
+        // Browser Fullscreen API is a silent no-op in Qt WebEngine's nested
+        // file:// iframes — toggle the whole panels window fullscreen via
+        // the host bridge (the same call panels.html's own ⛶ makes).
+        if (window.pywebview && window.pywebview.api &&
+            typeof window.pywebview.api.toggle_panels_fullscreen === 'function') {
+          window.pywebview.api.toggle_panels_fullscreen().then(function(on){
+            btn.textContent = on ? '⤢ Exit' : '⛶ Expand';
+            btn.title = on ? 'Exit fullscreen' : 'Fullscreen';
+          }).catch(function(){});
+          return;
+        }
+        // Standalone in a real browser — native fullscreen.
         if (document.fullscreenElement) { document.exitFullscreen(); return; }
         document.documentElement.requestFullscreen().catch(function(){});
       });
