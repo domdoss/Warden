@@ -1,10 +1,11 @@
 """Double-clap wake detector (Iron Man style).
 
-Monitors an input device for two sharp amplitude transients (claps)
-in quick succession and fires a callback. Runs in a background daemon
-thread while Jarvis is idle. Callers pause it during conversation / TTS
-playback to avoid mic contention and speaker feedback (see
-``pause``/``resume``).
+Monitors an input device for sharp amplitude transients (claps — or taps
+on the mic) in quick succession and fires a callback. ``taps`` sets how
+many: 2 is the classic double-clap, 3 is tap-tap-tap on the mic. Runs in
+a background daemon thread while Jarvis is idle. Callers pause it during
+conversation / TTS playback to avoid mic contention and speaker feedback
+(see ``pause``/``resume``).
 
 Two frame sources share the same transient-detection logic:
 
@@ -40,11 +41,12 @@ class ClapDetector:
         sample_rate: int = 16000,
         threshold: int = 9000,    # int16 peak amplitude that counts as a clap onset
         crest_factor: float = 4.0,  # min peak/RMS ratio — a clap is a sharp transient
-        min_gap: float = 0.12,    # min seconds between the two claps
-        max_gap: float = 0.8,     # max seconds between the two claps
-        refractory: float = 0.15,  # ignore window right after a clap onset
-        cooldown: float = 2.0,    # quiet period after a successful double-clap
+        min_gap: float = 0.12,    # min seconds between successive taps
+        max_gap: float = 0.8,     # max seconds between successive taps
+        refractory: float = 0.15,  # ignore window right after a tap onset
+        cooldown: float = 2.0,    # quiet period after a successful wake
         input_device: Optional[int] = None,
+        taps: int = 2,            # transients needed to fire (2=double clap)
     ):
         self.on_double_clap = on_double_clap
         self.can_fire = can_fire or (lambda: True)
@@ -56,6 +58,7 @@ class ClapDetector:
         self.refractory = refractory
         self.cooldown = cooldown
         self.input_device = input_device
+        self.taps = max(2, int(taps))
 
         self.samples_per_frame = int(sample_rate * self._FRAME_MS / 1000)
         self._stop = threading.Event()
@@ -89,19 +92,21 @@ class ClapDetector:
 
     def _open_stream(self):
         """Open the input source. Returns an opaque (handle, stream) pair
-        or raises on failure. ``handle`` is anything the closer needs."""
+        or raises on failure. ``handle`` is anything the closer needs.
+        ALSA stderr chatter (pulse errors etc.) is suppressed — the caller
+        logs the failure itself, once."""
         with _suppress_alsa():
             import pyaudio
 
             p = pyaudio.PyAudio()
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=self.sample_rate,
-            input=True,
-            frames_per_buffer=self.samples_per_frame,
-            input_device_index=self.input_device,
-        )
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.samples_per_frame,
+                input_device_index=self.input_device,
+            )
         return p, stream
 
     def _read_frame(self, stream) -> bytes:
@@ -131,10 +136,11 @@ class ClapDetector:
             print("[clap] pyaudio not installed; clap detection disabled")
             return
 
-        last_clap = 0.0   # timestamp of the first clap of a potential pair
+        tap_times = []  # onsets of the current tap sequence
         last_onset = 0.0  # for refractory debounce
-        fired_at = 0.0    # for cooldown
+        fired_at = 0.0     # for cooldown
         in_loud = False
+        warned = False     # mic-open failures log once, not every retry
         handle = stream = None
 
         try:
@@ -149,8 +155,11 @@ class ClapDetector:
                 if stream is None:
                     try:
                         handle, stream = self._open_stream()
+                        warned = False
                     except Exception as e:
-                        print(f"[clap] cannot open mic: {e}")
+                        if not warned:
+                            print(f"[clap] cannot open mic (will keep trying): {e}")
+                            warned = True
                         time.sleep(1.0)
                         continue
 
@@ -186,7 +195,7 @@ class ClapDetector:
                 crest = peak / rms
                 now = time.monotonic()
 
-                # Rising-edge onset: loud AND sharp = one clap candidate.
+                # Rising-edge onset: loud AND sharp = one tap candidate.
                 if peak >= self.threshold and crest >= self.crest_factor and not in_loud:
                     in_loud = True
                     if now - last_onset < self.refractory:
@@ -194,25 +203,27 @@ class ClapDetector:
                     last_onset = now
 
                     if now - fired_at < self.cooldown:
-                        last_clap = 0.0
+                        tap_times.clear()
                         continue
 
-                    if last_clap and self.min_gap <= (now - last_clap) <= self.max_gap:
-                        last_clap = 0.0
-                        if self.can_fire():
-                            fired_at = now
-                            try:
-                                self.on_double_clap()
-                            except Exception as e:
-                                print(f"[clap] callback error: {e}")
+                    if tap_times and self.min_gap <= (now - tap_times[-1]) <= self.max_gap:
+                        tap_times.append(now)
+                        if len(tap_times) >= self.taps:
+                            tap_times.clear()
+                            if self.can_fire():
+                                fired_at = now
+                                try:
+                                    self.on_double_clap()
+                                except Exception as e:
+                                    print(f"[clap] callback error: {e}")
                     else:
-                        last_clap = now
+                        tap_times = [now]
                 elif peak < self.threshold * 0.6:
                     in_loud = False
 
-                # Drop a stale first clap that never got a partner.
-                if last_clap and (now - last_clap) > self.max_gap:
-                    last_clap = 0.0
+                # Drop a stale sequence that never completed.
+                if tap_times and (now - tap_times[-1]) > self.max_gap:
+                    tap_times.clear()
         finally:
             self._close(handle, stream)
 

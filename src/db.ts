@@ -855,7 +855,17 @@ export function getMessagesForDashboard(
   const params = idea !== undefined && idea !== ''
     ? [...jids, sinceTimestamp, idea, limit]
     : [...jids, sinceTimestamp, limit];
-  return db.prepare(sql).all(...params) as NewMessage[];
+  const rows = db.prepare(sql).all(...params) as NewMessage[];
+  // Display-only: strip prompt blocks wrapped in <!--hidden--> ... <!--/hidden-->
+  // — per-turn context a channel injects into the message text for the
+  // orchestrator to read (e.g. a voice app's persona+memory block). Stored
+  // content is untouched; every pickup path (getMessagesSince, getNewMessages)
+  // still sees the full text.
+  const hiddenBlock = /<!--hidden-->[\s\S]*?<!--\/hidden-->/g;
+  for (const r of rows) {
+    r.content = String(r.content ?? '').replace(hiddenBlock, '').replace(/^\s+/, '');
+  }
+  return rows;
 }
 
 export function createTask(
