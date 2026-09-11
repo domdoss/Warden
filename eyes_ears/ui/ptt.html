@@ -12,26 +12,19 @@
     transition: filter .12s, transform .1s; }
   button:active { transform: scale(.97); }
 
-  /* Horizontal strip: all three buttons in one row — TALK dominates the
-     left, VOICE pad next, stop sign far right. Thin status line below. */
+  /* Horizontal strip: red PUSH TO TALK on the left — one push starts the
+     conversation (back and forth until the stop sign or "that's all for
+     now") — and the yellow stop sign on the right stops everything. */
   #row { flex: 1; display: flex; gap: 12px; }
-  #talk { flex: 3; background: #d81b1b; color: #fff; font-size: 40px;
-    border-radius: 22px;
-    box-shadow: inset 0 -8px 0 rgba(0,0,0,.28), 0 0 34px rgba(255,40,40,.35); }
-  #talk:hover { filter: brightness(1.12); }
-  #talk.on { animation: breathe 1.6s infinite; }
-  @keyframes breathe { 50% { filter: brightness(.72); } }
-
-  /* Red VOICE pad — 25% the stop sign's size (flex .75 vs 1, font 24 vs 32).
-     One push starts voice mode: back and forth until the stop sign is
-     pressed or he says "that's all for now". */
-  #voice { flex: .75; background: #d81b1b; color: #fff; font-size: 24px;
+  #push { flex: .75; background: #d81b1b; color: #fff; font-size: 24px;
     line-height: 1.15; border-radius: 14px;
     box-shadow: inset 0 -6px 0 rgba(0,0,0,.28), 0 0 18px rgba(255,40,40,.25); }
-  #voice.on { animation: breathe 1.6s infinite; }
+  #push:hover { filter: brightness(1.12); }
+  #push.on { animation: breathe 1.6s infinite; }
+  @keyframes breathe { 50% { filter: brightness(.72); } }
 
-  /* Big YELLOW OCTAGON stop sign — far right of the row, far from TALK.
-     Dormant when idle; flashes hard the whole time a task is running. */
+  /* Big YELLOW OCTAGON stop sign — 25% bigger than the push pad, far right.
+     Dormant when idle; flashes hard the whole time a conversation runs. */
   #stop { flex: 1; background: #f5c400; color: #221800; font-size: 32px;
     border-radius: 16px;
     clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
@@ -53,29 +46,27 @@
 <body>
 <div class="wrap">
   <div id="row">
-    <button id="talk">TALK</button>
-    <button id="voice">VOICE</button>
+    <button id="push">PUSH TO TALK</button>
     <button id="stop">STOP</button>
   </div>
   <div id="space"></div>
 </div>
 <script>
-  var talk = document.getElementById('talk'), stop = document.getElementById('stop'),
-      voice = document.getElementById('voice'), space = document.getElementById('space');
+  var push = document.getElementById('push'), stop = document.getElementById('stop'),
+      space = document.getElementById('space');
 
   function paint(s) {
     if (!s || !s.ok) {
-      talk.classList.remove('on'); stop.classList.remove('busy');
-      voice.classList.remove('on');
+      push.classList.remove('on'); stop.classList.remove('busy');
       space.textContent = 'Jarvis is not answering — check he is running.';
       space.className = 'err';
       return;
     }
     if (s.busy) {
-      talk.classList.add('on'); stop.classList.add('busy');
+      push.classList.add('on'); stop.classList.add('busy');
       space.textContent = 'Working…'; space.className = '';
     } else {
-      talk.classList.remove('on'); stop.classList.remove('busy');
+      push.classList.remove('on'); stop.classList.remove('busy');
       space.textContent = s.note || ''; space.className = '';
     }
   }
@@ -85,11 +76,7 @@
     catch (e) { paint(null); }
   }
 
-  talk.addEventListener('click', async function () {
-    try { await window.pywebview.api.talk(); } catch (e) {}
-    setTimeout(poll, 300);
-  });
-  voice.addEventListener('click', async function () {
+  push.addEventListener('click', async function () {
     try { await window.pywebview.api.voice_start(); } catch (e) {}
     setTimeout(poll, 300);
   });
