@@ -97,12 +97,18 @@ class WardenBridge:
 
     # ---------- send ----------
 
-    async def send_text(self, text: str, sender_name: Optional[str] = None) -> dict:
+    async def send_text(
+        self,
+        text: str,
+        sender_name: Optional[str] = None,
+        idea: Optional[str] = None,
+    ) -> dict:
         return await self.client.send_message(
             text=text,
             jid=self.active_jid,
             sender_name=sender_name,
             model=self.model,
+            idea=idea,
         )
 
     async def send_image(

@@ -24,6 +24,7 @@ import time
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
+from urllib.parse import parse_qs
 
 # When packaged (PyInstaller --windowed), there is no console and any accidental
 # write to stdout/stderr on Windows can raise. Library warnings/debug logs are
@@ -103,6 +104,9 @@ class ControlServer:
                         barge-in). Calls recorder/player.cancel() directly
                         (thread-safe) and schedules a bridge stop + turn abort
                         on the main loop.
+        POST /talk    → momentary VAD turn (record-until-silence), same path
+                        as the hologram click; a second /talk mid-turn stops
+                        it. Used by the standalone PTT button window.
         GET  /status  → {"ok": true, "remote": <bool>, "busy": <bool>}
     """
 
@@ -144,13 +148,24 @@ class ControlServer:
                     self.end_headers()
 
             def do_POST(self):
-                if self.path == "/press":
+                path, _, query = self.path.partition("?")
+                params = parse_qs(query)
+                if path == "/press":
                     server.app._on_button_press()
                     self._send_json(200, {"ok": True})
-                elif self.path == "/release":
+                elif path == "/release":
                     server.app._on_button_release()
                     self._send_json(200, {"ok": True})
-                elif self.path == "/cancel":
+                elif path == "/talk":
+                    # Momentary VAD turn (record-until-silence) — same path as
+                    # the hologram click. Second /talk while a turn is active
+                    # hard-stops it (the interrupt branch in _handle_interaction).
+                    # ?steve=1 tags the turn Steve mode: the transcript is sent
+                    # with idea="steve" and the orchestrator gets the Steve-mode
+                    # instruction block (converse, don't act on rambling).
+                    server.app._on_hologram_click(steve=params.get("steve", ["0"])[0] == "1")
+                    self._send_json(200, {"ok": True})
+                elif path == "/cancel":
                     server.app._external_cancel()
                     self._send_json(200, {"ok": True})
                 else:
@@ -551,6 +566,13 @@ class JarvisApp:
             self._turn_done.clear()
             self._end_conversation = False
             vision_source = self._vision_source(text)
+            # Steve-mode turn (from the big-button PTT panel): tag the message
+            # idea="steve" so the orchestrator gets the Steve-mode instructions
+            # (converse, don't act on rambling). Consume the flag here — one
+            # turn at a time, so a plain bool is the whole state.
+            steve = getattr(self, "_steve_turn", False)
+            self._steve_turn = False
+            idea = "steve" if steve else None
             if vision_source is not None:
                 self._update_ui_state("processing")
                 image = await asyncio.get_running_loop().run_in_executor(
@@ -566,9 +588,9 @@ class JarvisApp:
                     )
                 else:
                     print(f"[jarvis] {vision_source} capture failed; sending text only")
-                    self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Jarvis"))
+                    self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Jarvis", idea=idea))
             else:
-                self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Jarvis"))
+                self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Jarvis", idea=idea))
             try:
                 await self._send_task
             except asyncio.CancelledError:
@@ -854,7 +876,7 @@ class JarvisApp:
         else:
             asyncio.run_coroutine_threadsafe(self._handle_interaction(), self.loop)
 
-    def _on_hologram_click(self):
+    def _on_hologram_click(self, steve: bool = False):
         """Hologram click (pywebview JS bridge). A click is a clean toggle:
         start a VAD turn when idle, hard-stop everything when a turn is active.
 
@@ -865,11 +887,16 @@ class JarvisApp:
         push-to-talk barge-in re-recording was why a second click "prompted anew"
         instead of stopping. _clap_turn forces VAD recording even in
         satellite/push-to-talk mode, exactly like a clap wake; the interrupt
-        branch in _handle_interaction handles the stop-on-second-click."""
+        branch in _handle_interaction handles the stop-on-second-click.
+
+        steve=True (the Steve-mode PTT panel, /talk?steve=1) tags the turn's
+        transcript idea="steve" so Warden injects the Steve-mode prompt block
+        (converse, don't act on rambling)."""
         if self._ui_only:
             return
         if not (self.loop and self.loop.is_running()):
             return
+        self._steve_turn = steve
         self._clap_turn = True  # force VAD recording in satellite/push-to-talk mode
         asyncio.run_coroutine_threadsafe(self._hologram_interaction(), self.loop)
 
