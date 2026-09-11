@@ -130,17 +130,10 @@ def _ollama_chat(body: dict, timeout: int = 180) -> dict:
         return json.loads(resp.read().decode() or "{}")
 
 
-def scan_claude_lines() -> list[str]:
-    """Every .md under ~/.claude — memory.md, journal.md, CLAUDE.md, all of
-    it — one 'path: line' per interesting line, bounded."""
-    files: list[str] = []
-    for root, dirs, names in os.walk(CLAUDE_DIR):
-        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
-        for n in names:
-            if n.endswith(".md"):
-                files.append(os.path.join(root, n))
+def scan_claude_lines(files: list[str]) -> list[str]:
+    """The given files — one 'path: line' per interesting line, bounded."""
     lines: list[str] = []
-    for p in sorted(files)[:MEM_MAX_FILES]:
+    for p in files:
         try:
             if os.path.getsize(p) > MEM_MAX_FILE_BYTES:
                 continue
@@ -336,31 +329,36 @@ def _marm_rpc(session, body, timeout=10):
     return json.loads(text[s:text.rfind("}") + 1]), new_session
 
 
-def claude_files_changed_since(ts: float) -> bool:
-    """Did any .md under ~/.claude change since the last scan? Cheap —
-    mtimes only, no reading. The whole startup freshness check."""
+def claude_files_since(ts: float) -> list[str]:
+    """.md files under ~/.claude changed since the last scan — mtimes only,
+    no reading. Empty list = memories fresh, instant startup. The scan is
+    incremental: one edited file costs one file, not a full pass."""
+    changed: list[str] = []
     if not os.path.isdir(CLAUDE_DIR):
-        return False
+        return changed
     for root, dirs, names in os.walk(CLAUDE_DIR):
         dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
         for n in names:
             if not n.endswith(".md"):
                 continue
+            p = os.path.join(root, n)
             try:
-                if os.path.getmtime(os.path.join(root, n)) > ts:
-                    return True
+                if os.path.getmtime(p) > ts:
+                    changed.append(p)
             except OSError:
                 pass
-    return False
+    return sorted(changed)[:MEM_MAX_FILES]
 
 
 def memory_startup_check(set_note, on_ready) -> None:
-    """Boot sequence, all by itself: if the memory files changed since the
-    last scan, rescan, classify, and file the new facts into MARM; then
-    the app announces it's ready (spoken — the user is blind)."""
-    if claude_files_changed_since(read_scan_ts()):
+    """Boot sequence, all by itself: re-extract only the memory files that
+    changed since the last scan, file their new facts into MARM (recall
+    dedup skips what's already filed); then the app announces it's ready
+    (spoken — the user is blind)."""
+    changed = claude_files_since(read_scan_ts())
+    if changed:
         set_note("Updating memories…")
-        fresh = classify_lines(scan_claude_lines())
+        fresh = classify_lines(scan_claude_lines(changed))
         if fresh:
             filed = marm_file_new(fresh)
             print(f"[steve] filed {filed} new facts into MARM", file=sys.stderr)
