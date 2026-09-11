@@ -14,8 +14,10 @@ record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
   status strip sit between it and TALK so the two can't be confused. It
   FLASHES while a turn is running; click stops whatever is in flight —
   recording, waiting, or speaking.
-- Red PUSH-TO-TALK pad to the LEFT of the stop sign, 25% its size: hold to
-  record, release to send — the same turn as TALK once the mic stops.
+- Red VOICE pad to the LEFT of the stop sign, 25% its size: one push starts
+  VOICE MODE — record until silence, send, speak the reply, listen again,
+  back and forth — until the stop sign is pressed or he says
+  "that's all for now".
 - The window parks in the bottom-left corner and stays on top (always
   visible).
 - Status strip between the buttons: idle when empty, short status text
@@ -379,6 +381,12 @@ def warden_url_from_config() -> str:
     return ""
 
 
+def voice_mode_done(text: str) -> bool:
+    """'that's all for now' — any casing/punctuation — ends voice mode."""
+    norm = re.sub(r"[^a-z0-9]+", " ", text.lower().replace("'", "")).strip()
+    return "thats all for now" in norm or "that is all for now" in norm
+
+
 class SteveApp:
     """One worker thread per turn; STOP cancels at any stage."""
 
@@ -413,7 +421,6 @@ class SteveApp:
         self._lock = threading.Lock()
         self._worker = None  # live turn thread, None when idle
         self._stop = threading.Event()
-        self._ptt_release = threading.Event()  # set = push-to-talk released
         self._note = ""  # status-strip text while the startup scan runs
         threading.Thread(
             target=memory_startup_check,
@@ -493,13 +500,40 @@ class SteveApp:
             return
         self._pipeline(wav)
 
-    def _ptt_turn(self) -> None:
-        self.player.play_bytes(self.beeps.start_beep())
-        wav = self.recorder.record_until_released(self._ptt_release)
-        if self._stop.is_set() or not wav:
-            self._finish_turn(False)
-            return
-        self._pipeline(wav)
+    def _voice_loop(self) -> None:
+        """Voice mode: back and forth — listen, send, speak the reply —
+        until the stop sign is pressed or he says 'that's all for now'."""
+        failed = False
+        try:
+            while not self._stop.is_set():
+                self.player.play_bytes(self.beeps.start_beep())
+                wav = self.recorder.record_until_silence()
+                if self._stop.is_set():
+                    return
+                text = (self.stt.transcribe(wav) or "").strip() if wav else ""
+                if self._stop.is_set():
+                    return
+                if not text:
+                    continue  # nothing said — listen again
+                if voice_mode_done(text):
+                    break
+                my_id = self._send(text)
+                if self._stop.is_set():
+                    return
+                reply = self._await_reply(my_id)
+                if self._stop.is_set():
+                    return
+                if not reply:
+                    failed = True  # asked, but no answer came back
+                    break
+                audio = self.tts.synthesize(reply)
+                if audio and not self._stop.is_set():
+                    self.player.play_bytes(audio)
+        except Exception as e:
+            failed = True
+            print(f"[steve] voice mode failed: {e}", file=sys.stderr)
+        finally:
+            self._finish_turn(failed)
 
     def _pipeline(self, wav: bytes) -> None:
         """Everything after the mic stops, shared by both buttons."""
@@ -547,19 +581,14 @@ class SteveApp:
             self._worker.start()
         return json.dumps({"ok": True, "busy": True})
 
-    def ptt_down(self) -> str:
+    def voice_start(self) -> str:
         with self._lock:
             if self._worker is not None:
                 return json.dumps({"ok": True, "busy": True})
             self._stop.clear()
-            self._ptt_release.clear()
-            self._worker = threading.Thread(target=self._ptt_turn, daemon=True)
+            self._worker = threading.Thread(target=self._voice_loop, daemon=True)
             self._worker.start()
         return json.dumps({"ok": True, "busy": True})
-
-    def ptt_up(self) -> str:
-        self._ptt_release.set()
-        return json.dumps({"ok": True})
 
     def stop(self) -> str:
         self._stop.set()

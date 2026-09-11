@@ -29,13 +29,14 @@
     padding: 10px 16px; box-sizing: border-box; }
   #space.err { color: #ff9090; border-color: #4a2020; }
 
-  /* Bottom row — red PUSH-TO-TALK pad on the LEFT of the stop sign,
-     25% its size (flex .75 vs 1, font 24 vs 32). Hold to record. */
+  /* Bottom row — red VOICE pad on the LEFT of the stop sign, 25% its size
+     (flex .75 vs 1, font 24 vs 32). One push starts voice mode: back and
+     forth until the stop sign is pressed or he says "that's all for now". */
   #row { flex: 1.6; display: flex; gap: 14px; }
-  #ptt { flex: .75; background: #d81b1b; color: #fff; font-size: 24px;
+  #voice { flex: .75; background: #d81b1b; color: #fff; font-size: 24px;
     line-height: 1.15; border-radius: 14px;
     box-shadow: inset 0 -6px 0 rgba(0,0,0,.28), 0 0 18px rgba(255,40,40,.25); }
-  #ptt.on { animation: breathe 1.6s infinite; }
+  #voice.on { animation: breathe 1.6s infinite; }
 
   /* Big YELLOW OCTAGON stop sign — right side of the bottom row, as far
      from TALK as the window allows. Dormant when idle; flashes hard (bright +
@@ -56,18 +57,18 @@
   <button id="talk">TALK</button>
   <div id="space"></div>
   <div id="row">
-    <button id="ptt">PUSH<br>TO TALK</button>
+    <button id="voice">VOICE</button>
     <button id="stop">STOP</button>
   </div>
 </div>
 <script>
   var talk = document.getElementById('talk'), stop = document.getElementById('stop'),
-      ptt = document.getElementById('ptt'), space = document.getElementById('space');
+      voice = document.getElementById('voice'), space = document.getElementById('space');
 
   function paint(s) {
     if (!s || !s.ok) {
       talk.classList.remove('on'); stop.classList.remove('busy');
-      ptt.classList.remove('on');
+      voice.classList.remove('on');
       space.textContent = 'Jarvis is not answering — check he is running.';
       space.className = 'err';
       return;
@@ -95,20 +96,10 @@
     setTimeout(poll, 300);
   });
 
-  ptt.addEventListener('pointerdown', function (e) {
-    e.preventDefault();
-    ptt.classList.add('on');
-    try { window.pywebview.api.ptt_down(); } catch (err) {}
-  });
-  function pttUp() {
-    if (!ptt.classList.contains('on')) return;
-    ptt.classList.remove('on');
-    try { window.pywebview.api.ptt_up(); } catch (err) {}
+  voice.addEventListener('click', async function () {
+    try { await window.pywebview.api.voice_start(); } catch (e) {}
     setTimeout(poll, 300);
-  }
-  ptt.addEventListener('pointerup', pttUp);
-  ptt.addEventListener('pointerleave', pttUp);
-  ptt.addEventListener('pointercancel', pttUp);
+  });
 
   poll(); setInterval(poll, 1200);
 </script>
