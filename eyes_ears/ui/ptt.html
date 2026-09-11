@@ -7,59 +7,57 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: #050508;
     font-family: system-ui, sans-serif; user-select: none; }
   .wrap { height: 100%; display: flex; flex-direction: column;
-    align-items: stretch; justify-content: space-between; padding: 22px;
-    box-sizing: border-box; gap: 24px; }
+    padding: 14px; box-sizing: border-box; gap: 12px; }
   button { border: none; cursor: pointer; font-weight: 800; letter-spacing: 2px;
     transition: filter .12s, transform .1s; }
   button:active { transform: scale(.97); }
 
-  /* Big RED talk button — top of the window, dominates the panel */
-  #talk { flex: 3; background: #d81b1b; color: #fff; font-size: 44px;
-    border-radius: 26px;
-    box-shadow: inset 0 -10px 0 rgba(0,0,0,.28), 0 0 34px rgba(255,40,40,.35); }
+  /* Horizontal strip: all three buttons in one row — TALK dominates the
+     left, VOICE pad next, stop sign far right. Thin status line below. */
+  #row { flex: 1; display: flex; gap: 12px; }
+  #talk { flex: 3; background: #d81b1b; color: #fff; font-size: 40px;
+    border-radius: 22px;
+    box-shadow: inset 0 -8px 0 rgba(0,0,0,.28), 0 0 34px rgba(255,40,40,.35); }
   #talk:hover { filter: brightness(1.12); }
   #talk.on { animation: breathe 1.6s infinite; }
   @keyframes breathe { 50% { filter: brightness(.72); } }
 
-  /* Status strip — sits BETWEEN the buttons as a wide separation gap
-     so the stop sign can never be mistaken for the talk button */
-  #space { min-height: 110px; border-radius: 16px; background: #0d1018;
-    border: 1px solid #232a3a; color: #93a3c4; font-size: 19px; line-height: 1.4;
-    display: flex; align-items: center; justify-content: center; text-align: center;
-    padding: 10px 16px; box-sizing: border-box; }
-  #space.err { color: #ff9090; border-color: #4a2020; }
-
-  /* Bottom row — red VOICE pad on the LEFT of the stop sign, 25% its size
-     (flex .75 vs 1, font 24 vs 32). One push starts voice mode: back and
-     forth until the stop sign is pressed or he says "that's all for now". */
-  #row { flex: 1.6; display: flex; gap: 14px; }
+  /* Red VOICE pad — 25% the stop sign's size (flex .75 vs 1, font 24 vs 32).
+     One push starts voice mode: back and forth until the stop sign is
+     pressed or he says "that's all for now". */
   #voice { flex: .75; background: #d81b1b; color: #fff; font-size: 24px;
     line-height: 1.15; border-radius: 14px;
     box-shadow: inset 0 -6px 0 rgba(0,0,0,.28), 0 0 18px rgba(255,40,40,.25); }
   #voice.on { animation: breathe 1.6s infinite; }
 
-  /* Big YELLOW OCTAGON stop sign — right side of the bottom row, as far
-     from TALK as the window allows. Dormant when idle; flashes hard (bright +
-     scale + glow) the whole time a task is running. */
+  /* Big YELLOW OCTAGON stop sign — far right of the row, far from TALK.
+     Dormant when idle; flashes hard the whole time a task is running. */
   #stop { flex: 1; background: #f5c400; color: #221800; font-size: 32px;
-    border-radius: 18px;
+    border-radius: 16px;
     clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
-    box-shadow: inset 0 -8px 0 rgba(0,0,0,.22); }
+    box-shadow: inset 0 -6px 0 rgba(0,0,0,.22); }
   #stop:hover { filter: brightness(1.1); }
   #stop.busy { animation: strobe .7s infinite; }
   @keyframes strobe {
     50% { filter: brightness(.35); transform: scale(.94); }
   }
+
+  /* Thin status line under the button row */
+  #space { height: 34px; border-radius: 10px; background: #0d1018;
+    border: 1px solid #232a3a; color: #93a3c4; font-size: 15px;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 2px 12px; box-sizing: border-box; overflow: hidden; }
+  #space.err { color: #ff9090; border-color: #4a2020; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <button id="talk">TALK</button>
-  <div id="space"></div>
   <div id="row">
+    <button id="talk">TALK</button>
     <button id="voice">VOICE</button>
     <button id="stop">STOP</button>
   </div>
+  <div id="space"></div>
 </div>
 <script>
   var talk = document.getElementById('talk'), stop = document.getElementById('stop'),
@@ -91,13 +89,12 @@
     try { await window.pywebview.api.talk(); } catch (e) {}
     setTimeout(poll, 300);
   });
-  stop.addEventListener('click', async function () {
-    try { await window.pywebview.api.stop(); } catch (e) {}
-    setTimeout(poll, 300);
-  });
-
   voice.addEventListener('click', async function () {
     try { await window.pywebview.api.voice_start(); } catch (e) {}
+    setTimeout(poll, 300);
+  });
+  stop.addEventListener('click', async function () {
+    try { await window.pywebview.api.stop(); } catch (e) {}
     setTimeout(poll, 300);
   });
 
