@@ -160,10 +160,11 @@ class ControlServer:
                     # Momentary VAD turn (record-until-silence) — same path as
                     # the hologram click. Second /talk while a turn is active
                     # hard-stops it (the interrupt branch in _handle_interaction).
-                    # ?steve=1 tags the turn Steve mode: the transcript is sent
-                    # with idea="steve" and the orchestrator gets the Steve-mode
-                    # instruction block (converse, don't act on rambling).
-                    server.app._on_hologram_click(steve=params.get("steve", ["0"])[0] == "1")
+                    # Steve mode is the DEFAULT state (Steve is the only
+                    # user): the transcript is tagged idea="steve" and the
+                    # orchestrator gets the Steve-mode instruction block
+                    # unless a caller explicitly opts out with ?steve=0.
+                    server.app._on_hologram_click(steve=params.get("steve", ["1"])[0] != "0")
                     self._send_json(200, {"ok": True})
                 elif path == "/cancel":
                     server.app._external_cancel()
