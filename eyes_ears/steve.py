@@ -86,8 +86,10 @@ PERSONA — you are Petal, a warm Northern companion in the Donna Noble mould: k
 OLLAMA_URL = "http://127.0.0.1:11434"
 MEM_MODEL = "granite4.1:8b"
 CLAUDE_DIR = os.path.expanduser("~/.claude")
-MEM_CACHE = os.path.expanduser("~/.local/state/steve/memory.json")
+MEM_CACHE = os.path.expanduser("~/.local/state/steve/last_scan")
 MARM_URL = os.environ.get("MARM_URL", "http://127.0.0.1:8001/mcp")
+MARM_SESSION = "steve memory"
+MARM_PREFIX = "steve memory — "
 MEM_MAX_FILES = 300            # .md files per scan
 MEM_MAX_FILE_BYTES = 200_000   # skip huge files
 MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc first)
@@ -213,19 +215,63 @@ def _classify_chunk(chunk: list[str]) -> list[str]:
         return []
 
 
-def load_cached_facts() -> tuple[list[str], float]:
+def marm_tool_call(name: str, args: dict) -> dict | None:
+    """One MCP tools/call against MARM, parsed (Warden's marmToolCall
+    pattern — newest content block that parses as JSON wins)."""
+    init, session = _marm_rpc(None, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": "steve-app", "version": "1.0.0"},
+        },
+    })
+    if init is None:
+        raise RuntimeError("MARM initialize failed (not running?)")
+    _marm_rpc(session, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    r, _ = _marm_rpc(session, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": name, "arguments": args},
+    })
+    if not r or not r.get("result"):
+        return None
+    blocks = [c.get("text") for c in (r["result"].get("content") or []) if isinstance(c, dict)]
+    for b in reversed(blocks):
+        s = (b or "").find("{")
+        if s != -1:
+            e = b.rfind("}")
+            if e > s:
+                try:
+                    return json.loads(b[s:e + 1])
+                except ValueError:
+                    continue
+    return None
+
+
+def marm_load_facts() -> list[str]:
+    """The remembered facts, read back out of MARM — the ONLY memory store.
+    Empty when MARM has no session yet (fresh install, before first scan);
+    raises when MARM itself is unreachable."""
+    r = marm_tool_call("marm_log_show", {"session_name": MARM_SESSION})
+    facts = []
+    for entry in ((r or {}).get("entries") or []):
+        c = str(entry.get("full_entry") or "")
+        if c.startswith(MARM_PREFIX):
+            facts.append(c[len(MARM_PREFIX):].strip())
+    return facts
+
+
+def read_scan_ts() -> float:
     try:
         with open(MEM_CACHE, encoding="utf-8") as f:
-            d = json.load(f)
-        return [str(x) for x in (d.get("facts") or [])], float(d.get("ts") or 0)
+            return float(f.read().strip() or 0)
     except Exception:
-        return [], 0.0
+        return 0.0
 
 
-def save_cached_facts(facts: list[str]) -> None:
+def write_scan_ts() -> None:
     os.makedirs(os.path.dirname(MEM_CACHE), exist_ok=True)
     with open(MEM_CACHE, "w", encoding="utf-8") as f:
-        json.dump({"facts": facts, "ts": time.time()}, f)
+        f.write(str(time.time()))
 
 
 def _marm_rpc(session, body, timeout=10):
@@ -256,9 +302,8 @@ def _marm_rpc(session, body, timeout=10):
 
 
 def marm_log_entries(entries: list[str]) -> bool:
-    """File facts into the existing MARM memory server — the same durable
-    store Warden's own classifier writes to, so the agents can recall them.
-    Best-effort: MARM down just logs, the app is unaffected."""
+    """File facts into MARM — the only store. Everything lands in one fixed
+    session (the Topic: opener would date-suffix the name daily)."""
     if not entries:
         return True
     session = None
@@ -276,14 +321,17 @@ def marm_log_entries(entries: list[str]) -> bool:
         for e in entries:
             r, _ = _marm_rpc(session, {
                 "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {"name": "marm_log_entry", "arguments": {"entry": e}},
+                "params": {
+                    "name": "marm_log_entry",
+                    "arguments": {"entry": e, "session_name": MARM_SESSION},
+                },
             })
             if not r or not r.get("result"):
                 raise RuntimeError("marm_log_entry returned no result")
         return True
     except Exception as e:
         print(f"[steve] MARM filing failed: {e}", file=sys.stderr)
-        return False
+        raise
 
 
 def claude_files_changed_since(ts: float) -> bool:
@@ -305,36 +353,26 @@ def claude_files_changed_since(ts: float) -> bool:
 
 
 def memory_startup_check(set_state, set_note, on_ready) -> None:
-    """Boot sequence, all by itself: cached facts load instantly; if the
-    memory files changed since the last scan, rescan and re-classify; then
-    the app announces it's ready (spoken — the user is blind)."""
-    facts, ts = load_cached_facts()
+    """Boot sequence, all by itself: if the memory files changed since the
+    last scan, rescan, classify, and file into MARM — the only store; then
+    load the facts back out of MARM and announce ready."""
+    if claude_files_changed_since(read_scan_ts()):
+        set_note("Updating memories…")
+        lines = scan_claude_lines()
+        if lines:
+            fresh = classify_lines(lines)
+            if fresh:
+                prev = set(marm_load_facts())
+                new = [f for f in fresh if f not in prev]
+                if marm_log_entries([f"{MARM_PREFIX}{f}" for f in new]):
+                    print(f"[steve] filed {len(new)} new facts into MARM", file=sys.stderr)
+                write_scan_ts()
+    facts = marm_load_facts()
+    set_state(facts)
     if facts:
-        set_state(facts)
-    try:
-        if not facts or claude_files_changed_since(ts):
-            set_note("Updating memories…")
-            lines = scan_claude_lines()
-            if lines:
-                fresh = classify_lines(lines)
-                if fresh:
-                    prev = set(facts)
-                    save_cached_facts(fresh)
-                    set_state(fresh)
-                    print(f"[steve] memory scan: {len(lines)} lines -> {len(fresh)} facts", file=sys.stderr)
-                    # New-since-last-scan facts go into MARM — the durable
-                    # store the agents recall from — not just the local cache.
-                    new = [f for f in fresh if f not in prev]
-                    if marm_log_entries(
-                        ["Topic: steve memory"]
-                        + [f"steve memory — {f}" for f in new]
-                    ):
-                        print(f"[steve] filed {len(new)} new facts into MARM", file=sys.stderr)
-    except Exception as e:
-        print(f"[steve] memory scan failed: {e}", file=sys.stderr)
-    finally:
-        set_note("")
-        on_ready()
+        print(f"[steve] {len(facts)} facts loaded from MARM", file=sys.stderr)
+    set_note("")
+    on_ready()
 
 
 def warden_url_from_config() -> str:
