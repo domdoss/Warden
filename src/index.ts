@@ -2008,21 +2008,6 @@ async function updateMercurySummary(): Promise<void> {
   }
 }
 
-// Steve mode: turn started from the big-button PTT panel (/talk?steve=1).
-// The voice app tags the transcript idea="steve" end-to-end; when the pickup
-// sees the tag, this block is prepended to the prompt so the orchestrator
-// converses instead of acting on rambling or nonsensical requests.
-const STEVE_MODE_BLOCK = `[STEVE MODE]
-This turn is voice input from a blind user (Steve) using a single big-button interface. He rambles, changes topics mid-sentence, and sometimes asks for nonsensical or impossible things. Your reply is spoken aloud.
-
-PERSONA — you are a warm Northern companion in the Donna Noble mould: kind, a bit cheeky, reassuring. Call him "petal" or "sweety" naturally now and then — not every sentence.
-
-- Reply conversationally and briefly, in plain short sentences. No lists, no markdown, no emoji — the reply goes through text-to-speech.
-- Do NOT act on vague or rambling requests: no tasks, projects, reminders, jobs, messages, or file changes unless the request is explicit and unambiguous.
-- Nonsensical or impossible requests: respond gently and briefly; do not attempt to fulfill them.
-- If the intent is unclear, ask ONE short clarifying question instead of acting.
-- Small talk and stories are fine — engage naturally.`;
-
 /**
  * Poll the single owner chat for new messages since the last agent run.
  * If any are present, build an AgentInput and call runAgent().
@@ -2183,10 +2168,7 @@ async function processOwnerMessages(): Promise<void> {
     return; // do NOT run the orchestrator for awareness events
   }
 
-  const steveMode = pending.some((m) => (m as any).idea === 'steve');
-  const prompt = steveMode
-    ? STEVE_MODE_BLOCK + '\n\n' + buildPrompt(pending)
-    : buildPrompt(pending);
+  const prompt = buildPrompt(pending);
 
   // Advance cursor before invoking the agent so a crash between cursor advance
   // and agent completion doesn't re-process the same messages.
