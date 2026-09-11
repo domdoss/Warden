@@ -198,6 +198,56 @@ class AudioRecorder:
 
         return self._frames_to_wav(frames)
 
+    def record_until_released(self, release: threading.Event) -> bytes:
+        """Push-to-talk: record everything from call time until the caller
+        sets `release` (bounded by max_duration; cancel() aborts to b""
+        like the other recorders). The caller owns the event."""
+        try:
+            with _suppress_alsa():
+                import pyaudio
+        except ImportError:
+            raise RuntimeError("pyaudio not installed")
+
+        self._cancel_event.clear()
+
+        with _suppress_alsa():
+            p = pyaudio.PyAudio()
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=self.channels,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=self.samples_per_frame,
+            input_device_index=self.input_device_index,
+        )
+
+        frames = []
+        held_ms = 0
+        max_duration_ms = int(self.max_duration * 1000)
+        try:
+            while True:
+                if self._cancel_event.is_set():
+                    print("[rec] cancelled")
+                    return b""
+                if release.is_set():
+                    break
+                frame = stream.read(self.samples_per_frame, exception_on_overflow=False)
+                if len(frame) != self.bytes_per_frame:
+                    continue
+                frames.append(frame)
+                held_ms += self._FRAME_MS
+                if held_ms >= max_duration_ms:
+                    print("[rec] hit max_duration")
+                    break
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+
+        if not frames:
+            return b""
+        return self._frames_to_wav(frames)
+
     def _frames_to_wav(self, frames) -> bytes:
         buffer = io.BytesIO()
         data = b"".join(frames)

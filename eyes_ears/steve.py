@@ -14,6 +14,10 @@ record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
   status strip sit between it and TALK so the two can't be confused. It
   FLASHES while a turn is running; click stops whatever is in flight —
   recording, waiting, or speaking.
+- Red PUSH-TO-TALK pad to the LEFT of the stop sign, 25% its size: hold to
+  record, release to send — the same turn as TALK once the mic stops.
+- The window parks in the bottom-left corner and stays on top (always
+  visible).
 - Status strip between the buttons: idle when empty, short status text
   otherwise.
 - Audible cues for a blind user: short high beep when listening starts,
@@ -409,6 +413,7 @@ class SteveApp:
         self._lock = threading.Lock()
         self._worker = None  # live turn thread, None when idle
         self._stop = threading.Event()
+        self._ptt_release = threading.Event()  # set = push-to-talk released
         self._note = ""  # status-strip text while the startup scan runs
         threading.Thread(
             target=memory_startup_check,
@@ -479,14 +484,27 @@ class SteveApp:
             time.sleep(2)
         return None
 
-    # ----- Turn worker -----
+    # ----- Turn workers -----
     def _turn(self) -> None:
+        self.player.play_bytes(self.beeps.start_beep())
+        wav = self.recorder.record_until_silence()
+        if self._stop.is_set() or not wav:
+            self._finish_turn(False)
+            return
+        self._pipeline(wav)
+
+    def _ptt_turn(self) -> None:
+        self.player.play_bytes(self.beeps.start_beep())
+        wav = self.recorder.record_until_released(self._ptt_release)
+        if self._stop.is_set() or not wav:
+            self._finish_turn(False)
+            return
+        self._pipeline(wav)
+
+    def _pipeline(self, wav: bytes) -> None:
+        """Everything after the mic stops, shared by both buttons."""
         failed = False
         try:
-            self.player.play_bytes(self.beeps.start_beep())
-            wav = self.recorder.record_until_silence()
-            if self._stop.is_set() or not wav:
-                return
             text = (self.stt.transcribe(wav) or "").strip()
             if self._stop.is_set() or not text:
                 return
@@ -506,15 +524,18 @@ class SteveApp:
             failed = True
             print(f"[steve] turn failed: {e}", file=sys.stderr)
         finally:
-            try:
-                if failed and not self._stop.is_set():
-                    self.player.play_bytes(self.beeps.error_beep())
-                elif not self._stop.is_set():
-                    self.player.play_bytes(self.beeps.stop_beep())
-            except Exception:
-                pass
-            with self._lock:
-                self._worker = None
+            self._finish_turn(failed)
+
+    def _finish_turn(self, failed: bool) -> None:
+        try:
+            if failed and not self._stop.is_set():
+                self.player.play_bytes(self.beeps.error_beep())
+            elif not self._stop.is_set():
+                self.player.play_bytes(self.beeps.stop_beep())
+        except Exception:
+            pass
+        with self._lock:
+            self._worker = None
 
     # ----- pywebview JS bridge -----
     def talk(self) -> str:
@@ -525,6 +546,20 @@ class SteveApp:
             self._worker = threading.Thread(target=self._turn, daemon=True)
             self._worker.start()
         return json.dumps({"ok": True, "busy": True})
+
+    def ptt_down(self) -> str:
+        with self._lock:
+            if self._worker is not None:
+                return json.dumps({"ok": True, "busy": True})
+            self._stop.clear()
+            self._ptt_release.clear()
+            self._worker = threading.Thread(target=self._ptt_turn, daemon=True)
+            self._worker.start()
+        return json.dumps({"ok": True, "busy": True})
+
+    def ptt_up(self) -> str:
+        self._ptt_release.set()
+        return json.dumps({"ok": True})
 
     def stop(self) -> str:
         self._stop.set()
@@ -558,11 +593,14 @@ def main() -> None:
     url = args.warden or warden_url_from_config() or DEFAULT_WARDEN
 
     app = SteveApp(url)
+    scr = webview.screens()[0]  # primary screen — park bottom-left, on top
     webview.create_window(
         "Steve",
         os.path.join(HERE, "ui", "ptt.html"),
         js_api=app,
         width=420, height=760,
+        x=scr.x, y=scr.y + scr.height - 760,
+        on_top=True,  # always visible
         resizable=True,
         background_color="#050508",
     )
