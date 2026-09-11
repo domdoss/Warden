@@ -16,13 +16,15 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     'desktop-vision': { name: 'desktop-vision', tools: ['desktop_screenshot'], tier: 'public' },
     capture:   { name: 'capture',   tools: ['desktop_screenshot', 'webcam_capture', 'read_image'], tier: 'public' },
     // Iris's merged action tools (2026-09-09 collapse): one tool per noun,
-    // `action` param selects the operation. Project management + admin were
-    // dropped from iris entirely — email, scheduled tasks, calendar, and
-    // alarms are the core.
+    // `action` param selects the operation. Admin was dropped from iris
+    // entirely — email, scheduled tasks, calendar, and alarms are the core.
     tasks:     { name: 'tasks',     tools: ['task'], tier: 'public' },
     email:     { name: 'email',     tools: ['email'], tier: 'private' },
     calendar:  { name: 'calendar',  tools: ['calendar'], tier: 'private' },
     alarms:    { name: 'alarms',    tools: ['alarm'], tier: 'private' },
+    // Projects/work-tasks (re-wired 2026-09-11): the 17 flat tools from the
+    // 2026-09-09 collapse are ONE merged `project` tool (kind + action).
+    projects:  { name: 'projects',  tools: ['project'], tier: 'public' },
     documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
@@ -69,10 +71,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris — single toolcall agent (byte merged in 2026-09-05). 2026-09-09
     // collapse: 4 merged action tools (email/task/calendar/alarm), one per
-    // noun with an `action` param. Project management, work tasks, and admin
-    // were dropped entirely. Iris is single-shot (one tool call per
-    // delegation); the orchestrator drives any multi-step flow by calling
-    // iris once per step.
+    // noun with an `action` param. Iris's fine-tune is trained on exactly
+    // these four schemas. 2026-09-11: the merged `project` tool (kind+action,
+    // in projects/ above) is deliberately NOT here — no subagent owns it, so
+    // it flows into the orchestrator's own tool pool and the orchestrator
+    // handles projects/work-tasks DIRECTLY (simple CRUD is one tool call;
+    // no delegation, and iris stays in-distribution). Iris is single-shot
+    // (one tool call per delegation); the orchestrator drives any
+    // multi-step flow by calling iris once per step.
     'iris-core':     { name: 'iris-core',     tools: ['email','task','calendar','alarm'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
 };

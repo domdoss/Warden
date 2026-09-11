@@ -704,7 +704,7 @@ WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — ca
 
 FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read only that missed section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
 
-READ ONCE — Read each file the task names in a single pass (one Read or the specific ranges you need), then edit from what you have. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
+READ WHOLE, READ ONCE — read each file the task names in ONE full Read, no limit/offset paging in small line batches — tiny blocks hide the file's structure and waste the window. Only range-read a file that genuinely overflows your context. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
 
 WEB — Two tools, two jobs. No site-specific rituals — apply the same rule to every site:
 • \`WebFetch\` — READS a page server-side and returns clean Markdown (headings/links/lists/code/tables preserved; nav+footer+ads stripped) WITHOUT launching the browser. It is the DEFAULT for any "find X", "look up", "what does this page say", or "pull up the link for" task. If the ask can be answered from the DOM alone, use \`WebFetch\` and put the answer in your reply — do NOT open the browser.
@@ -752,7 +752,7 @@ WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — ca
 
 FILES — Read only the files your task names — don't explore unrelated files. You have full filesystem access — use absolute paths outside the workspace (\`~/Projects/\`, \`~/Documents/\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right directory instead of repeating full paths.
 
-READ ONCE — Read each file the task names in a single pass (one Read or the specific ranges you need), then edit from what you have. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
+READ WHOLE, READ ONCE — your context window is massive: use it. Read each file the task names in ONE full Read with NO limit/offset — never window through a file in small line batches (limit/offset paging and sed range dumps are horribly inefficient and hide the file's structure). Then edit from what you have. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
 
 MAKE THE CALL — work happens through tool calls, not narration. The turn that creates the deliverable (Write, Edit, Bash heredoc) is the turn that counts; describing what you are about to write is a no-op — when you know what the file needs, write it in that same turn. State results in the past tense (files written, commands run); state intentions by acting on them.
 
@@ -781,7 +781,9 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // (byte merged in 2026-09-05; core-only redesign 2026-09-09 per Steve;
         // 2026-09-09 collapse: 41 flat schemas → 4 merged action tools —
         // alarm, task, calendar, email — one tool per noun, `action` selects
-        // the operation. Projects, work tasks, and admin dropped entirely.
+        // the operation. Iris's fine-tune is trained on exactly these four
+        // schemas; projects/work-tasks stay OUT (2026-09-11: the merged
+        // `project` tool is orchestrator-direct instead — see toolsets.ts).
         // No BOTH-tier/skill/MCP merges, terse structured prompt, no examples.)
         maxIterations: 1,
         summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email. Use for inbox tasks, alarm and scheduling requests.',
@@ -3052,16 +3054,24 @@ async function runSubAgent(
         // resets the timer forever and never aborts. The budget is per-agent
         // (AGENT_SILENCE_OVERRIDE above) — agents that emit large buffered
         // tool calls on small local models need more than the 120s default.
+        // Two budgets: BEFORE the first chunk the allowance is generous
+        // (cloud models can spend minutes on prompt prefill before the first
+        // token — a 120s first-token cap killed glm jobs whose TTFT was
+        // legitimate and every retry re-paid the same silent prefill);
+        // AFTER the first chunk the normal silence budget applies.
         // Declared outside the try so the catch can clear the timer on error.
         const silenceController = new AbortController();
         const SILENCE_MS = subAgentSilenceMs(agentName);
+        const FIRST_TOKEN_MS = Math.max(SILENCE_MS, 300_000);
         let silenceTimer: any;
+        let gotFirstChunk = false;
         const resetSilence = () => {
             if (silenceTimer) clearTimeout(silenceTimer);
             silenceTimer = setTimeout(() => {
-                log(`[${agentName}] Stream silent for ${SILENCE_MS / 1000}s — aborting fetch`);
+                log(`[${agentName}] Stream silent for ${(gotFirstChunk ? SILENCE_MS : FIRST_TOKEN_MS) / 1000}s (pre/post first chunk) — aborting fetch`);
                 try { silenceController.abort(); } catch { /* already aborted */ }
-            }, SILENCE_MS);
+            }, gotFirstChunk ? SILENCE_MS : FIRST_TOKEN_MS);
+            gotFirstChunk = true;
         };
         // Throttle the per-iteration progress status so a fast stream (~40 t/s)
         // doesn't emit a status line per token; emit every ~400ms while generating.
@@ -3508,6 +3518,10 @@ async function runNativeOllama(input: ContainerInput) {
         'report_task_failure',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request',
+        // Projects/work-tasks CRUD — orchestrator-direct (no subagent owns
+        // the merged `project` tool). Always-on so a "add a task" ask can
+        // never be ranked out or shadowed by the scheduled-task `task` tool.
+        'project',
         // Vision captures are orchestrator-only (sub-agents can't see images —
         // _pendingImages is consumed only by runNativeOllama). desktop_screenshot,
         // webcam_capture, and read_image are ALL keyword-gated via the dynamic
@@ -3707,11 +3721,10 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
 - **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas.
-- **iris** — email, digests, scheduling, reminders, calendar, and work management: projects, work tasks, to-dos, deliverables, blockers, priorities, financials, and time tracking. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, calendar events, and work items ("create a task", "add a to-do", blockers, financials) are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris is single-shot: it makes one tool call per request; for a list→id→act flow, call iris once per step with the specific id.
+- **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris is single-shot: it makes one tool call per request; for a list→id→act flow, call iris once per step with the specific id.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
-- **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
 - **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
 
 # ROUTING
@@ -3725,9 +3738,8 @@ Cue words:
 - "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
 - "open X so I can see it", "show me the page/file" → **atlas** (opens local files via open_app, web pages in the real browser).
 - "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
-- "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
-- Work tasks, to-dos, deliverables, blockers, priorities, financials, time tracking → **iris**, same as scheduling. One call with the title and required fields (blockers: title + description; financials: amount + category).
+- Work tasks, to-dos, projects, deliverables, blockers, priorities, financials → your own \`project\` tool, directly — no delegation, it's one call. Missing an id (project, task, deliverable, blocker, priority)? \`project\` list first, then act with the id. A "task" with no time trigger means a work task (project tool), not a reminder.
 - Diagnosis — any "why/what happened" about something Warden did or didn't do (stalled/failed/never-finished job, "did you get that right", "double-check") → **artemis**. Never answer from your own memory — artemis reads logs and databases.
 - "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it, tell the user they're with Atlas, end your turn. Their messages then go straight to Atlas; you don't relay. Only for an explicit handoff.
 - A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
@@ -3759,7 +3771,6 @@ Iris makes ONE tool call per dispatch, then returns. Write one imperative senten
 - Reminders: name the kind — one-time, recurring interval, or recurring cron — and give the message verbatim. A delay with no clock time: "Set a one-time reminder to <message> in <delay>." A clock time: "Set a one-time reminder to <message> at <clock time>." Recurring: "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
 - Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply."
 - Calendar: "Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
-- Work items: give the title and required fields — "Add a work task to <title> to the <project> project", "Add a blocker titled <title> to project <project>: <description>", "Record a financial of <amount> in category <category>". No time trigger means work task, not reminder.
 
 ${'' /* SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction.
    The watchdog ticker was already no-op'd (ensureWatchdogTicker/runSupervisorWatchdog
@@ -4251,9 +4262,12 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     // If we already have content or tool calls, the model is working —
                     // give it room to buffer (Ollama buffers entire tool call JSON
                     // before sending). But still cap silence hard so a stuck cloud
-                    // socket can't hang the whole turn.
+                    // socket can't hang the whole turn. Pre-first-chunk, allow a
+                    // generous TTFT (cloud prefill can take minutes; a tight cap
+                    // killed jobs whose first token was merely late, and every
+                    // retry re-paid the same silent prefill).
                     const hasActivity = tokenCount > 0 || collectedToolCalls.length > 0 || fullThinking.length > 0;
-                    const silenceLimit = hasActivity ? 180_000 : 90_000;
+                    const silenceLimit = hasActivity ? 180_000 : (rawChunkCount === 0 ? 300_000 : 90_000);
                     const { done, value } = await Promise.race([
                         reader.read().then(r => { clearTimeout(streamTimer); return r; }).catch((e) => { clearTimeout(streamTimer); throw e; }),
                         new Promise<never>((_, reject) => {
