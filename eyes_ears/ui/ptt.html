@@ -8,38 +8,46 @@
     font-family: system-ui, sans-serif; user-select: none; }
   .wrap { height: 100%; display: flex; flex-direction: column;
     align-items: stretch; justify-content: space-between; padding: 22px;
-    box-sizing: border-box; gap: 18px; }
-  button { border: none; border-radius: 26px; cursor: pointer;
-    font-weight: 800; letter-spacing: 2px; transition: filter .12s, transform .1s; }
+    box-sizing: border-box; gap: 24px; }
+  button { border: none; cursor: pointer; font-weight: 800; letter-spacing: 2px;
+    transition: filter .12s, transform .1s; }
   button:active { transform: scale(.97); }
 
-  /* Big RED talk button — dominates the panel */
+  /* Big RED talk button — top of the window, dominates the panel */
   #talk { flex: 3; background: #d81b1b; color: #fff; font-size: 44px;
+    border-radius: 26px;
     box-shadow: inset 0 -10px 0 rgba(0,0,0,.28), 0 0 34px rgba(255,40,40,.35); }
   #talk:hover { filter: brightness(1.12); }
   #talk.on { animation: breathe 1.6s infinite; }
   @keyframes breathe { 50% { filter: brightness(.72); } }
 
-  /* Big YELLOW stop button — mostly blank, flashes while the system works */
-  #stop { flex: 1.4; background: #f5c400; color: #221800; font-size: 30px;
-    box-shadow: inset 0 -8px 0 rgba(0,0,0,.22); }
-  #stop:hover { filter: brightness(1.1); }
-  #stop.busy { animation: flash .8s infinite; }
-  @keyframes flash { 50% { filter: brightness(.45); } }
-
-  /* Blank space strip — stays empty when idle, fills with short status text */
-  #space { min-height: 74px; border-radius: 16px; background: #0d1018;
+  /* Status strip — sits BETWEEN the buttons as a wide separation gap
+     so the stop sign can never be mistaken for the talk button */
+  #space { min-height: 110px; border-radius: 16px; background: #0d1018;
     border: 1px solid #232a3a; color: #93a3c4; font-size: 19px; line-height: 1.4;
     display: flex; align-items: center; justify-content: center; text-align: center;
     padding: 10px 16px; box-sizing: border-box; }
   #space.err { color: #ff9090; border-color: #4a2020; }
+
+  /* Big YELLOW OCTAGON stop sign — pinned to the bottom edge, as far from
+     TALK as the window allows. Dormant when idle; flashes hard (bright +
+     scale + glow) the whole time a task is running. */
+  #stop { flex: 1.6; background: #f5c400; color: #221800; font-size: 32px;
+    border-radius: 18px;
+    clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+    box-shadow: inset 0 -8px 0 rgba(0,0,0,.22); }
+  #stop:hover { filter: brightness(1.1); }
+  #stop.busy { animation: strobe .7s infinite; }
+  @keyframes strobe {
+    50% { filter: brightness(.35); transform: scale(.94); }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <button id="talk">TALK</button>
-  <button id="stop">STOP</button>
   <div id="space"></div>
+  <button id="stop">STOP</button>
 </div>
 <script>
   var talk = document.getElementById('talk'), stop = document.getElementById('stop'),
