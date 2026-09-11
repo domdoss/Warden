@@ -100,7 +100,8 @@ MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc f
 MEM_LINE_TRUNC = 200
 MEM_BATCH_CHARS = 9_000        # classifier batch size
 MEM_FACTS_MAX = 400
-MEM_RECALL_LIMIT = 12          # memories pulled per turn
+MEM_RECALL_LIMIT = 12          # memories kept per turn, after the dump filter
+MEM_RECALL_FETCH = 24          # over-fetch — document dumps get dropped below
 
 MEM_SYSTEM = (
     "Role: you extract lasting facts about the user from their personal memory files.\n\n"
@@ -256,13 +257,27 @@ def marm_connect():
 
 
 def marm_recall_about(text: str) -> str:
-    """What MARM remembers that's relevant to what he just said — the
-    paste-ready context block straight from smart recall. Generous timeout:
-    during a scan the filing loop shares MARM, and this just waits its turn."""
+    """What MARM remembers that's relevant to what he just said. The bank
+    also holds bulk document dumps ('ingest ...' sessions — repo READMEs,
+    project docs, demo files) and Warden's own system docs: those are the
+    databank, not memories about him, so they never reach Petal's prompt —
+    the block is built from the results, not MARM's context_summary.
+    Generous timeout: during a scan the filing loop shares MARM, and this
+    just waits its turn."""
     r = _marm_call(marm_connect(), "marm_smart_recall", {
-        "query": text, "search_all": True, "limit": MEM_RECALL_LIMIT, "detail": 1,
+        "query": text, "search_all": True, "limit": MEM_RECALL_FETCH, "detail": 1,
     }, timeout=60)
-    return str((r or {}).get("context_summary") or "").strip()
+    hits = [
+        h for h in (r or {}).get("results") or []
+        if not str(h.get("session_name") or "").startswith("ingest ")
+        and str(h.get("session_name") or "") not in
+        ("warden-system-knowledge", "marm_system")
+    ]
+    lines = [
+        f"[{str(h.get('context_type') or '').upper()}] {h.get('content')}"
+        for h in hits[:MEM_RECALL_LIMIT]
+    ]
+    return "\n".join(lines).strip()
 
 
 def marm_file_new(facts: list[str]) -> int:
