@@ -84,7 +84,7 @@ PERSONA — you are Petal, a warm Northern companion in the Donna Noble mould: k
 
 # ---------- Steve's own memories (scanned from ~/.claude, local 8b) ----------
 OLLAMA_URL = "http://127.0.0.1:11434"
-MEM_MODEL = "qwen3.5:cloud"  # all models locked to cloud qwen — served through the local Ollama proxy
+MEM_MODEL = "granite4.1:8b"  # local granite classifies the scan; the chat seat is the qwen one
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 MEM_CACHE = os.path.expanduser("~/.local/state/steve/last_scan")
 MARM_URL = os.environ.get("MARM_URL", "http://127.0.0.1:8001/mcp")
@@ -201,9 +201,7 @@ def _classify_chunk(chunk: list[str]) -> list[str]:
                 {"role": "system", "content": MEM_SYSTEM},
                 {"role": "user", "content": "Lines:\n" + "\n".join(chunk)},
             ],
-            "think": False,  # cloud qwen is a thinking model; extraction doesn't need it
-            # Qwen3.5 documented non-thinking sampling (model card: general tasks)
-            "options": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
+            "options": {"temperature": 0},  # granite guidance: temp 0 for extraction
         })
         content = (data.get("message") or {}).get("content") or ""
         s, e = content.find("{"), content.rfind("}")
