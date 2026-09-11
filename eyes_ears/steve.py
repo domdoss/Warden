@@ -267,6 +267,7 @@ def marm_file_new(facts: list[str]) -> int:
     for f in facts:
         r = _marm_call(session, "marm_smart_recall", {
             "query": f, "search_all": True, "limit": 1, "detail": 3,
+            "exact_mode": "exact",  # FTS lane: verbatim presence, no query embedding
         })
         top = ((r or {}).get("results") or [{}])[0]
         if str(top.get("content") or "").strip() == f:
