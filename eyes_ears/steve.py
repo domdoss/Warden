@@ -130,6 +130,22 @@ def _ollama_chat(body: dict, timeout: int = 180) -> dict:
         return json.loads(resp.read().decode() or "{}")
 
 
+def ollama_unload_all() -> None:
+    """Free the GPU for the scan — every loaded model out of VRAM first."""
+    try:
+        with urllib.request.urlopen(OLLAMA_URL + "/api/ps", timeout=5) as resp:
+            models = json.loads(resp.read().decode()).get("models") or []
+        for m in models:
+            req = urllib.request.Request(
+                OLLAMA_URL + "/api/generate",
+                data=json.dumps({"model": m.get("name"), "keep_alive": 0}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            urllib.request.urlopen(req, timeout=30).read()
+    except Exception as e:
+        print(f"[steve] model unload skipped: {e}", file=sys.stderr)
+
+
 def scan_claude_lines(files: list[str]) -> list[str]:
     """The given files — one 'path: line' per interesting line, bounded."""
     lines: list[str] = []
@@ -358,6 +374,7 @@ def memory_startup_check(set_note, on_ready) -> None:
     changed = claude_files_since(read_scan_ts())
     if changed:
         set_note("Updating memories…")
+        ollama_unload_all()
         fresh = classify_lines(scan_claude_lines(changed))
         if fresh:
             filed = marm_file_new(fresh)
