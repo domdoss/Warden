@@ -24,6 +24,10 @@ import { WORKSPACE_ROOT, OLLAMA_URL } from './config.js';
 import { getChatHistory, getRouterState } from './db.js';
 import { pushAgentStatus } from './agent-spawn.js';
 import { logger } from './logger.js';
+// Circular with memory-tree.ts (it imports marmLogEntries from here) — safe:
+// both sides only call the other's exports at runtime, and noteTreeActivity
+// is a hoisted function declaration.
+import { noteTreeActivity } from './memory-tree.js';
 
 const COOLDOWN_MS = 15 * 60 * 1000; // max one writeback per chat per 15 min
 const MIN_NEW_MESSAGES = 25; // wait for a real run of conversation before distilling
@@ -104,7 +108,7 @@ async function ollamaChat(system: string, user: string, model: string): Promise<
 }
 
 /** Strip <think> blocks and code fences a local model may wrap output in. */
-function cleanModelOutput(raw: string): string {
+export function cleanModelOutput(raw: string): string {
   let out = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const fence = out.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
   if (fence) out = fence[1].trim();
@@ -165,8 +169,11 @@ async function marmRpc(sessionId: string | undefined, body: Record<string, unkno
 
 let marmSessionId: string | undefined;
 
-async function marmLogEntries(facts: string[]): Promise<void> {
-  if (facts.length === 0) return;
+// Returns true when every entry was logged, false when MARM was unreachable
+// or a call failed (the memory-tree classifier aborts its run on false so the
+// batch is retried at the next dump period instead of silently skipped).
+export async function marmLogEntries(facts: string[]): Promise<boolean> {
+  if (facts.length === 0) return true;
   try {
     const init = await marmRpc(undefined, {
       jsonrpc: '2.0',
@@ -181,19 +188,63 @@ async function marmLogEntries(facts: string[]): Promise<void> {
     if (!init) throw new Error('initialize failed (MARM not running?)');
     await marmRpc(marmSessionId, { jsonrpc: '2.0', method: 'notifications/initialized' });
     for (const fact of facts) {
-      await marmRpc(marmSessionId, {
+      const r = await marmRpc(marmSessionId, {
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/call',
         params: { name: 'marm_log_entry', arguments: { entry: fact } },
       });
+      if (!r || !r.result) throw new Error('marm_log_entry returned no result');
     }
     if (marmWarned) marmWarned = false;
+    return true;
   } catch (err) {
     if (!marmWarned) {
       marmWarned = true;
       logger.warn({ err, facts: facts.length }, 'MARM mirror failed (MARM down? writeback unaffected)');
     }
+    return false;
+  }
+}
+
+/** One MCP tools/call against MARM, parsed. Same init pattern as
+ *  marmLogEntries (initialize reusing the cached session, the courtesy
+ *  notification, then the call). Returns the tool's JSON payload — MARM
+ *  prepends banner blocks to the content array on first calls, so take
+ *  the newest block that parses. Null on any failure. */
+export async function marmToolCall(name: string, args: Record<string, unknown>): Promise<Record<string, any> | null> {
+  try {
+    const init = await marmRpc(undefined, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'warden-memory-writeback', version: '1.0.0' },
+      },
+    });
+    if (!init) throw new Error('initialize failed (MARM not running?)');
+    await marmRpc(marmSessionId, { jsonrpc: '2.0', method: 'notifications/initialized' });
+    const r = await marmRpc(marmSessionId, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    });
+    if (!r || !r.result) return null;
+    const blocks = ((r.result as Record<string, any>).content || [])
+      .map((c: any) => c && c.text).filter(Boolean);
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      try { return JSON.parse(blocks[i]); } catch { /* banner block — keep going */ }
+    }
+    return null;
+  } catch (err) {
+    if (!marmWarned) {
+      marmWarned = true;
+      logger.warn({ err, tool: name }, 'MARM tool call failed (MARM down?)');
+    }
+    return null;
   }
 }
 
@@ -350,6 +401,9 @@ Format: Reply with ONLY this JSON object, no prose:
       fs.appendFileSync(memoryPath, block, 'utf-8');
       // Mirror the same facts into MARM for semantic recall — fire-and-forget.
       void marmLogEntries(distilled.memory);
+      // Galaxy brain-scan feed: distiller writes carry no taxonomy path, so
+      // they ride as query-text events the galaxy keyword-maps onto regions.
+      distilled.memory.forEach((m) => noteTreeActivity({ kind: 'write', query: m }));
     }
     if (distilled.journal) {
       fs.appendFileSync(journalPath, `\n### ${today} — ${chatJid}\n${distilled.journal}\n`, 'utf-8');

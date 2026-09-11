@@ -19,6 +19,24 @@ const MAX_SECTION_CHARS = 900;
 
 let marmSessionId: string | undefined;
 
+/**
+ * Report a MARM recall/write to the Warden host's memory-activity ring
+ * (POST /api/memory-tree/activity) so the eyes_ears memory galaxy can light
+ * up the brain regions being used. Fire-and-forget by contract: the galaxy
+ * is a nice-to-have visualization, never a dependency of the recall itself.
+ */
+export function noteMarmActivity(kind: 'write' | 'recall', query: string): void {
+  const q = String(query || '').trim().slice(0, 400);
+  if (!q) return;
+  const port = process.env.STATUS_PORT || '3200';
+  fetch(`http://127.0.0.1:${port}/api/memory-tree/activity`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, query: q }),
+    signal: AbortSignal.timeout(2000),
+  }).catch(() => { /* the galaxy flare is best-effort — never surface this */ });
+}
+
 async function marmRpc(sessionId: string | undefined, body: Record<string, unknown>): Promise<Record<string, any> | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MARM_RECALL_TIMEOUT_MS);
@@ -94,6 +112,8 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
     if (res?.error || !res?.result || res.result.isError) return '';
     const raw = resultText(res).trim();
     if (!raw) return '';
+    // Regions hit — tell the host so the memory galaxy can flare them.
+    noteMarmActivity('recall', query);
     // The tool may answer in JSON or free text; either way keep it short —
     // one line per memory, whole section capped hard.
     let lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);

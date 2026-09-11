@@ -20,6 +20,7 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
+import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
   getAllTasks,
@@ -3040,6 +3041,12 @@ async function startMessageLoop(): Promise<void> {
       // Fire-and-forget; idle-gated + shared cleaner lock so it never overlaps
       // a turn or another cleaner.
       void maybeScheduleMercury();
+      // Memory-tree classifier: same rider. When nothing is happening (no
+      // agent run, no big model holding VRAM) it classifies the unprocessed
+      // warden.log backlog into the memory tree with granite4.1:30b — runs
+      // until the backlog is finished, cursor-persisted, aborts if the
+      // machine is claimed again.
+      void maybeClassifyMemoryTree(agentRunInFlight);
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }

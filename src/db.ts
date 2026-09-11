@@ -336,6 +336,19 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_alarm_user ON user_alarms(user_id);
     CREATE INDEX IF NOT EXISTS idx_alarm_enabled ON user_alarms(enabled);
+
+    -- Memory-tree fact index: every durable fact the log classifier files
+    -- into MARM ("memory tree — <path>: <fact>"), stored at file time so the
+    -- eyes_ears galaxy can light every node from ONE API call instead of
+    -- 211 paced semantic recalls. sig is the same near-duplicate signature
+    -- the classifier dedupes on (memory-tree.ts factSig).
+    CREATE TABLE IF NOT EXISTS memory_tree_facts (
+      sig TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      fact TEXT NOT NULL,
+      ts TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mtree_facts_path ON memory_tree_facts(path);
   `);
 
   database.exec(`
