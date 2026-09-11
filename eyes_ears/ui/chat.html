@@ -133,7 +133,13 @@
           var args=Array.prototype.slice.call(arguments);
           return new Promise(function(resolve,reject){
             var id='pm-'+Math.random().toString(36).slice(2);
-            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},30000);
+            // chat_send blocks up to 60s server-side (ears/main.py future
+            // timeout) — a 30s shim timeout rejects it mid-turn and the
+            // catch in doSend prints a misleading [unavailable]. Long-wait
+            // calls get a timeout that outlives the server-side one; every
+            // other call stays at 30s.
+            var tmo=method==='chat_send'?95000:30000;
+            var timer=setTimeout(function(){delete _pending[id];reject(new Error('bridge timeout: '+method));},tmo);
             _pending[id]={resolve:resolve,reject:reject,timer:timer};
             window.parent.postMessage({__pm:true,id:id,method:method,args:args},'*');
           });
