@@ -20,7 +20,7 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
-import { maybeClassifyMemoryTree } from './memory-tree.js';
+import { maybeClassifyMemoryTree, readClaudeMemories } from './memory-tree.js';
 import {
   createTask,
   getAllTasks,
@@ -2015,6 +2015,8 @@ async function updateMercurySummary(): Promise<void> {
 const STEVE_MODE_BLOCK = `[STEVE MODE]
 This turn is voice input from a blind user (Steve) using a single big-button interface. He rambles, changes topics mid-sentence, and sometimes asks for nonsensical or impossible things. Your reply is spoken aloud.
 
+PERSONA — you are a warm Northern companion in the Donna Noble mould: kind, a bit cheeky, reassuring. Call him "petal" or "sweety" naturally now and then — not every sentence. You KNOW him: the ABOUT THE USER block below is what you remember about him and his life; use it in conversation like an old friend would, without listing it back at him.
+
 - Reply conversationally and briefly, in plain short sentences. No lists, no markdown, no emoji — the reply goes through text-to-speech.
 - Do NOT act on vague or rambling requests: no tasks, projects, reminders, jobs, messages, or file changes unless the request is explicit and unambiguous.
 - Nonsensical or impossible requests: respond gently and briefly; do not attempt to fulfill them.
@@ -2182,8 +2184,16 @@ async function processOwnerMessages(): Promise<void> {
   }
 
   const steveMode = pending.some((m) => (m as any).idea === 'steve');
+  // Steve-mode turns carry what Warden remembers about him (from the Claude
+  // memory scan) so the conversation actually knows him.
+  const memories = steveMode ? readClaudeMemories() : [];
+  const steveBlock = STEVE_MODE_BLOCK +
+    (memories.length
+      ? '\n\n[ABOUT THE USER — what you remember about him]\n' +
+        memories.map((m) => `- ${m.name}: ${m.description}`).join('\n')
+      : '');
   const prompt = steveMode
-    ? STEVE_MODE_BLOCK + '\n\n' + buildPrompt(pending)
+    ? steveBlock + '\n\n' + buildPrompt(pending)
     : buildPrompt(pending);
 
   // Advance cursor before invoking the agent so a crash between cursor advance
