@@ -27,9 +27,9 @@ move straight on; anything changed triggers a full rescan and
 re-classification with local granite 8b via Ollama. Facts new since
 the last scan are filed into the existing MARM memory server (MCP over
 loopback:8001, best-effort) so the agents can recall them too. When
-the memories are current the app speaks "Ready." (he can't read a
-screen). Facts are injected into every turn as spoken context. No
-brain, no visualization — he can't see it.
+the memories are current the app speaks "Ready, sweetie." (he can't
+read a screen). Facts are injected into every turn as spoken context.
+No brain, no visualization — he can't see it.
 
 Run with the eyes_ears venv:
 
@@ -414,7 +414,7 @@ class SteveApp:
     def _announce_ready(self) -> None:
         """Memories current — the app tells him so, out loud."""
         try:
-            audio = self.tts.synthesize("Ready, petal.")
+            audio = self.tts.synthesize("Ready, sweetie.")
             if audio:
                 self.player.play_bytes(audio)
                 return
