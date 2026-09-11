@@ -120,17 +120,17 @@
   <script>
     (function(){
       var btn = document.getElementById('fsBtn');
+      var expanded = false;
       btn.addEventListener('click', function(){
-        // Browser Fullscreen API is a silent no-op in Qt WebEngine's nested
-        // file:// iframes — toggle the whole panels window fullscreen via
-        // the host bridge (the same call panels.html's own ⛶ makes).
-        if (window.pywebview && window.pywebview.api &&
-            typeof window.pywebview.api.toggle_panels_fullscreen === 'function') {
-          window.pywebview.api.toggle_panels_fullscreen().then(function(on){
-            btn.textContent = on ? '⤢ Exit' : '⛶ Expand';
-            btn.title = on ? 'Exit fullscreen' : 'Fullscreen';
-            scanBtnVis(!!on);
-          }).catch(function(){});
+        if (window.parent && window.parent !== window) {
+          // Embedded in panels.html: expand ONLY this panel — the galaxy
+          // iframe fills the window; every other panel stays laid out
+          // underneath. No OS-level fullscreen of the whole voice window.
+          expanded = !expanded;
+          btn.textContent = expanded ? '⤢ Exit' : '⛶ Expand';
+          btn.title = expanded ? 'Collapse the galaxy' : 'Expand the galaxy';
+          scanBtnVis(expanded);
+          window.parent.postMessage({__pm:true, type:'panel_expand', panel:'hologram', expand:expanded}, '*');
           return;
         }
         // Standalone in a real browser — native fullscreen.
@@ -138,7 +138,7 @@
         document.documentElement.requestFullscreen().catch(function(){});
       });
       // The scan drawer belongs to the expanded view — the small center
-      // slot stays clean, so the ⚙ button only exists while fullscreen.
+      // slot stays clean, so the ⚙ button only exists while expanded.
       function scanBtnVis(on) {
         document.getElementById('scanBtn').style.display = on ? 'block' : 'none';
         if (!on) document.getElementById('scanDrawer').style.display = 'none';
