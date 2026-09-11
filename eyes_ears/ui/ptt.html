@@ -65,7 +65,7 @@
       space.textContent = 'Working…'; space.className = '';
     } else {
       talk.classList.remove('on'); stop.classList.remove('busy');
-      space.textContent = ''; space.className = '';
+      space.textContent = s.note || ''; space.className = '';
     }
   }
 

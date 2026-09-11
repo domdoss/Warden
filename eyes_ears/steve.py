@@ -19,12 +19,15 @@ record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
 - Audible cues for a blind user: short high beep when listening starts,
   low beep when the turn finishes, long buzz if it failed.
 
-MEMORIES — this app owns them too (Warden knows nothing about Steve):
-at startup it scans ~/.claude (every .md: memory.md, journal.md, all
-related files), extracts the durable facts about him with local
-granite 8b via Ollama, caches them, and injects them into every turn
-as spoken context ("what you remember about him"). No brain, no
-visualization — he can't see it. Rescans daily.
+MEMORIES — this app owns them too (Warden knows nothing about Steve).
+At startup it makes sure they're up to date, all by itself: cached
+facts load instantly, every .md under ~/.claude (memory.md, journal.md,
+all related files) is checked against the last scan — unchanged means
+move straight on; anything changed triggers a full rescan and
+re-classification with local granite 8b via Ollama. When the memories
+are current the app speaks "Ready." (he can't read a screen). Facts
+are injected into every turn as spoken context. No brain, no
+visualization — he can't see it.
 
 Run with the eyes_ears venv:
 
@@ -81,7 +84,6 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 MEM_MODEL = "granite4.1:8b"
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 MEM_CACHE = os.path.expanduser("~/.local/state/steve/memory.json")
-MEM_SCAN_INTERVAL_S = 24 * 3600
 MEM_MAX_FILES = 300            # .md files per scan
 MEM_MAX_FILE_BYTES = 200_000   # skip huge files
 MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc first)
@@ -211,16 +213,34 @@ def save_cached_facts(facts: list[str]) -> None:
         json.dump({"facts": facts, "ts": time.time()}, f)
 
 
-def memory_scan_loop(get_state, set_state) -> None:
-    """Background: keep the fact list fresh — cached instantly at boot,
-    rescanned when stale, then once a day."""
-    while True:
-        facts, ts = load_cached_facts()
+def claude_files_changed_since(ts: float) -> bool:
+    """Did any .md under ~/.claude change since the last scan? Cheap —
+    mtimes only, no reading. The whole startup freshness check."""
+    if not os.path.isdir(CLAUDE_DIR):
+        return False
+    for root, dirs, names in os.walk(CLAUDE_DIR):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        for n in names:
+            if not n.endswith(".md"):
+                continue
+            try:
+                if os.path.getmtime(os.path.join(root, n)) > ts:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+def memory_startup_check(set_state, set_note, on_ready) -> None:
+    """Boot sequence, all by itself: cached facts load instantly; if the
+    memory files changed since the last scan, rescan and re-classify; then
+    the app announces it's ready (spoken — the user is blind)."""
+    facts, ts = load_cached_facts()
+    if facts:
         set_state(facts)
-        if facts and time.time() - ts < MEM_SCAN_INTERVAL_S:
-            time.sleep(MEM_SCAN_INTERVAL_S - (time.time() - ts))
-            continue
-        try:
+    try:
+        if not facts or claude_files_changed_since(ts):
+            set_note("Updating memories…")
             lines = scan_claude_lines()
             if lines:
                 fresh = classify_lines(lines)
@@ -228,9 +248,11 @@ def memory_scan_loop(get_state, set_state) -> None:
                     save_cached_facts(fresh)
                     set_state(fresh)
                     print(f"[steve] memory scan: {len(lines)} lines -> {len(fresh)} facts", file=sys.stderr)
-        except Exception as e:
-            print(f"[steve] memory scan failed: {e}", file=sys.stderr)
-        time.sleep(MEM_SCAN_INTERVAL_S)
+    except Exception as e:
+        print(f"[steve] memory scan failed: {e}", file=sys.stderr)
+    finally:
+        set_note("")
+        on_ready()
 
 
 def warden_url_from_config() -> str:
@@ -293,15 +315,34 @@ class SteveApp:
         # Steve's remembered facts (scanned from ~/.claude, classified by the
         # local 8b) — injected into every turn as spoken context.
         self._facts: list[str] = []
+        self._note = ""  # status-strip text while the startup scan runs
         threading.Thread(
-            target=memory_scan_loop,
-            args=(lambda: self._facts, self._set_facts),
+            target=memory_startup_check,
+            args=(self._set_facts, self._set_note, self._announce_ready),
             daemon=True,
         ).start()
 
     def _set_facts(self, facts: list[str]) -> None:
         with self._lock:
             self._facts = facts
+
+    def _set_note(self, note: str) -> None:
+        with self._lock:
+            self._note = note
+
+    def _announce_ready(self) -> None:
+        """Memories current — the app tells him so, out loud."""
+        try:
+            audio = self.tts.synthesize("Ready, petal.")
+            if audio:
+                self.player.play_bytes(audio)
+                return
+        except Exception:
+            pass
+        try:
+            self.player.play_bytes(self.beeps.stop_beep())
+        except Exception:
+            pass
 
     # ----- Warden HTTP (urllib — no main-app client) -----
     def _http(self, method: str, path: str, body: dict | None = None, timeout: int = 10):
@@ -405,12 +446,14 @@ class SteveApp:
 
     def status(self) -> str:
         busy = self._worker is not None and self._worker.is_alive()
+        with self._lock:
+            note = self._note
         try:
             self._http("GET", "/api/messages?limit=1", timeout=3)
             ok = True
         except Exception:
             ok = False
-        return json.dumps({"ok": ok, "busy": busy})
+        return json.dumps({"ok": ok, "busy": busy, "note": note})
 
 
 def main() -> None:
