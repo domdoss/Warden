@@ -24,10 +24,12 @@ At startup it makes sure they're up to date, all by itself: cached
 facts load instantly, every .md under ~/.claude (memory.md, journal.md,
 all related files) is checked against the last scan — unchanged means
 move straight on; anything changed triggers a full rescan and
-re-classification with local granite 8b via Ollama. When the memories
-are current the app speaks "Ready." (he can't read a screen). Facts
-are injected into every turn as spoken context. No brain, no
-visualization — he can't see it.
+re-classification with local granite 8b via Ollama. Facts new since
+the last scan are filed into the existing MARM memory server (MCP over
+loopback:8001, best-effort) so the agents can recall them too. When
+the memories are current the app speaks "Ready." (he can't read a
+screen). Facts are injected into every turn as spoken context. No
+brain, no visualization — he can't see it.
 
 Run with the eyes_ears venv:
 
@@ -84,6 +86,7 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 MEM_MODEL = "granite4.1:8b"
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 MEM_CACHE = os.path.expanduser("~/.local/state/steve/memory.json")
+MARM_URL = os.environ.get("MARM_URL", "http://127.0.0.1:8001/mcp")
 MEM_MAX_FILES = 300            # .md files per scan
 MEM_MAX_FILE_BYTES = 200_000   # skip huge files
 MEM_LINES_PER_FILE = 6         # body lines sampled per file (frontmatter desc first)
@@ -224,6 +227,64 @@ def save_cached_facts(facts: list[str]) -> None:
         json.dump({"facts": facts, "ts": time.time()}, f)
 
 
+def _marm_rpc(session, body, timeout=10):
+    """One MCP-over-HTTP call against MARM (same protocol Warden's memory
+    writeback uses). Returns (parsed-json-or-None, session-id)."""
+    req = urllib.request.Request(
+        MARM_URL, data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            **({"mcp-session-id": session} if session else {}),
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        new_session = resp.headers.get("mcp-session-id")
+        ctype = resp.headers.get("content-type") or ""
+        text = resp.read().decode()
+    if "text/event-stream" in ctype:
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                text = line[5:].strip()
+                break
+    s = text.find("{")
+    if s == -1:
+        return None, new_session
+    return json.loads(text[s:text.rfind("}") + 1]), new_session
+
+
+def marm_log_entries(entries: list[str]) -> bool:
+    """File facts into the existing MARM memory server — the same durable
+    store Warden's own classifier writes to, so the agents can recall them.
+    Best-effort: MARM down just logs, the app is unaffected."""
+    if not entries:
+        return True
+    session = None
+    try:
+        init, session = _marm_rpc(None, {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26", "capabilities": {},
+                "clientInfo": {"name": "steve-app", "version": "1.0.0"},
+            },
+        })
+        if init is None:
+            raise RuntimeError("MARM initialize failed (not running?)")
+        _marm_rpc(session, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        for e in entries:
+            r, _ = _marm_rpc(session, {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "marm_log_entry", "arguments": {"entry": e}},
+            })
+            if not r or not r.get("result"):
+                raise RuntimeError("marm_log_entry returned no result")
+        return True
+    except Exception as e:
+        print(f"[steve] MARM filing failed: {e}", file=sys.stderr)
+        return False
+
+
 def claude_files_changed_since(ts: float) -> bool:
     """Did any .md under ~/.claude change since the last scan? Cheap —
     mtimes only, no reading. The whole startup freshness check."""
@@ -256,9 +317,18 @@ def memory_startup_check(set_state, set_note, on_ready) -> None:
             if lines:
                 fresh = classify_lines(lines)
                 if fresh:
+                    prev = set(facts)
                     save_cached_facts(fresh)
                     set_state(fresh)
                     print(f"[steve] memory scan: {len(lines)} lines -> {len(fresh)} facts", file=sys.stderr)
+                    # New-since-last-scan facts go into MARM — the durable
+                    # store the agents recall from — not just the local cache.
+                    new = [f for f in fresh if f not in prev]
+                    if marm_log_entries(
+                        ["Topic: steve memory"]
+                        + [f"steve memory — {f}" for f in new]
+                    ):
+                        print(f"[steve] filed {len(new)} new facts into MARM", file=sys.stderr)
     except Exception as e:
         print(f"[steve] memory scan failed: {e}", file=sys.stderr)
     finally:
@@ -365,10 +435,10 @@ class SteveApp:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode() or "{}")
 
-    def _send(self, text: str) -> int:
+    def _send(self, text: str) -> str:
         """POST the turn as a plain owner message — the prompt block and the
         remembered facts ride in the message text, so Warden needs no Steve
-        handling. Returns the stored message id."""
+        handling. Returns the stored message id (an opaque string)."""
         parts = [STEVE_PROMPT]
         with self._lock:
             facts = list(self._facts)
@@ -379,18 +449,25 @@ class SteveApp:
             )
         parts.append("He says: " + text)
         resp = self._http("POST", "/api/messages", {"text": "\n\n".join(parts)})
-        return int(resp.get("id") or 0)
+        return str(resp.get("id") or "")
 
-    def _await_reply(self, my_id: int) -> str | None:
-        """Poll history for the first bot message after ours."""
+    def _await_reply(self, my_id: str) -> str | None:
+        """Poll history for the first bot message after ours — found by id
+        position in the returned list, so any id format works."""
         deadline = time.time() + REPLY_TIMEOUT_S
         while time.time() < deadline and not self._stop.is_set():
             try:
                 resp = self._http("GET", "/api/messages?limit=30", timeout=5)
                 msgs = resp.get("messages", [])
-                for m in msgs:
-                    if int(m.get("id") or 0) > my_id and m.get("is_bot_message"):
-                        return str(m.get("content") or "").strip() or None
+                start = -1
+                for i, m in enumerate(msgs):
+                    if str(m.get("id")) == my_id:
+                        start = i
+                        break
+                if start >= 0:
+                    for m in msgs[start + 1:]:
+                        if m.get("is_bot_message"):
+                            return str(m.get("content") or "").strip() or None
             except (urllib.error.URLError, OSError, ValueError):
                 pass  # transient — keep polling
             time.sleep(2)
