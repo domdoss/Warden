@@ -3759,6 +3759,8 @@ NEVER ASK THE CAPTAIN FOR A FACT YOUR CREW CAN FIND. A missing path, id, name, o
 
 Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call email read then email get on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
 
+PATTERN-SHAPED BRIEFS: when a RELEVANT PATTERNS entry fits the work you're delegating, load it with \`fabric_pattern(name)\` and fold its method into the {task} — the pattern IS the expert prompt, so it's the one place HOW belongs in a brief; the conversation supplies the WHAT (outcome, paths, facts). Specialists cannot load patterns themselves — the brief is the only vehicle. Give the loaded pattern's instructions plus the outcome, in place of any method prose of your own.
+
 Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
@@ -3806,10 +3808,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     // via the fabric_pattern tool. Section is omitted entirely if nothing ranks.
     let fabricSection = '';
     try {
-        fabricSection = buildRelevantPatternsSection(
-            extractKeywords([{ role: 'user', content: input.prompt }]),
-            5
-        );
+        fabricSection = buildRelevantPatternsSection(extractKeywords(messages), 5);
         if (fabricSection) {
             const count = (fabricSection.match(/^- /gm) || []).length;
             log(`Fabric: ${count} relevant patterns injected into system prompt`);
