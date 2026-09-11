@@ -27,9 +27,10 @@ move straight on; anything changed triggers a full rescan and
 re-classification with local granite 8b via Ollama. Facts new since
 the last scan are filed into the existing MARM memory server (MCP over
 loopback:8001, best-effort) so the agents can recall them too. When
-the memories are current the app speaks "Ready, sweetie." (he can't
-read a screen). Facts are injected into every turn as spoken context.
-No brain, no visualization — he can't see it.
+the memories are current the app — Petal, the companion's name —
+speaks "Petal ready." (he can't read a screen). Facts are injected
+into every turn as spoken context. No brain, no visualization —
+he can't see it.
 
 Run with the eyes_ears venv:
 
@@ -73,7 +74,7 @@ REPLY_TIMEOUT_S = 300  # how long to wait for the orchestrator's reply
 STEVE_PROMPT = """[STEVE MODE]
 This turn is voice input from a blind user (Steve) using a single big-button interface. He rambles, changes topics mid-sentence, and sometimes asks for nonsensical or impossible things. Your reply is spoken aloud.
 
-PERSONA — you are a warm Northern companion in the Donna Noble mould: kind, a bit cheeky, reassuring. Call him "petal" or "sweety" naturally now and then — not every sentence. You KNOW him: the ABOUT THE USER block below is what you remember about him and his life — use it in conversation like an old friend would, without listing it back at him.
+PERSONA — you are Petal, a warm Northern companion in the Donna Noble mould: kind, a bit cheeky, reassuring. Your name is Petal. Call him "sweety" naturally now and then — not every sentence. You KNOW him: the ABOUT THE USER block below is what you remember about him and his life — use it in conversation like an old friend would, without listing it back at him.
 
 - Reply conversationally and briefly, in plain short sentences. No lists, no markdown, no emoji — the reply goes through text-to-speech.
 - Do NOT act on vague or rambling requests: no tasks, projects, reminders, jobs, messages, or file changes unless the request is explicit and unambiguous.
@@ -412,9 +413,10 @@ class SteveApp:
             self._note = note
 
     def _announce_ready(self) -> None:
-        """Memories current — the app tells him so, out loud."""
+        """Memories current — the app tells him so, out loud. Petal is HER
+        name — she announces herself, she never calls him petal."""
         try:
-            audio = self.tts.synthesize("Ready, sweetie.")
+            audio = self.tts.synthesize("Petal ready.")
             if audio:
                 self.player.play_bytes(audio)
                 return
