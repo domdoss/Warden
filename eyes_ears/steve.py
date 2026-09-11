@@ -101,6 +101,12 @@ MEM_SYSTEM = (
     "- Keep a fact only if it stays true over months\n"
     "Output: the facts."
 )
+# Plan-narrative the 8b keeps and a memory is not (verified against its
+# dry-run output: "will be built", "wants Mercury to run", "will rely on").
+FUTURE_RE = re.compile(
+    r"\b(will\s+(?:be|use|rely|run|go|move|launch|land)|plans?\s+to|planning\s+to|going\s+to|wants?\s+to)\b",
+    re.I,
+)
 MEM_FORMAT = {
     "type": "object",
     "properties": {"facts": {"type": "array", "items": {"type": "string"}}},
@@ -163,13 +169,18 @@ def classify_lines(lines: list[str]) -> list[str]:
         chars += len(ln)
     if batch:
         facts.extend(_classify_chunk(batch))
-    # Dedup by normalized wording.
+    # Dedup by normalized wording, and drop plan-narrative — the 8b keeps
+    # future-tense chatter ("will be built", "wants to run") that a memory
+    # is not. The 30b pipeline spends a model-judge pass on this; the .claude
+    # source is clean enough that a mechanical filter does the job.
     seen: set[str] = set()
     out: list[str] = []
     for f in facts:
         f = f.strip()[:300]
         key = re.sub(r"[^a-z0-9]+", " ", f.lower()).strip()
         if not key or key in seen:
+            continue
+        if FUTURE_RE.search(f):
             continue
         seen.add(key)
         out.append(f)
