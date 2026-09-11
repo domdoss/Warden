@@ -27,7 +27,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { OLLAMA_URL } from './config.js';
+import { OLLAMA_URL, DATA_DIR } from './config.js';
 import { getDb, getRouterState, setRouterState } from './db.js';
 import { logger } from './logger.js';
 import { marmLogEntries, cleanModelOutput, marmToolCall } from './memory-writeback.js';
@@ -345,9 +345,31 @@ export function filedTreeFacts(): FiledFact[] {
 // the classifier keeps the index current at file time.
 const MTREE_TAG = 'memory tree — ';
 let backfillTried = false;
+
+// The Skills branch is registry-seeded, not log-classified: the real list
+// lives in data/skills/*/SKILL.md frontmatter, which the dump classifier
+// would never reliably surface. One fact per installed skill, idempotent on
+// sig (INSERT OR IGNORE), so newly added skills land at the next restart.
+const SKILLS_PATH = 'Skills > Current';
+function seedSkillsFacts(): void {
+  const facts: Fact[] = [];
+  const skillsRoot = path.join(DATA_DIR, 'skills');
+  for (const name of fs.readdirSync(skillsRoot).sort()) {
+    try {
+      const md = path.join(skillsRoot, name, 'SKILL.md');
+      if (!fs.statSync(md).isFile()) continue;
+      const desc = (fs.readFileSync(md, 'utf-8').match(/^description:\s*"?(.+?)"?\s*$/m) || [])[1] || '';
+      const short = desc.replace(/[".]+\s*$/, '').split(/(?<=[.!?])\s/)[0].slice(0, 160);
+      facts.push({ path: SKILLS_PATH, fact: `${name}: ${short || 'installed skill'}` });
+    } catch { /* unreadable skill dir — skip it */ }
+  }
+  if (facts.length) recordTreeFacts(facts);
+}
+
 export async function maybeBackfillTreeFacts(): Promise<void> {
   if (backfillTried) return;
   backfillTried = true;
+  try { seedSkillsFacts(); } catch (err) { logger.warn({ err }, 'memory-tree: skills seeding failed'); }
   try {
     const row = getDb().prepare('SELECT COUNT(*) AS c FROM memory_tree_facts').get() as { c: number };
     if (row.c > 0) return;
