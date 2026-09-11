@@ -104,7 +104,7 @@ async function bigModelsLoaded(): Promise<string[]> {
     if (!res.ok) return ['ps-unreachable'];
     const data = (await res.json()) as { models?: Array<{ name: string; size_vram?: number }> };
     return (data.models || [])
-      .filter((m) => (m.size_vram || 0) >= BIG_VRAM && m.name !== MTREE_MODEL)
+      .filter((m) => (m.size_vram || 0) >= BIG_VRAM && m.name !== classifyModel())
       .map((m) => m.name);
   } catch {
     return ['ps-unreachable'];
@@ -228,7 +228,7 @@ async function curateFacts(facts: Fact[]): Promise<Fact[] | null> {
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: MTREE_MODEL,
+        model: classifyModel(),
         stream: false,
         format: schema,
         messages: [
@@ -413,26 +413,154 @@ const SKIP_PATHS = new Set(['Projects > AI & Tools > MARM Memory']);
 // curated fact-line each. Scanned once per process, first classification run
 // after boot (idle-gated with the rest), on every machine Warden runs on —
 // a fresh install picks up whatever .claude memories exist there.
+// Extra include-dirs from the scan config (galaxy expand panel) are scanned
+// the same way in the same pass; everything is subject to the exclude lists.
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 let claudeScanTried = false;
+function memoryFileLine(file: string): string | null {
+  try {
+    const md = fs.readFileSync(file, 'utf-8');
+    // Curated memory files carry one fact in their frontmatter description;
+    // generic .md files fall back to the first non-empty body line.
+    const desc = (md.match(/^description:\s*"?(.+?)"?\s*$/m) || [])[1]?.trim();
+    if (desc) return `persistent memory ${path.basename(file, '.md')}: ${desc}`;
+    const body = md.replace(/^---[\s\S]*?---/, '').split('\n').map((l) => l.trim())
+      .find((l) => l && !l.startsWith('#'));
+    return body ? `${path.basename(file, '.md')}: ${body}` : null;
+  } catch { /* unreadable — skip */ }
+  return null;
+}
+function dirMemoryLines(dir: string): string[] {
+  const lines: string[] = [];
+  const walk = (d: string) => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = path.join(d, e.name);
+      if (scanExcluded(p)) continue;
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name === '.git') continue;
+        walk(p);
+      } else if (e.isFile() && e.name.endsWith('.md') && e.name !== 'MEMORY.md') {
+        const ln = memoryFileLine(p);
+        if (ln) lines.push(ln);
+      }
+    }
+  };
+  walk(dir);
+  return lines;
+}
 function claudeMemoryLines(): string[] {
   const lines: string[] = [];
   let projects: string[] = [];
-  try { projects = fs.readdirSync(CLAUDE_PROJECTS_DIR); } catch { return lines; /* no .claude — nothing to scan */ }
+  try { projects = fs.readdirSync(CLAUDE_PROJECTS_DIR); } catch { /* no .claude — nothing to scan */ }
   for (const proj of projects.sort()) {
+    if (scanExcluded(path.join(CLAUDE_PROJECTS_DIR, proj))) continue;
     const memDir = path.join(CLAUDE_PROJECTS_DIR, proj, 'memory');
     let files: string[] = [];
     try { files = fs.readdirSync(memDir); } catch { continue; }
     for (const f of files.sort()) {
       if (!f.endsWith('.md') || f === 'MEMORY.md') continue; // the index, not a fact
-      try {
-        const md = fs.readFileSync(path.join(memDir, f), 'utf-8');
-        const desc = (md.match(/^description:\s*"?(.+?)"?\s*$/m) || [])[1]?.trim();
-        if (desc) lines.push(`persistent memory ${f.replace(/\.md$/, '')}: ${desc}`);
-      } catch { /* unreadable memory — skip */ }
+      const p = path.join(memDir, f);
+      if (scanExcluded(p)) continue;
+      const ln = memoryFileLine(p);
+      if (ln) lines.push(ln);
     }
   }
+  for (const dir of scanConfig().includeDirs) {
+    lines.push(...dirMemoryLines(path.resolve(dir.replace(/^~(?=\/|$)/, os.homedir()))));
+  }
   return lines;
+}
+
+// ---------- Scan config (galaxy expand panel) ----------
+// User-managed scan settings, persisted in router_state: which model
+// classifies, whether the idle-gated auto-scan is paused, and include /
+// exclude lists shaping what gets scanned. Changing the config resets the
+// once-per-process memory-file scan so new include-dirs (or a removed
+// exclude) are picked up at the next run — dedup makes the rescan safe.
+export interface ScanConfig {
+  model: string;              // '' = the default (env MTREE_MODEL or granite4.1:30b)
+  paused: boolean;            // suspend the idle-gated auto-scan (Run still works)
+  includeDirs: string[];      // extra source dirs scanned like ~/.claude memories
+  excludeDirs: string[];      // paths containing one of these are never scanned
+  excludeFiles: string[];     // exact file names never scanned
+  excludePatterns: string[];  // wildcard patterns (* ?) never matched against a path
+}
+const SCANCFG_KEY = 'mtree:scanconfig';
+const SCAN_LIST_MAX = 64;    // entries per list
+const SCAN_ENTRY_MAX = 300;  // chars per entry
+let cachedScanConfig: ScanConfig | null = null;
+const DEFAULT_SCAN_CONFIG: ScanConfig = {
+  model: '', paused: false, includeDirs: [], excludeDirs: [], excludeFiles: [], excludePatterns: [],
+};
+function cleanScanList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const e of v) {
+    const s = String(e || '').trim().slice(0, SCAN_ENTRY_MAX);
+    if (s && !out.includes(s)) out.push(s);
+    if (out.length >= SCAN_LIST_MAX) break;
+  }
+  return out;
+}
+export function scanConfig(): ScanConfig {
+  if (cachedScanConfig) return cachedScanConfig;
+  let cfg = DEFAULT_SCAN_CONFIG;
+  try {
+    const raw = JSON.parse(getRouterState(SCANCFG_KEY) || '{}');
+    cfg = {
+      model: String(raw.model || '').trim().slice(0, 100),
+      paused: !!raw.paused,
+      includeDirs: cleanScanList(raw.includeDirs),
+      excludeDirs: cleanScanList(raw.excludeDirs),
+      excludeFiles: cleanScanList(raw.excludeFiles),
+      excludePatterns: cleanScanList(raw.excludePatterns),
+    };
+  } catch { /* unreadable — defaults */ }
+  cachedScanConfig = cfg;
+  return cfg;
+}
+export function setScanConfig(patch: Partial<ScanConfig>): ScanConfig {
+  const cur = scanConfig();
+  const next: ScanConfig = {
+    model: 'model' in patch ? String(patch.model || '').trim().slice(0, 100) : cur.model,
+    paused: 'paused' in patch ? !!patch.paused : cur.paused,
+    includeDirs: 'includeDirs' in patch ? cleanScanList(patch.includeDirs) : cur.includeDirs,
+    excludeDirs: 'excludeDirs' in patch ? cleanScanList(patch.excludeDirs) : cur.excludeDirs,
+    excludeFiles: 'excludeFiles' in patch ? cleanScanList(patch.excludeFiles) : cur.excludeFiles,
+    excludePatterns: 'excludePatterns' in patch ? cleanScanList(patch.excludePatterns) : cur.excludePatterns,
+  };
+  cachedScanConfig = next;
+  setRouterState(SCANCFG_KEY, JSON.stringify(next));
+  claudeScanTried = false; // config changed — rescan the file sources at the next run
+  return next;
+}
+/** Wildcard → regex: * any run, ? any one char. Matched case-insensitive
+ *  against the full source path. */
+function globToRe(pat: string): RegExp {
+  const esc = pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp(esc, 'i');
+}
+function scanExcluded(p: string): boolean {
+  const cfg = scanConfig();
+  const lower = p.toLowerCase();
+  for (const d of cfg.excludeDirs) if (lower.includes(d.toLowerCase())) return true;
+  const base = path.basename(p);
+  for (const f of cfg.excludeFiles) if (base === f) return true;
+  for (const pat of cfg.excludePatterns) {
+    try { if (globToRe(pat).test(p)) return true; } catch { /* bad pattern — ignore */ }
+  }
+  return false;
+}
+/** The classifier model: the scan config wins over env/default. */
+function classifyModel(): string {
+  return scanConfig().model || MTREE_MODEL;
+}
+// Mid-run abort, requested from the galaxy's Stop button.
+let scanAbortRequested = false;
+export function requestScanAbort(): void {
+  scanAbortRequested = true;
 }
 
 // Dedup + persist a classified batch: drops skipped paths, near-identical
@@ -533,7 +661,7 @@ async function classifyBatch(lines: string[], onFile: string[]): Promise<Fact[] 
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: MTREE_MODEL,
+        model: classifyModel(),
         stream: false,
         format: schema,
         messages: [
@@ -590,6 +718,7 @@ export interface ClassifyResult { ok: boolean; reason?: string; batches: number;
  *  machine is claimed again. */
 export async function runMemoryClassification(force = false): Promise<ClassifyResult> {
   if (running) return { ok: false, reason: 'already running', batches: 0, facts: 0 };
+  scanAbortRequested = false;
   // Snapshot: classify exactly what existed when the run began.
   let target = 0;
   if (fs.existsSync(LOG_PATH)) target = fs.statSync(LOG_PATH).size;
@@ -601,6 +730,7 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
   // install with an empty log still classifies its .claude memories.)
   if (!hasBacklog && claudeScanTried) return { ok: false, reason: 'no backlog', batches: 0, facts: 0 };
   if (!force) {
+    if (scanConfig().paused) return { ok: false, reason: 'paused', batches: 0, facts: 0 };
     // Idle-gated: a big model loaded means the machine is in use — stay off.
     const busy = await bigModelsLoaded();
     if (busy.length) return { ok: false, reason: 'gpu busy: ' + busy.join(','), batches: 0, facts: 0 };
@@ -614,7 +744,7 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
   let facts = 0;
   let aborted: string | undefined;
   const state = { topicSent: false };
-  logger.info({ model: MTREE_MODEL, backlog: target - cursor0, claude: !claudeScanTried }, 'memory-tree: classification run starting (dump period)');
+  logger.info({ model: classifyModel(), backlog: target - cursor0, claude: !claudeScanTried }, 'memory-tree: classification run starting (dump period)');
   try {
     // Claude-memory source first (once per process): the .claude lines ride
     // the same loaded 30b, chunked under the same batch limits as log lines.
@@ -634,6 +764,7 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
         }
         if (cur.length) chunks.push(cur);
         for (const chunk of chunks) {
+          if (scanAbortRequested) { aborted = 'stop requested from the dashboard — retries next run'; break; }
           const found = await classifyBatch(chunk, onFile());
           if (found == null) {
             aborted = 'claude memory scan: model failed — retries next process';
@@ -657,6 +788,7 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
       for (;;) {
         const batch = readBatch(cursor, target);
         if (!batch) break; // snapshot fully classified — run finished
+        if (scanAbortRequested) { aborted = 'stop requested from the dashboard — resumes next run'; break; }
         if (batch.lines.length === 0) {
           // Only blank lines in this window — advance past them, nothing to classify.
           setRouterState(CURSOR_KEY, String(batch.nextCursor));
@@ -704,6 +836,7 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
  *  per IDLE_CHECK_MS. */
 export function maybeClassifyMemoryTree(agentBusy: boolean): void {
   if (agentBusy || running) return;
+  if (scanConfig().paused) return; // suspended from the galaxy expand panel
   if (Date.now() - lastIdleCheck < IDLE_CHECK_MS) return;
   lastIdleCheck = Date.now();
   void runMemoryClassification(false).catch((err) => logger.warn({ err }, 'memory-tree: idle run failed'));

@@ -129,12 +129,22 @@
           window.pywebview.api.toggle_panels_fullscreen().then(function(on){
             btn.textContent = on ? '⤢ Exit' : '⛶ Expand';
             btn.title = on ? 'Exit fullscreen' : 'Fullscreen';
+            scanBtnVis(!!on);
           }).catch(function(){});
           return;
         }
         // Standalone in a real browser — native fullscreen.
         if (document.fullscreenElement) { document.exitFullscreen(); return; }
         document.documentElement.requestFullscreen().catch(function(){});
+      });
+      // The scan drawer belongs to the expanded view — the small center
+      // slot stays clean, so the ⚙ button only exists while fullscreen.
+      function scanBtnVis(on) {
+        document.getElementById('scanBtn').style.display = on ? 'block' : 'none';
+        if (!on) document.getElementById('scanDrawer').style.display = 'none';
+      }
+      document.addEventListener('fullscreenchange', function () {
+        scanBtnVis(!!document.fullscreenElement);
       });
     })();
   </script>
@@ -196,6 +206,235 @@
         }
       }) };
     }
+  </script>
+
+  <!-- ── Scan management drawer (expand view) ──
+       Include/exclude dirs, files and patterns; which model classifies;
+       run / pause the scan. Served by /api/memory/scan-config. The ⚙ button
+       appears when the panel is expanded (the small center slot stays clean);
+       the drawer slides over the right edge. -->
+  <div id="scanBtn" title="Manage scan" style="display:none; position:fixed; right:14px; bottom:52px; z-index:1000;
+    padding:6px 12px; border-radius:8px; cursor:pointer; user-select:none;
+    font-size:11px; letter-spacing:1.5px; text-transform:uppercase;
+    color:rgba(0,255,255,0.55); background:rgba(0,10,20,0.55);
+    border:1px solid rgba(0,255,255,0.25);
+    transition:color .15s, border-color .15s, background .15s;
+  " onmouseover="this.style.color='#00ffff';this.style.borderColor='rgba(0,255,255,0.6)'" onmouseout="this.style.color='rgba(0,255,255,0.55)';this.style.borderColor='rgba(0,255,255,0.25)'">⚙ Scan</div>
+  <div id="scanDrawer" style="display:none; position:fixed; top:0; right:0; bottom:0; width:380px; max-width:92vw;
+    z-index:2000; overflow-y:auto; box-sizing:border-box; padding:20px 22px 90px;
+    background:rgba(2,8,18,0.94); border-left:1px solid rgba(0,255,255,0.22);
+    font-family:system-ui,sans-serif; font-size:13px; color:#c8e2ef;
+  ">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+      <div style="font-size:15px; font-weight:700; color:#e8f6ff; letter-spacing:1px;">MEMORY SCAN</div>
+      <div id="scanClose" style="cursor:pointer; color:#7fb2c8; padding:2px 8px; font-size:16px;"
+        onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#7fb2c8'">✕</div>
+    </div>
+    <div id="scanStatus" style="font-size:11px; letter-spacing:1px; color:#7fb2c8; margin-bottom:18px;"></div>
+
+    <div class="scanSec">CLASSIFIER MODEL</div>
+    <input id="scanModel" placeholder="granite4.1:30b (default)" style="width:100%; box-sizing:border-box;">
+    <div class="scanNote">Ollama model that classifies facts into the tree.</div>
+
+    <div class="scanSec">AUTO-SCAN</div>
+    <div style="display:flex; align-items:center; gap:14px; margin-bottom:10px;">
+      <label style="display:flex; align-items:center; gap:7px; cursor:pointer;">
+        <input type="checkbox" id="scanPaused" style="accent-color:#00c8ff; width:15px; height:15px;">
+        <span>Paused — no automatic scans</span>
+      </label>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div id="scanRun" class="scanAct" style="background:#0a2a33; border-color:#00c8ff;">Run scan now</div>
+      <div id="scanStop" class="scanAct" style="background:#331414; border-color:#ff6a6a; display:none;">Stop scan</div>
+    </div>
+    <div class="scanNote">Runs only when the GPU is idle; "Run now" frees the GPU itself.</div>
+
+    <div class="scanSec">INCLUDE DIRS</div>
+    <div class="scanNote">Extra folders scanned like ~/.claude memories (*.md, one fact per file).</div>
+    <div id="list-includeDirs" class="scanList"></div>
+    <div class="scanAdd"><input data-list="includeDirs" placeholder="/home/you/notes  —  Enter to add"><div class="scanAddBtn" data-list="includeDirs">Add</div></div>
+
+    <div class="scanSec">EXCLUDE DIRS</div>
+    <div class="scanNote">Never scan paths containing one of these.</div>
+    <div id="list-excludeDirs" class="scanList"></div>
+    <div class="scanAdd"><input data-list="excludeDirs" placeholder="-opt-Other-Project  —  Enter to add"><div class="scanAddBtn" data-list="excludeDirs">Add</div></div>
+
+    <div class="scanSec">EXCLUDE FILES</div>
+    <div class="scanNote">Never scan files with one of these exact names.</div>
+    <div id="list-excludeFiles" class="scanList"></div>
+    <div class="scanAdd"><input data-list="excludeFiles" placeholder="scratch-notes.md  —  Enter to add"><div class="scanAddBtn" data-list="excludeFiles">Add</div></div>
+
+    <div class="scanSec">EXCLUDE PATTERNS</div>
+    <div class="scanNote">Wildcard filters (* = anything, ? = one char) matched against full paths.</div>
+    <div id="list-excludePatterns" class="scanList"></div>
+    <div class="scanAdd"><input data-list="excludePatterns" placeholder="*/secrets/*.md  —  Enter to add"><div class="scanAddBtn" data-list="excludePatterns">Add</div></div>
+
+    <div style="position:sticky; bottom:0; margin-top:22px; padding-top:14px;
+      background:linear-gradient(transparent, rgba(2,8,18,0.96) 30%);">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div id="scanSave" class="scanAct" style="background:#0a2a33; border-color:#00c8ff;">Save changes</div>
+        <span id="scanSaved" style="color:#58e07a; font-size:12px; opacity:0; transition:opacity .3s;">Saved ✓</span>
+      </div>
+    </div>
+  </div>
+  <style>
+    #scanDrawer .scanSec { font-size:11px; letter-spacing:2px; color:#5fb7d4; margin:22px 0 8px; font-weight:700; }
+    #scanDrawer .scanSec:first-of-type { margin-top:14px; }
+    #scanDrawer .scanNote { font-size:11px; color:#6d8ba0; margin:6px 0 8px; line-height:1.45; }
+    #scanDrawer input { background:#061420; color:#d5ecf7; border:1px solid #1e3a4a;
+      border-radius:6px; padding:8px 10px; font-size:13px; outline:none; font-family:inherit; }
+    #scanDrawer input:focus { border-color:#00c8ff; }
+    #scanDrawer .scanList { display:flex; flex-wrap:wrap; gap:6px; }
+    #scanDrawer .scanList:empty::after { content:'— none —'; color:#41586a; font-size:11px; }
+    #scanDrawer .chip { display:inline-flex; align-items:center; gap:6px; background:#0a2233;
+      border:1px solid #1e4a5f; border-radius:12px; padding:4px 8px 4px 10px; font-size:12px;
+      color:#a8d4e8; max-width:100%; }
+    #scanDrawer .chip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:240px; }
+    #scanDrawer .chip b { cursor:pointer; color:#ff8a8a; font-weight:700; padding:0 3px; }
+    #scanDrawer .chip b:hover { color:#ff5050; }
+    #scanDrawer .scanAdd { display:flex; gap:8px; margin-top:8px; }
+    #scanDrawer .scanAdd input { flex:1; min-width:0; }
+    #scanDrawer .scanAddBtn, #scanDrawer .scanAct { cursor:pointer; user-select:none; text-align:center;
+      border:1px solid; border-radius:7px; padding:8px 14px; font-size:12px; letter-spacing:1px;
+      color:#cdeef9; transition:filter .12s; }
+    #scanDrawer .scanAddBtn:hover, #scanDrawer .scanAct:hover { filter:brightness(1.25); }
+    #scanDrawer .scanAct:active, #scanDrawer .scanAddBtn:active { transform:scale(.98); }
+  </style>
+  <script>
+    (function () {
+      var btn = document.getElementById('scanBtn');
+      var drawer = document.getElementById('scanDrawer');
+      var cfg = { model:'', paused:false, includeDirs:[], excludeDirs:[], excludeFiles:[], excludePatterns:[] };
+      var running = false;
+      var dirty = false;
+      var LISTS = ['includeDirs', 'excludeDirs', 'excludeFiles', 'excludePatterns'];
+
+      // Same reach-Warden pattern as the rest of the page: host proxy when
+      // embedded (file:// fetch is blocked), direct fetch standalone.
+      var WARDEN = 'http://127.0.0.1:3200';
+      function api(path, method, body) {
+        if (window.pywebview && window.pywebview.api &&
+            typeof window.pywebview.api.warden_api === 'function') {
+          return window.pywebview.api.warden_api(path, method, body ? JSON.stringify(body) : '')
+            .then(function (t) { return t ? JSON.parse(t) : {}; });
+        }
+        return fetch(WARDEN + path, {
+          method: method || 'GET',
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        }).then(function (r) { return r.json(); });
+      }
+
+      function markDirty() { dirty = true; }
+      function renderList(key) {
+        var box = document.getElementById('list-' + key);
+        box.textContent = '';
+        cfg[key].forEach(function (v, i) {
+          var chip = document.createElement('span');
+          chip.className = 'chip';
+          var t = document.createElement('span'); t.textContent = v; t.title = v;
+          var x = document.createElement('b'); x.textContent = '✕'; x.title = 'Remove';
+          x.addEventListener('click', function () { cfg[key].splice(i, 1); renderList(key); markDirty(); });
+          chip.appendChild(t); chip.appendChild(x);
+          box.appendChild(chip);
+        });
+      }
+      function addEntry(key, val) {
+        val = (val || '').trim();
+        if (!val || cfg[key].indexOf(val) !== -1) return;
+        cfg[key].push(val);
+        renderList(key);
+        markDirty();
+      }
+
+      function paintStatus() {
+        var el = document.getElementById('scanStatus');
+        var parts = [];
+        parts.push(running ? '● Scan running' : '○ Scan idle');
+        if (cfg.paused) parts.push('paused');
+        el.textContent = parts.join('  ·  ');
+        el.style.color = running ? '#58e07a' : '#7fb2c8';
+        document.getElementById('scanRun').style.display = running ? 'none' : '';
+        document.getElementById('scanStop').style.display = running ? '' : 'none';
+      }
+
+      function loadConfig() {
+        return api('/api/memory/scan-config').then(function (d) {
+          cfg = {
+            model: d.model || '', paused: !!d.paused,
+            includeDirs: d.includeDirs || [], excludeDirs: d.excludeDirs || [],
+            excludeFiles: d.excludeFiles || [], excludePatterns: d.excludePatterns || []
+          };
+          running = !!d.running;
+          dirty = false;
+          document.getElementById('scanModel').value = cfg.model;
+          document.getElementById('scanPaused').checked = cfg.paused;
+          LISTS.forEach(renderList);
+          paintStatus();
+        }).catch(function () {
+          document.getElementById('scanStatus').textContent = 'Warden unreachable';
+        });
+      }
+
+      function save() {
+        cfg.model = document.getElementById('scanModel').value.trim();
+        cfg.paused = document.getElementById('scanPaused').checked;
+        return api('/api/memory/scan-config', 'POST', cfg).then(function (d) {
+          running = !!d.running;
+          dirty = false;
+          var ok = document.getElementById('scanSaved');
+          ok.style.opacity = 1;
+          setTimeout(function () { ok.style.opacity = 0; }, 1600);
+          paintStatus();
+        });
+      }
+
+      btn.addEventListener('click', function () {
+        var open = drawer.style.display === 'none';
+        drawer.style.display = open ? 'block' : 'none';
+        if (open) loadConfig();
+      });
+      document.getElementById('scanClose').addEventListener('click', function () {
+        drawer.style.display = 'none';
+      });
+      document.getElementById('scanModel').addEventListener('input', markDirty);
+      document.getElementById('scanPaused').addEventListener('change', markDirty);
+
+      document.querySelectorAll('#scanDrawer .scanAddBtn').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var inp = document.querySelector('#scanDrawer input[data-list="' + b.dataset.list + '"]');
+          addEntry(b.dataset.list, inp.value); inp.value = ''; inp.focus();
+        });
+      });
+      document.querySelectorAll('#scanDrawer .scanAdd input').forEach(function (inp) {
+        inp.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { addEntry(inp.dataset.list, inp.value); inp.value = ''; }
+        });
+      });
+      document.getElementById('scanRun').addEventListener('click', function () {
+        if (dirty) save();
+        api('/api/memory/classify', 'POST', {}).then(function () {
+          running = true; paintStatus();
+        });
+      });
+      document.getElementById('scanStop').addEventListener('click', function () {
+        api('/api/memory/scan-config', 'POST', { stop: true }).then(paintStatus);
+      });
+      document.getElementById('scanSave').addEventListener('click', save);
+
+      // Live running/paused state while the drawer is open (config edits stay
+      // local until Save — a poll overwriting the in-progress edits would be
+      // maddening, so only the run state refreshes).
+      setInterval(function () {
+        if (drawer.style.display === 'none') return;
+        api('/api/memory/scan-config').then(function (d) {
+          if (dirty) return; // never clobber in-progress edits
+          running = !!d.running; cfg.paused = !!d.paused;
+          document.getElementById('scanPaused').checked = cfg.paused;
+          paintStatus();
+        }).catch(function () {});
+      }, 3000);
+    })();
   </script>
   <script>
     // THREE, EffectComposer, RenderPass, UnrealBloomPass, OutputPass,
