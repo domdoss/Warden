@@ -930,6 +930,19 @@ const SUBAGENT_BY_DELEGATE = new Map<string, SubAgentDef>(SUBAGENTS.map(s => [s.
 
 const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'convert_file', 'api_request', 'list_api_keys',
+    // Atlas's lesser ONE-SHOT tools, shared with the orchestrator (2026-09-12):
+    // the orchestrator's model is as capable as atlas's, so a single-call
+    // action (run a status command, read a file, quick web lookup/search,
+    // open a local file, pause/skip media, volume) should not spawn a whole
+    // sub-agent job. Simple web tasks are included too — open a page, read
+    // it, click a link, fill one form: the interaction tools return the
+    // updated snapshot in the same result, so each is one round. Multi-page
+    // flows and scripted extraction stay with atlas; code editing stays
+    // with vulkan.
+    'Bash', 'Read', 'WebSearch', 'WebFetch', 'open_app',
+    'audio_volume', 'mic_volume', 'media_control',
+    'browser_navigate', 'browser_snapshot', 'browser_current_url', 'browser_tabs',
+    'browser_click', 'browser_type', 'browser_evaluate',
     // The orchestrator's EYES — also listed in Oculus's security toolset, so
     // without this the SUBAGENT_OWNED filter would strip them from the
     // orchestrator's tool defs and the # EYES instructions couldn't fire.
@@ -3599,6 +3612,14 @@ async function runNativeOllama(input: ContainerInput) {
         'report_task_failure',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request',
+        // Orchestrator-direct workhorses (2026-09-12 atlas→orch migration):
+        // Bash's schema has weak keyword overlap with the asks that need it
+        // ("run systemctl status", "check the log"), and browser_navigate /
+        // browser_evaluate don't rank on "play X" / "open Y" — always-on so a
+        // one-shot check, a simple web task, or a media ask never falls back
+        // to delegation on a ranking miss. The rest of the shared set
+        // (WebSearch, WebFetch, media, click/type/tabs) stays keyword-gated.
+        'Bash', 'browser_navigate', 'browser_evaluate',
         // Projects/work-tasks CRUD — orchestrator-direct (no subagent owns
         // the merged `project` tool). Always-on so a "add a task" ask can
         // never be ranked out or shadowed by the scheduled-task `task` tool.
@@ -3810,14 +3831,14 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 # ROUTING
 
-Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. If a tool in YOUR OWN toolset can do it (project, api_request, convert_file, Read, clear_context…), use it directly — never delegate something you can do yourself in one call; delegation is for work that needs a specialist's tools or many iterations. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
+Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. If a tool in YOUR OWN toolset can do it (project, api_request, convert_file, Bash, Read, WebFetch, WebSearch, open_app, media_control, audio_volume, browser_navigate, clear_context…), use it directly — never delegate something you can do yourself in one call; delegation is for work that needs a specialist's tools or many iterations. Bash and Read make a ONE-SHOT check (run a status command, read a config, list a directory) yours directly — do it and answer. A SIMPLE WEB TASK is yours too: open a page (browser_navigate or WebFetch), read it (the navigate result IS the snapshot), click a link, fill one form, then answer. The moment work becomes multi-step — a build, code edits, a many-page browse/extract/research flow — it delegates: atlas for hands-on/web, vulkan for code. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
 
 Cue words:
 - Before delegating any search, lookup, or find to atlas, check \`marm_smart_recall\` first — if memory can answer it, no delegation. atlas opens and does; it does not rediscover what memory already knows.
 - "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot or webcam for an email request.
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
-- "play X on youtube", "youtube X", "put on X", "change/skip the song" → **atlas** with the song/artist. Vague media: pick something reasonable and act immediately. Delegate once, end your turn — never poll or stop a running media job.
-- "open X so I can see it", "show me the page/file" → **atlas** (opens local files via open_app, web pages in the real browser).
+- "play X on youtube", "youtube X", "put on X", pause/skip/volume → activate_skill('media-playback') and follow it — a single song/video is yours in one turn; only a media FLOW (a queue, a playlist build) delegates to **atlas**. Vague media: pick something reasonable and act immediately — never poll or stop a running media job.
+- "open X so I can see it", "show me the page" → your own \`browser_navigate\` straight to the final URL (local files: bare path or \`open_app\` for an OS-default app). Read the returned snapshot and confirm what opened. Only a many-page browse/extract flow delegates to **atlas**.
 - "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
 - Work tasks, to-dos, projects, deliverables, blockers, priorities, financials → your own \`project\` tool, directly — no delegation, it's one call. Missing an id (project, task, deliverable, blocker, priority)? \`project\` list first, then act with the id. A "task" with no time trigger means a work task (project tool), not a reminder.
@@ -5473,12 +5494,15 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     const startTime = Date.now();
     const sessionId = context.chatJid || '';
 
-    // The def-level filter hides Bash/mcp__ schemas from the orchestrator, but
+    // The def-level filter hides mcp__ schemas from the orchestrator, but
     // the model can still call them blind (activate_skill lists tool names).
     // Enforce the block at execution time too, with a redirect that teaches
-    // the correct path.
-    if (opts?.orchestrator && ((toolName.startsWith('mcp__') && !toolName.startsWith('mcp__marm__')) || toolName === 'Bash')) {
-        return `Error: ${toolName} is not available to the orchestrator. Delegate the work instead: atlas for shell, browser, web, files, and databases; iris for email and scheduling. Call the delegate tool with a {task} argument.`;
+    // the correct path. Bash is NO LONGER blocked (2026-09-12: the
+    // orchestrator runs one-shot commands directly — see
+    // ORCHESTRATOR_SHARED_TOOLS); only foreign MCP tools stay
+    // orchestrator-verboten.
+    if (opts?.orchestrator && toolName.startsWith('mcp__') && !toolName.startsWith('mcp__marm__')) {
+        return `Error: ${toolName} is not available to the orchestrator. Delegate that work instead: atlas for browser, web, files, and databases; vulkan for code; iris for email and scheduling. Call the delegate tool with a {task} argument.`;
     }
 
     // Pre-tool hooks — can block execution
