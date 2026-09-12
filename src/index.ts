@@ -3186,7 +3186,18 @@ function spawnChrome(): void {
     // Native Wayland window on the user's Plasma desktop.
     chromeArgs.push('--ozone-platform=wayland');
   }
-  const child = spawn(CHROME_BIN, chromeArgs, {
+  // Launch inside a transient scope unit so Chrome lives OUTSIDE warden's
+  // cgroup — a service restart kills everything in the cgroup (observed:
+  // the user's window died on every restart despite the adopt-on-start
+  // watchdog, because Chrome was already dead before the probe ran). With
+  // Chrome in its own scope it survives restarts and the watchdog ADOPTS
+  // the live instance (see startChromeWatchdog). Direct spawn is the
+  // fallback when systemd-run isn't available.
+  const systemdRun = '/usr/bin/systemd-run';
+  const scopeLaunch = fs.existsSync(systemdRun);
+  const launchBin = scopeLaunch ? systemdRun : CHROME_BIN;
+  const launchArgs = scopeLaunch ? ['--user', '--scope', CHROME_BIN, ...chromeArgs] : chromeArgs;
+  const child = spawn(launchBin, launchArgs, {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ...displayEnv },
@@ -3206,38 +3217,9 @@ function spawnChrome(): void {
 }
 
 function startChromeWatchdog(): void {
-  // Kill any stale chrome on this port before starting fresh.
-  try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
   let chromeLaunchTime = Date.now();
   let chromeFailures = 0;
   let chromeLaunched = false;
-
-  function restartChrome(reason: string): void {
-    logger.warn({ reason, chromeFailures }, 'Relaunching Chrome');
-    try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
-    chromeFailures = 0;
-    chromeLaunchTime = Date.now();
-    spawnChrome();
-    chromeLaunched = true;
-  }
-
-  // Initial launch: wait for the graphical session to come up so Chrome starts
-  // headed (a visible window) instead of going headless. systemd user services
-  // start at login, so the Wayland/X session is usually up within seconds;
-  // poll for up to 30s. If no session is found, Chrome launches headless as a
-  // fallback (this desktop always has a Wayland session, so the wait resolves
-  // in seconds). This does not block the rest of startup — it runs async while
-  // DB/channels/agents come up.
-  void (async () => {
-    for (let i = 0; i < 15; i++) {
-      const e = discoverDisplayEnv();
-      if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) break;
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    spawnChrome();
-    chromeLaunched = true;
-    chromeLaunchTime = Date.now();
-  })();
 
   const httpOk = (url: string, timeoutMs = 3000) =>
     new Promise<boolean>((resolve) => {
@@ -3249,6 +3231,57 @@ function startChromeWatchdog(): void {
       req.on('timeout', () => { req.destroy(); resolve(false); });
       setTimeout(() => { req.destroy(); resolve(false); }, timeoutMs);
     });
+
+  function restartChrome(reason: string): void {
+    logger.warn({ reason, chromeFailures }, 'Relaunching Chrome');
+    try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
+    chromeFailures = 0;
+    chromeLaunchTime = Date.now();
+    spawnChrome();
+    chromeLaunched = true;
+  }
+
+  // Initial launch: ADOPT a live Warden Chrome if one is already running — a
+  // service restart must NOT throw away the user's browser window and tabs. If
+  // CDP answers on the watchdog port, that Chrome IS the persistent Warden
+  // profile browser, so skip the pkill+respawn entirely and let it keep
+  // running; the 15s health loop below takes over from there. Only when CDP
+  // is down do we kill a stale/zombie instance and wait for the graphical
+  // session to launch fresh (headed once a session exists, headless only as a
+  // session-less fallback). This does not block the rest of startup.
+  void (async () => {
+    if (await httpOk(`http://localhost:${CHROME_CDP_PORT}/json/version`, 2000)) {
+      chromeLaunched = true;
+      chromeLaunchTime = Date.now();
+      // Detect adopted headless instances so the health loop still flips them
+      // headed once a graphical session appears.
+      try {
+        const body = await new Promise<string>((resolve, reject) => {
+          const req = http.get(`http://localhost:${CHROME_CDP_PORT}/json/version`, { timeout: 2000 }, (res) => {
+            let buf = '';
+            res.on('data', (c: Buffer) => { buf += c.toString('utf8'); });
+            res.on('end', () => resolve(buf));
+          });
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+        });
+        chromeHeadless = /Headless/i.test(body);
+      } catch { chromeHeadless = false; }
+      logger.info({ cdpPort: CHROME_CDP_PORT, headless: chromeHeadless }, 'Adopted already-running Warden Chrome — no relaunch');
+      return;
+    }
+    // CDP unreachable: a hung Warden-profile Chrome may still hold the port or
+    // profile lock — kill it before starting fresh.
+    try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
+    for (let i = 0; i < 15; i++) {
+      const e = discoverDisplayEnv();
+      if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    spawnChrome();
+    chromeLaunched = true;
+    chromeLaunchTime = Date.now();
+  })();
 
   // Re-check every 15 seconds; restart Chrome only after repeated failures
   // and never within a 10 s grace period after a fresh launch.
@@ -3447,12 +3480,10 @@ async function warmResidentOllamaModels(): Promise<void> {
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
-  // The auto-spawned dedicated Chrome session is disabled (2026-09-03): the
-  // user prefers pages opening as a new tab in their normal Chrome (xdg-open)
-  // and the extra window was unwanted. Browser-automation tools that attach
-  // over CDP :9222 will find no agent Chrome unless one is started manually —
-  // agents should open user-facing pages with xdg-open instead.
-  // startChromeWatchdog();
+  // The auto-spawned dedicated Chrome session was disabled (2026-09-03) but
+  // re-enabled after Chrome was killed during debugging. Browser-automation
+  // tools attach over CDP :9222 to this persistent Chrome instance.
+  startChromeWatchdog();
   loadState();
   // Seed the three Iris digest automations (hourly/daily/weekly) as
   // scheduled_tasks rows so they show in the Sched tab and the host poll loop
