@@ -1932,6 +1932,88 @@ function maybeScheduleMercury(): void {
 }
 
 /**
+ * File each mercury summary into MARM (session "mercury") so the rolling
+ * conversation state stays recallable via marm_smart_recall even after the
+ * 120-message RAG horizon passes — the first step toward MARM-first recall.
+ * Fire-and-forget: MARM being down or slow must never block compaction.
+ * Dedup on the summary body: compaction rewrites the whole file each run and
+ * consecutive summaries overlap heavily, so only file when the text changed.
+ */
+let marmHostSessionId: string | undefined;
+
+async function marmRpc(sessionId: string | undefined, body: Record<string, unknown>): Promise<Record<string, any> | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(process.env.MARM_URL || 'http://127.0.0.1:8001/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const newSession = res.headers.get('mcp-session-id');
+    if (newSession) marmHostSessionId = newSession;
+    const ctype = res.headers.get('content-type') || '';
+    let text = await res.text();
+    if (ctype.includes('text/event-stream')) {
+      const line = text.split('\n').find((l) => l.startsWith('data:'));
+      text = line ? line.slice(5).trim() : '';
+    }
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+    return JSON.parse(text.slice(start, text.lastIndexOf('}') + 1));
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function fileMercurySummaryToMarm(summary: string): void {
+  if (!summary.trim() || summary === getRouterState('mercury:marm_last_file')) return;
+  void (async () => {
+    const init = await marmRpc(undefined, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'warden-mercury-filing', version: '1.0.0' },
+      },
+    });
+    if (!init) {
+      logger.warn('Mercury→MARM filing skipped: MARM unreachable');
+      return;
+    }
+    await marmRpc(marmHostSessionId, { jsonrpc: '2.0', method: 'notifications/initialized' });
+    const res = await marmRpc(marmHostSessionId, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'marm_log_entry',
+        arguments: {
+          session_name: 'mercury',
+          entry: `${new Date().toISOString().slice(0, 10)} - rolling conversation summary (auto-filed by mercury compaction):\n${summary}`,
+        },
+      },
+    });
+    if (res?.error || res?.result?.isError) {
+      logger.warn({ err: res?.error?.message ?? 'tool error' }, 'Mercury→MARM filing failed');
+      return;
+    }
+    setRouterState('mercury:marm_last_file', summary);
+    logger.info({ chars: summary.length }, 'Mercury summary filed to MARM (session: mercury)');
+  })().catch((err) => logger.warn({ err: err?.message ?? err }, 'Mercury→MARM filing failed'));
+}
+
+/**
  * Mercury — automatic rolling conversation compaction.
  *
  * Reads the last ~40 messages, preserves the most recent turns verbatim, and
@@ -2026,6 +2108,7 @@ async function updateMercurySummary(): Promise<void> {
     const entry = `# Mercury summary updated ${stamp}\n\n${summary}\n\n---\n\n`;
     fs.writeFileSync(mercuryPath, entry, 'utf8');
     logger.info({ chars: summary.length }, 'Mercury summary updated');
+    fileMercurySummaryToMarm(summary);
   } catch (err: any) {
     logger.warn({ err: err?.message ?? err }, 'Mercury summary update failed');
   }
