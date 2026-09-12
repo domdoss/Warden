@@ -114,21 +114,34 @@ export async function ensureChrome(): Promise<void> {
     };
 
     let launched = false;
+    // Chrome must live OUTSIDE warden's cgroup: a service restart kills the
+    // whole cgroup, which closed the user's window every time. Launching via
+    // a transient systemd scope keeps Chrome alive across restarts, and the
+    // host watchdog then ADOPTS the live instance instead of respawning.
+    const SYSTEMD_RUN = '/usr/bin/systemd-run';
+    const scopeLaunch = fs.existsSync(SYSTEMD_RUN);
     for (const bin of candidates) {
         if (!binExists(bin)) continue;
         try {
-            const ch = spawn(bin, chromeArgs, {
-                cwd: process.cwd(),
-                env: { ...process.env, ...DISPLAY_ENV },
-                stdio: 'ignore',
-                detached: true,
-            });
+            const ch = scopeLaunch
+                ? spawn(SYSTEMD_RUN, ['--user', '--scope', bin, ...chromeArgs], {
+                    cwd: process.cwd(),
+                    env: { ...process.env, ...DISPLAY_ENV },
+                    stdio: 'ignore',
+                    detached: true,
+                })
+                : spawn(bin, chromeArgs, {
+                    cwd: process.cwd(),
+                    env: { ...process.env, ...DISPLAY_ENV },
+                    stdio: 'ignore',
+                    detached: true,
+                });
             ch.on('error', (err) => {
                 log(`browser: ${bin} failed to spawn after PATH check (${err.message}) — CDP wait will time out`);
             });
             ch.unref();
             launched = true;
-            log(`browser: launched ${bin} with CDP on :${CDP_PORT}`);
+            log(`browser: launched ${bin}${scopeLaunch ? ' (systemd scope)' : ''} with CDP on :${CDP_PORT}`);
             break;
         } catch { /* try next */ }
     }
