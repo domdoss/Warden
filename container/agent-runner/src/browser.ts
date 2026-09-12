@@ -181,16 +181,46 @@ export async function listPages(): Promise<Page[]> {
 
 const SNAPSHOT_MAX_CHARS = 25000;
 
-/** Aria snapshot with [ref=eN] element refs, capped so a huge page can't flood the context. */
-export async function snapshot(page: Page): Promise<string> {
+// URL + raw aria tree of the last snapshot taken — the "before" state that
+// changedSnapshot() compares against to tell whether an interaction tool's
+// action actually changed the page.
+let lastSnapKey = '';
+
+async function takeAria(page: Page): Promise<{ key: string; text: string; title: string; url: string }> {
     let title = '';
     try { title = await page.title(); } catch { /* navigating */ }
     const snap = await page.ariaSnapshot({ mode: 'ai', timeout: 10000 });
-    const header = `Page: ${title || '(untitled)'}\nURL: ${page.url()}\n`;
-    if (snap.length > SNAPSHOT_MAX_CHARS) {
-        return `${header}${snap.slice(0, SNAPSHOT_MAX_CHARS)}\n[... snapshot truncated at ${SNAPSHOT_MAX_CHARS} chars — interact with the elements above or navigate/scroll to see more]`;
+    const url = page.url();
+    return { key: `${url}\n${snap}`, text: snap, title, url };
+}
+
+function formatSnapshot(s: { text: string; title: string; url: string }): string {
+    const header = `Page: ${s.title || '(untitled)'}\nURL: ${s.url}\n`;
+    if (s.text.length > SNAPSHOT_MAX_CHARS) {
+        return `${header}${s.text.slice(0, SNAPSHOT_MAX_CHARS)}\n[... snapshot truncated at ${SNAPSHOT_MAX_CHARS} chars — interact with the elements above or navigate/scroll to see more]`;
     }
-    return header + snap;
+    return header + s.text;
+}
+
+/** Aria snapshot with [ref=eN] element refs, capped so a huge page can't flood the context. */
+export async function snapshot(page: Page): Promise<string> {
+    const s = await takeAria(page);
+    lastSnapKey = s.key;
+    return formatSnapshot(s);
+}
+
+/** Post-action page read for the interaction tools (click/press/select/hover):
+ * returns the fresh snapshot when the page visibly changed, or null when the
+ * aria tree is byte-identical to the last snapshot — the action was a visual
+ * no-op. Returning the snapshot here folds the follow-up browser_snapshot the
+ * agent would otherwise spend a whole model round on into the action itself,
+ * and the null case tells it the click didn't land so it switches method
+ * instead of snapshot/screenshot/re-click loops. */
+export async function changedSnapshot(page: Page): Promise<string | null> {
+    const s = await takeAria(page);
+    if (s.key === lastSnapKey) return null;
+    lastSnapKey = s.key;
+    return formatSnapshot(s);
 }
 
 /** Locator for a ref from a snapshot, e.g. "e12". */
