@@ -219,18 +219,35 @@ function mercuryRetrieveRelevant(newMessages: NewMessage[], topK = MERCURY_CONTE
   const candidates = gated.slice(0, -MERCURY_RECENT_MESSAGES);
   if (candidates.length === 0) return [];
 
-  const scored = candidates.map((m) => {
+  // Evidence floor: a longer query collides with old turns on single keywords
+  // by chance (the "5 concrete examples" ask matched a day-old eyes_ears
+  // thread purely on the word "concrete" and the model replayed it as current).
+  // Require ≥2 DISTINCT keyword matches once the query carries 3+ keywords;
+  // shorter queries keep the ≥1 floor so single-topic recalls still work.
+  const minMatches = keywords.length >= 3 ? 2 : 1;
+
+  const scored = candidates.map((m, i) => {
     const words = tokenizeMercury(m.content || '');
+    const lower = (m.content || '').toLowerCase();
     let score = 0;
+    let matched = 0;
     for (const kw of keywords) {
-      if (words.includes(kw)) score += 1;
-      if ((m.content || '').toLowerCase().includes(kw)) score += 0.5;
+      const whole = words.includes(kw);
+      if (whole) matched += 1;
+      if (whole) score += 1;
+      if (lower.includes(kw)) score += 0.5;
     }
-    return { m, score };
+    // Recency prior: a position bonus (0 = oldest candidate, 1 = newest) breaks
+    // score ties toward recent turns. Without it the stable sort + topK slice
+    // favored the OLDEST equally-scoring messages — exactly how stale threads
+    // crowded out fresh ones. The bonus can lift a tie but never outrank a
+    // genuinely stronger keyword match.
+    const recency = candidates.length > 1 ? i / (candidates.length - 1) : 1;
+    return { m, score, matched, rank: score + recency };
   });
-  scored.sort((a, b) => b.score - a.score);
+  scored.sort((a, b) => b.rank - a.rank);
   return scored
-    .filter((s) => s.score > 0)
+    .filter((s) => s.matched >= minMatches)
     .slice(0, topK)
     .map((s) => s.m)
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -262,9 +279,15 @@ function buildPrompt(newMessages: NewMessage[]): string {
     if (relevant.length > 0) {
       const lines = relevant.map((m) => {
         const role = m.is_bot_message ? ASSISTANT_NAME : (m.sender_name || 'User');
-        return `<message sender="${role}" history="relevant">${m.content}</message>`;
+        const time = formatLocalTime(m.timestamp, TIMEZONE);
+        return `<message sender="${role}" time="${time}" history="relevant">${m.content}</message>`;
       });
-      prompt += `<mercury_context count="${relevant.length}">\n${lines.join('\n')}\n</mercury_context>\n\n`;
+      // The `time` on each line is the anti-hijack: keyword matches can surface
+      // day-old turns, and without a visible timestamp the model cannot tell a
+      // stale thread from the current one (it once answered a fresh question by
+      // replaying a day-old exchange retrieved this way). The note states the
+      // hierarchy: these are background, never a substitute for the ask.
+      prompt += `<mercury_context count="${relevant.length}" note="older turns keyword-matched to this ask — background only; check each timestamp; the current ask and recent chat history always take priority">\n${lines.join('\n')}\n</mercury_context>\n\n`;
     }
   }
 
