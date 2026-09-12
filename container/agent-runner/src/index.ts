@@ -708,13 +708,14 @@ READ WHOLE, READ ONCE — read each file the task names in ONE full Read, no lim
 
 WEB — Two tools, two jobs. No site-specific rituals — apply the same rule to every site:
 • \`WebFetch\` — READS a page server-side and returns clean Markdown (headings/links/lists/code/tables preserved; nav+footer+ads stripped) WITHOUT launching the browser. It is the DEFAULT for any "find X", "look up", "what does this page say", or "pull up the link for" task. If the ask can be answered from the DOM alone, use \`WebFetch\` and put the answer in your reply — do NOT open the browser.
-• \`browser_*\` — drives the user's REAL signed-in Chrome (CDP 9222) to DISPLAY a page in front of them or to INTERACT (click, type/submit a form, log in, control media). Call \`browser_navigate\` directly as the first action; it returns a snapshot with refs like [ref=e12] for click/type, and take a fresh \`browser_snapshot\` after the page changes (refs go stale). Never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins.
+• \`browser_*\` — drives the user's REAL signed-in Chrome (CDP 9222) to DISPLAY a page in front of them or to INTERACT (click, type/submit a form, log in, control media). Call \`browser_navigate\` directly as the first action; it returns a snapshot with refs like [ref=e12] for click/type. \`browser_click\`/\`browser_press_key\`/\`browser_select_option\`/\`browser_hover\` return the updated snapshot themselves when the page changes (refs go stale) — call \`browser_snapshot\` only to re-read the page without acting. Never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins.
 Route by intent:
 - User just wants to KNOW something → \`WebFetch\`, answer in your reply, no browser.
 - User wants to SEE a page, watch/play media, or DO something (form, login, click) → find the real URL with \`WebFetch\`/\`WebSearch\`, then \`browser_navigate\` straight to that final URL so it opens in front of them. Reuse the shared browser — don't pile up new tabs.
 - User wants to SEE a LOCAL file you just wrote or that already exists (an HTML page, a PDF, an image) → \`browser_navigate\` with the file's ABSOLUTE path as \`url\`. Bare paths open as file:// in the shared Warden Chrome and you get the snapshot back — check the snapshot shows the right page before you report done. Use \`open_app\` (xdg-open) only when the file belongs in its OS-default app (a PDF reader, an image viewer), not the browser. A local server IS the right call when the page genuinely needs one — it's the node/express/dev server you just built, or the page fails from file:// (fetch, CORS, service workers). Then: serve the directory that ACTUALLY contains the file, \`browser_navigate\` to the exact URL, and read the snapshot — a 404 or a different site means the server root is wrong; fix the root path, don't navigate again hoping it changed.
 - User is ALREADY on a page in the shared browser → work THERE. \`browser_current_url\` + \`browser_snapshot\` to see where they are, then act in that page (navigate onward, click, control media) instead of opening a new one.
 - \`WebFetch\` comes back empty/blocked → the page is probably JS-rendered; fall back to \`browser_navigate\` + \`browser_snapshot\` to read it.
+- Filters and data extraction on results/marketplace pages → prefer ONE \`browser_evaluate\` that returns the structured items (title, price, link) or a URL with query parameters, over clicking through filter UIs. A "did not visibly change" result is the page telling you the action had no effect — switch method on the very next call; repeating the same click or Escape never helps.
 For media playback on any site, drive the page's \`<video>\`/\`<audio>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the site's UI buttons.
 
 NATIVE APPS — Two routes, pick by whether you need to drive it. (1) Fire-and-forget SHOW: the user just wants to see or launch something (open a PDF, open a folder, launch Stremio) → \`open_app\` with \`app: "xdg-open"\` (or the app binary) and the absolute path; it opens on the host display and returns immediately. (2) DRIVE: you need to click/type/screenshot controls inside a desktop app (a settings window, a media player you must steer) → launch it with Bash (\`flatpak run …\` or the app command), wait for it to open, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the control's pixel coordinates, and \`desktop_type\` to type or send keys. Take a fresh \`desktop_screenshot\` after each action. Use xdg-open for showing, the CDP browser for pages you'll keep driving, and Bash+desktop tools for apps you must steer — never the wrong one.
@@ -2833,12 +2834,71 @@ function subAgentMsgBudgetChars(model: string, ctxOverride: string | undefined, 
     return Math.min(availTokens * 3, 600000);     // ~3 chars/token (conservative); cloud hard-cap 600k
 }
 
+// ─── Stale browser snapshots ────────────────────────────────────────────────
+// A browsing run's context is mostly page snapshots, and every one is dead the
+// moment the page changes — its refs are stale and its content is superseded
+// by the next snapshot. Rather than dropping oldest WHOLE groups (which also
+// throws away the real action history), shrink old snapshots to a header stub.
+// Tool results are wrapped by untrustedContextMessage (not reliably parseable),
+// so snapshot-bearing tool messages are tagged in this WeakSet at push time.
+const BROWSER_SNAPSHOT_MSGS = new WeakSet<object>();
+const BROWSER_SNAPSHOT_RESULT_TOOLS = new Set([
+    'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_press_key',
+    'browser_select_option', 'browser_hover', 'browser_type',
+]);
+const SNAPSHOT_KEEP_FULL = 2;     // newest snapshots kept whole (current page + one back)
+const SNAPSHOT_STUB_MIN_CHARS = 1500; // a stub only pays for itself on real dumps
+
+/** Replace all but the newest few browser snapshot results in `msgs` with a
+ *  short "elided" stub (page title + URL preserved). Returns how many were
+ *  stubbed. Mutates the message objects in place — the caller's array sees it. */
+function stubStaleBrowserSnapshots(msgs: any[]): number {
+    let full = 0;
+    let stubbed = 0;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m?.role !== 'tool' || !BROWSER_SNAPSHOT_MSGS.has(m)) continue;
+        const c = m.content;
+        // Small results (click no-op notes, tiny snapshots) neither consume a
+        // keep-full slot nor get stubbed — only real dumps do.
+        if (typeof c !== 'string' || c.length < SNAPSHOT_STUB_MIN_CHARS) continue;
+        if (full < SNAPSHOT_KEEP_FULL) { full++; continue; }
+        const mm = /Page: (.*)\nURL: (.*)/.exec(c);
+        if (!mm) continue;
+        m.content = untrustedContextMessage(
+            `Older page snapshot elided (refs are stale — take a fresh browser_snapshot or browser_navigate if you need this page again).\nPage: ${mm[1]}\nURL: ${mm[2]}`,
+        );
+        stubbed++;
+    }
+    return stubbed;
+}
+
 /** Trim oldest non-system messages to fit the char budget. Always keeps
- *  the system prompt, the initial user task, and the most recent messages. */
+ *  the system prompt, the initial user task, and the most recent messages.
+ *
+ *  Cache economics: Ollama reuses the KV prefix of the previous request, so
+ *  an append-only turn costs only its NEW tokens — but dropping the OLDEST
+ *  groups changes the prompt at its front and forces a full re-prefill of
+ *  everything behind the head (~17K tokens on a 32K-window agent, the whole
+ *  per-iteration "thinking" latency of a browser run). Two countermeasures:
+ *  1. Before dropping groups, shrink STALE browser snapshots in place (see
+ *     stubStaleBrowserSnapshots) — browsing runs are made of them and they
+ *     are worthless once the page changed.
+ *  2. When groups must be dropped, drop down to a WATERMARK (~70% of budget)
+ *     instead of barely-under, so the next trim fires many iterations later
+ *     and the prefix stays valid (append-only) in between. */
+const TRIM_WATERMARK = 0.7;
+
 function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
     if (msgs.length <= 2) return msgs;
-    const total = estimateMessagesChars(msgs);
+    let total = estimateMessagesChars(msgs);
     if (total <= budgetChars) return msgs;
+    const stubbed = stubStaleBrowserSnapshots(msgs);
+    if (stubbed > 0) {
+        total = estimateMessagesChars(msgs);
+        log(`[context] stubbed ${stubbed} stale browser snapshot(s); ~${(total / 1000).toFixed(0)}K chars`);
+        if (total <= budgetChars) return msgs;
+    }
     const system = msgs[0];
     // The persistent orchestrator's layout is:
     //   [system(+merged mercury summary), initialUser, ...tail]
@@ -2862,7 +2922,12 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
     const headChars = estimateMessagesChars(headMsgs);
     let groupChars = groups.reduce((s, g) => s + estimateMessagesChars(g), 0);
     let start = 0;
-    while (start < groups.length - 1 && groupChars > budgetChars - headChars) {
+    // Watermark: trim well below budget (not barely under) so the next trim
+    // fires several iterations later — each fire invalidates the KV prefix
+    // cache and costs a full re-prefill, so firing every iteration (the old
+    // just-under behavior) paid that cost on EVERY model turn.
+    const tailTarget = (budgetChars - headChars) * TRIM_WATERMARK;
+    while (start < groups.length - 1 && groupChars > tailTarget) {
         groupChars -= estimateMessagesChars(groups[start]!);
         start++;
     }
@@ -3133,7 +3198,7 @@ async function runSubAgent(
             const sysChars = estimateMessagesChars([messages[0]!]);
             const toolChars = JSON.stringify(tools).length;
             const trimmed = trimMessagesToBudget(messages, subAgentMsgBudgetChars(model, ctxOverride, sysChars, toolChars));
-            if (trimmed.length !== messages.length) messages.length = 0, messages.push(...trimmed);
+            if (trimmed !== messages) { messages.length = 0; messages.push(...trimmed); }
             resetSilence();
             const subThink = ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model);
             const chatResult = await provider.chatStream({
@@ -3207,7 +3272,9 @@ async function runSubAgent(
                             const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
                             const truncated = truncateToolResult(name, result, toolResultMaxChars(agentName));
                             lastToolResult = truncated;
-                            messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
+                            const toolMsg: any = { role: 'tool', content: untrustedContextMessage(truncated) };
+                            if (BROWSER_SNAPSHOT_RESULT_TOOLS.has(name)) BROWSER_SNAPSHOT_MSGS.add(toolMsg);
+                            messages.push(toolMsg);
                             if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
                                 modifiedFiles.add(args.file_path);
                             onToolCall(name, argSummary, truncated.slice(0, 200));
@@ -3221,7 +3288,9 @@ async function runSubAgent(
                             const result = await executeXmlTool(name, args, toolContext, modifiedFiles);
                             const truncated = truncateToolResult(name, result, toolResultMaxChars(agentName));
                             lastToolResult = truncated;
-                            messages.push({ role: 'tool', content: untrustedContextMessage(truncated) });
+                            const toolMsg: any = { role: 'tool', content: untrustedContextMessage(truncated) };
+                            if (BROWSER_SNAPSHOT_RESULT_TOOLS.has(name)) BROWSER_SNAPSHOT_MSGS.add(toolMsg);
+                            messages.push(toolMsg);
                             if ((name === 'Write' || name === 'Edit') && args.file_path && !result.startsWith('Error'))
                                 modifiedFiles.add(args.file_path);
                         } catch (err: any) {
@@ -4173,7 +4242,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 JSON.stringify(mergeSkillTools()).length,
             );
             const trimmedOrch = trimMessagesToBudget(messages, orchBudget);
-            if (trimmedOrch.length !== messages.length) messages.length = 0, messages.push(...trimmedOrch);
+            if (trimmedOrch !== messages) { messages.length = 0; messages.push(...trimmedOrch); }
             try {
                 // #3 Mid-loop breaker: if circling or runaway was detected last
                 // round, force this round to run with NO tools so the model must
@@ -4765,7 +4834,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                                 JSON.stringify(mergeSkillTools()).length,
                             );
                             const trimmedRetry = trimMessagesToBudget(messages, retryBudget);
-                            if (trimmedRetry.length !== messages.length) messages.length = 0, messages.push(...trimmedRetry);
+                            if (trimmedRetry !== messages) { messages.length = 0; messages.push(...trimmedRetry); }
                             const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
                             if (toolIteration <= 1 || modelRequiresThink(model)) {
                                 retryBody.think = true;

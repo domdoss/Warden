@@ -3,9 +3,12 @@ import path from 'path';
 import { pathToFileURL } from 'url';
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
-import { getPage, listPages, setActivePage, snapshot, refLocator } from '../browser.js';
+import { getPage, listPages, setActivePage, snapshot, changedSnapshot, refLocator } from '../browser.js';
 
 const ACTION_TIMEOUT = 10000;
+// Client-side UI (menus, dialogs, live-filtered results) renders after the
+// click handler returns; give it a beat so changedSnapshot sees it.
+const ACTION_SETTLE_MS = 500;
 
 // Same-URL re-navigation guard: when CDP hiccups, agents retry the identical
 // navigate in a loop and every retry can open another tab in the user's
@@ -73,7 +76,7 @@ registry.register({
 
 registry.register({
     name: 'browser_click',
-    description: 'Click an element on the page by its snapshot ref.',
+    description: 'Click an element on the page by its snapshot ref. Returns the updated page snapshot when the click changes the page, or a "did not visibly change" note when it has no visible effect — that note means the click did nothing: switch approach (browser_evaluate, URL parameters, a different element) instead of repeating it.',
     schema: {
         type: 'object',
         properties: {
@@ -90,7 +93,10 @@ registry.register({
             if (args.double) await loc.dblclick({ timeout: ACTION_TIMEOUT });
             else await loc.click({ timeout: ACTION_TIMEOUT });
             await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
-            return `Clicked ${args.element || args.ref}. Now on: ${await page.title().catch(() => '(untitled)')} — ${page.url()}. Call browser_snapshot to read the updated page.`;
+            await page.waitForTimeout(ACTION_SETTLE_MS);
+            const fresh = await changedSnapshot(page);
+            if (fresh !== null) return fresh;
+            return `Clicked ${args.element || args.ref} — the page did not visibly change (same content as before the click). If you expected a menu, dialog, or navigation, it did not happen: change approach (browser_evaluate to toggle or extract, URL parameters, or a different element) instead of repeating this click. State-only changes (playback, volume) do not show in the snapshot — verify those with browser_evaluate.`;
         } catch (err: any) {
             return `Error clicking ${args.ref}: ${err.message}. Take a fresh browser_snapshot — refs go stale when the page changes.`;
         }
@@ -123,8 +129,10 @@ registry.register({
                 if (page.url() === urlBefore) {
                     return `Typed into ${args.ref} and pressed Enter, but the page did NOT navigate (still on ${urlBefore}). Do not retry Enter — take a browser_snapshot, find the form's submit/search button, and browser_click it instead.`;
                 }
+                await page.waitForTimeout(ACTION_SETTLE_MS);
+                return (await changedSnapshot(page)) ?? `Typed into ${args.ref} and pressed Enter. Call browser_snapshot to read the updated page.`;
             }
-            return `Typed into ${args.ref}${args.submit ? ' and pressed Enter' : ''}. Call browser_snapshot to read the updated page.`;
+            return `Typed into ${args.ref}. Call browser_snapshot to read the updated page.`;
         } catch (err: any) {
             return `Error typing into ${args.ref}: ${err.message}. Take a fresh browser_snapshot — refs go stale when the page changes.`;
         }
@@ -135,7 +143,7 @@ registry.register({
 
 registry.register({
     name: 'browser_press_key',
-    description: 'Press a keyboard key in the browser page, e.g. "Enter", "Escape", "ArrowDown", "Control+a", "k" (YouTube play/pause). Pass ref to press the key ON a specific element (focuses it first) — without a ref the key goes to whatever happens to be focused, which may be nothing.',
+    description: 'Press a keyboard key in the browser page, e.g. "Enter", "Escape", "ArrowDown", "Control+a", "k" (YouTube play/pause). Pass ref to press the key ON a specific element (focuses it first) — without a ref the key goes to whatever happens to be focused, which may be nothing. Returns the updated snapshot when the page changes, or a "did not visibly change" note when it does not.',
     schema: {
         type: 'object',
         properties: {
@@ -154,7 +162,10 @@ registry.register({
             } else {
                 await page.keyboard.press(key);
             }
-            return `Pressed ${key}${args.ref ? ` on ${args.ref}` : ''}.`;
+            await page.waitForTimeout(ACTION_SETTLE_MS);
+            const fresh = await changedSnapshot(page);
+            if (fresh !== null) return fresh;
+            return `Pressed ${key}${args.ref ? ` on ${args.ref}` : ''} — the page did not visibly change. If you expected a menu or dialog to react, it did not: change approach instead of repeating this key. State-only changes (playback, volume) do not show in the snapshot — verify those with browser_evaluate.`;
         } catch (err: any) {
             return `Error pressing ${args.key}: ${err.message}`;
         }
@@ -165,7 +176,7 @@ registry.register({
 
 registry.register({
     name: 'browser_select_option',
-    description: 'Select an option in a <select> dropdown identified by its snapshot ref.',
+    description: 'Select an option in a <select> dropdown identified by its snapshot ref. Returns the updated snapshot when the page changes, or a "did not visibly change" note when the selection alone doesn\'t trigger anything (e.g. a filter that needs an Apply button).',
     schema: {
         type: 'object',
         properties: {
@@ -183,7 +194,10 @@ registry.register({
             } catch {
                 await loc.selectOption({ label: String(args.value) }, { timeout: ACTION_TIMEOUT });
             }
-            return `Selected "${args.value}" in ${args.ref}.`;
+            await page.waitForTimeout(ACTION_SETTLE_MS);
+            const fresh = await changedSnapshot(page);
+            if (fresh !== null) return fresh;
+            return `Selected "${args.value}" in ${args.ref} — the page did not visibly change (the selection alone triggered nothing; if the site needs an Apply/Update button, click it next).`;
         } catch (err: any) {
             return `Error selecting in ${args.ref}: ${err.message}`;
         }
@@ -194,7 +208,7 @@ registry.register({
 
 registry.register({
     name: 'browser_hover',
-    description: 'Hover the mouse over an element by its snapshot ref (opens menus, reveals tooltips).',
+    description: 'Hover the mouse over an element by its snapshot ref (opens menus, reveals tooltips). Returns the updated snapshot showing whatever appeared.',
     schema: {
         type: 'object',
         properties: {
@@ -206,7 +220,10 @@ registry.register({
         try {
             const page = await getPage();
             await refLocator(page, String(args.ref)).hover({ timeout: ACTION_TIMEOUT });
-            return `Hovering over ${args.ref}. Call browser_snapshot to see what appeared.`;
+            await page.waitForTimeout(ACTION_SETTLE_MS);
+            const fresh = await changedSnapshot(page);
+            if (fresh !== null) return fresh;
+            return `Hovered over ${args.ref} — nothing visibly appeared. If you expected a menu, it did not open: change approach instead of hovering again.`;
         } catch (err: any) {
             return `Error hovering ${args.ref}: ${err.message}`;
         }
