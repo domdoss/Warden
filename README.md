@@ -210,6 +210,14 @@ The orchestrator writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` �
 
 After every conversation, a **memory writeback** pass runs automatically: a local model reads the last ~30 messages of the chat, distills durable facts (preferences, decisions, context the agent should carry forward), and appends them to `MEMORY.md` with a dated entry in `JOURNAL.md`. The distilled facts are visible to the agent on the very next turn — no manual note-taking, no "remember this" prompts. The writeback is fire-and-forget (never blocks the message loop), throttled to once per chat per 15 minutes, and auto-compacts `MEMORY.md` when it grows too large. Both files live at `WORKSPACE_ROOT` — the same place the orchestrator loads from every turn, and the same place Mercury writes `MERCURY_MEMORY.md`.
 
+#### 🪞 Mercury — rolling conversation memory
+
+Mercury is the working-memory layer for the live conversation — how a fresh orchestrator (after a restart or context clear) knows what the current thread is about without replaying an ever-growing transcript.
+
+- **Rolling compaction.** On a cadence (default every 30 min, or 5 min after you go quiet — never mid-turn), a local model reads the last ~45 messages, keeps the newest ~12 verbatim, and compresses the rest into a concise state-of-the-conversation note written to `MERCURY_MEMORY.md`. Every turn's prompt starts with that summary merged into the system prompt, cache-prefix-stable.
+- **RAG over recent history.** A follow-up that references something older than the verbatim window ("what did I say about the filter two hours ago?") pulls keyword-matched turns from the last ~120 messages into a `<mercury_context>` block. Retrieval is deliberately conservative, because raw old turns injected carelessly once hijacked a turn — the model answered a fresh question by replaying a day-old exchange verbatim, matched on a single shared keyword: a query with 3+ keywords must now match ≥2 of them, score ties break toward the *newest* message, every retrieved line carries its timestamp, and the block is labeled background-only with the current ask explicitly prioritized.
+- **Filed to MARM when present.** Each compaction also files the summary into MARM (session `mercury`, `marm_log_entry`, deduped on unchanged text) so the rolling state stays semantically recallable even after the 120-message horizon passes. Fire-and-forget and fail-open: MARM down or absent changes nothing — Mercury and its RAG work standalone and are always the default recall path.
+
 #### 🧬 MARM — semantic long-term recall (optional, off by default)
 
 [MARM Memory](https://github.com/Lyellr88/marm-memory) (by [Lyellr88](https://github.com/Lyellr88)) is an **optional** dependency: a local-first memory server that gives the agent recall beyond what `MEMORY.md` can hold. Warden runs identically without it — every MARM path is fail-open — but with it installed you get:
@@ -227,6 +235,7 @@ After every conversation, a **memory writeback** pass runs automatically: a loca
 How it integrates (all built in, none of it requires touching Warden's core):
 
 - The memory writeback mirrors every distilled fact into MARM (`marm_log_entry`, over MCP HTTP) right after appending to `MEMORY.md` — fire-and-forget, with a 10s timeout: MARM down or absent changes nothing. In the other direction, `marm-recall.ts` auto-recalls the top MARM matches for each incoming message (2.5s timeout, ≤3 hits, ≤900 chars, fail-open) and injects them into the orchestrator's prompt as a `# RECALLED MEMORIES` section.
+- Mercury compaction files each rolling summary into MARM as well (`marm_log_entry`, session `mercury`, deduped on unchanged text) — the conversation's recent state becomes long-term recallable under the same fail-open contract.
 - The voice app's center panel is the **memory galaxy** (`eyes_ears/ui/memory-galaxy.html`): a 3D constellation of MARM's concept graph — nodes are entities extracted from stored memories, edges are walked relations. Clicking a node opens its details in a separate popup window. The built graph is cached (15 min), so a UI restart doesn't re-probe MARM. With MARM off or the concept graph unbuilt, the galaxy falls back to its built-in demo constellation.
 
 ### 💓 Heartbeat
