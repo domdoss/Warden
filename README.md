@@ -306,13 +306,69 @@ Warden connects to your actual Chrome via Playwright and the Chrome DevTools Pro
 
 The browser tools operate on **DOM accessibility snapshots**, not screenshots. Each element gets a `[ref=e12]` identifier. The agent clicks, types, and navigates by ref — fast, precise, and cheap. Screenshots exist only for visual verification of end states.
 
-Chrome runs as a persistent process with its own watchdog. It survives agent restarts. Sign into Google once; the profile persists forever.
+Chrome runs as a persistent process with its own watchdog. It survives agent restarts — and service restarts too: on startup the watchdog adopts an already-running, healthy Warden Chrome instead of killing it, so your window and tabs persist. Sign into Google once; the profile persists forever.
 
 ---
 
 ## 🖱️ Desktop Control
 
 Warden controls your actual desktop — mouse movement, keystrokes, window management. Wayland via ydotool, X11 via xdotool. It discovers your display environment automatically, even when started from systemd with no `DISPLAY` set.
+
+---
+
+## 🧰 The Custom Toolset
+
+Almost none of Warden's tools are generic wrappers — they're purpose-built, one layer above the real system, and they work out of the box because they bind to what's already there: your real Chrome profile, your real audio hardware, your real CalDAV calendar, your real media players. No adapters to configure, no credentials to paste twice, no "integration setup."
+
+The design rule for the action tools is **one tool per noun, one `action` parameter** (a 2026-09 collapse of 41 flat tools): `email`, `task`, `calendar`, `alarm`, `project` — each a single schema whose `action` selects the operation. Small models stay in-distribution, and every new operation is one enum value, not a new tool.
+
+### 🌐 Browser automation (13 tools)
+
+`browser_navigate` · `browser_snapshot` · `browser_click` · `browser_type` · `browser_press_key` · `browser_select_option` · `browser_hover` · `browser_evaluate` · `browser_wait_for` · `browser_tabs` · `browser_back` · `browser_current_url` · `browser_screenshot`
+
+Built on your real Chrome over CDP — no headless puppet browser, no fresh profile. Interaction tools (`click`, `press_key`, `select_option`, `hover`) return the updated page snapshot **in the same result** when the page changes, or an explicit *did not visibly change* signal when the action was a no-op — so the agent knows immediately instead of re-clicking itself in circles. Local files open in the same persistent Chrome via bare paths (`~/site/index.html`), no throwaway `google-chrome` spawns.
+
+### 🖱️ Desktop & apps
+
+`desktop_screenshot` · `desktop_click` · `desktop_type` · `open_app` — sees and steers native apps (settings windows, media players) with pixel coordinates, auto-detecting Wayland vs X11; `open_app` fire-and-forgets files to their OS-default app.
+
+### 🔊 Media & audio
+
+`audio_volume` (speakers) · `mic_volume` · `media_control` (play/pause/skip) — anything exposing MPRIS: a browser YouTube tab, Spotify, mpv, VLC. Dedicated tools, not `amixer`/`playerctl` shell noise.
+
+### 👁️ Vision
+
+`query_image` — ask questions about any image on disk, answered locally. `read_image` + `webcam_capture` + `desktop_screenshot` feed frames into the agent's vision context automatically.
+
+### ✉️ Communications
+
+`email` (read/send/cache, date-windowed) — your real IMAP inbox · `send_sms` / `read_sms` — Twilio in and out · `contacts` — full CRUD (`list_contacts`, `search_contacts`, `get_contact`, `create_contact`, `update_contact`, `delete_contact`) · `calendar` — CalDAV events, Kontact/Google-synced.
+
+### ⏰ Scheduling & time
+
+`alarm` · `task` (schedule/list/update/pause/resume/cancel — cron, interval, one-shot) · `start_timer` · `stop_timer` · `log_time` — durations are parsed host-side (ISO-8601 `PT2M`), never by the model doing clock math. Fired reminders land in chat directly, and the Alarms view shows every once/cron/interval job including fired ones.
+
+### 📋 Projects, work & todos
+
+`project` (kind + action over projects and work tasks) · `list_todos` · `create_todo` · `complete_todo` · `delete_todo`.
+
+### 📄 Documents
+
+`generate_pdf` — build a PDF from scratch · `convert_file` — DOCX/XLSX/HTML/markdown conversions, no external services.
+
+### 🧠 Context & chat plumbing
+
+`get_chat_history` · `attach_file` (deliver a generated file to the user) · `send_message` · `clear_context` — the agent manages its own thread weight.
+
+### 🛰️ Awareness & security
+
+`awareness_log` / `awareness_status` — Oculus's record of room events and live state · `tell_oculus` / `oculus_query` / `oculus_capture` — silent background awareness; it never speaks or alerts on its own · `security_frame` / `save_known_person` / `security_log` / `arm_security` / `disarm_security` / `alert_security` / `dismiss_security_flag` · `sentry_report` — the software-security scanner (read-only sockets/services/crontab audit, one inventory submission, host does the diffing).
+
+### 🔌 The rest
+
+`api_request` + `list_api_keys` — your own stored provider credentials, used directly · `fabric_pattern` — Daniel Miessler's fabric patterns hot-plugged into prompts · `Bash` — a persistent shared shell where `cd` sticks.
+
+Every tool above is registered with a toolset and routed to agents by role ([Dynamic Tool Selection](#-dynamic-tool-selection)) — vulkan gets code tools and physically cannot screenshot-loop, sentry gets read-only audit tools and nothing else, atlas gets the browser and the media hardware.
 
 ---
 
