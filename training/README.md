@@ -49,6 +49,13 @@ from the runner source at gen time** (throws if the extraction drifts), so
 training always matches production exactly. Re-run both whenever the runner's
 SUBAGENTS entry, toolsets, or tool schemas change.
 
+**The ANCHOR time header is BAKED IN** (`gen_toolcall_sft.mjs`, `ANCHOR`):
+`2026-08-31T14:05:00 (timezone America/Vancouver)`. Every row's user turn
+carries it, so the model trains on Vancouver-local timestamps. If the machine
+this serves runs in a different timezone, change the `ANCHOR` line to match
+the local one **before regenerating** the dataset — otherwise the fine-tune
+computes clock math in the wrong offset at inference time.
+
 ## Files
 
 - `dump_tool_schemas.mjs` — dumps the exact Ollama tool definitions from the
