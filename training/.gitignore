@@ -9,5 +9,8 @@ Modelfile.*
 # - training + dryfire logs
 *.log
 dryfire_*.txt
+# - exec summaries (personal docs, live in ~/Documents)
+warden_exec_summary*
 # - venv + scratch
-.venv/!Modelfile.toolcall-ft
+.venv/
+!Modelfile.toolcall-ft
