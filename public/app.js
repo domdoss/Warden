@@ -275,7 +275,6 @@
     if (name === 'tasks') refreshTasks();
     else if (name === 'skills') { refreshSkills(); refreshMcp(); }
     else if (name === 'activity') refreshActivity();
-    else if (name === 'security') refreshSecurity();
     else if (name === 'logs') refreshProcessLogs();
     else if (name === 'accounts') refreshAccounts();
     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
@@ -957,14 +956,6 @@
           <select class="select small" id="sMercuryCtx">${buildCtxOptions(d.mercuryCtx)}</select>
           <span class="dim mono" style="font-size:10px">blank = model default</span>
         </div>
-        <div class="setting-row"><label>Awareness / Security (Oculus)</label>
-          <select class="select" id="sOculusModel">${anyModelHtml}</select>
-          <span class="dim mono" style="font-size:10px">data-only guard that decides normal vs anomaly; blank = inherit orchestrator</span>
-        </div>
-        <div class="setting-row"><label>Oculus Ollama</label>
-          <select class="select" id="sOculusOllamaServer"></select>
-          <span class="dim mono" style="font-size:10px">blank = default server</span>
-        </div>
         <div class="setting-row"><label>Thinking</label>
           <select class="select" id="sThinking">
             <option value="true">On — first turn + always-think models</option>
@@ -980,7 +971,6 @@
         <h3>Servers</h3>
         <div class="hint">Role URLs used by the Warden backend. Ollama servers below are referenced by per-agent dropdowns in Model Configuration.</div>
         <div class="setting-row"><label>Audio / Transcription server</label><input class="input" id="sAudioServerUrl" value="${escAttr(d.audioServerUrl || '')}" placeholder="http://localhost:8766"></div>
-        <div class="setting-row"><label>Video server</label><input class="input" id="sVideoServerUrl" value="${escAttr(d.videoServerUrl || '')}" placeholder="http://localhost:8765"></div>
         <div class="setting-row"><label>Satellite (remote mic/speaker)</label><input class="input" id="sSatelliteUrl" value="${escAttr(d.satelliteUrl || '')}" placeholder="http://192.168.0.160:8766"></div>
         <div class="setting-row"><label>Whisper API fallback</label><input class="input" id="sTranscriptionApiUrl" value="${escAttr(d.transcriptionApiUrl || '')}" placeholder="https://api.groq.com/openai (Groq, autofilled)"></div>
         <div style="margin-bottom:6px"><span class="dim" style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:0.04em">Ollama servers</span>
@@ -1005,26 +995,6 @@
         <div class="hint">Rename Ollama models for display in dropdowns. Blank = use original tag.</div>
         <div id="friendlyList"></div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveFriendly">Save</button><span class="status" id="friendlyStatus"></span></div>
-      </div>
-
-      <div class="setting-card">
-        <h3>Oculus rules</h3>
-        <div class="hint">Edit eyes_ears/oculus.md. Oculus reads this file to know how to silently log camera events.</div>
-        <textarea class="input" id="sOculusMd" rows="16" style="font-family:monospace;font-size:12px;white-space:pre-wrap">${escAttr(d.oculusMd || '')}</textarea>
-        <div class="save-row">
-          <button class="btn btn-primary btn-sm" id="btnSaveOculusMd">Save Oculus.md</button>
-          <span class="status" id="oculusMdStatus"></span>
-        </div>
-      </div>
-
-      <div class="setting-card">
-        <h3>Oculus — watch out for</h3>
-        <div class="hint">One situation per line. When an awareness event clearly matches one, Oculus saves the photo to uploads and logs it silently (it does not message you).</div>
-        <textarea class="input" id="sWatchOut" rows="6" placeholder="e.g. someone taking food from the fridge"></textarea>
-        <div class="save-row">
-          <button class="btn btn-primary btn-sm" id="btnSaveWatchOut">Save list</button>
-          <span class="status" id="watchOutStatus"></span>
-        </div>
       </div>
 
       <div class="setting-card">
@@ -1064,7 +1034,6 @@
     setSelect('sMercury', d.mercuryMode || 'full');
     setSelect('sMercuryModel', (d.mercuryModel || '').replace(/^local:/, ''));
     setSelect('sMercuryCtx', d.mercuryCtx || '');
-    setSelect('sOculusModel', (d.oculusModel || '').replace(/^local:/, ''));
     setSelect('sThinking', d.thinking || 'true');
     // Timezone dropdown: select the saved zone, appending it as an extra
     // option if it isn't in the curated list (preserves custom values).
@@ -1084,7 +1053,6 @@
 
     // Servers card
     $('sAudioServerUrl').value = esc(d.audioServerUrl || '');
-    $('sVideoServerUrl').value = esc(d.videoServerUrl || '');
     $('sSatelliteUrl').value = esc(d.satelliteUrl || '');
     $('sTranscriptionApiUrl').value = esc(d.transcriptionApiUrl || '');
 
@@ -1118,7 +1086,6 @@
     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
     fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
     fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
-    fillAgentServerSelect('sOculusOllamaServer', d.oculusOllamaServer || '');
 
     // Friendly names list
     const fl = $('friendlyList');
@@ -1139,11 +1106,8 @@
     $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveAutomation').addEventListener('click', saveAutomation);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);
-    $('btnSaveOculusMd').addEventListener('click', saveOculusMd);
-    $('btnSaveWatchOut').addEventListener('click', saveWatchOut);
     $('btnRestartServer2').addEventListener('click', restartServer);
 
-    loadWatchOut();
     refreshLogInfo();
     $('btnRefreshLogInfo').addEventListener('click', refreshLogInfo);
     $('btnTruncateLogs').addEventListener('click', truncateLogs);
@@ -1222,7 +1186,6 @@
         mercuryMode: $('sMercury').value,
         mercuryModel: stripLocal($('sMercuryModel').value),
         mercuryCtx: $('sMercuryCtx').value,
-        oculusModel: stripLocal($('sOculusModel').value),
         thinking: $('sThinking').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
         atlasCtx: $('sAtlasCtx').value,
@@ -1231,7 +1194,6 @@
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
-        oculusOllamaServer: $('sOculusOllamaServer').value,
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
@@ -1277,7 +1239,6 @@
       const defIdx = defRadio ? Number(defRadio.value) : 0;
       const body = {
         audioServerUrl: $('sAudioServerUrl').value.trim(),
-        videoServerUrl: $('sVideoServerUrl').value.trim(),
         satelliteUrl: $('sSatelliteUrl').value.trim(),
         transcriptionApiUrl: $('sTranscriptionApiUrl').value.trim(),
         ollamaDefaultServerId: defIdx >= 1 && defIdx <= 3 ? slotIds[defIdx - 1] : '',
@@ -1285,7 +1246,6 @@
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
-        oculusOllamaServer: $('sOculusOllamaServer').value,
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
@@ -1309,43 +1269,6 @@
       STATE.cachedFriendlyNames = names;
       st.textContent = 'saved'; st.className = 'status ok';
       toast('Friendly names saved', 'success');
-    } catch (e) {
-      st.textContent = 'failed: ' + e.message; st.className = 'status err';
-    }
-  }
-
-  async function saveOculusMd() {
-    const st = $('oculusMdStatus');
-    st.textContent = 'saving…'; st.className = 'status';
-    try {
-      const content = $('sOculusMd').value;
-      await postJson('/api/oculus/rules', { content });
-      st.textContent = 'saved'; st.className = 'status ok';
-      toast('Oculus rules saved', 'success');
-    } catch (e) {
-      st.textContent = 'failed: ' + e.message; st.className = 'status err';
-    }
-  }
-
-  async function loadWatchOut() {
-    const ta = $('sWatchOut');
-    if (!ta) return;
-    try {
-      const data = await api('/api/oculus/watch-out');
-      ta.value = Array.isArray(data.items) ? data.items.join('\n') : '';
-    } catch (e) {
-      // leave the textarea blank on first load
-    }
-  }
-
-  async function saveWatchOut() {
-    const st = $('watchOutStatus');
-    st.textContent = 'saving…'; st.className = 'status';
-    try {
-      const items = $('sWatchOut').value.split('\n').map(s => s.trim()).filter(Boolean);
-      await postJson('/api/oculus/watch-out', { items });
-      st.textContent = 'saved'; st.className = 'status ok';
-      toast('Watch-out-for list saved', 'success');
     } catch (e) {
       st.textContent = 'failed: ' + e.message; st.className = 'status err';
     }
@@ -2080,57 +2003,6 @@
     }
   }
 
-  // ============================================================= Security events
-  function fmtAbsence(seconds) {
-    if (seconds == null) return '';
-    const s = Math.round(Number(seconds));
-    if (!isFinite(s) || s < 0) return '';
-    if (s < 60) return `gone ${s}s`;
-    const m = Math.floor(s / 60);
-    const rs = s % 60;
-    if (m < 60) return `gone ${m}m${rs ? ' ' + rs + 's' : ''}`;
-    const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return `gone ${h}h${rm ? ' ' + rm + 'm' : ''}`;
-  }
-
-  async function refreshSecurity() {
-    const el = $('securityList');
-    if (!el) return;
-    el.innerHTML = '<div class="task-empty">Loading…</div>';
-    try {
-      const data = await api('/api/oculus/awareness-log?limit=50');
-      const rows = data.rows || [];
-      if (!rows.length) { el.innerHTML = '<div class="task-empty">No security events yet.</div>'; return; }
-      el.innerHTML = rows.map(r => {
-        const who = r.label ? esc(r.label) : (r.is_known != null ? (r.is_known ? 'known' : 'unknown') : '');
-        const absence = r.event === 'arrival' && r.seconds_empty != null ? ' · ' + esc(fmtAbsence(r.seconds_empty)) : '';
-        let extra = '';
-        if (r.data) { try { const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; if (d && d.person_count != null) extra = 'people: ' + esc(String(d.person_count)); } catch {}
-        }
-        return '<div class="activity-item"><div class="row1">' +
-          '<span class="name">' + esc(r.event || '?') + (who ? ' · ' + who : '') + '</span>' +
-          '<span class="ts">' + fmtTime(r.ts) + absence + '</span></div>' +
-          (extra ? '<div class="tools">' + extra + '</div>' : '') +
-          '</div>';
-      }).join('');
-    } catch (e) {
-      el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
-    }
-  }
-
-  async function clearOculusLogs() {
-    if (!confirm('Clear all Oculus awareness + security logs on the laptop store?')) return;
-    try {
-      const d = await api('/api/oculus/logs', { method: 'DELETE' });
-      if (!d.ok) { toast(d.error || 'Clear failed', 'error'); return; }
-      toast('Oculus logs cleared', 'success');
-      refreshSecurity();
-    } catch (e) {
-      toast(e.message || 'Clear failed', 'error');
-    }
-  }
-
   // ============================================================= Process logs
   async function refreshProcessLogs() {
     const el = $('processLogsContent');
@@ -2556,8 +2428,6 @@
     $('btnAddApiKey').addEventListener('click', openApiKeyDrawer);
     $('btnRefreshSkills').addEventListener('click', () => { refreshSkills(); refreshMcp(); });
     $('btnRefreshActivity').addEventListener('click', refreshActivity);
-    const btnSec = $('btnRefreshSecurity'); if (btnSec) btnSec.addEventListener('click', refreshSecurity);
-    const btnClear = $('btnClearOculusLogs'); if (btnClear) btnClear.addEventListener('click', clearOculusLogs);
 
     // MCP + Skills mutation controls
     $('btnMcpAdd').addEventListener('click', mcpAddSubmit);
@@ -2657,5 +2527,5 @@
   }
 
   // Expose a small surface for debugging and inline handlers
-  window.Warden = { STATE, sendChat, pollChat, pollStatus, refreshTasks, refreshSkills, refreshActivity, refreshSecurity, refreshAccounts, deleteApiKey, syncThinkingBar, stopAgent };
+  window.Warden = { STATE, sendChat, pollChat, pollStatus, refreshTasks, refreshSkills, refreshActivity, refreshAccounts, deleteApiKey, syncThinkingBar, stopAgent };
 })();

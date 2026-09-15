@@ -20,7 +20,6 @@ import path from 'path';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
-import { setOculusTaskPrompt } from './tools/awareness-tools.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
@@ -260,7 +259,7 @@ const SUB_INTENT_MAX_NUDGES = 2;
 // reply with no matching tool_call this turn and it is NOT a past-tense
 // citation of a prior result ("Atlas reported…", "Atlas's report") — instead of
 // chasing phrasings (arms race per feedback-fix-general-cause-not-symptom).
-const DELEGATE_NAMES = ['atlas', 'iris', 'vulkan', 'artemis', 'oculus'];
+const DELEGATE_NAMES = ['atlas', 'iris', 'vulkan', 'artemis'];
 // Words that, when they appear within ~40 chars before OR after a delegate
 // name, mark the mention as a citation of an already-completed result rather
 // than a promise to dispatch now. Before: "according to Atlas", "from Atlas".
@@ -554,7 +553,6 @@ function applySettingsSync(data: any) {
     if (data.irisCtx !== undefined) process.env.IRIS_NUM_CTX = data.irisCtx ? String(data.irisCtx) : '';
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
-    if (data.oculusCtx !== undefined) process.env.OCULUS_NUM_CTX = data.oculusCtx ? String(data.oculusCtx) : '';
     // Per-agent keep_alive overrides (-1 = resident, 300 = 5 min). The host
     // seeds ORCHESTRATOR_KEEP_ALIVE='-1' to preserve the historic resident
     // orchestrator; toolcall/atlas stay unset → runner defaults to 300.
@@ -861,52 +859,7 @@ Be direct and specific — reference the exact point you're critiquing. Do not f
         toolsets: [],
     },
     {
-        delegate: 'oculus',
-        label: 'Oculus',
-        maxIterations: 4,
-        summary: "single background situational-awareness agent: SILENTLY logs each AWARENESS event to awareness_log, captures+logs watch-out-for matches to uploads, and answers orchestrator queries about the room/logs at a given time. Never proactively messages or alerts.",
-        systemPrompt: `You are Oculus, Warden's background situational-AWARENESS agent. You are SILENT. You never message the user, never raise an alert, never arm/disarm anything. You only record and, on demand, report.
-
-You receive one structured JSON AWARENESS event from the camera detector. Your ONLY job is to LOG it. Apply the user rules in eyes_ears/oculus.md.
-
-Event fields in the task:
-- event: arrival | departure | movement | motion_burst | camera_covered | camera_uncovered | camera_moved | note
-- situation.person_count, situation.labels, situation.room_occupied
-- situation.seconds_empty, situation.seconds_occupied, situation.motion_area
-- situation.camera_covered, situation.camera_moved
-- is_known (bool) and label (string) from InsightFace face recognition, when a face is visible
-- ts (timestamp)
-
-A latest frame reference is provided in your task when the user's eyes are OPEN (e.g. "Latest security frame: [Image: attachments/img-....jpg]"). When eyes are CLOSED, no frame is provided and you log the text event only.
-
-ON EVERY AWARENESS EVENT — your one action is:
-1. awareness_log({"action":"record", "ts":..., "event":..., "label":..., "is_known":..., "assessment":"logged"}) — record the event. If a latest security frame IS provided in your task (eyes open), look at it and add a one-line "description" of what you see to the record. If no frame is provided (eyes closed), record the text event with no description. That is the whole job. Then stop. Do NOT call send_message (you do not have it). Do NOT output plain text. Use tools only.
-
-WATCH-OUT-FOR MATCH — the task may include a "Watch out for" list (situations the user defined). If the current event clearly matches one of those situations:
-1. awareness_log({"action":"record", "assessment":"flagged", "watch_out_for":"<the matched situation>", ...}) — record that it matched.
-2. oculus_capture({}) — save the latest frame to the uploads area so the user can review it later. (The frame was already fetched for you.)
-Then stop. Still SILENT — do not message the user about the match; the photo in uploads + the log entry is the record.
-
-If the model you are running on is vision-capable, you may call security_frame once to load the live frame and verify what you see before logging. Otherwise rely on the structured payload.
-
-If the user asks to register a person as known (e.g. "this is dominic, remember him"), call save_known_person({"label":"dominic"}).
-
-Do NOT output plain-text summaries. Only call tools, then stop.
-
-STATUS QUERY MODE — the orchestrator asks you a direct question such as "who's in the room", "what's happening", or "what did the logs show around <time>" by passing a task that starts with [ORCHESTRATOR_QUERY]. This is DIFFERENT from an AWARENESS event. In this mode:
-- Do NOT message the user. You do not have send_message.
-- Use awareness_status for the CURRENT room state, and security_frame (once) to look at the live screen if the question is about what is on screen now.
-- Use awareness_log({"action":"query", ...}) and security_log to read TEXT LOGS — query by the time window the user asked about.
-- Decide the CURRENT room state and return a concise report as your final plain-text output.
-- Start with NOTHING_NOTEWORTHY if the room is currently empty and there is no person present, no recent motion/arrival/departure, and the camera is normal.
-- Start with NOTEWORTHY if a person is currently present, an unknown person is detected, there is recent motion, or the camera is covered/moved.
-- If the user asked about a specific time, report what the logs show for that window.
-- Then add one sentence of detail. Do not greet or alert the user.`,
-        toolsets: ['awareness-core', 'security-core'],
-    },
-    {
-        // Sentry was reborn 2026-09-08: the old webcam-awareness Sentry died with
-        // the oculus consolidation — this is the software-security scanner.
+        // Sentry was reborn 2026-09-08 — this is the software-security scanner.
         // Spawned by the host (hourly peek / daily deep scheduled tasks, fired
         // like iris-digest rows) and delegatable on demand ("scan the pc").
         delegate: 'sentry',
@@ -955,9 +908,8 @@ const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'audio_volume', 'mic_volume', 'media_control',
     'browser_navigate', 'browser_snapshot', 'browser_current_url', 'browser_tabs',
     'browser_click', 'browser_type', 'browser_evaluate',
-    // The orchestrator's EYES — also listed in Oculus's security toolset, so
-    // without this the SUBAGENT_OWNED filter would strip them from the
-    // orchestrator's tool defs and the # EYES instructions couldn't fire.
+    // The orchestrator's vision tools — kept out of the SUBAGENT_OWNED filter
+    // so the orchestrator always keeps them.
     'desktop_screenshot', 'webcam_capture', 'read_image',
 ]);
 
@@ -1145,10 +1097,8 @@ const BOTH_TOOL_DEFS = stripTier(registry.getDefinitions(
     registry.getByTier('both').map(t => t.name)
 ));
 
-// Each sub-agent's actual tool defs: its toolsets' tools + shared 'both' tools,
-// EXCEPT for Oculus, which gets only its explicit toolsets to prevent
-// fabric/MCP/web noise from derailing its narrow background job.
-// Iris is exempt too (2026-09-09): the toolcall-ft fine-tune was trained on
+// Each sub-agent's actual tool defs: its toolsets' tools + shared 'both' tools.
+// Iris is exempt (2026-09-09): the toolcall-ft fine-tune was trained on
 // EXACTLY the iris-core 41 tools (tool_schemas.json) — extra tools in the
 // schema (Read etc.) are off-distribution and it grabs them instead of the
 // trained pick ("check emails" → Read(".mail") bug).
@@ -1156,7 +1106,7 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
     SUBAGENTS.map(s => [
         s.delegate,
         stripTier(
-            (s.delegate === 'oculus' || s.delegate === 'sentry' || s.delegate === 'iris')
+            (s.delegate === 'sentry' || s.delegate === 'iris')
                 ? registry.getDefinitions(getSubAgentToolNames(s))
                 : [
                     ...registry.getDefinitions(getSubAgentToolNames(s)),
@@ -1168,11 +1118,11 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
 
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
-    // Atlas, artemis, oculus, and sentry run async by default: the call returns a
+    // Atlas, artemis, vulkan, and sentry run async by default: the call returns a
     // job id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
     // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'oculus' || s.delegate === 'sentry') {
+    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry') {
         return {
             type: 'function',
             function: {
@@ -1754,7 +1704,7 @@ const DEFAULT_WATCHDOG_TICK_MS = 600_000; // default self-audit cadence (10 min)
 // there is no persistence ceiling, no abortIgnoredJob, no auto-escalate. The
 // only code-enforced stop is the 3h wall-clock (WALL_CLOCK_MS), a last resort.
 // The decision to steer or stop is always the orchestrator's; code only ticks.
-const CHURN_EXEMPT_AGENTS = new Set(['artemis','oculus']); // read-only by design — supervisor is told not to flag them for reading
+const CHURN_EXEMPT_AGENTS = new Set(['artemis']); // read-only by design — supervisor is told not to flag them for reading
 const WATCHDOG_NUDGE_COOLDOWN_S = 1200; // min seconds between supervisor flags on the same job (20 min — at a 10-min cadence the old 120s was always satisfied, so a flagged job was re-flagged on the next tick before the orchestrator could act)
 
 // Write/edit tools whose `args` carry a file_path — used to render the OFF-TASK
@@ -2631,7 +2581,6 @@ const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     artemis: () => process.env.ARTEMIS_NUM_CTX || '',
     atlas: () => process.env.ATLAS_NUM_CTX || '',
     vulkan: () => process.env.VULKAN_NUM_CTX || '',
-    oculus: () => process.env.OCULUS_NUM_CTX || '',
     sentry: () => process.env.SENTRY_NUM_CTX || '',
     // iris-digest (the hourly memory digest) is another one-shot on the toolcall
     // model; inherit the toolcall ctx so it reuses the resident instance instead
@@ -2682,11 +2631,11 @@ function keepAliveEnv(name: string, dflt: number): number {
     return Number.isFinite(n) ? n : dflt;
 }
 // Sub-agent chat calls (runSubAgent): the toolcall agents —
-// iris, oculus, mercury, and the one-shot iris-digest spawn — share one
+// iris, mercury, and the one-shot iris-digest spawn — share one
 // keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use the
 // atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
 function subAgentKeepAlive(agent: string): number {
-    if (['iris', 'oculus', 'mercury', 'iris-digest'].includes(agent)) {
+    if (['iris', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
@@ -3488,8 +3437,8 @@ interface ContainerInput {
     chatJid: string;
     isMain: boolean;
     isScheduledTask?: boolean;
-    /** When set (e.g. 'oculus'), main() runs that sub-agent directly instead
-     *  of the orchestrator loop — used for the background security agent. */
+    /** When set (e.g. 'sentry'), main() runs that sub-agent directly instead
+     *  of the orchestrator loop — used for the background security scanner. */
     agent?: string;
     assistantName?: string;
     voiceAttachments?: Array<{ relativePath: string; mediaType: string }>;
@@ -3650,10 +3599,6 @@ async function runNativeOllama(input: ContainerInput) {
         // filter doesn't strip them from the ranked pool) but are no longer
         // always-on: they surface only when the user's words match (screen,
         // screenshot, see, webcam, photo, camera, room).
-        // Orchestrator → Oculus direct line (registered by awareness-tools.ts,
-        // toolset 'chat'). Always exposed so presence/schedule notes from the
-        // user reach Oculus regardless of the dynamic top-K ranking.
-        'tell_oculus',
         // The following are keyword-gated via the dynamic top-K (rankTools scores
         // name+description overlap), NOT always-on, so they only surface when the
         // user's words match — saving ~330 tokens/turn on ordinary turns. Each
@@ -3661,8 +3606,6 @@ async function runNativeOllama(input: ContainerInput) {
         //   atlas_direct    — "talk to atlas" / "handoff" (ROUTING cue-words)
         //   atlas_background — "atlas" / "background" / long-running handoff
         //   council_status  — "council" / "how's the council"
-        //   oculus_query    — "who's/what's in the room" / "security status"
-        //   awareness_status — "room" / "see" / "camera" (vision combo)
         //   list_api_keys   — "api key" / "keys"
         // Vision captures (desktop_screenshot/webcam_capture/read_image) likewise
         // surface on screen/screenshot/see/webcam/photo/camera/room keywords.
@@ -3841,7 +3784,6 @@ Each specialist is a separate model with its own tools and context — it can't 
 - **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris can make up to 3 tool calls per dispatch, but keep each dispatch one short step (e.g. just the attachment download with the email id and filename) and let it chain list→id→act itself.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
-- **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
 - **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
 
 # ROUTING
@@ -4728,7 +4670,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // "I'll let you know" must not suppress the nudge (2026-08-21: a
                 // claimed YouTube delegation passed exactly that way, no job ran).
                 const claimedDelegation = !delegatedThisTurn
-                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|vulkan|artemis|oculus)\b/i.test(historyContent);
+                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|vulkan|artemis|sentry)\b/i.test(historyContent);
                 // Narrated delegation: a delegate is named in the reply but was
                 // never called this turn, and the mention is NOT a past-tense
                 // citation ("Atlas reported…") or a possessive ("Atlas's
@@ -4781,7 +4723,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         const announcement = (intentMatch ? intentMatch[0] : historyContent).slice(0, 120);
                         log(`Intent nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool_call: "${announcement}"`);
                         appendStatus({ phase: 'thinking', label: `Nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool call — pushing back` });
-                        const delegateList = 'atlas/iris/vulkan/artemis/oculus';
+                        const delegateList = 'atlas/iris/vulkan/artemis/sentry';
                         let nudgeMsg: string;
                         if (narratedDelegation) {
                             nudgeMsg = `You wrote "${announcement}" and named ${narratedDelegation}, but you made no ${narratedDelegation} tool call — the delegation did not happen. Call the ${narratedDelegation} tool with a {task} now, or drop the narration and answer directly.`;
@@ -6148,69 +6090,6 @@ async function main() {
             error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
         });
         process.exit(1);
-    }
-
-    // Oculus run-mode: the host spawns this
-    // process with agent:'oculus' (AWARENESS event from the detector's presence
-    // tracker, or a tell_oculus note) to run the background security/awareness
-    // agent directly — NOT the orchestrator loop. Tool calls (send_message,
-    // open_security_alert, security_log, etc.) route to the host via CALLBACK stdio.
-    if (containerInput.agent === 'oculus') {
-        try {
-            const def = SUBAGENT_BY_DELEGATE.get('oculus');
-            if (!def) throw new Error('oculus sub-agent not defined');
-            const tools = SUBAGENT_TOOL_DEFS.get('oculus') || [];
-            const ctx = {
-                chatJid: containerInput.chatJid || 'owner@local',
-                groupFolder: containerInput.groupFolder || 'owner',
-                isMain: containerInput.isMain ?? true,
-                userId: process.env.WARDEN_USER_ID || '',
-            };
-            // The host resolves the model (oculus:model router key, seeded from
-            // the orchestrator model on first boot) and passes it in
-            // containerInput.model. No hardcoded fallback: an empty model errors
-            // out instead of silently running on a baked-in model.
-            const model = (containerInput.model || '').replace(/^local:/, '');
-            if (!model) {
-                writeOutput({ status: 'error', result: null, error: 'No oculus model configured (set oculus:model in the Agents panel). Refusing to fall back to a hardcoded default.' });
-                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-                process.exit(0);
-            }
-            // Track the oculus model so unloadModel keeps it consistent.
-            ORCHESTRATOR_MODEL = model;
-            // Oculus's num_ctx comes from its Agents-panel setting
-            // (local:oculus_ctx) — settings only, nothing seeded or baked
-            // anywhere. getNumCtx picks it up via the AGENT_CTX_OVERRIDE['oculus']
-            // entry; blank = the model's native window.
-            // Load the user-editable rules from security/oculus.md and inject them
-            // as trusted instructions. The user writes freeform notes like "I will
-            // be out all day, anyone is an alert". Treat those notes as the primary
-            // behavior guide; they are NOT untrusted tool output.
-            let systemPrompt = def.systemPrompt;
-            try {
-                const oculusMdPath = path.join(containerInput.workspaceRoot || '', 'security', 'oculus.md');
-                // The repo's live rules file lives at eyes_ears/oculus.md (security/
-                // is a dead dir); fall back to it so the rules load on this box.
-                const oculusMd = fs.existsSync(oculusMdPath)
-                    ? fs.readFileSync(oculusMdPath, 'utf8')
-                    : (fs.existsSync('/opt/Warden/eyes_ears/oculus.md') ? fs.readFileSync('/opt/Warden/eyes_ears/oculus.md', 'utf8') : '');
-                if (oculusMd) {
-                    systemPrompt = `${systemPrompt}\n\n# YOUR USER'S OCULUS NOTES — FOLLOW THESE\n${oculusMd}`;
-                }
-            } catch (e: any) {
-                log(`[oculus] could not read oculus.md: ${e.message}`);
-            }
-            log(`[oculus] starting background awareness agent: model=${model || '(none)'}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
-            setOculusTaskPrompt(containerInput.prompt || '');
-            (globalThis as any).__oculusQueryMode = (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]');
-            const sa = await runSubAgent('oculus', model, systemPrompt, tools, containerInput.prompt || '', ctx, (containerInput.prompt || '').startsWith('[ORCHESTRATOR_QUERY]') ? 2 : def.maxIterations);
-            writeOutput({ status: 'success', result: sa.content || 'Oculus: done (silent).', error: null });
-        } catch (err: any) {
-            log(`[oculus] error: ${err.message}`);
-            writeOutput({ status: 'error', result: null, error: `Oculus error: ${err.message}` });
-        }
-        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-        process.exit(0);
     }
 
     // Sentry run-mode: the host spawns this process with agent:'sentry' (the

@@ -4,8 +4,8 @@
 # surfaces — stt.py needs torch+whisper, audio.py needs webrtcvad — and
 # eagerly importing them here meant `from ears.tts import TTS` (kokoro/
 # orpheus_cpp path) required torch for no reason. Attribute access imports on
-# demand, keeping `from ears import STT` working while letting TTS-only and
-# eyes-side consumers import just what they use.
+# demand, keeping `from ears import STT` working while letting TTS-only
+# consumers import just what they use.
 
 import importlib
 from typing import Any

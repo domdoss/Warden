@@ -10,7 +10,7 @@ A desktop companion that turns your Dockbox into a voice assistant. Press a butt
 
 ## Short pitch
 
-Dockbox Voice is a lightweight desktop app that gives you a push-to-talk (or hotkey) interface to your Dockbox. Speak naturally; it transcribes locally, sends the text to your Dockbox agent, and speaks the reply back. All intelligence lives on your Dockbox server — the app is just ears, eyes, and a mouth. A minimal hologram UI shows whether it's listening, thinking, or speaking.
+Dockbox Voice is a lightweight desktop app that gives you a push-to-talk (or hotkey) interface to your Dockbox. Speak naturally; it transcribes locally, sends the text to your Dockbox agent, and speaks the reply back. All intelligence lives on your Dockbox server — the app is just ears and a mouth. A minimal hologram UI shows whether it's listening, thinking, or speaking.
 
 ## Features
 

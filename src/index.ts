@@ -3,8 +3,6 @@ import http from 'node:http';
 import path from 'path';
 import { spawn, execSync } from 'node:child_process';
 
-import { processImage } from './image.js';
-
 import {
   AGENT_TIMEOUT,
   ASSISTANT_NAME,
@@ -19,7 +17,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, runSubAgentSync, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
 import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
@@ -93,7 +91,6 @@ import { startLogCap } from './log-rotator.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
 import { captureScreenshotFromSecurityApp, captureWebcamFromSecurityApp, readHostImage } from './capture.js';
-import { securityLog, awarenessLog, recordAwarenessEvent, queryAwarenessHostEvents } from './security-log.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -133,11 +130,6 @@ let lastTimestamp = '';
 let lastAgentTimestamp = '';
 let messageLoopRunning = false;
 export let agentProcessing = false;
-let lastAwarenessEvent: string = '';
-
-// Oculus senders — background agents (Oculus) whose send_message output
-// should also be spoken over the voice client's SSE stream.
-const OCULUS_SENDERS = new Set(['Oculus']);
 
 const channels: Channel[] = [];
 
@@ -303,11 +295,8 @@ function buildPrompt(newMessages: NewMessage[]): string {
   const rawHistory = clearAt
     ? allHistory.filter((m) => (m.timestamp || '') > clearAt)
     : allHistory;
-  // Exclude background agent messages (Oculus security alerts and greetings) —
-  // they are stored for the user/dashboard, but the orchestrator must NOT see them
-  // in its history (otherwise it parrots/acknowledges them).
   const contextMessages = rawHistory
-    .filter((m) => !pendingIds.has(m.id) && m.sender_name !== 'Oculus')
+    .filter((m) => !pendingIds.has(m.id))
     .slice(-MERCURY_RECENT_MESSAGES);
 
   if (contextMessages.length > 0) {
@@ -419,101 +408,6 @@ function startCalendarReminderLoop(): void {
 }
 
 /**
- * Oculus (situational-awareness agent) model resolution. Uses the dedicated
- * oculus:model router setting (dashboard Models card) — no fallback. A `local:`
- * prefix is stripped. seedPerAgentModelSettings() materializes oculus:model from
- * the orchestrator model on first boot, so this is never empty in normal use.
- */
-function resolveAwarenessModel(): string {
-  // Oculus has its own model row in Settings (oculus:model) — no sharing, no
-  // fallback: seedPerAgentModelSettings materializes it on first boot, so an
-  // empty value here means it was manually cleared and should surface loudly.
-  return (getRouterState('oculus:model') || '').trim().replace(/^local:/, '');
-}
-
-/** Pull the current frame from the satellite security detector and save it to
- *  the desktop's owner attachments. Returns the [Image: ...] reference string. */
-async function fetchAndSaveSecurityFrame(): Promise<string | null> {
-  const ip = getSatelliteIp();
-  const url = `http://${ip}:8765/frame`;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`frame server returned ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf || buf.length === 0) throw new Error('empty frame');
-    const groupDir = path.join(WORKSPACE_ROOT, 'groups', 'owner');
-    const processed = await processImage(buf, groupDir, '');
-    if (!processed) throw new Error('processImage failed');
-    return processed.content; // e.g. "[Image: attachments/xyz.jpg]"
-  } catch (err: any) {
-    logger.warn({ err, url }, 'fetchAndSaveSecurityFrame: failed to pull/save satellite frame');
-    return null;
-  }
-}
-
-/** Latest security frame reference fetched for the current Oculus run, so the
- *  host can attach it to Oculus's send_message even if the model forgets. */
-let latestOculusFrame: string | null = null;
-
-/** Spawn Oculus, the single background security/awareness agent (fire-and-forget).
- *  Never awaited. Pass the original awareness text so Oculus has full context.
- *
- *  eyes_open gates the IMAGE only. Text awareness events are always logged
- *  (arrivals/departures/face labels) while the eyes server runs; "eyes closed"
- *  means Oculus logs the text event with no image. "eyes open" means on a new
- *  (debounced) event the host fetches the frame so Oculus can look at it,
- *  describe it, log it, and move on. The detector reports eyes_open in the
- *  AWARENESS payload; if it's missing we default to text-only (eyes closed). */
-export function spawnOculusBackground(task: string, awarenessText?: string): void {
-  if (awarenessText) {
-    lastAwarenessEvent = awarenessText;
-  }
-  let eyesOpen = false;
-  if (awarenessText) {
-    const m = awarenessText.match(/data:\s*(\{.*\})/);
-    if (m) {
-      try { eyesOpen = !!JSON.parse(m[1]).eyes_open; } catch { /* default text-only */ }
-    }
-  }
-  const spawn = (prompt: string) =>
-    runSubAgentBackground({
-      agent: 'oculus',
-      prompt,
-      model: resolveAwarenessModel(),
-      sessionId: 'owner',
-      workspaceRoot: WORKSPACE_ROOT,
-      chatJid: OWNER_JID,
-      groupFolder: 'owner',
-      isMain: true,
-      timeoutMs: 90 * 1000, // short — don't let a stuck model linger
-      callbacks: buildAgentCallbacks({ awarenessText }),
-    } as any);
-
-  // Eyes closed: log the text event only — no image fetch, no description.
-  if (!eyesOpen) {
-    latestOculusFrame = null;
-    spawn(task);
-    return;
-  }
-  // Eyes open: wait ~2s for the person to settle, then pull the frame so Oculus
-  // can look at it + describe it. If the frame server is slow/down, Oculus still
-  // runs with text only rather than being blocked.
-  void new Promise((resolve) => setTimeout(resolve, 2000))
-    .then(() => fetchAndSaveSecurityFrame())
-    .then((imageTag) => {
-      latestOculusFrame = imageTag || null;
-      if (!imageTag) {
-        logger.warn('spawnOculusBackground: could not fetch security frame for Oculus');
-      }
-      const prompt = imageTag ? `${task}\n\nLatest security frame: ${imageTag}` : task;
-      spawn(prompt);
-    });
-}
-
-/**
  * Build the parent-side callback map the agent-runner can invoke when the
  * agent calls one of the side-effecting tools (send_message, schedule_task,
  * read_emails, send_email, install_mcp_server, uninstall_mcp_server,
@@ -523,7 +417,7 @@ export function spawnOculusBackground(task: string, awarenessText?: string): voi
  * Handlers return `{ ok: true, ... }` on success or `{ ok: false, error }`
  * on failure. The agent-runner parser surfaces the error to the agent.
  */
-export function buildAgentCallbacks(opts?: { awarenessText?: string }): CallbackMap {
+export function buildAgentCallbacks(): CallbackMap {
   return {
     send_message: async (args: any) => {
       try {
@@ -537,15 +431,7 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           return { ok: true, skipped: true };
         }
 
-        // For Oculus security alerts, append the real pre-fetched security
-        // frame so Telegram sends the photo. Only swap when we actually have a
-        // frame — otherwise leave whatever [Image: ...] reference Oculus wrote
-        // in place so Telegram can still resolve and send it.
         let finalText = text;
-        if (senderName === 'Oculus' && latestOculusFrame) {
-          finalText = finalText.replace(/\s*\[Image:\s*[^\]]+\]/gi, '').trim();
-          finalText = `${finalText} ${latestOculusFrame}`;
-        }
         if (!finalText.trim()) return { ok: false, error: 'missing text' };
         const messageId = `bot-cb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         storeMessage({
@@ -1395,88 +1281,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
-    // ─── Oculus alert (close) ──────────────────────────────────────────────
-    // Close the open security alert on the standalone detector app, re-arming
-    // it so it can raise the next alert. The detector holds an alert OPEN until
-    // this is called (one alert per incident, not one per detection).
-    close_security_alert: async (_args: any) => {
-      const ip = getSatelliteIp();
-      const url = `http://${ip}:8765/alert/close`;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3000);
-        try {
-          const res = await fetch(url, { method: 'POST', signal: controller.signal });
-          const body = await res.text().catch(() => '');
-          logger.info({ status: res.status, body: body.slice(0, 120) }, 'close_security_alert: detector re-armed');
-          return { ok: res.ok, state: body };
-        } finally {
-          clearTimeout(timer);
-        }
-      } catch (err: any) {
-        logger.warn({ err }, 'close_security_alert: security app not reachable');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // "Open your eyes" — toggle the detector's eyes_open flag on (it will POST
-    // AWARENESS events again). Mirrors close_oculus_alert. The detector keeps
-    // running + showing the feed; eyes_open means awareness is active, eyes
-    // closed means it's paused.
-    arm_security: async (_args: any) => {
-      const ip = getSatelliteIp();
-      const url = `http://${ip}:8765/open`;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3000);
-        try {
-          const res = await fetch(url, { method: 'POST', signal: controller.signal });
-          const body = await res.text().catch(() => '');
-          logger.info({ status: res.status, body: body.slice(0, 120) }, 'arm_security: eyes opened');
-          return { ok: res.ok, state: body };
-        } finally {
-          clearTimeout(timer);
-        }
-      } catch (err: any) {
-        logger.warn({ err }, 'arm_security: oculus app not reachable');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // "Close your eyes" — toggle the detector's eyes_open flag off (stop posting
-    // AWARENESS events).
-    disarm_security: async (_args: any) => {
-      const ip = getSatelliteIp();
-      const url = `http://${ip}:8765/close`;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3000);
-        try {
-          const res = await fetch(url, { method: 'POST', signal: controller.signal });
-          const body = await res.text().catch(() => '');
-          logger.info({ status: res.status, body: body.slice(0, 120) }, 'disarm_security: eyes closed');
-          return { ok: res.ok, state: body };
-        } finally {
-          clearTimeout(timer);
-        }
-      } catch (err: any) {
-        logger.warn({ err }, 'disarm_security: oculus app not reachable');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Oculus's conditions log (own sqlite store, store/security.db). Records
-    // each alert assessment with an exact timestamp, and queries history by
-    // local-time range so Oculus can reference events by time/date.
-    security_log: async (args: any) => {
-      return securityLog(args);
-    },
-
-    // Oculus's situational-awareness history (arrivals/departures/greetings).
-    awareness_log: async (args: any) => {
-      return awarenessLog(args);
-    },
-
     // Sentry scan submission. The agent collects the raw inventory with Bash,
     // JUDGES it itself (a smart model knows what a normal Linux desktop looks
     // like), and submits it ONCE with its `suspicious` flags. THIS handler
@@ -1557,168 +1361,6 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
       }
     },
 
-    // Oculus watch-out-for match: copy the latest fetched frame into the owner's
-    // uploads tree (groups/owner/oculus/<ts>.jpg) so the user can review it later,
-    // and return the uploads path. Silent — no message to the user. Called by the
-    // Oculus agent when an AWARENESS event matches a user-defined watch-out-for
-    // situation. The frame was already pulled + saved by fetchAndSaveSecurityFrame.
-    oculus_capture: async (_args: any) => {
-      try {
-        if (!latestOculusFrame) return { ok: false, error: 'no frame available' };
-        const m = latestOculusFrame.match(/\[Image:\s*(.+?)\]/);
-        if (!m) return { ok: false, error: 'could not parse frame reference' };
-        const rel = m[1].trim();                      // e.g. attachments/xyz.jpg
-        const src = path.join(WORKSPACE_ROOT, 'groups', 'owner', rel);
-        if (!fs.existsSync(src)) return { ok: false, error: 'frame file not found' };
-        const destDir = path.join(WORKSPACE_ROOT, 'groups', 'owner', 'oculus');
-        fs.mkdirSync(destDir, { recursive: true });
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const base = path.basename(rel);
-        const dest = path.join(destDir, `${stamp}-${base}`);
-        fs.copyFileSync(src, dest);
-        const uploadPath = `oculus/${stamp}-${base}`;
-        logger.info({ uploadPath }, 'oculus_capture: watch-out-for match saved to uploads');
-        return { ok: true, path: uploadPath };
-      } catch (err: any) {
-        logger.warn({ err }, 'oculus_capture: failed to save frame');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Oculus registers a known person; the satellite computes the face embedding
-    // on CPU and stores it locally.
-    save_known_person: async (args: any) => {
-      try {
-        const label = String(args?.label || '').trim();
-        if (!label) return { ok: false, error: 'missing label' };
-        const ip = getSatelliteIp();
-        const url = `http://${ip}:8765/known/save`;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15000);
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        const body: any = await res.json().catch(() => ({}));
-        if (!res.ok || !body?.ok) {
-          return { ok: false, error: body?.error || `HTTP ${res.status}` };
-        }
-        return { ok: true, label };
-      } catch (err: any) {
-        logger.warn({ err }, 'save_known_person: failed to reach satellite');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Orchestrator vision aid: the latest AWARENESS info from Oculus / the
-    // camera detector — the most recent event text plus the recent host event
-    // rows (event, is_known/label, person_count, how long the room's been
-    // occupied/empty). Lets the orchestrator answer "who's in the room" by
-    // combining a webcam_capture photo with this structured context (names,
-    // counts, durations) that the photo alone can't provide.
-    awareness_status: async () => {
-      try {
-        const recent = await queryAwarenessHostEvents(5);
-        return { ok: true, latest: lastAwarenessEvent, recent };
-      } catch (err: any) {
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Orchestrator → Oculus direct. The user tells Jarvis a presence/schedule
-    // note (e.g. "heading out for the evening"); Oculus processes it according to
-    // the rules in eyes_ears/oculus.md. Oculus does not reply in the chat.
-    tell_oculus: async (args: any) => {
-      try {
-        const message = typeof args?.message === 'string' ? args.message.trim() : '';
-        if (!message) return { ok: false, error: 'missing message' };
-        const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-        const compactTs = localNow.replace(/[-:]/g, ''); // match the detector's %Y%m%dT%H%M%S
-        const task =
-          `Current local time is ${localNow} (timezone ${tz}).\n\n` +
-          `AWARENESS — note at ${compactTs}. data: {"event":"note","message":${JSON.stringify(message)},"ts":"${compactTs}"}\n\n` +
-          `The user passed you a note. Read eyes_ears/oculus.md and follow its rules. ` +
-          `Do NOT send_message and do NOT reply in chat unless the rules explicitly tell you to greet. Stop after one action.`;
-        spawnOculusBackground(task);
-        logger.info('tell_oculus: spawned Oculus to process note');
-        return { ok: true };
-      } catch (err: any) {
-        logger.warn({ err }, 'tell_oculus: failed to spawn Oculus');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Orchestrator → Oculus live status query. Spawns Oculus synchronously so
-    // it can pull/process live data and return a concise report, instead of
-    // returning stale cached rows. The orchestrator uses this to decide whether
-    // a current room-status question needs a webcam frame.
-    oculus_query: async (args: any) => {
-      try {
-        const question = typeof args?.question === 'string' && args.question.trim()
-          ? args.question.trim()
-          : 'live status';
-        const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-        const task =
-          `[ORCHESTRATOR_QUERY] Current local time is ${localNow} (timezone ${tz}).\n\n` +
-          `The orchestrator asks: "${question}"\n\n` +
-          `You are Oculus, the situational-awareness agent. This is a live query from the orchestrator, NOT an AWARENESS event. ` +
-          `Do NOT send_message to the user (you do not have it). ` +
-          `If the question is about what is happening NOW or what is on screen: call awareness_status for the current room state, and security_frame once to look at the live screen if it would help answer. ` +
-          `If the question is about what happened at or around a given time: query awareness_log (action: query) and security_log for that time window to read the text logs. ` +
-          `Then return a concise report as your final plain-text output. ` +
-          `Start with NOTHING_NOTEWORTHY if the room is currently empty and there is no person present, no recent motion/arrival/departure, and the camera is normal. ` +
-          `Start with NOTEWORTHY if a person is currently present, an unknown person is detected, there is recent motion, or the camera is covered/moved. ` +
-          `If the user asked about a specific time, report what the logs show for that window. ` +
-          `Then add one sentence of detail. Read eyes_ears/oculus.md if you need user-specific rules, but do not greet or alert the user directly.`;
-        const model = resolveAwarenessModel();
-        const result = await runSubAgentSync({
-          agent: 'oculus',
-          prompt: task,
-          model,
-          workspaceRoot: WORKSPACE_ROOT,
-          chatJid: OWNER_JID,
-          groupFolder: 'owner',
-          isMain: true,
-          timeoutMs: 30 * 1000,
-          callbacks: buildAgentCallbacks({}),
-        } as any);
-        logger.info({ report: result.content.slice(0, 200), exitCode: result.exitCode }, 'oculus_query: got report');
-        return { ok: true, report: result.content };
-      } catch (err: any) {
-        logger.warn({ err }, 'oculus_query: failed to query Oculus');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // Oculus raised an alert → light the red alert on the satellite detector.
-    open_security_alert: async (args: any) => {
-      const reason = String(args?.reason || '').trim();
-      if (!reason) return { ok: false, error: 'missing reason' };
-      const ip = getSatelliteIp();
-      const url = `http://${ip}:8765/alert/open`;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3000);
-        try {
-          const res = await fetch(url, { method: 'POST', signal: controller.signal });
-          const body = await res.text().catch(() => '');
-          logger.info({ status: res.status, body: body.slice(0, 120) }, 'open_security_alert: detector ALERTED');
-          return { ok: res.ok, state: body };
-        } finally {
-          clearTimeout(timer);
-        }
-      } catch (err: any) {
-        logger.warn({ err }, 'open_security_alert: security app not reachable');
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
-    // The orchestrator called its clear_context tool. Record the clear boundary
     // on the host so <chat_history> is gated to messages AFTER this point —
     // otherwise pre-clear turns (e.g. a STT-misheard "dental file" thread the
     // small model keeps latching onto) get re-injected every turn. The
@@ -2215,48 +1857,6 @@ async function processOwnerMessages(): Promise<void> {
     }
   }
   setRouterState('orchestrator:last_user_message_at', latestUserTs);
-
-  // ── Security intercepts removed 2026-09-15 — Dom: no security on this
-  // install beyond the machine's basic AV. "Close the alert" / "open/close
-  // your eyes" now flow to the orchestrator as normal conversation. ──
-
-  // ── Awareness events → Oculus direct pipe ───────────────────────────────
-  // An AWARENESS message (posted by the standalone detector's presence
-  // tracker — arrival/departure/note, event-driven, never per-frame) is piped
-  // straight to Oculus, the background situational-awareness agent, in code.
-  // Same engrained pattern: the event row is pre-written to awareness_log
-  // (so it's recorded even if Oculus crashes), Oculus runs on the model
-  // configured in dashboard (oculus:model), and we return so the orchestrator
-  // never burns a turn on it.
-  // Independent of the arm/disarm state — awareness ≠ security arming.
-  const isAwareness = pending.some((m) => (m.content || '').startsWith('AWARENESS'));
-  if (isAwareness) {
-    lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
-    saveState();
-    logger.info({ chatJid: OWNER_JID, messageCount: pending.length }, 'Awareness → routing to Oculus (background)');
-
-    const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const localNow = new Date().toLocaleString('sv-SE', { timeZone: tz }).replace(' ', 'T');
-    const events = pending.filter((m) => (m.content || '').startsWith('AWARENESS'));
-    const latest = events.length > 0 ? events[events.length - 1] : pending[pending.length - 1]!;
-    const awarenessText = latest.content || '';
-    // Pull the user's "watch out for" list so Oculus can match silently.
-    let watchOut: string[] = [];
-    try { watchOut = JSON.parse(getRouterState('oculus:watch_out_for') || '[]'); } catch { watchOut = []; }
-    const watchOutBlock = watchOut.length
-      ? `\n\nWatch out for (user-defined situations; if this event CLEARLY matches one, record it in awareness_log with assessment "flagged" and the matched situation, then call oculus_capture to save the photo to uploads — stay SILENT, do not message the user):\n${watchOut.map((w) => `- ${w}`).join('\n')}`
-      : '';
-    const task = `Current local time is ${localNow} (timezone ${tz}).\n\n${awarenessText}\n\nYou are Oculus, Warden's SILENT situational-awareness agent. Use tools only. Read eyes_ears/oculus.md and apply its rules exactly. Your ONLY job is to LOG this event silently: call awareness_log (action: record) with the event details, then stop. Do NOT message the user, do NOT greet, do NOT alert — you have no send_message.${watchOutBlock}\n\nThe AWARENESS payload includes:\n- event type (arrival|departure|camera_covered|camera_moved|motion_burst|note)\n- person_count\n- is_known and label (from InsightFace face embeddings when a face is visible)\n- room occupancy, motion area, camera state\n\nDo not write a plain-text response; use tools only.`;
-
-    try {
-      // Host-side auto-log of the raw event, independent of Oculus.
-      recordAwarenessEvent(awarenessText);
-      spawnOculusBackground(task, awarenessText);
-    } catch (err: any) {
-      logger.warn({ err }, 'Awareness: failed to spawn Oculus');
-    }
-    return; // do NOT run the orchestrator for awareness events
-  }
 
   const prompt = buildPrompt(pending);
 
@@ -3419,7 +3019,6 @@ function seedPerAgentModelSettings(): void {
   seed('atlas:model', orch);
   seed('vulkan:model', orch);
   seed('mercury:model', orch);
-  seed('oculus:model', orch);
   // Supervisor (monitor-tick) model inherits the orchestrator on first boot —
   // no blank anywhere: every dashboard model dropdown always shows a concrete
   // model. The user picks a small/cloud one afterward if they want.
@@ -3433,7 +3032,7 @@ function seedPerAgentModelSettings(): void {
 
 /**
  * Sync every per-agent num_ctx override from router_state into process.env so
- * the agent-runner child (and background spawns like Oculus, which inherit
+ * the agent-runner child (and background spawns like Sentry, which inherit
  * ...process.env) always sees the current value. Called at boot (after the
  * migration seed, so background spawns before the first chat turn are covered)
  * and again per turn (so dashboard changes take effect immediately).
@@ -3452,13 +3051,10 @@ export function syncAgentCtxEnv(): void {
     getRouterState('local:iris_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.ARTEMIS_NUM_CTX = getRouterState('local:artemis_ctx') || '';
   process.env.VULKAN_NUM_CTX = getRouterState('local:vulkan_ctx') || '';
-  // Mercury and Oculus have their own ctx rows in Settings. Until a per-agent
-  // value is saved they inherit the shared toolcall ctx so effective behavior
-  // is unchanged.
+  // Mercury has its own ctx row in Settings. Until a per-agent value is saved
+  // it inherits the shared toolcall ctx so effective behavior is unchanged.
   process.env.MERCURY_NUM_CTX =
     getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '';
-  process.env.OCULUS_NUM_CTX =
-    getRouterState('local:oculus_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.SENTRY_NUM_CTX =
     getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
@@ -3559,8 +3155,7 @@ async function main(): Promise<void> {
   // Seed the two Sentry security scans (hourly peek / daily deep) the same
   // way: scheduled_tasks rows for visibility + cron editing, fired by
   // checkSentryDue() on the poll loop.
-  // seedSentryTasks();  // disabled 2026-09-15: no security on this install
-  // beyond the machine's own basic AV — Dom. Scheduled scans stay off.
+  seedSentryTasks();
   // Materialize a concrete per-agent model + ctx for every agent from the
   // legacy shared values BEFORE any agent runs, so every Agents-panel dropdown
   // is populated (no blank) and the agent-runner never sees an empty key. This

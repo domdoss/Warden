@@ -16,7 +16,5 @@ import './host-tools.js';
 import './desktop.js';
 import './browser.js';
 import './media.js';
-import './security-tools.js';
-import './awareness-tools.js';
 import './sentry-tools.js';
 import './vision-qa.js';
