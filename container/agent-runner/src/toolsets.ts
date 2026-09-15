@@ -30,27 +30,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
     agent:     { name: 'agent',     tools: ['atlas','vulkan','artemis','iris','sentry'], tier: 'public' },
 
-    // Security tools — used by Oculus (the single background security agent) to
-    // Oculus awareness tools — look at the live frame + log. Oculus is a SILENT
-    // awareness agent: it records to awareness_log/security_log and can look at the
-    // frame / register a known face, but it has NO send_message, NO alerting, NO
-    // arm/disarm — it never proactively speaks or raises an alert. The user opens
-    // / closes the eyes (toggles eyes_open) and queries Oculus at will.
-    security:     { name: 'security',     tools: ['security_frame','security_caption','save_known_person','security_log','oculus_capture'], tier: 'public' },
-    'security-core': { name: 'security-core', includes: ['security'] },
-
-    // awareness_log / awareness_status — the record/query + live-room-state tools
-    // Oculus uses on every event and every orchestrator query. No send_message
-    // here either: Oculus is silent by design.
-    awareness:    { name: 'awareness',    tools: ['awareness_log','awareness_status'], tier: 'public' },
-    'awareness-core': { name: 'awareness-core', includes: ['awareness'] },
-
-    // Sentry — the software-security scanner (reborn 2026-09-08; the old webcam
-    // awareness job belongs to oculus above). Bash for the read-only scan
-    // commands (ss, ps, systemctl, crontab — all user-readable, NO elevated
-    // permissions anywhere) + sentry_report to submit the inventory once; the
-    // host does the baseline diff. Like awareness, a narrow toolset on purpose:
-    // a security scanner gets no fabric/MCP/web/browser tools.
+    // Sentry — the software-security scanner (reborn 2026-09-08). Bash for the
+    // read-only scan commands (ss, ps, systemctl, crontab — all user-readable,
+    // NO elevated permissions anywhere) + sentry_report to submit the inventory
+    // once. A narrow toolset on purpose: a security scanner gets no
+    // fabric/MCP/web/browser tools.
     'sentry-core': { name: 'sentry-core', tools: ['Bash', 'sentry_report'], tier: 'public' },
 
     // Media (speaker/mic volume + playback) — atlas drives the hardware.

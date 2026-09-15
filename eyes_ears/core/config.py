@@ -1,4 +1,4 @@
-"""Configuration loader for Eyes & Ears (one config for both apps).
+"""Configuration loader for the Ears voice app.
 
 Layered config — ONE file, no shadow configs:
     1. **Bundled defaults** — `config/settings.example.yaml` next to this
@@ -7,8 +7,8 @@ Layered config — ONE file, no shadow configs:
        Written by `run.sh` "Configure" / the setup wizard.
 
 `save()` only writes the user-overrides file. `_load()` reads defaults then
-deep-merges user overrides on top. Both eyes (detector) and ears (voice) read
-the same file via this class.
+deep-merges user overrides on top. (The Eyes webcam detector was removed
+2026-09-15; this config now serves ears only.)
 """
 
 from __future__ import annotations
@@ -102,24 +102,11 @@ class Config:
             d = d.setdefault(k, {})
         d[keys[-1]] = value
 
-    # ---- section properties (eyes) ----
+    # ---- section properties (ears) ----
     @property
     def warden(self) -> Dict[str, Any]:
         return self._data.get("warden", {})
 
-    @property
-    def frame_server(self) -> Dict[str, Any]:
-        return self._data.get("frame_server", {})
-
-    @property
-    def model(self) -> Dict[str, Any]:
-        return self._data.get("model", {})
-
-    @property
-    def awareness(self) -> Dict[str, Any]:
-        return self._data.get("awareness", {})
-
-    # ---- section properties (ears) ----
     @property
     def voice(self) -> Dict[str, Any]:
         return self._data.get("voice", {})

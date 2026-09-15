@@ -20,7 +20,6 @@
 **[🔊 Audio Pipeline](#modular-audio-pipeline-runsh)** ·
 **[🗣️ Voice](#%EF%B8%8F-voice-assistant)** ·
 **[🛰️ Satellite](#-satellite-pi-audio-relay)** ·
-**[🛡️ Security Mode](#-security-mode)** ·
 **[🚀 Quick Start](#%EF%B8%8F-quick-start)**
 
 </div>
@@ -58,7 +57,6 @@ You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (
                                    → Vulkan (coding, background)
                                    → Iris (email, calendar, projects)
                                    → Mercury (memory)
-                                   → Oculus (room awareness)
                                    → Sentry (security scans)
                                    → Artemis (audit)
                                    → The Council (deliberation)
@@ -80,7 +78,7 @@ Delegation is not fire-and-forget. When the orchestrator hands work to Atlas, At
 
 **There is no running-job supervisor.** The periodic LLM self-audit watchdog that used to tick every few minutes and flag running jobs as **on track / off-rails / crashed** has been **cut out** — the ticker never arms, the tick function is a no-op, and the dashboard Supervisor row (model + on/off + cadence) is removed. It was **unneeded**: the orchestrator's chain-following is now strong enough to drive a job end to end on its own — delegate → drain the finished-job inbox → confirm the result against the ask → chain the next step, or re-delegate on failure — so a second model watching the running job added false positives without value. And it was actively **harmful** on local hardware: a 3b model cannot reliably tell a slow read-or-compose from veering, so it kept flagging healthy Atlas jobs (a read-first pass, a long idle while a 27b composes a large file) and the standing escalation rule killed them and handed the work to Vulkan — and even after the ticker was no-op'd, the orchestrator's prompt still made it *role-play* supervisor flags about its own legitimate read-only delegations and stop them. **You supervise on demand:** ask the orchestrator how a job is doing and it looks (`list_running_agents` / `agent_logs` / `read_job_result`), assesses the recent calls itself, and can `stop_agent` + re-delegate on its own judgment. It just no longer wakes itself up to do it. (The one thing that still runs on the supervisor model is the **completion verdict** on finished jobs — see below.)
 
-**A deterministic churn detector.** The thing that actually stops a looping job is in code, not the LLM. The runner counts consecutive **read-only calls** (Read, Grep, Glob, Bash, WebSearch, …) with no deliverable produced. At 12 in a row it injects a *commit nudge* into the agent's next turn — "you have enough context, stop searching, write the deliverable now." If the agent keeps searching after the nudge — 10 more read-only calls — the runner aborts the job itself. Crucially, the post-nudge count is **decoupled from writes**: a single `Edit` in a sea of reads no longer resets the abort clock, so "churn punctuated by an occasional token write" can't dodge the kill. When an **Atlas** job is stopped this way it **auto-escalates to Vulkan** on the same task (and burns the one retry credit so the orchestrator can't double-dispatch on top of it). Artemis and Oculus are exempt — they're read-only by design, so "lots of reads" is their job, not a loop. (Full mechanics: [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)
+**A deterministic churn detector.** The thing that actually stops a looping job is in code, not the LLM. The runner counts consecutive **read-only calls** (Read, Grep, Glob, Bash, WebSearch, …) with no deliverable produced. At 12 in a row it injects a *commit nudge* into the agent's next turn — "you have enough context, stop searching, write the deliverable now." If the agent keeps searching after the nudge — 10 more read-only calls — the runner aborts the job itself. Crucially, the post-nudge count is **decoupled from writes**: a single `Edit` in a sea of reads no longer resets the abort clock, so "churn punctuated by an occasional token write" can't dodge the kill. When an **Atlas** job is stopped this way it **auto-escalates to Vulkan** on the same task (and burns the one retry credit so the orchestrator can't double-dispatch on top of it). Artemis is exempt — it's read-only by design, so "lots of reads" is its job, not a loop. (Full mechanics: [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)
 
 When a job **finishes**, the result lands in an **inbox**.
 
@@ -100,7 +98,7 @@ Your raw message never reaches a specialist. *"hey can you set the volume to lik
 
 ### Sub-Agents
 
-Each sub-agent has its own system prompt and toolset. Iris, Oculus, and Sentry share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
+Each sub-agent has its own system prompt and toolset. Iris and Sentry share one model (the dashboard's **Toolcall model**); Atlas, Vulkan, Artemis, and each Council seat keep their own. They don't share context — the orchestrator composes a self-contained task string with everything the sub-agent needs.
 
 | Agent | Model | Tools | Role |
 |-------|-------|-------|------|
@@ -109,10 +107,9 @@ Each sub-agent has its own system prompt and toolset. Iris, Oculus, and Sentry s
 | **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos, scheduling, projects & work tasks | Personal information management — email digests, calendar events, scheduled tasks (cron, interval, once), projects, deliverables, and work tasks. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
-| **Oculus** | Local (light, vision-optional) | `awareness_log`, `security_log`, `send_message`, `alert_security`, `open_security_alert`, `dismiss_security_flag`, `webcam_capture`, arm/disarm | Single background room-awareness agent. Receives structured JSON AWARENESS events from the desktop camera, applies the editable `eyes_ears/oculus.md` rules, and decides per event: alert (send a captioned frame + open the red alert), greet (friendly arrival), or stay silent. Also owns arming/disarming and the security log. **AWARENESS events route directly to `/api/awareness`, never through the chat message path.** |
 | **Sentry** | Local or cloud (local recommended) | Bash (read-only), `sentry_report` | Background security scanner — periodically inventories the PC (listening sockets, network connections, running services, autostart, user crontab, enabled units, processes) with no elevated permissions, diffs against a learned baseline, and reports only when something new or suspicious appears. Runs an hourly peek and a daily deep scan; can also be dispatched on demand ("run a security scan"). |
 
-> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Iris, Oculus, and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Iris/Oculus/Sentry) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident.
+> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Iris and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Iris/Sentry) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident.
 
 ![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
 
@@ -143,7 +140,7 @@ The orchestrator owns the intent; Iris owns the timing. When something needs to 
 
 The schedule-value format is where scheduling breaks in every system that has one, so Iris is built to be obsessive about it: it validates the cron expression, rejects malformed intervals and timestamps, refuses timezone suffixes on `once`, and double-checks its own offset math. The point is that the entry is correct the first time, every time, on a model that costs nothing to run.
 
-> 🪨 **The toolcall agents (Iris, Oculus, Sentry) are prompted for `granite4.1:3b`.** Their system prompts are tuned to that 3B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 3B local one.
+> 🪨 **The toolcall agents (Iris, Sentry) are prompted for `granite4.1:3b`.** Their system prompts are tuned to that 3B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 3B local one.
 
 > ⚠️ **Stock granite doesn't cut it — the fine-tuned `toolcall-ft` model is effectively required.** The toolcall agents need the LoRA fine-tune built from `training/` (`toolcall-ft` in Ollama; see `training/README` / `Modelfile.toolcall-ft` for building it). Reliable tool-call transcription on this 41-tool surface was trained in — a stock model won't reproduce it. On a fresh install without the LoRA weights it just wouldn't work, even with the 8B stock model swapped in.
 
@@ -199,7 +196,7 @@ The tool loop has multiple circuit breakers to prevent common failure modes:
 - **Circling detection** — consecutive useless rounds (no tool calls, no output) trigger a forced no-tools round to extract an answer
 - **Degenerate output filter** — word-mash / garbled output from misconfigured models is detected and suppressed
 - **Verifier sub-agent** — after effectful work (file writes, edits), a verifier pass confirms the changes
-- **Deterministic churn detection** — N consecutive read-only calls (Read/Grep/Glob/Bash/WebSearch — the `RESEARCH` set) with no deliverable produced → inject a "stop searching, write now" commit nudge; 10 more read-only calls after the nudge → the runner aborts the job itself (12/10 thresholds; artemis and oculus exempt). The post-nudge count ignores writes, so churn punctuated by an occasional `Edit` can't evade the abort. A stopped **Atlas** auto-escalates to **Vulkan** on the same task. *(See [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)*
+- **Deterministic churn detection** — N consecutive read-only calls (Read/Grep/Glob/Bash/WebSearch — the `RESEARCH` set) with no deliverable produced → inject a "stop searching, write now" commit nudge; 10 more read-only calls after the nudge → the runner aborts the job itself (12/10 thresholds; artemis is exempt). The post-nudge count ignores writes, so churn punctuated by an occasional `Edit` can't evade the abort. A stopped **Atlas** auto-escalates to **Vulkan** on the same task. *(See [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)*
 - **One-atlas-at-a-time gate** — a new Atlas dispatch aborts any already-running Atlas (the new task supersedes) before spawning, so the orchestrator can't double-launch Atlas on the same file and clobber edits. Vulkan is exempt (the churn-escalation spawns it while Atlas winds down).
 - **Atlas first-turn thinking** — Atlas thinks on its first iteration only (plan what it needs, then act), paired with a **READ ONCE** prompt rule (read each named file once; don't re-Read it to find the next edit target — that re-reading *is* the loop). Later iterations keep thinking off to preserve context.
 - **Supervisor watchdog (cut out)** — the periodic LLM self-audit that flagged running jobs and let the orchestrator nudge/stop has been removed. It was unneeded once the orchestrator's chain-following could drive a job end to end on its own, and a 3b model kept false-flagging healthy slow reads/composes. The orchestrator still monitors **on demand** (ask it, and it looks + can stop/retry on its own), and the completion verdict still judges finished jobs. Only the deterministic churn detector stops jobs automatically.
@@ -275,7 +272,7 @@ Every model selection in the dashboard is per-role:
 | **Supervisor (watchdog)** | Small local (e.g. granite4.1:3b) | **The running-job self-audit tick is cut out** (see above). The model still runs the **completion verdict** on finished jobs — tool-less, a few hundred tokens per call, falls back to the orchestrator model if unset. The dashboard Supervisor row is removed. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
 | **Vulkan** | Cloud (default) | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
-| **Toolcall agents** | Local (recommended) | Iris, Oculus, and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
+| **Toolcall agents** | Local (recommended) | Iris and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
 | **Artemis** | Cloud (default) | Read-only audit. Keep-alive optional. |
 | **Council seats** | Cloud ×3 (different models) | Diverse perspectives for deliberation. |
 
@@ -305,7 +302,7 @@ The agent-runner speaks Ollama's native HTTP API and talks to Ollama directly �
 
 **Optional — piping in Claude:** `src/credential-proxy.ts` (port 3001) is in the codebase but **not wired in by default**. It exists for one case: routing to Anthropic's Claude. It translates Ollama-native requests ↔ Anthropic format and injects the Claude API key so the agent-runner never sees it. If you want Claude, wire the proxy in and point the agent-runner at it; otherwise everything stays on native Ollama.
 
-**Supervisor model & per-iteration thinking.** The running-job self-audit tick is **cut out**; the **completion verdict** still runs on a separate `SUPERVISOR_MODEL` (falls back to the orchestrator model) — a small, tool-less call, so a local model is ideal. Sub-agents think on a per-iteration rule: **Atlas thinks on its first turn only** (plan, then act — paired with the READ-ONCE prompt rule against the re-reading loop); **kimi thinks every turn** (it leaks reasoning as untagged text when thinking is off, so `/^kimi/i` models are forced on); every other sub-agent iteration is `think:false`. The orchestrator has its own dashboard `thinkingMode` (`max` = every turn, `true` = first turn, off otherwise) and thinks on turn 1 by default. Never send `think:true` to a Granite model — Ollama rejects it, so the Granite toolcall agents (iris/oculus/sentry) stay on `think:false`.
+**Supervisor model & per-iteration thinking.** The running-job self-audit tick is **cut out**; the **completion verdict** still runs on a separate `SUPERVISOR_MODEL` (falls back to the orchestrator model) — a small, tool-less call, so a local model is ideal. Sub-agents think on a per-iteration rule: **Atlas thinks on its first turn only** (plan, then act — paired with the READ-ONCE prompt rule against the re-reading loop); **kimi thinks every turn** (it leaks reasoning as untagged text when thinking is off, so `/^kimi/i` models are forced on); every other sub-agent iteration is `think:false`. The orchestrator has its own dashboard `thinkingMode` (`max` = every turn, `true` = first turn, off otherwise) and thinks on turn 1 by default. Never send `think:true` to a Granite model — Ollama rejects it, so the Granite toolcall agents (iris/sentry) stay on `think:false`.
 
 ---
 
@@ -369,9 +366,9 @@ Built on your real Chrome over CDP — no headless puppet browser, no fresh prof
 
 `get_chat_history` · `attach_file` (deliver a generated file to the user) · `send_message` · `clear_context` — the agent manages its own thread weight.
 
-### 🛰️ Awareness & security
+### 🛡️ Sentry
 
-`awareness_log` / `awareness_status` — Oculus's record of room events and live state · `tell_oculus` / `oculus_query` / `oculus_capture` — silent background awareness; it never speaks or alerts on its own · `security_frame` / `save_known_person` / `security_log` / `arm_security` / `disarm_security` / `alert_security` / `dismiss_security_flag` · `sentry_report` — the software-security scanner (read-only sockets/services/crontab audit, one inventory submission, host does the diffing).
+`sentry_report` — the software-security scanner (read-only sockets/services/crontab audit, one inventory submission, host logs the scan and relays findings).
 
 ### 🔌 The rest
 
@@ -540,14 +537,13 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
 | **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
 | **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
-| **Security & vault** | `POST /api/awareness` · `GET /api/security/awareness-log` · `GET/POST /api/security/oculus-md` · `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
+| **Vault & audit** | `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
 | **Settings & UI plumbing** | `GET/POST /api/settings` · `GET/POST /api/dashboard-pages` (live/beta file editing) · `GET/POST /api/mcp-servers` · `GET /api/notifications` · `GET /api/notifications/poll` · `GET/POST /api/notification-list` · `POST /api/notification-list/read-all` · `GET/POST /api/api-keys` |
 
 ### Things worth knowing
 
 - **Files are workspace-scoped.** Every `/api/files/*` route resolves its `?path=` under `GROUPS_DIR` (`~/warden/groups`) and rejects anything that escapes it (`..`, absolute paths). The shared uploads/downloads folder the hologram panel uses is `groups/uploads/`. Uploads take the file body as `application/octet-stream` with the filename in an `x-filename` header (up to 1 GB); downloads stream a single file as octet-stream or a directory as `tar.gz`.
 - **Digests are a loopback.** Iris compiles a digest and publishes it by `POST /api/summaries?span=X` — a keyless internal call back to this same server. The panel then reads `GET /api/summaries?span=X`. That loopback is the *only* way a digest reaches the UI.
-- **AWARENESS bypasses chat.** The desktop camera stack `POST /api/awareness` with a structured `AWARENESS…` payload; the server routes it straight to the Oculus sub-agent — it never becomes a chat message.
 - **The hologram can't `fetch()` directly.** Its panels load from `file://`, so Qt WebEngine's same-origin policy blocks them from reaching `:3200`. `eyes_ears/ui/jarvis_window.py` bridges this with `warden_api(path, method, body)` (JSON proxy), `warden_upload(dir, name, b64)`, and `warden_download(path)` (base64 in/out) — Python makes the real HTTP request and hands the result back to the iframe.
 - **Quick checks.** `curl -fsS http://localhost:3200/api/status` for a live snapshot; `curl -fsS http://localhost:3200/api/health` for a liveness ping.
 
@@ -629,10 +625,9 @@ Warden is an autonomous AI that runs on your own hardware. It can operate fully 
 | OS | Linux (kernel 5+) | Arch Linux or Ubuntu LTS |
 | Node.js | 20+ | 22 LTS |
 | RAM | 8 GB | 16 GB+ (local models + browser tools) |
-| GPU | Optional | NVIDIA GPU for local vision / TTS / security models |
+| GPU | Optional | NVIDIA GPU for local vision / TTS models |
 | Browser | Chromium/Chrome | System Chromium for Playwright CDP tools |
 | Microphone/speaker | Optional | USB or Bluetooth headset for voice |
-| Webcam | Optional | For security / vision features |
 
 ### Step 1 — Get the repo
 
@@ -733,7 +728,7 @@ tail -f logs/warden.log
 
 ### Tuning the Ollama daemon
 
-Warden drives Ollama as its local model runtime — the orchestrator, the shared Toolcall model (Iris/Oculus/Sentry), and any resident cloud models all live there. The daemon's defaults are tuned for a generic single-user chat client, not an agent loop that fires many short requests across several models, so it's worth overriding them. Create a systemd drop-in for the `ollama` system service:
+Warden drives Ollama as its local model runtime — the orchestrator, the shared Toolcall model (Iris/Sentry), and any resident cloud models all live there. The daemon's defaults are tuned for a generic single-user chat client, not an agent loop that fires many short requests across several models, so it's worth overriding them. Create a systemd drop-in for the `ollama` system service:
 
 ```bash
 sudo systemctl edit ollama
@@ -767,7 +762,7 @@ What each line does and why it's here:
 | Setting | What it controls | Why this value |
 |---|---|---|
 | `OLLAMA_NUM_PARALLEL=1` | How many inference requests Ollama will run **concurrently**. The default scales with your CPU count, inviting parallelism. | Warden's orchestrator runs **one conversation at a time** and dispatches one sub-agent at a time. There is no benefit to concurrent inference here — only downside: two models racing for VRAM, evicting each other, or OOMing. Pinning this to `1` serializes requests so a model finishes and frees memory before the next one loads. |
-| `OLLAMA_MAX_LOADED_MODELS=3` | The max number of models Ollama will keep **resident in VRAM at once**. Beyond this, the least-recently-used resident model is evicted. | Room for the three things that matter to Warden: the **orchestrator** (kept alive always), the shared **Toolcall model** (Iris/Oculus/Sentry), and a third resident model whose keep-alive you've enabled. (The supervisor no longer holds a slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs.) A fourth request simply evicts the LRU rather than OOMing. (Raise or lower this to match your VRAM; the dashboard's keep-alive checkboxes decide *which* models are candidates for these slots.) |
+| `OLLAMA_MAX_LOADED_MODELS=3` | The max number of models Ollama will keep **resident in VRAM at once**. Beyond this, the least-recently-used resident model is evicted. | Room for the three things that matter to Warden: the **orchestrator** (kept alive always), the shared **Toolcall model** (Iris/Sentry), and a third resident model whose keep-alive you've enabled. (The supervisor no longer holds a slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs.) A fourth request simply evicts the LRU rather than OOMing. (Raise or lower this to match your VRAM; the dashboard's keep-alive checkboxes decide *which* models are candidates for these slots.) |
 | `OLLAMA_KEEP_ALIVE=30m` | How long a model stays loaded in VRAM **after its last request** before Ollama unloads it. Default is `5m`. | The agent loop issues many short, bursty requests separated by seconds-to-minutes of thinking. At `5m` a model often unloads between turns and you pay the multi-second reload latency on the next call. `30m` keeps models hot across a typical work session so repeated calls hit resident weights. Lower it if you're tight on VRAM and want idle models to release memory sooner. |
 | `OLLAMA_KV_CACHE_TYPE=q8_0` | Quantizes the **KV cache** (the per-token attention state that grows with context length) to 8-bit instead of fp16. | Long agent contexts eat VRAM fast, and the KV cache is where it goes. `q8_0` roughly halves that cache footprint at a negligible quality cost, which is what lets you run longer contexts and keep more models resident (see `OLLAMA_MAX_LOADED_MODELS`) on the same GPU. Leave it fp16 only if you have VRAM to spare and want the last bit of fidelity. |
 
@@ -827,44 +822,36 @@ Mic and speaker are chosen **independently**. You can have the Pi mic in one roo
 
 The `--mic` and `--speaker` flags accept `local`, `remote` (resolves to the default satellite IP), `remote:<ip>`, or a bare IP. The root `run.sh` normalizes all of these into `main.py`'s `--mic`/`--speaker` format before launching.
 
-#### Audio and video, together or apart
+#### `eyes_ears/run.sh` — the single entrypoint
 
-Audio (voice assistant) and video (security camera) are independent subprocesses launched by the same parent. They can run together, separately, or on different machines:
+`eyes_ears/run.sh` is the one launcher for the ears app (the Eyes / Oculus webcam detector was removed 2026-09-15 — ears only now). It handles the app-specific setup before handing off to `ears.main`:
 
 ```bash
-./run.sh --ears                    # just the voice assistant, no camera
-./run.sh --eyes                    # just the security camera, no voice
-./run.sh --both                    # both — eyes in background, ears in foreground
-./run.sh --ears --remote ...       # voice on a satellite, camera off
+./run.sh --ears                    # voice assistant, local mic + speaker
+./run.sh --ears --remote ...       # voice on a satellite relay
 ./run.sh --ui-only                 # hologram + panels + text chat, NO audio routing
 ```
 
-This means you can run the camera on a box with a webcam and the voice client on a different box with a good mic — each pointed at the same Warden brain via `--warden <ip>`. The new `--ui-only` mode lets a machine run just the hologram + panels against the Warden server with no mic, speaker, STT, TTS, clap-detector, control-server, or global-hotkey — handy for a desktop that shouldn't route audio.
+The `--ui-only` mode lets a machine run just the hologram + panels against the Warden server with no mic, speaker, STT, TTS, clap-detector, control-server, or global-hotkey — handy for a desktop that shouldn't route audio.
 
 #### Interactive launcher
 
-With no flags and a TTY, `eyes_ears/run.sh` drops into an interactive menu (prefaced with an ANSI `EYES & EARS` block banner):
+With no flags and a TTY, `eyes_ears/run.sh` drops into an interactive menu (prefaced by an ANSI `EARS` block banner):
 
 ```
-1) Eyes       — Oculus detector + frame server, background awareness
-2) Ears       — voice + UI, local mic + speaker
-3) Both       — eyes in background, ears in foreground
-4) Satellite  — this machine is the audio relay on :8766
-5) UI only    — hologram + panels + text chat, NO audio routing
-6) Configure  — set warden.base_url / satellite.host / oculus toggle
-7) Quit
+1) Ears       — voice + UI, local mic + speaker
+2) Satellite  — this machine is the audio relay on :8766
+3) UI only    — hologram + panels + text chat, NO audio routing
+4) Configure  — set warden.base_url / satellite.host
+5) Quit
 ```
 
-The same choices exist as flags for scripting: `--eyes`, `--ears`, `--both`, `--ui-only`, `--satellite`, `--configure`. Bare `--mic`/`--speaker`/`--remote` audio flags forward to ears (`--remote <host>` is shorthand for `--mic remote:HOST --speaker remote:HOST`). No Warden or satellite IPs are hardcoded in the script — both come from `eyes_ears/config/settings.yaml`, set via the Configure menu or `--configure`.
+The same choices exist as flags for scripting: `--ears`, `--ui-only`, `--satellite`, `--configure`. Bare `--mic`/`--speaker`/`--remote` audio flags forward to ears (`--remote <host>` is shorthand for `--mic remote:HOST --speaker remote:HOST`). No Warden or satellite IPs are hardcoded in the script — both come from `eyes_ears/config/settings.yaml`, set via the Configure menu or `--configure`.
 
-#### `eyes_ears/run.sh` — the single entrypoint
-
-`eyes_ears/run.sh` is now the one launcher for both halves (the old `security/run.sh` and `voice/run.sh` are merged). It handles the eyes/ears-specific setup before handing off to `eyes.main` / `ears.main`:
-
-- **Dual-mode**: `./run.sh --satellite` runs the dumb audio relay (`../satellite/satellite_server.py`) on the current machine instead of either eyes or ears — same script, opposite role. The relay is stdlib-only, so this works on a bare Pi with no venv.
-- **GPU setup**: Sets ROCm library paths for AMD GPUs, persists compiled GPU kernels so cold starts are fast, and configures Qt WebEngine flags for the hologram UI (skips slow D-Bus probes, collapses 5 renderer processes into 2).
-- **TTS persistence**: Reads `TTS_ENGINE` and `KOKORO_VOICE` from the environment and writes them to `eyes_ears/config/settings.yaml` before launch, so the in-process TTS picks them up at startup. Defaults to Kokoro with `af_bella`; swap to Orpheus with `TTS_ENGINE=orpheus_cpp ./run.sh`.
-- **Sensible defaults**: No flags (with a TTY) drops into the menu; otherwise no flags = fully local (desk mic + desk speaker, Kokoro on GPU). Any `--mic`/`--speaker`/`--remote` flag and it forwards them through.
+- **Satellite mode**: `./run.sh --satellite` runs the dumb audio relay (`../satellite/satellite_server.py`) on the current machine instead of ears — same script, opposite role. The relay is stdlib-only, so this works on a bare Pi with no venv.
+- **GPU setup**: Sets CUDA library paths for the orpheus_cpp TTS engine and configures Qt WebEngine flags for the hologram UI (skips slow kwallet probes).
+- **TTS persistence**: `--tts kokoro|orpheus_cpp|orpheus` and `--tts-device` persist to `eyes_ears/config/settings.yaml` before launch, so the in-process TTS picks them up at startup. Defaults to Kokoro; swap with `./run.sh --tts orpheus_cpp`.
+- **Sensible defaults**: No flags (with a TTY) drops into the menu; otherwise no flags = fully local (desk mic + desk speaker). Any `--mic`/`--speaker`/`--remote` flag and it forwards them through.
 
 ```bash
 cd eyes_ears
@@ -874,21 +861,17 @@ cd eyes_ears
 
 # Or pick a role directly
 ./run.sh --ears
-./run.sh --eyes
-./run.sh --both
 ./run.sh --ui-only
 
 # Run the satellite relay on this machine instead
 ./run.sh --satellite
 
-# Orpheus TTS with a different voice
-TTS_ENGINE=orpheus_cpp KOKORO_VOICE=zoe ./run.sh
+# Orpheus TTS with a device pin
+./run.sh --tts orpheus_cpp --tts-device cuda:0
 
-# Remote mic, local speaker, custom control port
-./run.sh --mic remote:192.168.0.171 --speaker local --control-port 8768
-```
-
-For a permanent install, prefer the systemd service. `run.sh` is for development, one-off tests, and split-machine topologies.
+# Remote mic, local speaker
+./run.sh --mic remote:192.168.0.171 --speaker local
+```For a permanent install, prefer the systemd service. `run.sh` is for development, one-off tests, and split-machine topologies.
 
 ---
 
@@ -900,8 +883,7 @@ Warden is split into roles that can run on different machines on the same LAN. B
 
 | Role | What to set | Where |
 |------|-------------|-------|
-| **Warden** (brain/dashboard) | `WARDEN_URL` or `warden.base_url` | `data/env/env` for server; `eyes_ears/config/settings.yaml` for eyes + ears |
-| **Video** (security detector) | Warden URL it POSTs awareness to | `eyes_ears/config/settings.yaml` under `warden.base_url` |
+| **Warden** (brain/dashboard) | `WARDEN_URL` or `warden.base_url` | `data/env/env` for server; `eyes_ears/config/settings.yaml` for ears |
 | **Audio** (hologram) | Warden URL + Satellite URL | `eyes_ears/config/settings.yaml` under `warden.base_url`; `--remote <satellite-ip>` on launch |
 | **Ollama** | `OLLAMA_URL` | `data/env/env` |
 | **Satellite** (Pi audio relay) | Audio server IP | Pi TUI (`tui/graice-tui.sh`) |
@@ -910,7 +892,6 @@ Warden is split into roles that can run on different machines on the same LAN. B
 
 - **Warden** on a small box at `http://<warden-host>:3200`
 - **Ollama** on a GPU box at `http://<ollama-host>:11434`
-- **Video** on a desktop with a webcam
 - **Audio** on the same desktop, using a Pi Satellite at `<satellite-host>`
 
 Set on the **Warden host** (`data/env/env`):
@@ -919,7 +900,7 @@ Set on the **Warden host** (`data/env/env`):
 OLLAMA_URL=http://<ollama-host>:11434
 ```
 
-Set on the **Video and/or Audio host** (`eyes_ears/config/settings.yaml`) — one merged file, one `warden.base_url`:
+Set on the **Audio host** (`eyes_ears/config/settings.yaml`) — one merged file, one `warden.base_url`:
 
 ```yaml
 warden:
@@ -932,13 +913,13 @@ Then start Audio pointed at the Satellite:
 ./eyes_ears/run.sh --remote <satellite-host>
 ```
 
-See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing matrix — independent mic/speaker, eyes/ears/ui-only, and the interactive launcher.
+See [Modular audio pipeline](#modular-audio-pipeline-runsh) for the full routing matrix — independent mic/speaker, local/satellite/ui-only, and the interactive launcher.
 
 ---
 
 ## 🗣️ Voice Assistant
 
-`eyes_ears/` (the ears half) is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro or Orpheus) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears, eyes, and a mouth.
+`eyes_ears/` (the ears half) is a voice-first desktop companion that turns Warden into a talk-to-it assistant. Press a button (or a global hotkey), speak, and the reply is spoken back. Speech-to-text (Whisper) and text-to-speech (Kokoro or Orpheus) run locally on your machine — your voice never leaves it. All reasoning, tools, and memory stay on the Warden server; the app is just ears and a mouth.
 
 ![The Warden TUI / hologram window](docs/screenshots/warden-tui.png)
 
@@ -963,7 +944,7 @@ The window wrapper (`eyes_ears/ui/jarvis_window.py`) exposes the same interface 
 
 ### Install the voice client
 
-1. Create a Python virtual environment (one combined venv for eyes + ears):
+1. Create a Python virtual environment:
 
 ```bash
 cd eyes_ears
@@ -1090,72 +1071,6 @@ The relay binds `:8766` by default.
 
 ---
 
-## 🛡️ Security Mode
-
-`eyes_ears/` (the eyes half) is a webcam awareness system. The camera machine runs the cheap RF-DETR detector and sends only structured JSON events to the Warden service. One background agent handles the rest.
-
-![Oculus rules: the editable `eyes_ears/oculus.md` decision rules](docs/screenshots/oculus-rules.png)
-
-### Features
-
-- 📷 **RF-DETR Keypoint** watches the webcam (CPU or NVIDIA GPU) and builds a compact JSON situation each frame.
-- 🔔 **AWARENESS events** are POSTed to `/api/awareness` only when something changes.
-- 🛡️ **Oculus** receives the JSON, applies editable `eyes_ears/oculus.md` rules, and decides: alert, greet, or stay silent.
-- 👤 **Face recognition** runs on every AWARENESS event — known people are identified by name, unknown faces escalate.
-- 🎛️ Oculus model and camera host are set from the dashboard.
-- 🗄️ `store/security.db` logs every event and assessment.
-
-### Install
-
-1. Create a Python virtual environment (one combined venv for eyes + ears):
-
-```bash
-cd eyes_ears
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-2. Copy and edit the config:
-
-```bash
-cp config/settings.example.yaml config/settings.yaml
-```
-
-Set at least:
-
-```yaml
-warden:
-  base_url: http://localhost:3200
-
-camera:
-  index: 0
-```
-
-Use `camera.stream_url` instead of `index` if you want an ESP32-CAM or other HTTP/MJPEG stream.
-
-3. Run it:
-
-```bash
-python -m eyes.main
-# or
-./run.sh --eyes
-```
-
-Or start it via `run.sh` from the project root:
-
-```bash
-./eyes_ears/run.sh --eyes
-```
-
-### Dashboard setup
-
-Open the dashboard, go to **Settings**, and set the **Video server** / **Satellite IP** to the host running `eyes.main`. Warden will pull frames from `http://<host>:8765/frame`.
-
-See `eyes_ears/README.security.md` for tuning, arming/disarming, and the Oculus rules.
-
----
-
 ## ⚙️ Configuration
 
 ### Environment file
@@ -1197,8 +1112,8 @@ systemctl --user restart warden
 
 Most runtime behavior is controlled from the dashboard at `http://localhost:3200`:
 
-- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Iris/Oculus/Sentry. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
-- **Servers** — Ollama URL, Whisper URL, video server / Satellite IP, and (after the distributed-roles refactor) Audio/Warden/Video role URLs.
+- **Models** — per-role model selection: orchestrator, Atlas, Vulkan, Artemis, council seats, and one shared Toolcall model for Iris/Sentry. Each role has a num_ctx override and a keep-alive checkbox for Orchestrator/Atlas/Toolcall.
+- **Servers** — Ollama URL, Whisper URL, Satellite IP, and the Audio/Warden role URLs.
 - **Heartbeat** — scheduled standing instructions.
 - **Skills & MCP** — toggle capabilities and external tools.
 
@@ -1207,10 +1122,6 @@ Dashboard settings are stored in the router state and take effect immediately �
 ### Voice config
 
 `eyes_ears/config/settings.yaml` holds STT/TTS parameters, audio devices, the Warden server URL (`warden.base_url`), and the Satellite port. Copy from `eyes_ears/config/settings.example.yaml` or run `./eyes_ears/run.sh --configure` to generate it. This file is gitignored.
-
-### Security config
-
-`eyes_ears/config/settings.yaml` also controls the camera, detector model, awareness cooldown, face-ID settings, and the Warden URL the detector POSTs events to (same single merged file).
 
 ---
 

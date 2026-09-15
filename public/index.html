@@ -105,10 +105,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="rail-tip">Agent Activity</span>
       </button>
-      <button class="rail-btn" data-view="security" data-tip="Oculus">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span class="rail-tip">Oculus</span>
-      </button>
       <button class="rail-btn" data-view="logs" data-tip="Process Logs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         <span class="rail-tip">Process Logs</span>
@@ -448,20 +444,6 @@
           <div class="activity-list" id="activityList"></div>
           <div class="section-divider">Recent activity (last 20)</div>
           <div class="activity-list" id="recentActivityList"></div>
-        </div>
-      </section>
-
-      <!-- ===== Oculus view (AWARENESS event log) ===== -->
-      <section class="view" id="view-security">
-        <div class="chat-meta-row">
-          <span class="chip">oculus events</span>
-          <span class="spacer"></span>
-          <button class="btn btn-ghost btn-sm" id="btnClearOculusLogs">Clear logs</button>
-          <button class="btn btn-ghost btn-sm" id="btnRefreshSecurity">Refresh</button>
-        </div>
-        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
-          <div class="section-divider">Awareness events</div>
-          <div class="activity-list" id="securityList"></div>
         </div>
       </section>
 
@@ -1128,12 +1110,12 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
       <div class="help-section-label"><span>06</span> Settings worth knowing</div>
       <div class="settings-grid">
         <div class="settings-tile"><h4>Orchestrator</h4><p>The model that replies to you. Pick a strong one.</p></div>
-        <div class="settings-tile"><h4>Per-agent models</h4><p>Atlas, Artemis, Iris, Vulkan, Mercury, Oculus — each has its own model + ctx. No sharing, no fallback.</p></div>
+        <div class="settings-tile"><h4>Per-agent models</h4><p>Atlas, Artemis, Iris, Vulkan, Mercury — each has its own model + ctx. No sharing, no fallback.</p></div>
         <div class="settings-tile"><h4>Council Seats</h4><p>Skeptic / Pragmatist / Synthesist. Different models = different perspectives.</p></div>
         <div class="settings-tile"><h4>num_ctx overrides</h4><p>Per-agent. Blank = model default (native window).</p></div>
         <div class="settings-tile"><h4>Thinking</h4><p>On / Max / Off. Global default, no per-chat override.</p></div>
         <div class="settings-tile"><h4>Ollama URL</h4><p>Local daemon endpoint. Models populate all dropdowns.</p></div>
-        <div class="settings-tile"><h4>Servers</h4><p>Audio / Transcription, Video, Satellite, Whisper API fallback, and multiple named Ollama servers.</p></div>
+        <div class="settings-tile"><h4>Servers</h4><p>Audio / Transcription, Satellite, Whisper API fallback, and multiple named Ollama servers.</p></div>
       </div>
 
       <div class="help-section-label"><span>07</span> Audit</div>

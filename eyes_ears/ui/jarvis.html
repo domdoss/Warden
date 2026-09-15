@@ -28,40 +28,6 @@
             cursor: default;
         }
 
-        /* Flip card — front is the hologram, back is the oculus feed.
-           The card fills the viewport so the hologram stays full-screen. */
-        .flip-card {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            perspective: 1200px;
-            z-index: 1;
-        }
-        .flip-card-inner {
-            position: relative;
-            width: 100%;
-            height: 100%;
-            transform-style: preserve-3d;
-            transition: transform .6s ease;
-        }
-        .flip-card-inner.flipped { transform: rotateY(180deg); }
-        .flip-face {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            backface-visibility: hidden;
-            -webkit-backface-visibility: hidden;
-        }
-        .flip-face.front { z-index: 2; }
-        .flip-face.back { transform: rotateY(180deg); overflow: auto; }
-
-        /* Hologram canvas container — radial fade hides the square window edge.
-           Now doubles as the flip-card front face, so it carries .flip-face.front
-           in the DOM; the position/mask/pointer-events stay identical. */
         .hologram-container {
             position: absolute;
             top: 0;
@@ -79,8 +45,8 @@
             display: block;
         }
 
-        /* HUD layer (timer, mini holograms) — lives on the front face so it
-           flips away with the hologram. Still pointer-events:none. */
+        /* HUD layer (timer, mini holograms) — overlays the hologram.
+           Still pointer-events:none. */
         .hud {
             position: absolute;
             top: 0;
@@ -91,126 +57,7 @@
             pointer-events: none;
         }
 
-        /* Flip toggle — sits in the top-right corner on top of both faces so
-           it stays reachable no matter which side is shown. */
-        #flip-toggle {
-            position: fixed;
-            top: 2vmin;
-            left: 2vmin;
-            z-index: 10;
-            pointer-events: auto;
-            background: rgba(5, 8, 12, 0.7);
-            color: #00ffff;
-            border: 0.3vmin solid #00ffff;
-            font-family: 'Courier New', monospace;
-            font-size: 2vmin;
-            letter-spacing: 0.2vmin;
-            text-transform: uppercase;
-            padding: 1vmin 1.6vmin;
-            cursor: pointer;
-            box-shadow: 0 0 1.5vmin rgba(0, 255, 255, 0.35);
-        }
-        #flip-toggle:active { background: rgba(0, 255, 255, 0.15); }
 
-        /* Oculus back face */
-        .oculus-face {
-            background: rgba(5, 8, 12, 0.92);
-            color: #c8e8ec;
-            font-family: 'Courier New', monospace;
-            padding: 3vmin;
-            box-sizing: border-box;
-            display: flex;
-            flex-direction: column;
-            gap: 2vmin;
-            overflow: auto;
-        }
-        .oculus-face h2 {
-            color: #00ffff;
-            font-size: 3.2vmin;
-            letter-spacing: 0.4vmin;
-            text-transform: uppercase;
-            text-shadow: 0 0 1.2vmin #00ffff;
-            margin: 0;
-        }
-        #oculus-feed {
-            width: 100%;
-            max-height: 50vh;
-            object-fit: contain;
-            background: #000;
-            border: 0.3vmin solid #00ffff44;
-            box-shadow: 0 0 2vmin rgba(0, 255, 255, 0.2);
-        }
-        #oculus-status {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1.2vmin;
-            font-size: 2vmin;
-            align-items: center;
-        }
-        .oculus-pill {
-            padding: 0.6vmin 1.2vmin;
-            border: 0.2vmin solid #00ffff66;
-            border-radius: 1vmin;
-            background: rgba(0, 255, 255, 0.06);
-            color: #c8e8ec;
-            letter-spacing: 0.15vmin;
-            text-transform: uppercase;
-        }
-        .oculus-pill.eyes-open { border-color: #4a8aff; color: #8ab4f8; background: rgba(74, 138, 255, 0.1); box-shadow: 0 0 1.5vmin rgba(74, 138, 255, 0.25); }
-        .oculus-pill.eyes-closed { border-color: #00ff66; color: #66ff99; background: rgba(0, 255, 102, 0.1); }
-        .oculus-btns { display: flex; flex-wrap: wrap; gap: 1.2vmin; }
-        .oculus-btns button {
-            background: transparent;
-            color: #00ffff;
-            border: 0.3vmin solid #00ffff;
-            font-family: 'Courier New', monospace;
-            font-size: 2vmin;
-            letter-spacing: 0.2vmin;
-            text-transform: uppercase;
-            padding: 1vmin 1.8vmin;
-            cursor: pointer;
-            box-shadow: 0 0 1.2vmin rgba(0, 255, 255, 0.25);
-        }
-        .oculus-btns button:hover:not(:disabled) { background: rgba(0, 255, 255, 0.1); }
-        .oculus-btns button:disabled { opacity: 0.35; cursor: default; box-shadow: none; }
-        .oculus-ip-row {
-            display: flex;
-            align-items: center;
-            gap: 1.2vmin;
-            flex-wrap: wrap;
-            font-size: 2vmin;
-        }
-        .oculus-ip-row label { display: flex; align-items: center; gap: 1vmin; flex: 1 1 auto; }
-        #oculus-ip {
-            flex: 1 1 auto;
-            min-width: 18vmin;
-            background: rgba(0, 0, 0, 0.5);
-            color: #c8e8ec;
-            border: 0.3vmin solid #00ffff66;
-            font-family: 'Courier New', monospace;
-            font-size: 2vmin;
-            padding: 0.8vmin 1.2vmin;
-        }
-        #oculus-ip:focus { outline: none; border-color: #00ffff; }
-        #oculus-ip-save {
-            background: transparent;
-            color: #00ffff;
-            border: 0.3vmin solid #00ffff;
-            font-family: 'Courier New', monospace;
-            font-size: 2vmin;
-            letter-spacing: 0.2vmin;
-            text-transform: uppercase;
-            padding: 0.8vmin 1.6vmin;
-            cursor: pointer;
-        }
-        #oculus-msg {
-            font-size: 1.8vmin;
-            color: #ff5577;
-            min-height: 1.8vmin;
-        }
-        #oculus-msg.ok { color: #66ff99; }
-
-        /* Timer - top right */
         .timer-slot {
             position: absolute;
             top: 3vmin;
@@ -339,59 +186,33 @@
     </style>
 </head>
 <body>
-    <!-- Flip-card: front = 3D hologram + HUD, back = oculus feed + settings -->
-    <div class="flip-card">
-        <button id="flip-toggle" title="Flip card">Oculus</button>
-        <div class="flip-card-inner" id="flipInner">
-            <div class="flip-face front">
-                <!-- 3D hologram canvas -->
-                <div class="hologram-container">
-                    <canvas id="hologramCanvas"></canvas>
-                </div>
 
-                <!-- HUD layer -->
-                <div class="hud">
-                    <!-- Top-right: timer slot (initially hidden) -->
-                    <div id="timer-slot" class="timer-slot">
-                        <div class="timer-ring">
-                            <div id="timer-value" class="timer-value">0</div>
-                        </div>
-                        <div id="timer-label" class="timer-label"></div>
-                    </div>
+    <div class="hologram-container">
+        <canvas id="hologramCanvas"></canvas>
+    </div>
 
-                    <!-- Settings gear + panel moved to the Warden Dashboard (panels.html)
-                         window — it lived on the hologram but wasn't obviously part of it,
-                         and the dashboard is where widget show/hide controls belong. -->
-
-                    <!-- Bottom: mini hologram slots (6 blank stubs) -->
-                    <div class="mini-slots" id="mini-slots">
-                        <div class="mini-slot" data-slot="0"></div>
-                        <div class="mini-slot" data-slot="1"></div>
-                        <div class="mini-slot" data-slot="2"></div>
-                        <div class="mini-slot" data-slot="3"></div>
-                        <div class="mini-slot" data-slot="4"></div>
-                        <div class="mini-slot" data-slot="5"></div>
-                    </div>
-                </div>
+    <!-- HUD layer -->
+    <div class="hud">
+        <!-- Top-right: timer slot (initially hidden) -->
+        <div id="timer-slot" class="timer-slot">
+            <div class="timer-ring">
+                <div id="timer-value" class="timer-value">0</div>
             </div>
+            <div id="timer-label" class="timer-label"></div>
+        </div>
 
-            <div class="flip-face back">
-                <div class="oculus-face">
-                    <h2>Oculus</h2>
-                    <img id="oculus-feed" alt="live feed">
-                    <div id="oculus-status">—</div>
-                    <div class="oculus-btns">
-                        <button id="oculus-open">Open Eyes</button>
-                        <button id="oculus-close">Close Eyes</button>
-                        <button id="oculus-alert-close">Acknowledge alert</button>
-                    </div>
-                    <div class="oculus-ip-row">
-                        <label>Frame server <input id="oculus-ip" placeholder="host or IP"></label>
-                        <button id="oculus-ip-save">Save</button>
-                    </div>
-                    <div id="oculus-msg"></div>
-                </div>
-            </div>
+        <!-- Settings gear + panel moved to the Warden Dashboard (panels.html)
+             window — it lived on the hologram but wasn't obviously part of it,
+             and the dashboard is where widget show/hide controls belong. -->
+
+        <!-- Bottom: mini hologram slots (6 blank stubs) -->
+        <div class="mini-slots" id="mini-slots">
+            <div class="mini-slot" data-slot="0"></div>
+            <div class="mini-slot" data-slot="1"></div>
+            <div class="mini-slot" data-slot="2"></div>
+            <div class="mini-slot" data-slot="3"></div>
+            <div class="mini-slot" data-slot="4"></div>
+            <div class="mini-slot" data-slot="5"></div>
         </div>
     </div>
 
@@ -864,11 +685,6 @@
         const miniSlotsContainer = document.getElementById('mini-slots');
 
         let currentState = 'idle';
-        // Flip-card state. When flipped, the oculus face is shown and the
-        // hologram press-to-talk is disabled (a press flips back instead).
-        let flipped = false;
-        let statusPollId = null;
-        let framePollId = null;
         // Timers: id -> { label, secondsRemaining }
         const activeTimers = new Map();
         // Mini holograms: id -> slotIndex
@@ -1052,9 +868,6 @@
         // and hologram_click interrupts the voice side (playback/recording).
         // In any other state a press is the normal toggle (start/stop a turn).
         function hologramPress() {
-            // If the oculus face is showing, a press flips back to the
-            // hologram instead of triggering press-to-talk / hard-kill.
-            if (flipped) { flipCard(); return; }
             if (currentState === 'processing') {
                 callApi('warden_api', '/api/chat/stop', 'POST', JSON.stringify({ hard: true }));
             }
@@ -1062,229 +875,6 @@
         }
 
         // ======================================================================
-        // Flip-card + oculus face
-        // ======================================================================
-        // callApi returns the pywebview promise (or undefined if the bridge
-        // isn't ready). These helpers await + JSON.parse the result, returning
-        // null on any failure so callers can render an error instead of
-        // throwing through the poll loop.
-        async function apiGet(path) {
-            try {
-                const r = await callApi('warden_api', path);
-                if (!r) return null;
-                return JSON.parse(r);
-            } catch (e) {
-                console.log('[jarvis] apiGet', path, 'failed:', e);
-                return null;
-            }
-        }
-        async function apiPost(path, body) {
-            try {
-                const r = await callApi('warden_api', path, 'POST', JSON.stringify(body || {}));
-                if (!r) return null;
-                return JSON.parse(r);
-            } catch (e) {
-                console.log('[jarvis] apiPost', path, 'failed:', e);
-                return null;
-            }
-        }
-
-        function oculusMsg(text, ok) {
-            const el = document.getElementById('oculus-msg');
-            if (!el) return;
-            el.textContent = text || '';
-            el.classList.toggle('ok', !!ok);
-        }
-
-        function humanizeTs(ts) {
-            if (!ts) return '';
-            const n = Number(ts);
-            const d = n > 1e12 ? new Date(n) : new Date(n * 1000);
-            if (isNaN(d.getTime())) return String(ts);
-            const diff = (Date.now() - d.getTime()) / 1000;
-            if (diff < 60) return Math.max(0, Math.round(diff)) + 's ago';
-            if (diff < 3600) return Math.round(diff / 60) + 'm ago';
-            if (diff < 86400) return Math.round(diff / 3600) + 'h ago';
-            return d.toLocaleString();
-        }
-
-        function renderOculusStatus(s) {
-            const el = document.getElementById('oculus-status');
-            if (!el) return;
-            el.innerHTML = '';
-            if (!s || s.ok === false) {
-                const err = document.createElement('div');
-                err.className = 'oculus-pill';
-                err.style.borderColor = '#ff0033';
-                err.style.color = '#ff5577';
-                err.textContent = 'status: ' + (s && s.error ? s.error : 'unavailable');
-                el.appendChild(err);
-                return;
-            }
-            const statePill = document.createElement('div');
-            statePill.className = 'oculus-pill';
-            statePill.textContent = 'state: ' + (s.state || '—');
-            el.appendChild(statePill);
-
-            const armPill = document.createElement('div');
-            armPill.className = 'oculus-pill ' + (s.eyes_open ? 'eyes-open' : 'eyes-closed');
-            armPill.textContent = s.eyes_open ? 'EYES OPEN' : 'EYES CLOSED';
-            el.appendChild(armPill);
-
-            if (s.last_alert_ts) {
-                const la = document.createElement('div');
-                la.className = 'oculus-pill';
-                la.textContent = 'last alert: ' + humanizeTs(s.last_alert_ts);
-                el.appendChild(la);
-            }
-
-            // Open/Close disabled state tracks current eyes_open value.
-            document.getElementById('oculus-open').disabled = !!s.eyes_open;
-            document.getElementById('oculus-close').disabled = !s.eyes_open;
-        }
-
-        async function pollOculusStatus() {
-            try {
-                const s = await apiGet('/api/oculus/status');
-                renderOculusStatus(s);
-            } catch (e) {
-                console.log('[jarvis] status poll failed:', e);
-            }
-        }
-
-        async function pollOculusFrame() {
-            try {
-                const f = await apiGet('/api/oculus/frame');
-                if (f && f.ok && f.data) {
-                    document.getElementById('oculus-feed').src = 'data:image/jpeg;base64,' + f.data;
-                } else if (f && f.ok === false) {
-                    oculusMsg(f.error || 'frame unavailable');
-                }
-            } catch (e) {
-                console.log('[jarvis] frame poll failed:', e);
-            }
-        }
-
-        function startOculusPolls() {
-            stopOculusPolls();
-            // Status is light — every 3s. Frame is heavier — every 700ms and
-            // only while the back face is visible.
-            statusPollId = setInterval(pollOculusStatus, 3000);
-            framePollId = setInterval(pollOculusFrame, 700);
-            // Fire once immediately so the face isn't blank for a beat.
-            pollOculusStatus();
-            pollOculusFrame();
-        }
-
-        function stopOculusPolls() {
-            if (statusPollId) { clearInterval(statusPollId); statusPollId = null; }
-            if (framePollId) { clearInterval(framePollId); framePollId = null; }
-        }
-
-        async function prefillOculusIp() {
-            const s = await apiGet('/api/settings');
-            if (s && s.securitySatelliteIp != null) {
-                const ip = document.getElementById('oculus-ip');
-                if (ip && !ip.value) ip.value = s.securitySatelliteIp;
-            } else if (s && s.ok === false) {
-                oculusMsg(s.error || 'settings unavailable');
-            }
-        }
-
-        function flipCard() {
-            flipped = !flipped;
-            const inner = document.getElementById('flipInner');
-            if (inner) inner.classList.toggle('flipped', flipped);
-            const toggle = document.getElementById('flip-toggle');
-            if (toggle) toggle.textContent = flipped ? 'Hologram' : 'Oculus';
-            if (flipped) {
-                // Back face is now visible — start polling + prefill IP.
-                startOculusPolls();
-                prefillOculusIp();
-            } else {
-                stopOculusPolls();
-                oculusMsg('');
-            }
-        }
-
-        // A single pointerdown replaces the old separate mousedown + touchstart
-        // listeners. On a touchscreen those two fire for the SAME tap
-        // (touchstart, then an emulated mousedown), which used to dispatch
-        // hologram_click TWICE — the first call started a turn and the second
-        // hit _handle_interaction's interrupt branch and cancelled it, so a
-        // tap "just cancelled" instead of listening. pointerdown fires exactly
-        // once per physical press for mouse, touch, and pen.
-        document.addEventListener('pointerdown', () => {
-            hologramPress();
-        }, { passive: true });
-
-        // Dev keyboard shortcuts
-        document.addEventListener('keydown', (ev) => {
-            if (ev.key === 'F11') {
-                ev.preventDefault();
-                callApi('toggle_fullscreen');
-            } else if (ev.key === 'Escape') {
-                ev.preventDefault();
-                callApi('exit_fullscreen');
-            } else if (ev.key === ' ' || ev.key === 'Enter') {
-                ev.preventDefault();
-                hologramPress();
-            }
-        });
-
-        // Suppress default context menu so right-clicks don't interfere.
-        document.addEventListener('contextmenu', (ev) => ev.preventDefault());
-
-        // ── Flip-card + oculus face wiring ─────────────────────────────
-        // The flip toggle sits above both faces; stop the event so the
-        // document pointerdown doesn't also fire hologramPress (which would
-        // immediately flip back when showing the oculus face).
-        document.getElementById('flip-toggle').addEventListener('pointerdown', (ev) => {
-            ev.stopPropagation();
-            ev.preventDefault();
-            flipCard();
-        });
-
-        // Clicks inside the oculus face must not bubble to the document
-        // pointerdown — otherwise hologramPress() sees flipped===true and
-        // flips back to the hologram before the button's own click fires.
-        document.querySelector('.oculus-face').addEventListener('pointerdown', (ev) => {
-            ev.stopPropagation();
-        }, { passive: true });
-
-        document.getElementById('oculus-open').addEventListener('click', async () => {
-            oculusMsg('');
-            const r = await apiPost('/api/oculus/open', {});
-            if (r && r.ok) { pollOculusStatus(); }
-            else { oculusMsg((r && r.error) || 'open failed'); }
-        });
-        document.getElementById('oculus-close').addEventListener('click', async () => {
-            oculusMsg('');
-            const r = await apiPost('/api/oculus/close', {});
-            if (r && r.ok) { pollOculusStatus(); }
-            else { oculusMsg((r && r.error) || 'close failed'); }
-        });
-        document.getElementById('oculus-alert-close').addEventListener('click', async () => {
-            oculusMsg('');
-            const r = await apiPost('/api/oculus/alert/close', {});
-            if (r && r.ok) { pollOculusStatus(); }
-            else { oculusMsg((r && r.error) || 'acknowledge failed'); }
-        });
-        document.getElementById('oculus-ip-save').addEventListener('click', async () => {
-            const v = document.getElementById('oculus-ip').value.trim();
-            if (!v) { oculusMsg('enter a host or IP'); return; }
-            const r = await apiPost('/api/settings', { securitySatelliteIp: v });
-            if (r && r.ok !== false) {
-                oculusMsg('saved', true);
-                // The frame server host just changed — re-poll so the feed
-                // starts working immediately if the host was correct.
-                pollOculusFrame();
-                pollOculusStatus();
-            } else {
-                oculusMsg((r && r.error) || 'save failed');
-            }
-        });
-
         // ── Settings ─────────────────────────────────────────────────────
         // Settings (Warden URL, satellite host, widget show/hide) moved to the
         // Warden Dashboard window (panels.html).
