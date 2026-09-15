@@ -80,9 +80,43 @@ PERSONA — you are Petal, a warm Northern companion in the Donna Noble mould: k
 
 - Reply conversationally and briefly, in plain short sentences. No lists, no markdown, no emoji — the reply goes through text-to-speech.
 - Do NOT act on vague or rambling requests: no tasks, projects, reminders, jobs, messages, or file changes unless the request is explicit and unambiguous.
+- If he asks you to FIX, debug, or change anything technical or complex (a broken app, a slow tool, a setting, a server): do NOT attempt the fix — never, no matter how he phrases it, and never change anything on this machine. In your own warm words, tell him you can't sort that one out yourself but you've passed it to Dominic and he'll look after it. Then offer ONE simple spoken alternative if there is one (something Petal can actually do: chat, read something, look something simple up). Then send exactly one email to dom.doss@gmail.com — his words, what he said happened, today's date — and stop.
 - Nonsensical or impossible requests: respond gently and briefly; do not attempt to fulfill them.
 - If the intent is unclear, ask ONE short clarifying question instead of acting.
 - Small talk and stories are fine — engage naturally."""
+
+# Backstop for the fix-request rule above: when his words look like a technical
+# fix/change request, _send appends a hard-rule block so the curation survives
+# even when the general prompt block has scrolled far back in context. False
+# positives are harmless — the block only ever tells the orchestrator to
+# refuse-and-report, which is the right default for Steve anyway.
+BUG_REPORT_EMAIL = "dom.doss@gmail.com"
+FIX_REQUEST_RE = re.compile(
+    r"\b(fix|repai?r|broken|broke|bug|debug|error|crash(?:e[ds]?|ing)?|"
+    r"doesn'?t\s+(?:work|load|open|respond|start)|not\s+working|stopped\s+working|"
+    r"won'?t\s+(?:work|open|start|stop)|install|uninstall|update|upgrade|reboot|restart|"
+    r"frozen|hang(?:s|ed|ing)?|slow|taking\s+(?:forever|ages|a\s+long\s+time))\b",
+    re.I,
+)
+
+
+def fix_request_block(text: str) -> str:
+    """The appended hard rule for a detected fix request. Never blocks the
+    send — it only steers the orchestrator to refuse-and-report."""
+    return (
+        "TECHNICAL FIX REQUEST DETECTED in his words above. HARD RULE: do not attempt any "
+        "fix, debug step, investigation, setting change, install, update, or file change "
+        "for it — no exceptions, however he phrased it, and never change anything on this "
+        "machine. Your entire reply to him: tell him warmly, in your own words, that you "
+        "can't sort that one out yourself but you've passed it to Dominic, and offer one "
+        "simple spoken alternative if there is one (only something Petal can actually do: "
+        "chat, read something out, look something simple up). Then send exactly one email "
+        f"to {BUG_REPORT_EMAIL} with subject \"Bug report: <the thing>\", containing his "
+        "request in his words, what he said happened, and today's date — and stop. Do not "
+        "investigate on this machine; the email itself is the handoff to Dominic. If his "
+        "words turn out to be small talk or a story rather than a technical request (e.g. "
+        "he was talking about a slow movie), ignore this block entirely and just chat."
+    )
 
 # ---------- Steve's own memories (scanned from ~/.claude, local 8b) ----------
 OLLAMA_URL = "http://127.0.0.1:11434"
@@ -463,6 +497,9 @@ class SteveApp:
         self._lock = threading.Lock()
         self._worker = None  # live turn thread, None when idle
         self._stop = threading.Event()
+        # True from _send() until the reply lands — STOP uses it to know
+        # whether a Warden turn is actually in flight and must be stopped.
+        self._awaiting_reply = False
         # 3 taps on the mic wake the conversation — same as the TALK button.
         # Paused while a conversation runs (the recorder owns the mic then).
         self.claps = ClapDetector(
@@ -516,6 +553,8 @@ class SteveApp:
         shows only his spoken words. Returns the stored message id (an
         opaque string)."""
         parts = ["<!--hidden-->", STEVE_PROMPT]
+        if FIX_REQUEST_RE.search(text):
+            parts.append(fix_request_block(text))
         about = marm_recall_about(text)
         if about:
             parts.append("ABOUT THE USER — what you remember about him:\n" + about)
@@ -565,10 +604,15 @@ class SteveApp:
                     continue  # nothing said — listen again
                 if voice_mode_done(text):
                     break
+                self._awaiting_reply = True  # a Warden turn is in flight
                 my_id = self._send(text)
                 if self._stop.is_set():
+                    # STOP fired while the message was still in flight — the
+                    # turn starts after it, so kill it now that it exists.
+                    self._kill_warden_turn()
                     return
                 reply = self._await_reply(my_id)
+                self._awaiting_reply = False
                 if self._stop.is_set():
                     return
                 if not reply:
@@ -585,6 +629,7 @@ class SteveApp:
             self.claps.resume()
 
     def _finish_turn(self, failed: bool) -> None:
+        self._awaiting_reply = False  # belt-and-braces: never leave it stuck
         try:
             if failed and not self._stop.is_set():
                 self.player.play_bytes(self.beeps.error_beep())
@@ -605,6 +650,23 @@ class SteveApp:
             self._worker.start()
         return json.dumps({"ok": True, "busy": True})
 
+    def _kill_warden_turn(self) -> None:
+        """Stop the Warden turn this conversation started — before this,
+        STOP only silenced the app while the orchestrator kept burning until
+        the 5-minute reply timeout. hard=true (SIGKILL, same as the "stop"
+        panic word): the button has to actually stop it now; the next voice
+        message pays a few seconds of runner cold boot for that certainty.
+        Callers must only fire this when a turn is in flight — a stop while
+        idle would drop a stray interrupt file that kills the NEXT turn."""
+        try:
+            self._http(
+                "POST", "/api/chat/stop",
+                {"jid": "web:dashboard", "hard": True},
+                timeout=5,
+            )
+        except Exception:
+            pass  # warden unreachable — local cancels already happened
+
     def stop(self) -> str:
         self._stop.set()
         try:
@@ -615,6 +677,8 @@ class SteveApp:
             self.player.cancel()
         except Exception:
             pass
+        if self._awaiting_reply:
+            self._kill_warden_turn()
         return json.dumps({"ok": True})
 
     def status(self) -> str:

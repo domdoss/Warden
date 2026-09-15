@@ -2216,71 +2216,9 @@ async function processOwnerMessages(): Promise<void> {
   }
   setRouterState('orchestrator:last_user_message_at', latestUserTs);
 
-  // ── "Close the alert" — the person at the keyboard re-arms the detector ──
-  // Oculus never closes an ABNORMAL alert itself; the user closes it after
-  // they've checked / acted on it. This intercepts that command and calls the
-  // close_security_alert host callback directly (the orchestrator doesn't own
-  // that tool), then acknowledges — no orchestrator turn needed.
-  const closeText = pending.some((m) => {
-    const s = (m.content || '').toLowerCase();
-    return (/\b(close|clear|dismiss)\b/.test(s) && /\balert|security|intruder|threat\b/.test(s))
-      || /\b(stand\s+down|all\s+clear)\b/.test(s)
-      || /close.*alert/.test(s);
-  });
-  if (closeText) {
-    lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
-    saveState();
-    let reply = 'Alert closed.';
-    try {
-      const r = await buildAgentCallbacks().close_security_alert({});
-      if (r && r.ok === false) reply = `Tried to close the security alert: ${r.error || 'detector app not reachable'}.`;
-    } catch (err: any) {
-      reply = `Could not close the security alert: ${err?.message ?? err}.`;
-    }
-    await deliverReply(reply);
-    pushNotification('owner', { type: 'chat_complete', message: reply, from: OWNER_JID });
-    logger.info({ chatJid: OWNER_JID }, 'Oculus alert closed by user');
-    return;
-  }
-
-  // ── "Open / close your eyes" — the user toggles the detector's eyes_open
-  // flag (awareness on/off). We call the arm_security/disarm_security host
-  // callback directly (the orchestrator doesn't own that tool — the callback
-  // POSTs to the detector's /open or /close) and acknowledge — no orchestrator
-  // turn needed.
-  const closeEyesText = pending.some((m) => {
-    const s = (m.content || '').toLowerCase();
-    return (/\bclose\b/.test(s) && /\beyes?\b/.test(s)) || /\bshut\b.*\beyes?\b/.test(s);
-  });
-  const openEyesText = pending.some((m) => {
-    const s = (m.content || '').toLowerCase();
-    return /\bopen\b/.test(s) && /\beyes?\b/.test(s);
-  });
-  if (openEyesText || closeEyesText) {
-    lastAgentTimestamp = pending[pending.length - 1]!.timestamp;
-    saveState();
-    let reply = '';
-    try {
-      const cb = buildAgentCallbacks();
-      if (closeEyesText) {
-        const r = await cb.disarm_security({});
-        reply = r && r.ok === false
-          ? `Tried to close your eyes: ${r.error || 'detector app not reachable'}.`
-          : 'Eyes closed — awareness paused.';
-      } else {
-        const r = await cb.arm_security({});
-        reply = r && r.ok === false
-          ? `Tried to open your eyes: ${r.error || 'detector app not reachable'}.`
-          : 'Eyes open — awareness active.';
-      }
-    } catch (err: any) {
-      reply = `Could not toggle the eyes: ${err?.message ?? err}.`;
-    }
-    await deliverReply(reply);
-    pushNotification('owner', { type: 'chat_complete', message: reply, from: OWNER_JID });
-    logger.info({ chatJid: OWNER_JID, open: openEyesText, close: closeEyesText }, 'Eyes toggled by user');
-    return;
-  }
+  // ── Security intercepts removed 2026-09-15 — Dom: no security on this
+  // install beyond the machine's basic AV. "Close the alert" / "open/close
+  // your eyes" now flow to the orchestrator as normal conversation. ──
 
   // ── Awareness events → Oculus direct pipe ───────────────────────────────
   // An AWARENESS message (posted by the standalone detector's presence
@@ -3621,7 +3559,8 @@ async function main(): Promise<void> {
   // Seed the two Sentry security scans (hourly peek / daily deep) the same
   // way: scheduled_tasks rows for visibility + cron editing, fired by
   // checkSentryDue() on the poll loop.
-  seedSentryTasks();
+  // seedSentryTasks();  // disabled 2026-09-15: no security on this install
+  // beyond the machine's own basic AV — Dom. Scheduled scans stay off.
   // Materialize a concrete per-agent model + ctx for every agent from the
   // legacy shared values BEFORE any agent runs, so every Agents-panel dropdown
   // is populated (no blank) and the agent-runner never sees an empty key. This
