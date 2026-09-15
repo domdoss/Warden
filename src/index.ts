@@ -80,7 +80,7 @@ import {
   deleteAlarm as deleteAlarmDb,
 } from './db.js';
 import { decryptApiKey } from './encryption.js';
-import { fetchEmails, sendEmail, getEmailById } from './email.js';
+import { fetchEmails, sendEmail, getEmailById, downloadEmailAttachment } from './email.js';
 import { addMcpServer, removeMcpServer, McpServerConfig } from './mcp-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { formatLocalTime } from './timezone.js';
@@ -833,6 +833,52 @@ export function buildAgentCallbacks(opts?: { awarenessText?: string }): Callback
           }
         }
         return { ok: false, error: `email not found — ${errors.join('; ')}` };
+      } catch (err: any) {
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
+    // Download one attachment from an email and save it under the workspace
+    // (data/email-attachments/) so other agents can Read it. Accepts the
+    // attachment's id or just its filename. Without this, "email me the PDF"
+    // routed to atlas, which scraped Gmail's DOM in the browser.
+    download_email_attachment: async (args: any) => {
+      try {
+        const emailId = args?.emailId ?? args?.email_id;
+        if (typeof emailId !== 'string' || !emailId) {
+          return { ok: false, error: 'missing emailId' };
+        }
+        const attachmentId = typeof args?.attachmentId === 'string' ? args.attachmentId : undefined;
+        const filename = typeof args?.filename === 'string' ? args.filename : undefined;
+        if (!attachmentId && !filename) {
+          return { ok: false, error: 'missing attachmentId or filename' };
+        }
+        const accounts = getEmailAccounts(null).filter((a) => a.enabled);
+        if (accounts.length === 0) {
+          return { ok: false, error: 'no enabled email account' };
+        }
+        const errors: string[] = [];
+        for (const account of accounts) {
+          if (account.oauth_account_id && !getOAuthAccount(account.oauth_account_id)) {
+            continue;
+          }
+          try {
+            const att = await downloadEmailAttachment(account.id, emailId, attachmentId, filename);
+            if (!att) continue;
+            // Sanitize the filename: strip directories and shell-unfriendly
+            // characters so a hostile filename can't escape the target dir.
+            const safeName = att.filename.replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^\.+/, '_');
+            const root = WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? '');
+            const dir = path.join(root, 'data', 'email-attachments');
+            fs.mkdirSync(dir, { recursive: true });
+            const filePath = path.join(dir, `${emailId}_${safeName}`);
+            fs.writeFileSync(filePath, att.data);
+            return { ok: true, path: filePath, filename: att.filename, size: att.data.length };
+          } catch (err: any) {
+            errors.push(`${account.email}: ${String(err?.message ?? err)}`);
+          }
+        }
+        return { ok: false, error: `attachment not downloaded — ${errors.join('; ')}` };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }

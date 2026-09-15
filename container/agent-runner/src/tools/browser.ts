@@ -4,6 +4,7 @@ import { pathToFileURL } from 'url';
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
 import { getPage, listPages, setActivePage, snapshot, changedSnapshot, refLocator } from '../browser.js';
+import { resolveUserPath } from '../ipc-helpers.js';
 
 const ACTION_TIMEOUT = 10000;
 // Client-side UI (menus, dialogs, live-filtered results) renders after the
@@ -392,6 +393,125 @@ registry.register({
             return `${await page.title().catch(() => '(untitled)')}\n${page.url()}`;
         } catch (err: any) {
             return `Error reading browser URL: ${err.message}`;
+        }
+    },
+    toolset: 'browser',
+    tier: 'public',
+});
+
+// ─── browser_download ─────────────────────────────────────────────────────
+// Chrome's own download machinery, driven over CDP — the page's cookies and
+// sign-in apply, no DOM extraction. Playwright contexts from connectOverCDP
+// are created with acceptDownloads: false, so page.waitForEvent('download')
+// never fires; the raw Browser.setDownloadBehavior + downloadWillBegin/
+// downloadProgress events are the only working channel. Without this tool a
+// "download the PDF this page offers" task had no owner: browser_click on a
+// download link starts a download Chrome never reports back, so agents fished
+// bytes out of the DOM with browser_evaluate (2026-09-15, atlas-m05y: 15
+// iterations scraping Gmail's obfuscated selectors and nothing on disk).
+registry.register({
+    name: 'browser_download',
+    description: "Save a file the browser offers — a PDF link, an export button, an email attachment card — to disk, and return the saved path. Give EITHER url (a direct file/download URL: Chrome navigates there and the download starts) OR ref (the snapshot ref of the download link/button on the CURRENT page). save_path is where to put the file: workspace-relative like 'data/work/report.pdf' or absolute; default is data/browser-downloads/<original filename>. This is the ONLY way to fetch a file a page offers — never fish file bytes out of the DOM with browser_evaluate.",
+    schema: {
+        type: 'object',
+        properties: {
+            url: { type: 'string', description: 'Direct download URL to navigate to (the page does not have to be open already).' },
+            ref: { type: 'string', description: 'Snapshot ref of the download link/button on the current page, e.g. "e12".' },
+            element: { type: 'string', description: 'Human-readable description of the element (for the log).' },
+            save_path: { type: 'string', description: "Where to save: workspace-relative ('data/work/report.pdf') or absolute. A directory keeps the original filename; a full path renames the file." },
+            timeout_seconds: { type: 'number', description: 'Max seconds to wait for the download to finish (default 90, max 300).' },
+        },
+        required: [],
+    },
+    handler: async (args) => {
+        const url = String(args.url || '').trim();
+        const ref = String(args.ref || '').trim();
+        if (!url && !ref) return 'Error: give url (direct download URL) or ref (download element on the current page).';
+        if (url && ref) return 'Error: give url OR ref, not both.';
+        let page: any;
+        let cdp: any;
+        try {
+            page = await getPage();
+            // Stage the download next to the final destination; Chrome writes
+            // there, then we move/rename into save_path. Same staging dir for
+            // the default location keeps the move a no-op.
+            let destDir: string, destName: string | null = null;
+            if (args.save_path) {
+                const resolved = resolveUserPath(String(args.save_path));
+                if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+                    destDir = resolved;
+                } else {
+                    destDir = path.dirname(resolved);
+                    destName = path.basename(resolved);
+                }
+            } else {
+                destDir = resolveUserPath('data/browser-downloads');
+            }
+            fs.mkdirSync(destDir, { recursive: true });
+
+            cdp = await page.context().newCDPSession(page);
+            await cdp.send('Browser.setDownloadBehavior', {
+                behavior: 'allow',
+                downloadPath: destDir,
+                eventsEnabled: true,
+            });
+
+            let downloadGuid: string | null = null;
+            let downloadName: string | null = null;
+            let onDone: ((r: { ok: boolean; name?: string; error?: string }) => void) | null = null;
+            const done = new Promise<{ ok: boolean; name?: string; error?: string }>((resolve) => { onDone = resolve; });
+            cdp.on('Browser.downloadWillBegin', (ev: any) => {
+                downloadGuid = ev.guid;
+                downloadName = ev.suggestedFilename || `download-${Date.now()}`;
+            });
+            cdp.on('Browser.downloadProgress', (ev: any) => {
+                if (downloadGuid && ev.guid !== downloadGuid) return; // another download we didn't ask for
+                if (ev.state === 'completed' && onDone) onDone({ ok: true, name: downloadName || undefined });
+                if (ev.state === 'canceled' && onDone) onDone({ ok: false, error: 'Chrome canceled the download (the host may have refused it or the session expired).' });
+            });
+
+            // Trigger. page.goto on a download URL aborts navigation on
+            // purpose (net::ERR_ABORTED) while the download proceeds — that
+            // error is expected, not a failure.
+            if (ref) {
+                await refLocator(page, ref).click({ timeout: ACTION_TIMEOUT });
+            } else {
+                try {
+                    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                } catch (err: any) {
+                    // "Download is starting" is Playwright's success case over
+                    // CDP (no Playwright download object, but Chrome proceeds);
+                    // ERR_ABORTED is the raw equivalent. Both mean keep waiting
+                    // for the CDP download events.
+                    if (!/Download is starting|ERR_ABORTED|ERR_CONNECTION|ERR_NAME_NOT_RESOLVED/i.test(String(err?.message || ''))) throw err;
+                }
+            }
+
+            const seconds = Math.min(Number(args.timeout_seconds) || 90, 300);
+            const outcome = await Promise.race([
+                done,
+                new Promise<{ ok: false; error: string }>((resolve) =>
+                    setTimeout(() => resolve({ ok: false, error: `No download finished within ${seconds}s — the link may not be a download, or the page needs another click first. Take a browser_snapshot and try the ref of the real download element.` }), seconds * 1000).unref?.()),
+            ]);
+            if (!outcome.ok) return `Error downloading: ${outcome.error}`;
+
+            const savedName = outcome.name || downloadName || '';
+            if (!savedName) return 'Error: download finished but Chrome reported no filename — check the destination directory.';
+            let finalPath = path.join(destDir, savedName);
+            if (!fs.existsSync(finalPath)) return `Error: Chrome reported the download complete, but ${finalPath} is not on disk.`;
+            if (destName) {
+                finalPath = path.join(destDir, destName);
+                fs.renameSync(path.join(destDir, savedName), finalPath);
+            }
+            const size = fs.statSync(finalPath).size;
+            return `Downloaded to ${finalPath} (${size} bytes). The file is on disk — use this path for any further work on it.`;
+        } catch (err: any) {
+            return `Error downloading: ${err.message}`;
+        } finally {
+            // Restore Chrome's normal download behavior (user downloads go
+            // back to their usual folder with the UI) and drop the session.
+            try { await cdp?.send('Browser.setDownloadBehavior', { behavior: 'default' }); } catch { /* browser may be gone */ }
+            try { await cdp?.detach(); } catch { /* already detached */ }
         }
     },
     toolset: 'browser',

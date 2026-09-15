@@ -26,18 +26,19 @@ async function callHost(tool: string, args: any, timeoutMs = 30000): Promise<any
 // ─── email: read | get | send | refresh | cached ──────────────────────────
 registry.register({
     name: 'email',
-    description: "The user's email. action=read lists recent emails (or a date range via since/before, both ISO 8601); action=get fetches one full email by id; action=send sends from the user's account; action=refresh re-syncs the local cache; action=cached lists from the local cache. For an inbox scan, read with the window the request names and report what you find.",
+    description: "The user's email. action=read lists recent emails (or a date range via since/before, both ISO 8601); action=get fetches one full email by id (attachment names included when present); action=download saves one attachment to disk and returns the file path; action=send sends from the user's account; action=refresh re-syncs the local cache; action=cached lists from the local cache. For an inbox scan, read with the window the request names and report what you find.",
     schema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['read', 'get', 'send', 'refresh', 'cached'], description: 'Which email operation to perform.' },
+            action: { type: 'string', enum: ['read', 'get', 'download', 'send', 'refresh', 'cached'], description: 'Which email operation to perform.' },
             limit: { type: 'number', description: 'read: max emails to fetch before date filtering (default: 500)' },
             preview_only: { type: 'boolean', description: 'read: return previews only (default: true)' },
             folder: { type: 'string', description: 'read: mail folder (default: INBOX)' },
             search: { type: 'string', description: 'read: optional text search (provider query, e.g. Gmail q=)' },
             since: { type: 'string', description: 'read: ISO 8601 timestamp — only emails received at/after this' },
             before: { type: 'string', description: 'read: ISO 8601 timestamp — only emails received before this' },
-            email_id: { type: 'string', description: 'get: the email id from a read result' },
+            email_id: { type: 'string', description: 'get/download: the email id from a read result' },
+            filename: { type: 'string', description: 'download: the attachment filename from a get result' },
             to: { type: 'string', description: 'send: recipient address' },
             subject: { type: 'string', description: 'send: subject line' },
             body: { type: 'string', description: 'send: email body' },
@@ -78,9 +79,22 @@ registry.register({
             const resp = await callHost('get_email', { emailId: args.email_id, userId: context.userId }, 60000);
             if (resp?.ok && resp.email) {
                 const e = resp.email;
-                return `Email content:\nFrom: ${e.from || 'unknown'}\nSubject: ${e.subject || '(no subject)'}\nDate: ${e.date || ''}\n\n${e.body || ''}`;
+                const atts = e.attachments || [];
+                const attLine = atts.length
+                    ? `\n\nAttachments (${atts.length}): ${atts.map((x: any) => `${x.filename} (${Math.max(1, Math.round((x.size || 0) / 1024))} KB)`).join(', ')}`
+                    : '';
+                return `Email content:\nFrom: ${e.from || 'unknown'}\nSubject: ${e.subject || '(no subject)'}\nDate: ${e.date || ''}\n\n${e.body || ''}${attLine}`;
             }
             return `Email fetch failed: ${resp?.error || 'unknown error'}`;
+        }
+        if (a === 'download') {
+            // Attachment download can be slow (Gmail API round-trip + file
+            // write), so it gets a 120s ceiling like the date-range reads.
+            const resp = await callHost('download_email_attachment', {
+                emailId: args.email_id, filename: args.filename, userId: context.userId,
+            }, 120000);
+            if (resp?.ok) return `Attachment saved: ${resp.path} (${resp.filename}, ${resp.size} bytes). Use this path for any further work on the file.`;
+            return `Attachment download failed: ${resp?.error || 'unknown error'}`;
         }
         if (a === 'send') {
             const resp = await callHost('send_email', {
@@ -100,7 +114,7 @@ registry.register({
             if (resp?.ok) return `Cached emails:\n${JSON.stringify(resp.emails, null, 2).slice(0, 4000)}`;
             return `Cached emails fetch failed: ${resp?.error || 'unknown error'}`;
         }
-        return `Unknown email action "${a}" — use read, get, send, refresh, or cached.`;
+        return `Unknown email action "${a}" — use read, get, download, send, refresh, or cached.`;
     },
     toolset: 'email',
     tier: 'private',

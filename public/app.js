@@ -2398,13 +2398,23 @@
       STATE.sseSource.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
-          if (data.type === 'connected') return;
+          if (data.type === 'connected') {
+            // Fresh stream (first connect or recovery after a restart): reset
+            // the reconnect backoff and stop the polling backstop.
+            STATE.sseRetryMs = 2000;
+            if (STATE.notifPollTimer) { clearInterval(STATE.notifPollTimer); STATE.notifPollTimer = null; }
+            return;
+          }
           handleNotification(data);
         } catch {}
       };
       STATE.sseSource.onerror = () => {
         try { STATE.sseSource.close(); } catch {}
         STATE.sseSource = null;
+        // The stream dies whenever Warden restarts; the tab used to stay dead
+        // until a manual refresh. Keep the poll as a backstop but keep trying
+        // to re-establish SSE (with backoff) — the full event stream is the
+        // real feed; the poll only carries chat_complete previews.
         if (!STATE.notifPollTimer) {
           STATE.notifPollTimer = setInterval(async () => {
             try {
@@ -2416,6 +2426,13 @@
             } catch {}
           }, 8000);
         }
+        const backoff = Math.min(STATE.sseRetryMs || 2000, 30000);
+        STATE.sseRetryMs = (STATE.sseRetryMs || 2000) * 2;
+        setTimeout(() => {
+          if (!STATE.sseSource) {
+            connectSSE();
+          }
+        }, backoff);
       };
     } catch (e) { /* SSE not supported */ }
   }

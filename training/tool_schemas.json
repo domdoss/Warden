@@ -4,7 +4,7 @@
       "type": "function",
       "function": {
         "name": "email",
-        "description": "The user's email. action=read lists recent emails (or a date range via since/before, both ISO 8601); action=get fetches one full email by id; action=send sends from the user's account; action=refresh re-syncs the local cache; action=cached lists from the local cache. For an inbox scan, read with the window the request names and report what you find.",
+        "description": "The user's email. action=read lists recent emails (or a date range via since/before, both ISO 8601); action=get fetches one full email by id (attachment names included when present); action=download saves one attachment to disk and returns the file path; action=send sends from the user's account; action=refresh re-syncs the local cache; action=cached lists from the local cache. For an inbox scan, read with the window the request names and report what you find.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -13,6 +13,7 @@
               "enum": [
                 "read",
                 "get",
+                "download",
                 "send",
                 "refresh",
                 "cached"
@@ -45,7 +46,11 @@
             },
             "email_id": {
               "type": "string",
-              "description": "get: the email id from a read result"
+              "description": "get/download: the email id from a read result"
+            },
+            "filename": {
+              "type": "string",
+              "description": "download: the attachment filename from a get result"
             },
             "to": {
               "type": "string",

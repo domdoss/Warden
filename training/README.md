@@ -5,10 +5,12 @@ LoRA fine-tuning data + training + verification for the toolcall model
 
 - **iris** — the single toolcall agent. Byte was merged into iris on
   2026-09-05 (one toolcall agent, one fine-tuned model); dexter had been
-  absorbed earlier. Iris covers email, digests, scheduled tasks, calendar,
-  and work management (projects, work tasks, deliverables, blockers,
-  priorities, financials, time tracking) — all **single-shot**: one tool
-  call per request (`maxIterations: 1`).
+  absorbed earlier. The 2026-09-09 collapse stripped iris to FOUR merged
+  action tools — email, task (scheduled reminders), calendar, alarm
+  (projects/work-tasks are orchestrator-direct now). Since 2026-09-15 a
+  dispatch allows **up to 3 tool calls** (`maxIterations: 3`): each call
+  must use a fact an earlier call returned (an id from a read, a filename
+  from a get), and no succeeded call is repeated.
 - **sentry is NOT covered** (changed 2026-09-08): the background
   security-scanner run-mode briefly had SFT rows here, but the user
   switched sentry to share the orchestrator/atlas model (set manually in
@@ -36,18 +38,21 @@ window; reinforced with a busy-morning daily rep).
 ## Pipeline
 
 ```
-node dump_tool_schemas.mjs   # tool_schemas.json — live schemas: iris-core (41)
-node gen_toolcall_sft.mjs    # toolcall-sft.jsonl — the SFT dataset (iris + digest rows)
+node dump_tool_schemas.mjs   # tool_schemas.json — live schemas: iris-core (4 action tools)
+node gen_toolcall_sft.mjs    # toolcall-sft.jsonl — the SFT dataset (iris rows)
 ./run.sh                     # train (torchrun, both RTX 5000s) + pack → ollama:toolcall-ft
 node dryfire.mjs             # verify the fine-tune against the real run contract
 ```
 
 Run `dump_tool_schemas.mjs` **after** building the agent-runner
 (`npm run build:agent-runner` from /opt/Warden) — it reads the compiled
-registry. `gen_toolcall_sft.mjs` extracts the iris system prompt **verbatim
-from the runner source at gen time** (throws if the extraction drifts), so
-training always matches production exactly. Re-run both whenever the runner's
-SUBAGENTS entry, toolsets, or tool schemas change.
+registry. `AR_DIST=<dir>` points it at a scratch compile instead (the dir
+must end in `dist/agent-runner` — the loader stubs `index.js` by that path),
+so schemas can be refreshed from source without rebuilding the dist the
+running Warden serves from. `gen_toolcall_sft.mjs` extracts the iris system
+prompt **verbatim from the runner source at gen time** (throws if the
+extraction drifts), so training always matches production exactly. Re-run
+both whenever the runner's SUBAGENTS entry, toolsets, or tool schemas change.
 
 **The ANCHOR time header is BAKED IN** (`gen_toolcall_sft.mjs`, `ANCHOR`):
 `2026-08-31T14:05:00 (timezone America/Vancouver)`. Every row's user turn
@@ -60,13 +65,12 @@ computes clock math in the wrong offset at inference time.
 
 - `dump_tool_schemas.mjs` — dumps the exact Ollama tool definitions from the
   compiled agent-runner registry (via `tool_schema_loader.mjs`, which stubs
-  the runner's IPC imports). Agent: `iris-core` (41 tools).
+  the runner's IPC imports). Agent: `iris-core` (4 action tools: email,
+  task, calendar, alarm).
 - `tool_schemas.json` — the dumped schemas (`iris` key).
 - `gen_toolcall_sft.mjs` — dataset generator → `toolcall-sft.jsonl`
-  (304 rows: iris single-shot, digest run-mode).
-- `digest_reality.mjs` — extracts the REAL digest prompts/tool from the live
-  sources (digests are direct `iris-digest-<span>` background runs — never
-  through the delegate).
+  (229 rows: iris, 1–3 tool-call turns — mostly single-turn, plus the
+  read→get / get→download email chains).
 - `dryfire.mjs` — the verification harness (below).
 - `train_dexter_lora.py`, `pack_dexter.sh`, `run.sh` — LoRA train + GGUF pack
   (filenames are historical; they serve toolcall-ft now).
@@ -94,9 +98,9 @@ trains on correct outputs only):
 4. **Invented content.** No-content reminders once got invented prompts.
    → ask-back text-only reps (~3 schedule_task per ask-back).
 5. **Plain to-dos.** Once handed off to byte / scheduled with invalid
-   `schedule_value: "now"`. → since the merge, iris OWNS work management: a
-   plain to-do is a `create_work_task` call (`project_id: "personal"`
-   default), never a `schedule_task`.
+   `schedule_value: "now"`. → since the 2026-09-09 collapse iris has no
+   work-task tool: a plain to-do (content but no time) gets one short line
+   asking for a time, then it becomes a scheduled reminder.
 6. **Schema-as-args / wrong artifact.** `send_email` without `to`; "add a
    priority" answered with `create_work_task`; "mark as Blocked" answered by
    creating a junk project. → clean single-call reps, and id-supplied manage
@@ -113,11 +117,11 @@ Each row is OpenAI-style messages + a `tools` array:
   "messages": [
     {"role":"system","content":"<iris system prompt, extracted verbatim from the live runner>"},
     {"role":"user","content":"Current local time is 2026-08-31T14:05:00 (timezone America/Vancouver). Compute every absolute timestamp from this.\n\n<orchestrator-style brief>"},
-    {"role":"assistant","content":"","tool_calls":[{"type":"function","function":{"name":"schedule_task","arguments":{...}}}]},
-    {"role":"tool","name":"schedule_task","content":"OK"},
+    {"role":"assistant","content":"","tool_calls":[{"type":"function","function":{"name":"task","arguments":{...}}}]},
+    {"role":"tool","name":"task","content":"OK"},
     {"role":"assistant","content":"Set a reminder …"}
   ],
-  "tools": [ <41 tool defs matching the live registry schemas> ]
+  "tools": [ <4 tool defs matching the live registry schemas> ]
 }
 ```
 
@@ -135,14 +139,15 @@ parenthetical timezone, explicit ids, em-dashes) so train ≈ infer.
 baseline) hits Ollama `/api/chat` directly with the extracted system prompt
 and the live tool schemas, then scores against the **real run contract**:
 
-- **iris single-shot**: ONE Ollama call per case; the exact expected call set
-  in that one turn (a list-first call is a chain the production run can never
-  complete → FAIL). Manage briefs carry ids; email briefs carry resolved
-  addresses. Covers every `schedule_value` form, work management, ask-backs,
-  email, and the API flow.
-- **digest run-mode**: the `iris-digest-<span>` background shape — read_emails
-  with the verbatim UTC window, then the digest JSON as final text, validated
-  by `digest_reality.mjs`'s contract checker.
+- **iris**: ONE Ollama call per case — the harness scores the FIRST model
+  turn only, so each case pins the exact expected call set for that turn
+  (extra calls in turn one are the fine-tune over-firing). Manage briefs
+  carry ids; email briefs carry resolved addresses. Covers every
+  `schedule_value` form, ask-backs, email, and alarms. (The 2-turn
+  read→get / get→download chains are NOT dryfire-covered yet — the harness
+  has no tool-result feedback loop; those rows are verified structurally at
+  gen time. Extend the harness with a multi-turn runner before trusting a
+  retrain on the chains.)
 
 Transport note: dryfire talks to Ollama **streaming**. A non-streaming reply
 sends headers only after the whole generation, and Node's fetch gives up on
@@ -185,8 +190,8 @@ tools, masks non-assistant turns to `-100`, trains LoRA r=16/alpha=32 on
 every linear layer (2 epochs default, fp16, grad checkpointing on). This is
 tool-call transcription, not new knowledge — small rank is plenty. Sequence
 length matters a lot post-merge: every example carries the full schema block
-(41 iris tools), so rendered seqs run min/mean/max
-**1486/4697/4994** over 304 rows (p95 4915; check with
+(4 iris action tools), so rendered seqs run min/mean/max
+**2073/2161/2465** over 229 rows (p95 2236; check with
 `./.venv/bin/python check_seqlen.py`, or the training-time printout) — the
 trainer's `--max-len` default is **6144** accordingly. Any lower value
 left-truncates the system prompt off nearly the whole dataset; if a
@@ -205,6 +210,10 @@ Invariants:
 - cron for "every day at HH:MM" is `MM HH * * *` — minute first.
 - interval → milliseconds as a string.
 - no content / no time → ask back, no tool call.
-- a plain to-do → `create_work_task` (`project_id: "personal"` default).
-- manage → the id arrives in the brief; ONE call. No list→act chains.
+- a plain to-do (content, no time) → ask back for a time; it becomes a
+  scheduled reminder once a time is given.
+- manage (task/calendar/alarm) → the id arrives in the brief; ONE call.
+- email chains (read→get, get→download) may span up to 3 calls; every call
+  after the first must use an id/filename an earlier result returned, and no
+  succeeded call is repeated.
 - every request carries the ANCHOR time header.

@@ -718,6 +718,10 @@ Route by intent:
 - Filters and data extraction on results/marketplace pages → prefer ONE \`browser_evaluate\` that returns the structured items (title, price, link) or a URL with query parameters, over clicking through filter UIs. A "did not visibly change" result is the page telling you the action had no effect — switch method on the very next call; repeating the same click or Escape never helps.
 For media playback on any site, drive the page's \`<video>\`/\`<audio>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the site's UI buttons.
 
+DOWNLOADS — \`browser_download\` saves any file a page offers (a PDF link, an export button, an email attachment card) and returns the saved path; give it the URL or the ref and the destination. It uses Chrome's own download, so signed-in pages work. This is the only way to fetch a file — never fish file bytes out of the DOM with \`browser_evaluate\`, and never report a file as saved unless browser_download (or Bash) returned its path.
+
+EMAIL — reading or searching the user's mail is the orchestrator's email specialist's work (iris): a task that wants mail content ends right away with "This is email work — it routes to the email specialist". Downloading a FILE a mail page offers, though, is a download: if you are already on the page, browser_download the attachment and report the path.
+
 NATIVE APPS — Two routes, pick by whether you need to drive it. (1) Fire-and-forget SHOW: the user just wants to see or launch something (open a PDF, open a folder, launch Stremio) → \`open_app\` with \`app: "xdg-open"\` (or the app binary) and the absolute path; it opens on the host display and returns immediately. (2) DRIVE: you need to click/type/screenshot controls inside a desktop app (a settings window, a media player you must steer) → launch it with Bash (\`flatpak run …\` or the app command), wait for it to open, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the control's pixel coordinates, and \`desktop_type\` to type or send keys. Take a fresh \`desktop_screenshot\` after each action. Use xdg-open for showing, the CDP browser for pages you'll keep driving, and Bash+desktop tools for apps you must steer — never the wrong one.
 
 AUDIO & MEDIA — Use the dedicated tools, not Bash amixer/playerctl commands. \`audio_volume\` (action get/set/toggle_mute, level 0-100) for the SPEAKER loudness; \`mic_volume\` for the MIC sensitivity; \`media_control\` (play/pause/play_pause/next/previous/stop) for a running media player (browser YouTube, Spotify, mpv). "Turn it up/down", "mute", "make it louder", "volume to 50" → audio_volume; "mute the mic", "mic too quiet/loud" → mic_volume; "pause/skip/next song" → media_control.
@@ -739,7 +743,9 @@ FINISHING — you declare done, not a timer or tool cap (you have up to 100 roun
 
 PERSISTENCE — never call a task "impossible", "not supported", or "limited by the browser/tool" until you've tried at least three distinct approaches that all failed with concrete errors. "I can't control media playback" / "complex JavaScript" / "dynamic rendering" are excuses, not conclusions — pages are just DOM trees: snapshot them, find the element, interact. If one approach fails, try another (search-results URL, type+Enter, browser_eval click, keyboard shortcut). If you truly can't finish after three attempts, report what each returned and what the next would be.
 
-PREMISE CHECK — PERSISTENCE governs approaches that FAIL WITH ERRORS; this governs searches that SUCCEED WITH NOTHING. A search that keeps coming back empty is an answer, not a reason to try a new search term. When the task names a target you haven't yet seen (a page, file, feature, route), find the TARGET ITSELF first — Glob/find by its name, or one ls of the directory it should live in — before you study anything around it. If three different searches for the same target all come back empty, the premise is broken: widen ONCE to the other tree it could live in — user data and deliverables are in the workspace (\`~/Warden\`, e.g. \`data/work/\`), while \`/opt/Warden\` is the application's own source, which almost never holds a user's artifact — and if it still doesn't appear, end BLOCKED: name the target, say exactly where you looked, and ask for its location. Searching is only progress while each call narrows toward the target; hunting an application's source for a user artifact that was never there is the classic spiral.`,
+PREMISE CHECK — PERSISTENCE governs approaches that FAIL WITH ERRORS; this governs searches that SUCCEED WITH NOTHING. A search that keeps coming back empty is an answer, not a reason to try a new search term. When the task names a target you haven't yet seen (a page, file, feature, route), find the TARGET ITSELF first — Glob/find by its name, or one ls of the directory it should live in — before you study anything around it. If three different searches for the same target all come back empty, the premise is broken: widen ONCE to the other tree it could live in — user data and deliverables are in the workspace (\`~/Warden\`, e.g. \`data/work/\`), while \`/opt/Warden\` is the application's own source, which almost never holds a user's artifact — and if it still doesn't appear, end BLOCKED: name the target, say exactly where you looked, and ask for its location. Searching is only progress while each call narrows toward the target; hunting an application's source for a user artifact that was never there is the classic spiral.
+
+MEMORY — before hunting for a fact, prior decision, or how something was done, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it. Log a durable fact you just established (a confirmed path, a decision, a fix) with \`mcp__marm__marm_log_entry\` so it's recallable next time. Memory is checked once per fact, not a substitute for the task's own tools.`,
         toolsets: ['atlas-core'],
     },
     {
@@ -770,15 +776,21 @@ FINISHING — you declare done, not a timer or tool cap (you have up to 100 roun
 - **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result.
 - **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
 
-PERSISTENCE — never call a task "impossible" or "not supported" until you've tried at least three distinct approaches that all failed with concrete errors. If one approach fails, try another (different file, different API, a workaround). If you truly can't finish after three attempts, report what each returned and what the next would be.`,
+PERSISTENCE — never call a task "impossible" or "not supported" until you've tried at least three distinct approaches that all failed with concrete errors. If one approach fails, try another (different file, different API, a workaround). If you truly can't finish after three attempts, report what each returned and what the next would be.
+
+MEMORY — before re-deriving a fact, prior decision, or how something was built, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it (past fixes, project history, decisions). Log a durable fact you just established (a root cause, a confirmed contract, a decision) with \`mcp__marm__marm_log_entry\` so it's recallable next time.`,
         toolsets: ['vulkan-core'],
     },
     {
         delegate: 'iris',
         label: 'Iris',
-        // Single-shot: one tool call, then the output is handed straight back
-        // to the orchestrator. Iris doesn't loop on follow-up calls — if the
-        // one shot wasn't right, the orchestrator sends a fresh request.
+        // Up to 3 tool calls per dispatch (was 1, 2026-09-15): iris is a
+        // fine-tuned 3b that held list→id→act flows only across separate
+        // orchestrator dispatches — the orchestrator had to re-delegate each
+        // step, and multi-step email work (get → download attachment) fell
+        // through to atlas scraping Gmail's DOM. The loop machinery below
+        // handles multi-iteration; the fine-tune needs 2-turn SFT rows to be
+        // fully on-distribution, so keep dispatches to 1-3 calls.
         // (byte merged in 2026-09-05; core-only redesign 2026-09-09;
         // 2026-09-09 collapse: 41 flat schemas → 4 merged action tools —
         // alarm, task, calendar, email — one tool per noun, `action` selects
@@ -786,17 +798,17 @@ PERSISTENCE — never call a task "impossible" or "not supported" until you've t
         // schemas; projects/work-tasks stay OUT (2026-09-11: the merged
         // `project` tool is orchestrator-direct instead — see toolsets.ts).
         // No BOTH-tier/skill/MCP merges, terse structured prompt, no examples.)
-        maxIterations: 1,
-        summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email. Use for inbox tasks, alarm and scheduling requests.',
+        maxIterations: 3,
+        summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email, download email attachments. Use for inbox tasks, alarm and scheduling requests.',
         systemPrompt: `You are Iris: alarms, reminders, calendar, email.
 
-CONTRACT: one request → one tool call → one result line.
+CONTRACT: one request → up to 3 tool calls → one result line. Each call must use a fact an earlier call returned (an id from a read/list). Never repeat a call that already succeeded.
 
 TOOLS — one tool per noun; the 'action' parameter selects the operation.
 - alarm: action=create (label + alarm_time HH:MM; alarm_date, repeat_type none/daily/weekdays/custom, repeat_days), action=list, action=update (alarm_id + fields), action=delete (alarm_id)
 - task: action=schedule (prompt + schedule_type + schedule_value), action=list, action=update (task_id + fields), action=pause, action=resume, action=cancel (task_id)
 - calendar: action=create (title + start_time), action=list (start/end range), action=update (event_id + fields), action=delete (event_id)
-- email: action=read (recent emails; since/before for a date range), action=get (email_id), action=send (to, subject, body), action=refresh, action=cached
+- email: action=read (recent emails; since/before for a date range), action=get (email_id), action=download (email_id + filename from the get result; saves the file, returns its path), action=send (to, subject, body), action=refresh, action=cached
 
 INPUT
 Line 1 of the task is the local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)" — compute every timestamp from it.
@@ -1526,7 +1538,11 @@ let drainedDigestJobIds: string[] = [];
 const ATLAS_ALWAYS_INCLUDED_TOOLS = new Set<string>([
     'Bash', 'open_app',
     'desktop_click', 'desktop_type', 'desktop_screenshot',
-    'browser_navigate', 'browser_snapshot',
+    'browser_navigate', 'browser_snapshot', 'browser_download',
+    // MARM recall+log always ride along for atlas: without these in the
+    // always-set, the RAG tool ranking drops them for most tasks and atlas
+    // re-derives facts memory already holds (2026-09-15).
+    'mcp__marm__marm_smart_recall', 'mcp__marm__marm_log_entry',
     'Read', 'Edit', 'Write', 'Glob', 'Grep',
     'WebFetch', 'WebSearch',
     'attach_file',
@@ -3312,11 +3328,10 @@ async function runSubAgent(
                         }
                     }
                 }
-                // Single-shot agents (maxIterations <= 1): one tool call, then
-                // hand the result straight to the orchestrator — no second model
-                // round, no "stopped at safety limit" tail. The orchestrator
-                // decides if the one shot was right; if not, it sends a fresh
-                // request. (See the iris def: maxIterations: 1.)
+                // Multi-call agents still stop early when the model writes its
+                // final line instead of a tool call. Agents capped at 1
+                // iteration (none currently; iris was raised to 3 on
+                // 2026-09-15) return the last tool result directly.
                 if (cap <= 1) {
                     const ran = [...new Set(toolsRun)];
                     const content = lastToolResult.trim()
@@ -3823,7 +3838,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
 - **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas.
-- **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris is single-shot: it makes one tool call per request; for a list→id→act flow, call iris once per step with the specific id.
+- **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris can make up to 3 tool calls per dispatch, but keep each dispatch one short step (e.g. just the attachment download with the email id and filename) and let it chain list→id→act itself.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **oculus** — background security/situational awareness. AWARENESS events pipe to Oculus in code; you don't see them. Delegate only for an explicit security status check. For "who's/what's in the room" call \`oculus_query\` and relay its live report in one sentence — not \`awareness_status\` (stale), not \`webcam_capture\`.
@@ -3835,7 +3850,7 @@ Answer directly, no tools, for plain conversation — advice, definitions, trans
 
 Cue words:
 - Before delegating any search, lookup, or find to atlas, check \`marm_smart_recall\` first — if memory can answer it, no delegation. atlas opens and does; it does not rediscover what memory already knows.
-- "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot or webcam for an email request.
+- "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot, webcam, or the browser for an email request. That includes attachments: "download/save the PDF from the email" is iris (it saves the file and returns the path), never atlas driving Gmail in the browser.
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
 - "play X on youtube", "youtube X", "put on X", pause/skip/volume → activate_skill('media-playback') and follow it — a single song/video is yours in one turn; only a media FLOW (a queue, a playlist build) delegates to **atlas**. Vague media: pick something reasonable and act immediately — never poll or stop a running media job.
 - "open X so I can see it", "show me the page" → your own \`browser_navigate\` straight to the final URL (local files: bare path or \`open_app\` for an OS-default app). Read the returned snapshot and confirm what opened. Only a many-page browse/extract flow delegates to **atlas**.
@@ -3867,13 +3882,13 @@ Keep personal info local. Atlas and Vulkan may run on a cloud model — keep nam
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
-# BRIEFING IRIS (single-shot specialist)
+# BRIEFING IRIS
 
-Iris makes ONE tool call per dispatch, then returns. Write one imperative sentence naming the outcome and the facts it can't guess, then stop.
+Iris makes up to 3 tool calls per dispatch, then returns. Write one imperative sentence naming the outcome and the facts it can't guess, then stop.
 
-- One tool call per dispatch. For cancel/pause/resume/update, hand it the id and call once per step; if you need the id, call iris to list first, then call again with the id. Never list-then-act in one call.
+- One step per dispatch — but iris chains the id lookups itself: if you don't have the email id yet, one brief ("find the email from <sender> about <subject>") and iris reads, picks the id, and acts. For cancel/pause/resume/update, hand it the id if you have it.
 - Reminders: name the kind — one-time, recurring interval, or recurring cron — and give the message verbatim. A delay with no clock time: "Set a one-time reminder to <message> in <delay>." A clock time: "Set a one-time reminder to <message> at <clock time>." Recurring: "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
-- Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply."
+- Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply." For an attachment: give the email id and the attachment filename — "Download the <filename> attachment from email <id>" — iris saves it and returns the saved file path; hand that path to whoever does the next step.
 - Calendar: "Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
 
 ${'' /* SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction.
@@ -5155,7 +5170,10 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             }
             if (fs.existsSync(resolved.path)) {
                 const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(filePath);
-                const tag = isImage ? `[Image: ${filePath}]` : `[File: ${filePath}]`;
+                // Tag with the RESOLVED absolute path — the host (telegram
+                // sendPhoto/sendDocument) can't expand ~ or runner-relative
+                // paths itself.
+                const tag = isImage ? `[Image: ${resolved.path}]` : `[File: ${resolved.path}]`;
                 writeCallback('send_message', {
                     type: 'message',
                     chatJid: toolContext.chatJid,
@@ -6318,14 +6336,15 @@ GROUNDING: Use only facts that appear in INPUT or email tool output. If a sectio
 
 Call email(action="read") once if the task needs recent inbox activity, then output the JSON object as your final message. No commentary, no markdown, just the JSON.`;
             log(`[iris-digest] starting digest compiler: span=${span}, model=${model}, tools=${tools.length}, prompt=${(containerInput.prompt || '').slice(0, 80)}…`);
-            // NOT def.maxIterations (=1, the single-shot iris delegate cap): the
-            // digest is a 2-step job — email(action="read") once with the INPUT
-            // window, then the JSON object as final text. With cap 1 the run
-            // returns right after the email call and the raw email listing gets
-            // published to /api/summaries as the "digest" (the prompts below
-            // instruct the model to call email FIRST, so cap 1 made that failure
-            // the steady state). Small explicit cap: read once (maybe retry
-            // once), then final text.
+            // NOT def.maxIterations: the digest is a 2-step job regardless of
+            // the iris delegate cap (now 3) — email(action="read") once with
+            // the INPUT window, then the JSON object as final text. With a
+            // tight cap the run returns right after the email call and the
+            // raw email listing gets published to /api/summaries as the
+            // "digest" (the prompts below instruct the model to call email
+            // FIRST, so a cap of 1 made that failure the steady state).
+            // Small explicit cap: read once (maybe retry once), then final
+            // text.
             const sa = await runSubAgent('iris', model, digestSystemPrompt, tools, containerInput.prompt || '', ctx, 4, undefined, undefined, 0);
             // Publish the structured JSON directly to the dashboard. This is the
             // 100% path — we do not depend on the model calling a publish tool.
