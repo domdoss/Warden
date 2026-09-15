@@ -309,33 +309,46 @@ export class TelegramChannel implements Channel {
     if (!chatId) return;
     this.stopTyping(); // a reply is going out — thinking is over
 
-    // [Image: <path>] refs → send as Telegram photos (with the surrounding
-    // text as the caption) so alert frames show up on the phone. Path is
-    // repo-relative; resolve from the Warden cwd.
+    // [Image: <path>] refs → send as Telegram photos; [File: <path>] refs →
+    // send as documents (so attach_file/auto-attach deliver real files, not
+    // the literal tag text). The remaining text is the caption.
     const imgRe = /\[Image:\s*([^\]]+)\]/gi;
-    const images: string[] = [];
-    let mm: RegExpExecArray | null;
-    while ((mm = imgRe.exec(text)) !== null) images.push(mm[1].trim());
-    const caption = text.replace(imgRe, '').trim();
+    const fileRe = /\[File:\s*([^\]]+)\]/gi;
+    const collect = (re: RegExp): string[] => {
+      const out: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) out.push(m[1].trim());
+      return out;
+    };
+    const images = collect(imgRe);
+    const files = collect(fileRe);
+    const caption = text.replace(imgRe, '').replace(fileRe, '').trim();
 
-    if (images.length > 0) {
-      for (const rel of images) {
-        const abs = path.isAbsolute(rel) ? rel : path.resolve(process.cwd(), rel);
-        // Security frames are stored under groups/owner/attachments, but the
-        // Oculus image tag is repo-relative (attachments/...). If the root
-        // path is missing, fall back to the owner group folder.
-        let finalAbs = abs;
-        if (!fs.existsSync(finalAbs)) {
-          const groupAbs = path.resolve(WORKSPACE_ROOT, 'groups', 'owner', rel);
-          if (fs.existsSync(groupAbs)) finalAbs = groupAbs;
-        }
-        if (!fs.existsSync(finalAbs)) { warn(`sendPhoto: image not found: ${abs}`); continue; }
+    // Media paths arrive absolute (attach_file) or repo/group-relative
+    // (Oculus security frames). Try repo cwd, the owner group folder, and
+    // WORKSPACE_ROOT itself — attach_file tags are relative to the runner's
+    // cwd, which IS WORKSPACE_ROOT.
+    const resolveMedia = (rel: string): string | null => {
+      const candidates = path.isAbsolute(rel)
+        ? [rel]
+        : [
+            path.resolve(process.cwd(), rel),
+            path.resolve(WORKSPACE_ROOT, 'groups', 'owner', rel),
+            path.resolve(WORKSPACE_ROOT, rel),
+          ];
+      for (const c of candidates) if (fs.existsSync(c)) return c;
+      return null;
+    };
+
+    if (images.length > 0 || files.length > 0) {
+      // Send each media item with retry; the caption rides on the first one.
+      let captionUsed = false;
+      const sendWithRetry = async (send: (cap?: string) => Promise<unknown>, label: string, abs: string): Promise<void> => {
         let attempt = 0;
         for (;;) {
           try {
-            await this.bot.api.sendPhoto(Number(chatId), new InputFile(finalAbs), {
-              caption: caption.slice(0, 1024) || undefined,
-            });
+            await send(captionUsed ? undefined : caption.slice(0, 1024) || undefined);
+            captionUsed = true;
             break;
           } catch (err: any) {
             const retryAfter = err instanceof GrammyError ? err.parameters?.retry_after : undefined;
@@ -345,13 +358,29 @@ export class TelegramChannel implements Channel {
               continue;
             }
             if (attempt < 1) { attempt++; await new Promise((r) => setTimeout(r, 1500)); continue; }
-            warn(`sendPhoto failed permanently: ${err?.message ?? err}`);
+            warn(`${label} failed permanently: ${err?.message ?? err} (${abs})`);
             break;
           }
         }
+      };
+      for (const rel of images) {
+        const abs = resolveMedia(rel);
+        if (!abs) { warn(`sendPhoto: image not found: ${rel}`); continue; }
+        await sendWithRetry(
+          (cap) => this.bot.api.sendPhoto(Number(chatId), new InputFile(abs), { caption: cap }),
+          'sendPhoto', abs,
+        );
+      }
+      for (const rel of files) {
+        const abs = resolveMedia(rel);
+        if (!abs) { warn(`sendDocument: file not found: ${rel}`); continue; }
+        await sendWithRetry(
+          (cap) => this.bot.api.sendDocument(Number(chatId), new InputFile(abs), { caption: cap }),
+          'sendDocument', abs,
+        );
       }
       // Any caption text beyond Telegram's 1024-char limit → follow-up text.
-      if (caption.length > 1024) {
+      if (captionUsed && caption.length > 1024) {
         for (const chunk of chunkText(caption.slice(1024))) {
           try { await this.bot.api.sendMessage(Number(chatId), chunk, { link_preview_options: { is_disabled: true } }); }
           catch (err: any) { warn(`caption follow-up failed: ${err?.message ?? err}`); }

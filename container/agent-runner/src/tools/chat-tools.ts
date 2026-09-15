@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { registry } from '../tool-registry.js';
-import { writeIpcFile, waitForResult, TASKS_DIR, IPC_DIR, cleanFilePath } from '../ipc-helpers.js';
+import { writeCallback } from '../index.js';
+import { writeIpcFile, waitForResult, TASKS_DIR, resolveUserPath } from '../ipc-helpers.js';
 
 // --- Chat tools ---
 registry.register({
@@ -57,26 +58,21 @@ registry.register({
         required: ['path'],
     },
     handler: async (args, context) => {
-        let filePath = args.path;
-        if (filePath.startsWith('/tmp/')) {
-            const basename = path.basename(filePath);
-            try {
-                fs.copyFileSync(filePath, path.join(process.cwd(), basename));
-                filePath = basename;
-            } catch {
-                return `Error: could not copy file from ${filePath}`;
-            }
-        }
-        const full = path.resolve(process.cwd(), cleanFilePath(filePath));
-        if (!full.startsWith(process.cwd())) return 'Error: path must be relative to workspace';
-        if (!fs.existsSync(full)) return `Error: file not found at ${filePath}`;
-        const relPath = path.relative(process.cwd(), full);
-        const tag = args.type === 'image' ? `[Image: ${relPath}]` : `[File: ${relPath}]`;
+        // Resolve like a shell would: ~ → home, absolutes stay absolute (the
+        // agent can already Read/Edit files outside the workspace, so the old
+        // "path must be relative to workspace" refusal just rejected the very
+        // files users ask to attach, e.g. ~/Projects/site/index.html).
+        const filePath = resolveUserPath(args.path);
+        if (!fs.existsSync(filePath)) return `Error: file not found at ${args.path}`;
+        const tag = args.type === 'image' ? `[Image: ${filePath}]` : `[File: ${filePath}]`;
         const text = args.message ? `${args.message}\n\n${tag}` : tag;
-        writeIpcFile(path.join(IPC_DIR, 'messages'), {
+        // Deliver through the live stdio callback channel — the old
+        // writeIpcFile(IPC_DIR/messages) path was dead (the host no longer
+        // polls the IPC dir), so attachments silently vanished there.
+        writeCallback('send_message', {
             type: 'message', chatJid: context.chatJid, text, groupFolder: context.groupFolder, timestamp: new Date().toISOString(),
         });
-        return `File attached: ${filePath}`;
+        return `File attached: ${args.path}`;
     },
     toolset: 'chat',
     tier: 'both',
