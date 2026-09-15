@@ -10,7 +10,9 @@ LoRA fine-tuning data + training + verification for the toolcall model
   (projects/work-tasks are orchestrator-direct now). Since 2026-09-15 a
   dispatch allows **up to 3 tool calls** (`maxIterations: 3`): each call
   must use a fact an earlier call returned (an id from a read, a filename
-  from a get), and no succeeded call is repeated.
+  from a get), and no succeeded call is repeated. The 2026-09-15 dataset
+  expansion took iris to **993 rows** with broad email coverage (see
+  `gen_toolcall_sft.mjs` "EMAIL BREADTH" section).
 - **sentry is NOT covered** (changed 2026-09-08): the background
   security-scanner run-mode briefly had SFT rows here, but the user
   switched sentry to share the orchestrator/atlas model (set manually in
@@ -69,8 +71,14 @@ computes clock math in the wrong offset at inference time.
   task, calendar, alarm).
 - `tool_schemas.json` — the dumped schemas (`iris` key).
 - `gen_toolcall_sft.mjs` — dataset generator → `toolcall-sft.jsonl`
-  (229 rows: iris, 1–3 tool-call turns — mostly single-turn, plus the
-  read→get / get→download email chains).
+  (993 rows: iris, 0–3 tool-call turns — 700 single-call rows, 136 two-call
+  chains, 36 three-call chains, 121 text-only clarification rows). Two parts:
+  a curated corpus (hand-written rows grounded in logged failures) plus a
+  **seeded combinatorial EMAIL BREADTH section** (mulberry32, seed 20260915 —
+  regens are byte-stable) that paraphrases one canonical call many ways over
+  banks of senders/subjects/attachments. Action mix ≈ read 26%, get 22%,
+  download 17%, send 9%, refresh+cached 4%, scheduling chains ~10%,
+  text-only 12%; every result string byte-matches the live handler.
 - `dryfire.mjs` — the verification harness (below).
 - `train_dexter_lora.py`, `pack_dexter.sh`, `run.sh` — LoRA train + GGUF pack
   (filenames are historical; they serve toolcall-ft now).
@@ -191,7 +199,7 @@ every linear layer (2 epochs default, fp16, grad checkpointing on). This is
 tool-call transcription, not new knowledge — small rank is plenty. Sequence
 length matters a lot post-merge: every example carries the full schema block
 (4 iris action tools), so rendered seqs run min/mean/max
-**2073/2161/2465** over 229 rows (p95 2236; check with
+**2071/2225/2533** over 993 rows (p95 2419; check with
 `./.venv/bin/python check_seqlen.py`, or the training-time printout) — the
 trainer's `--max-len` default is **6144** accordingly. Any lower value
 left-truncates the system prompt off nearly the whole dataset; if a
@@ -216,4 +224,10 @@ Invariants:
 - email chains (read→get, get→download) may span up to 3 calls; every call
   after the first must use an id/filename an earlier result returned, and no
   succeeded call is repeated.
+- task `list` is fire-and-forget in production (`{"ok":true,…}` — no ids
+  come back), so there are NO task list→act chains; scheduling chains use
+  alarm/calendar `list` results only.
+- new breadth rows go in the seeded EMAIL BREADTH section: fixed PRNG seed
+  (regens must stay byte-stable), result strings byte-match the handler, and
+  the ASK is paraphrased while tool args stay canonical.
 - every request carries the ANCHOR time header.
