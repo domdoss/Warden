@@ -452,7 +452,9 @@ export class GoogleProvider implements OAuthProvider {
         body?: { data?: string };
         parts?: Array<{
           mimeType?: string;
-          body?: { data?: string };
+          filename?: string;
+          body?: { data?: string; size?: number; attachmentId?: string };
+          parts?: unknown[];
         }>;
       };
     };
@@ -491,6 +493,7 @@ export class GoogleProvider implements OAuthProvider {
       date: date ? new Date(date).toISOString() : '',
       folder,
       isRead,
+      attachments: this.collectAttachments(msg.payload),
     };
   }
 
@@ -587,6 +590,51 @@ export class GoogleProvider implements OAuthProvider {
       }
     }
     return null;
+  }
+
+  /** Depth-first walk of the multipart tree collecting real attachments:
+   *  every part Gmail tags with a filename (PDFs, images, office docs —
+   *  inline or not). Nested multiparts (related/alternative) are traversed;
+   *  parts without a filename are body parts, not attachments. */
+  private collectAttachments(payload: any): Array<{ id?: string; filename: string; size: number; contentType: string }> {
+    if (!payload) return [];
+    const out: Array<{ id?: string; filename: string; size: number; contentType: string }> = [];
+    const walk = (parts: any[]) => {
+      for (const p of parts) {
+        if (p.filename && p.body?.size != null) {
+          out.push({
+            id: p.body.attachmentId,
+            filename: p.filename,
+            size: p.body.size,
+            contentType: p.mimeType ?? 'application/octet-stream',
+          });
+        }
+        if (p.parts) walk(p.parts);
+      }
+    };
+    walk(payload.parts ?? []);
+    return out;
+  }
+
+  async downloadAttachment(
+    token: string,
+    emailId: string,
+    attachmentId: string,
+  ): Promise<{ data: Buffer; size: number }> {
+    const res = await fetch(
+      `${GMAIL_BASE}/messages/${emailId}/attachments/${attachmentId}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(
+        `Gmail download attachment failed (${res.status}): ${text}`,
+      );
+    }
+    // { data: base64url, size } — same encoding as message part bodies.
+    const att = (await res.json()) as { data: string; size: number };
+    const base64 = att.data.replace(/-/g, '+').replace(/_/g, '/');
+    return { data: Buffer.from(base64, 'base64'), size: att.size };
   }
 
   /** Minimal HTML → plain text: drop tags + styles/scripts, decode entities,

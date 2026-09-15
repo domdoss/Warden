@@ -10,11 +10,15 @@
 // + tool schemas the agent sees at inference, and the assistant target is a
 // Granite tool call.
 //
-// IRIS IS SINGLE-SHOT (maxIterations: 1): ONE model turn per request — one
-// tool call (or parallel calls when the request names several things, e.g. the
-// reminder+calendar pair). Manage flows are id-supplied: the orchestrator
-// resolves ids (its own list dispatch) and the brief carries them. No
-// list→act chains anywhere in the data.
+// IRIS IS MULTI-TURN (maxIterations: 3, raised from 1 on 2026-09-15): up to
+// 3 sequential tool calls per request, each using a fact an earlier call
+// returned (an id from a read/list, a filename from a get result); never
+// repeating a call that already succeeded. Most rows are still ONE turn — one
+// tool call (or a parallel set when the request names several things, e.g. the
+// reminder+calendar pair); a small 2-turn section teaches the email chains
+// (read→get, get→download) the third iteration exists for. Manage flows stay
+// id-supplied: the orchestrator resolves ids (its own list dispatch) and the
+// brief carries them.
 //
 // The system prompt is EXTRACTED from the live runner source at gen time
 // (see IRIS_SYSTEM below) — training always matches production, and a source
@@ -26,7 +30,7 @@
 // Coverage is weighted to the hard calls the 3B Granite fumbles:
 //   scheduling: schedule_value forms (PT2M vs timestamp vs cron vs ms), field
 //           placement, ask-back when no payload, id-supplied manage flows,
-//           email read/send/search.
+//           email read/get/download/send/search.
 //   alarms: create/list/update/delete — HH:MM, repeat patterns, id-supplied
 //           manage.
 //
@@ -74,11 +78,11 @@ function assertIris(agent) {
   }
 }
 
-// Single-shot: user request → one tool call (or a parallel set when the
+// Single-turn: user request → one tool call (or a parallel set when the
 // request names several things), then an optional text reply (emitted as a
 // separate assistant turn after a synthetic tool result). Every request gets
 // the ANCHOR prepended — the dispatch path injects the time header into ALL
-// iris tasks, work management included.
+// iris tasks, work management included. 2-turn chains use exMulti below.
 function ex(agent, request, toolCalls, opts = {}) {
   assertIris(agent);
   const msgs = [
@@ -126,6 +130,25 @@ function exManage(agent, request, { actionTool, actionArgs, actionResult, reply 
     { role: 'tool', name: actionTool, content: actionResult },
     { role: 'assistant', content: reply },
   ];
+  return { messages: msgs, tools: TOOLS.iris };
+}
+
+// Multi-turn chain (2026-09-15, maxIterations 1→3): user request → tool call
+// → result → next tool call → result → … → final one-line reply. Each step's
+// call must use a fact the PREVIOUS result returned (an id from a read, a
+// filename from a get's Attachments line) — that dependency is the whole point
+// of these rows. steps: [{ call: {name, arguments}, result }, …].
+function exMulti(agent, request, steps, reply) {
+  assertIris(agent);
+  const msgs = [
+    { role: 'system', content: IRIS_SYSTEM },
+    { role: 'user', content: `${ANCHOR}\n\n${request}` },
+  ];
+  for (const s of steps) {
+    msgs.push({ role: 'assistant', content: '', tool_calls: [{ type: 'function', function: s.call }] });
+    msgs.push({ role: 'tool', name: s.call.name, content: String(s.result) });
+  }
+  msgs.push({ role: 'assistant', content: reply });
   return { messages: msgs, tools: TOOLS.iris };
 }
 
@@ -278,10 +301,11 @@ examples.push(ex('iris', 'Set a recurring interval reminder every 3 hours to fee
   [{ name: 'task', arguments: { action: 'schedule', prompt: 'Feed the cat.', schedule_type: 'interval', schedule_value: '10800000', context_mode: 'group' } }],
   { reply: 'Set a cat-feeding reminder every 3 hours (interval 10800000ms).' }));
 
-// ---- E. Manage flows (single-shot: id ALREADY SUPPLIED by the orchestrator) ----
-// iris never lists-then-acts in one delegation. The orchestrator already ran the
-// list, picked the id, and hands it to iris in the request. Each example below
-// is ONE tool call with the id in the request.
+// ---- E. Manage flows (single-turn: id ALREADY SUPPLIED by the orchestrator) ----
+// Task/calendar/alarm manage stays id-supplied: the orchestrator already ran
+// the list, picked the id, and hands it to iris in the request. Each example
+// below is ONE tool call with the id in the request. (Email is the one noun
+// with in-dispatch chains — see the 2-turn section.)
 examples.push(ex('iris', 'Cancel the reminder task-cb-1788206097352-yadl0c — that is the 11:30 AM "Take xyz medication" daily reminder.',
   [{ name: 'task', arguments: { action: 'cancel', task_id: 'task-cb-1788206097352-yadl0c' } }],
   { results: ['Task task-cb-1788206097352-yadl0c cancelled.'],
@@ -695,14 +719,14 @@ examples.push(ex('iris', "Show me emails from the last 24 hours.",
   [{ name: 'email', arguments: { action: 'read', since: '2026-08-30T14:05:00', limit: 50 } }],
   { results: ['3 emails:\n1. 2026-08-31T09:12 sarah@acme.io | "Re: Q4 budget approval needed"\n2. 2026-08-31T08:40 newsletter@hackernews.com | "HN Weekly"\n3. 2026-08-30T17:55 billing@stripe.com | "Invoice #4421 paid"'],
     reply: '3 emails in the last 24h: Sarah (budget sign-off), HN Weekly (newsletter), Stripe (paid receipt).' }));
-examples.push(ex('iris', "Open the email from Jason about the NDA.",
-  [{ name: 'email', arguments: { action: 'read', search: 'from:jason NDA', limit: 10 } }],
-  { results: ['1 email:\n1. 2026-08-30T14:20 jason@partnerco.com | "Action required: sign the NDA" (id email-4f2a)'],
-    reply: 'Found Jason\'s NDA email (email-4f2a, Aug 30). Want me to fetch the full body?' }));
+// (The old "Open the email from Jason about the NDA" row lived here — a bare
+// read + "want me to fetch the full body?" It taught stopping after the read,
+// which the maxIterations 3 contract replaces: that request now chains
+// read→get, covered by the 2-turn section below.)
 examples.push(ex('iris', "Get me the FULL body of email email-4f2a (Jason's NDA email).",
   [{ name: 'email', arguments: { action: 'get', email_id: 'email-4f2a' } }],
-  { results: ['From: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-08-30T14:20\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason'],
-    reply: 'Jason asks you to review and sign the attached NDA to move the partnership forward. Full body fetched.' }));
+  { results: ['Email content:\nFrom: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-08-30T14:20\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason\n\nAttachments (1): NDA-partnership.pdf (245 KB)'],
+    reply: 'Jason asks you to review and sign the attached NDA (NDA-partnership.pdf, 245 KB) to move the partnership forward. Full body fetched.' }));
 examples.push(ex('iris', "Refresh my email cache.",
   [{ name: 'email', arguments: { action: 'refresh' } }],
   { results: ['Email cache refreshed.'],
@@ -725,6 +749,88 @@ examples.push(ex('iris', "Send a note to the team: standup is back to 10am Monda
   [{ name: 'email', arguments: { action: 'send', to: 'team@acme.io', subject: 'Standup back to 10am Monday', body: 'Heads-up: standup is back to 10am Monday.\n\n— Dominic' } }],
   { results: ['Email sent to team@acme.io ("Standup back to 10am Monday").'],
     reply: 'Sent the standup update to the team (team@acme.io).' }));
+
+// ---- T2. Email: download (single-turn — the brief carries id + filename) --
+// The orchestrator already resolved both facts (its own read + get dispatches)
+// and hands them to iris, exactly like the manage flows above.
+examples.push(ex('iris', "Download the attachment NDA-partnership.pdf from the email email-4f2a (Jason's 'Action required: sign the NDA' email) and tell me where it lands.",
+  [{ name: 'email', arguments: { action: 'download', email_id: 'email-4f2a', filename: 'NDA-partnership.pdf' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf (NDA-partnership.pdf, 251234 bytes). Use this path for any further work on the file.'],
+    reply: "Saved NDA-partnership.pdf from Jason's NDA email (email-4f2a) to /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf." }));
+examples.push(ex('iris', "Save the attachment Q4-budget-v2.xlsx from email email-9b2f (Sarah's Q4 budget email) — give me the file path.",
+  [{ name: 'email', arguments: { action: 'download', email_id: 'email-9b2f', filename: 'Q4-budget-v2.xlsx' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.'],
+    reply: "Saved Q4-budget-v2.xlsx from Sarah's budget email (email-9b2f) to /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx." }));
+examples.push(ex('iris', "Download invoice-4421.pdf from email email-7d3e — the Stripe 'Invoice #4421 paid' receipt — so I have a local copy.",
+  [{ name: 'email', arguments: { action: 'download', email_id: 'email-7d3e', filename: 'invoice-4421.pdf' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-7d3e_invoice-4421.pdf (invoice-4421.pdf, 96500 bytes). Use this path for any further work on the file.'],
+    reply: 'Saved invoice-4421.pdf from the Stripe receipt (email-7d3e) to /home/dominic/Warden/data/email-attachments/email-7d3e_invoice-4421.pdf.' }));
+examples.push(ex('iris', "Pull the shipping label label-48215.pdf out of email email-a1b2 (the orders@shop.io 'Order #48215 shipped' email) and save it.",
+  [{ name: 'email', arguments: { action: 'download', email_id: 'email-a1b2', filename: 'label-48215.pdf' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-a1b2_label-48215.pdf (label-48215.pdf, 33400 bytes). Use this path for any further work on the file.'],
+    reply: 'Saved label-48215.pdf from the Order #48215 email (email-a1b2) to /home/dominic/Warden/data/email-attachments/email-a1b2_label-48215.pdf.' }));
+
+// ---- U. Email 2-turn chains (read→get, get→download — the maxIterations 3
+// contract: call 2 must use an id/filename call 1's result returned) --------
+examples.push(exMulti('iris', 'Find the email from Jason about the NDA and show me the full body.',
+  [
+    { call: { name: 'email', arguments: { action: 'read', search: 'from:jason NDA', limit: 10 } },
+      result: '1 email:\n1. 2026-08-30T14:20 jason@partnerco.com | "Action required: sign the NDA" (id email-4f2a)' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-4f2a' } },
+      result: 'Email content:\nFrom: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-08-30T14:20\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason\n\nAttachments (1): NDA-partnership.pdf (245 KB)' },
+  ],
+  "Jason's NDA email (email-4f2a, Aug 30): review and sign the attached NDA (NDA-partnership.pdf, 245 KB) to move the partnership forward."));
+examples.push(exMulti('iris', "Look up Sarah's latest email about the Q4 budget and show me what she needs.",
+  [
+    { call: { name: 'email', arguments: { action: 'read', search: 'from:sarah Q4 budget', limit: 20 } },
+      result: '2 emails:\n1. 2026-08-31T09:12 sarah@acme.io | "Re: Q4 budget approval needed" (id email-9b2f)\n2. 2026-08-28T10:05 sarah@acme.io | "Q4 budget draft v2" (id email-9b1c)' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-9b2f' } },
+      result: 'Email content:\nFrom: sarah@acme.io\nSubject: Re: Q4 budget approval needed\nDate: 2026-08-31T09:12\n\nHi Dominic,\n\nThe Q4 budget needs your sign-off by Friday — draft v2 is attached. Let me know if anything looks off.\n\n— Sarah\n\nAttachments (1): Q4-budget-v2.xlsx (47 KB)' },
+  ],
+  'Sarah (email-9b2f) needs the Q4 budget signed off by Friday; draft v2 (Q4-budget-v2.xlsx) is attached.'));
+examples.push(exMulti('iris', 'Get the full body of the email from billing@stripe.com about invoice #4421 and tell me the total.',
+  [
+    { call: { name: 'email', arguments: { action: 'read', search: 'from:billing 4421', limit: 10 } },
+      result: '1 email:\n1. 2026-08-30T17:55 billing@stripe.com | "Invoice #4421 paid" (id email-7d3e)' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-7d3e' } },
+      result: 'Email content:\nFrom: billing@stripe.com\nSubject: Invoice #4421 paid\nDate: 2026-08-30T17:55\n\nHi Dominic,\n\nYour invoice #4421 was paid — total $199.00. A PDF copy is attached.\n\n— Stripe Billing\n\nAttachments (1): invoice-4421.pdf (94 KB)' },
+  ],
+  'Stripe invoice #4421 (email-7d3e) is paid — total $199.00, PDF copy attached (invoice-4421.pdf).'));
+examples.push(exMulti('iris', "Download the NDA attachment from email email-4f2a (Jason's NDA email).",
+  [
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-4f2a' } },
+      result: 'Email content:\nFrom: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-08-30T14:20\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason\n\nAttachments (1): NDA-partnership.pdf (245 KB)' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-4f2a', filename: 'NDA-partnership.pdf' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf (NDA-partnership.pdf, 251234 bytes). Use this path for any further work on the file.' },
+  ],
+  'Saved NDA-partnership.pdf from email-4f2a to /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf (251234 bytes).'));
+examples.push(exMulti('iris', "Save the budget spreadsheet attached to email email-9b2f (Sarah's Q4 budget email) — I need the file.",
+  [
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-9b2f' } },
+      result: 'Email content:\nFrom: sarah@acme.io\nSubject: Re: Q4 budget approval needed\nDate: 2026-08-31T09:12\n\nHi Dominic,\n\nThe Q4 budget needs your sign-off by Friday — draft v2 is attached. Let me know if anything looks off.\n\n— Sarah\n\nAttachments (1): Q4-budget-v2.xlsx (47 KB)' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-9b2f', filename: 'Q4-budget-v2.xlsx' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.' },
+  ],
+  "Saved Q4-budget-v2.xlsx from Sarah's email (email-9b2f) to /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx."));
+examples.push(exMulti('iris', "Email email-11d0 from support@saas.io has the maintenance plan attached — download just the plan PDF, not the ticket transcript.",
+  [
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-11d0' } },
+      result: 'Email content:\nFrom: support@saas.io\nSubject: Maintenance window Sunday\nDate: 2026-08-26T15:40\n\nHi Dominic,\n\nSunday\'s maintenance window runs 02:00–04:00. The plan and the ticket transcript are attached.\n\n— Support\n\nAttachments (2): maintenance-plan.pdf (210 KB), ticket-4421-transcript.txt (6 KB)' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-11d0', filename: 'maintenance-plan.pdf' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-11d0_maintenance-plan.pdf (maintenance-plan.pdf, 215040 bytes). Use this path for any further work on the file.' },
+  ],
+  'Saved maintenance-plan.pdf from the support email (email-11d0) to /home/dominic/Warden/data/email-attachments/email-11d0_maintenance-plan.pdf.'));
+// The full 3-call chain — the outer edge of the maxIterations: 3 contract.
+examples.push(exMulti('iris', "Find Sarah's Q4 budget email, open it, and save the attached spreadsheet.",
+  [
+    { call: { name: 'email', arguments: { action: 'read', search: 'from:sarah Q4 budget', limit: 20 } },
+      result: '2 emails:\n1. 2026-08-31T09:12 sarah@acme.io | "Re: Q4 budget approval needed" (id email-9b2f)\n2. 2026-08-28T10:05 sarah@acme.io | "Q4 budget draft v2" (id email-9b1c)' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-9b2f' } },
+      result: 'Email content:\nFrom: sarah@acme.io\nSubject: Re: Q4 budget approval needed\nDate: 2026-08-31T09:12\n\nHi Dominic,\n\nThe Q4 budget needs your sign-off by Friday — draft v2 is attached. Let me know if anything looks off.\n\n— Sarah\n\nAttachments (1): Q4-budget-v2.xlsx (47 KB)' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-9b2f', filename: 'Q4-budget-v2.xlsx' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.' },
+  ],
+  "Saved Q4-budget-v2.xlsx from Sarah's budget reply (email-9b2f) to /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx."));
 
 // ---- V. Iris no-op / edge cases ----------------------------------------
 examples.push(exText('iris', 'Summarize the email from my lawyer about the contract.',
@@ -951,7 +1057,7 @@ examples.push(ex('iris', 'Check whether I have any important emails in the inbox
 examples.push(ex('iris', 'Find the email for order #48215 and pull the tracking info out of it.',
   [{ name: 'email', arguments: { action: 'read', search: '48215', limit: 10 } }],
   { results: ['1 email:\n1. 2026-08-30T11:00 orders@shop.io | "Order #48215 shipped" — tracking 1Z999AA10123456784'],
-    reply: 'Found order #48215 (orders@shop.io, Aug 30): tracking number 1Z999AA10123456784. Want me to fetch the full body?' }));
+    reply: 'Found order #48215 (orders@shop.io, Aug 30): tracking number 1Z999AA10123456784.' }));
 
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -960,8 +1066,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   writeFileSync(new URL('./toolcall-sft.jsonl', import.meta.url), lines.join('\n') + '\n');
   console.log(`Wrote ${all.length} examples to toolcall-sft.jsonl`);
 
-  // Per-agent + per-target counts.
-  const byAgent = {}, byTarget = {};
+  // Per-agent + per-target + per-turn counts.
+  const byAgent = {}, byTarget = {}, byTurns = {};
   for (const e of all) {
     const sys = e.messages[0].content;
     const agent = sys.startsWith('You are Iris') ? 'iris'
@@ -971,9 +1077,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const a = e.messages.find(m => m.role === 'assistant');
     const key = a?.tool_calls ? a.tool_calls.map(t => t.function.name).join('+') : 'text-only';
     byTarget[key] = (byTarget[key] || 0) + 1;
+    const turns = e.messages.filter(m => m.role === 'assistant' && m.tool_calls?.length).length;
+    byTurns[turns] = (byTurns[turns] || 0) + 1;
   }
   console.log('By agent:', byAgent);
   console.log('By target:', byTarget);
+  console.log('By tool-call turns:', byTurns);
 }
 
 export { examples };

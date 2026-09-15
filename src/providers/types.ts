@@ -24,7 +24,9 @@ export interface Email {
   folder: string;
   isRead: boolean;
   snippet?: string; // Preview text (first ~100 chars of body)
-  attachments?: Array<{ filename: string; size: number; contentType: string }>;
+  // `id` is the provider's attachment handle (Gmail attachmentId) — needed to
+  // download the file. IMAP/password accounts don't populate attachments yet.
+  attachments?: Array<{ id?: string; filename: string; size: number; contentType: string }>;
 }
 
 export type OAuthTokens = {
@@ -81,6 +83,12 @@ export interface OAuthProvider {
     token: string,
     emailId: string,
   ): Promise<Email | null>;
+  // Downloads one attachment's bytes by the handle from Email.attachments.
+  downloadAttachment?(
+    token: string,
+    emailId: string,
+    attachmentId: string,
+  ): Promise<{ data: Buffer; size: number }>;
   sendEmail(
     token: string,
     to: string,

@@ -25,7 +25,7 @@ export interface EmailMessage {
   folder?: string;
   isRead?: boolean;
   snippet?: string;
-  attachments?: Array<{ filename: string; size: number; contentType: string }>;
+  attachments?: Array<{ id?: string; filename: string; size: number; contentType: string }>;
 }
 
 export interface SendEmailResult {
@@ -62,7 +62,7 @@ export async function fetchEmails(
       subject: e.subject,
       date: e.date,
       body: e.body,
-      attachments: [],
+      attachments: e.attachments ?? [],
     }));
   }
 
@@ -175,7 +175,9 @@ export async function getEmailById(
     const provider: OAuthProvider = providerName === 'google'
       ? new GoogleProvider()
       : new MicrosoftProvider();
-    return await provider.getEmailById?.(token, emailId) ?? null;
+    const email = await provider.getEmailById?.(token, emailId) ?? null;
+    if (email) email.attachments = email.attachments ?? [];
+    return email;
   }
 
   // IMAP path — fetch a single message by UID and extract its body. The
@@ -231,6 +233,45 @@ export async function getEmailById(
     logger.error({ err, accountId, emailId }, 'IMAP get_email error');
     throw new Error(`Failed to fetch email: ${err.message}`);
   }
+}
+
+/**
+ * Download one attachment's bytes. `attachmentId` is the handle from the
+ * email's `attachments` array (from getEmailById); `filename` is an
+ * alternative way to pick it when the id wasn't carried through.
+ */
+export async function downloadEmailAttachment(
+  accountId: string,
+  emailId: string,
+  attachmentId?: string,
+  filename?: string,
+): Promise<{ filename: string; contentType: string; data: Buffer } | null> {
+  const email = await getEmailById(accountId, emailId);
+  if (!email) throw new Error('Email not found');
+  const atts = email.attachments ?? [];
+  if (atts.length === 0) throw new Error('This email has no attachments');
+  const att = (attachmentId ? atts.find((a) => a.id === attachmentId) : undefined)
+    ?? (filename ? atts.find((a) => a.filename === filename) : undefined)
+    ?? (atts.length === 1 ? atts[0] : undefined);
+  if (!att) {
+    throw new Error(`Attachment not found in email ${emailId}. Available: ${atts.map((a) => a.filename).join(', ')}`);
+  }
+  if (!att.id) throw new Error(`Attachment "${att.filename}" has no download handle (IMAP accounts don't support attachment download yet)`);
+
+  const account = getEmailAccount(accountId);
+  if (!account) throw new Error('Email account not found');
+  if (account.oauth_account_id) {
+    const { token, provider: providerName } = await refreshTokenIfNeeded(account.oauth_account_id);
+    const provider: OAuthProvider = providerName === 'google'
+      ? new GoogleProvider()
+      : new MicrosoftProvider();
+    if (!provider.downloadAttachment) {
+      throw new Error(`Attachment download not supported for ${providerName} accounts yet`);
+    }
+    const { data } = await provider.downloadAttachment(token, emailId, att.id);
+    return { filename: att.filename, contentType: att.contentType, data };
+  }
+  throw new Error('Attachment download requires an OAuth-linked email account');
 }
 
 /**

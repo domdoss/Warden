@@ -10,7 +10,12 @@ import path from 'node:path';
 
 register('./tool_schema_loader.mjs', import.meta.url);
 
-const ROOT = '/opt/Warden/dist/agent-runner';
+// Default: the LIVE compiled registry (dist/agent-runner — build first with
+// `npm run build:agent-runner`). AR_DIST=<dir> overrides it so schemas can be
+// dumped from a scratch compile (e.g. tsc --outDir /tmp/.../dist/agent-runner)
+// without rebuilding the dist the running Warden serves from. The dir must end
+// in dist/agent-runner — tool_schema_loader.mjs stubs index.js by that path.
+const ROOT = process.env.AR_DIST || '/opt/Warden/dist/agent-runner';
 const url = (rel) => pathToFileURL(path.resolve(ROOT, rel)).href;
 
 const { registry } = await import(url('tool-registry.js'));
