@@ -12,7 +12,7 @@
 // import './slack.js';
 
 // telegram
-// import './telegram.js';  // removed 2026-09-15: not wanted on this install — Dom
+import './telegram.js';
 
 // whatsapp
 // import './whatsapp.js';
