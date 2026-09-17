@@ -254,7 +254,13 @@ async function takeAria(page: Page): Promise<{ key: string; text: string; title:
 function formatSnapshot(s: { text: string; title: string; url: string }): string {
     const header = `Page: ${s.title || '(untitled)'}\nURL: ${s.url}\n`;
     if (s.text.length > SNAPSHOT_MAX_CHARS) {
-        return `${header}${s.text.slice(0, SNAPSHOT_MAX_CHARS)}\n[... snapshot truncated at ${SNAPSHOT_MAX_CHARS} chars — interact with the elements above or navigate/scroll to see more]`;
+        // Keep the head AND the tail: the tail holds end-of-page controls (a
+        // submit/post button in a composer footer) that the head-only slice was
+        // dropping, which sent agents hunting via browser_evaluate for a button
+        // they'd have seen refs for (Reddit shreddit composer, 2026-09-17).
+        const headChars = Math.floor(SNAPSHOT_MAX_CHARS * 0.8);
+        const tailChars = SNAPSHOT_MAX_CHARS - headChars;
+        return `${header}${s.text.slice(0, headChars)}\n[... ${s.text.length - SNAPSHOT_MAX_CHARS} chars elided (middle of page) — the text below is the END of the page ...]\n${s.text.slice(-tailChars)}`;
     }
     return header + s.text;
 }
