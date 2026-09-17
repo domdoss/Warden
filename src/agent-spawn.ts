@@ -510,6 +510,13 @@ export interface LiveJob {
   lastAction: string;
   elapsed: number;   // seconds since job start
   idle: number;      // seconds since last tool call
+  // Live output scrollby — tail of the job's most recent streamed
+  // thinking/content (runner keeps them capped on the job record) plus the
+  // ms timestamp of the last chunk, so Oversight can show what the model is
+  // producing right now and distinguish "actively generating" from a stall.
+  streamThinking?: string;
+  streamContent?: string;
+  streamAt?: number;
 }
 let liveJobs: LiveJob[] = [];
 export function getLiveJobs(): LiveJob[] {
