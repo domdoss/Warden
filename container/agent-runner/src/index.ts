@@ -339,19 +339,6 @@ const RUNAWAY_CALL_LIMIT = 15;
 const RECENT_CALL_SIG_DEPTH = 6;
 const FORCED_NO_TOOL_MAX = 3;   // #3b: cap on retrying a tool-free round that keeps returning phantom tool_calls
 
-// Verifier sub-agent: fresh-context second model judges SUCCESS/FAIL after
-// effectful tools. Opt-in via env var (default OFF — costs an extra model call
-// per turn, worth it for weak local models that rationalize self-checks).
-const AGENT_VERIFIER_SUBAGENT = process.env.AGENT_VERIFIER_SUBAGENT === '1' || process.env.AGENT_VERIFIER_SUBAGENT === 'true';
-const VERIFIER_MAX_ROUNDS = 2;
-const VERIFIER_EFFECTFUL_TOOLS = new Set<string>([
-    'Write', 'Edit', 'NotebookEdit', 'Bash', 'Write_Special', // file/effect mutations
-    'send_email', 'reply_email', 'bulk_email',                  // email sends
-    'schedule_task', 'cancel_task', 'pause_task', 'resume_task', 'update_task', // scheduler mutations
-    'install_mcp_server', 'uninstall_mcp_server',
-    'open_app', 'desktop_click', 'desktop_type',               // desktop actions
-    'atlas', 'iris',                                // sub-agent delegates (they perform actions)
-]);
 
 // Build a one-line signature of a tool call for the runaway / circling detectors.
 function callSignature(toolName: string, args: any): string {
@@ -858,7 +845,7 @@ RULES
 
 OUTPUT
 One plain-text line naming the ids returned, or the result found.`,
-        toolsets: ['alarms', 'tasks', 'calendar', 'email'],
+        toolsets: ['iris-core'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
         // structured tool use (so Iris reliably calls the email/task/calendar/alarm
         // tools rather than emitting free text and skipping the tool call).
@@ -1565,6 +1552,14 @@ function selectAtlasTools(allTools: any[], task: string): any[] {
     }
 }
 
+// Per-delegate concurrency cap: at most this many jobs of the SAME delegate
+// (e.g. 3 vulkans, 3 atlases) run at once. This is a resource/cost safety
+// control, distinct from the same-file backstop below (which prevents two
+// jobs racing one file, regardless of delegate count). Removing the old
+// one-atlas-at-a-time gate (this session) left concurrency fully uncapped —
+// this restores a ceiling without going back to serial-only.
+const MAX_CONCURRENT_PER_DELEGATE = 3;
+
 // Spawn a background job for an async delegate (atlas or vulkan). Used by
 // the delegate tool handlers and by the "go" exit from direct Atlas
 // passthrough. Returns the job id.
@@ -1584,6 +1579,19 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         log(`[dedup] refusing duplicate dispatch of ${existingId} (${delegate}, already running ${elapsed}s)`);
         if (urgent && !dup.urgent) { dup.urgent = true; log(`[dedup] promoted ${existingId} to urgent`); }
         return existingId;
+    }
+    // Concurrency cap: MAX_CONCURRENT_PER_DELEGATE jobs of this delegate
+    // already running — queue behind the oldest one rather than spawn a 4th.
+    // Reuses the same pendingFollowups/drainFollowups mechanism the same-file
+    // backstop below uses, so a queued job fires automatically the moment a
+    // slot frees up.
+    const sameDelegateRunning = [...backgroundJobs.values()].filter(j => j.agent === delegate && j.status === 'running');
+    if (sameDelegateRunning.length >= MAX_CONCURRENT_PER_DELEGATE) {
+        const oldest = sameDelegateRunning.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b));
+        oldest.pendingFollowups.push({ delegate, task, urgent });
+        if (urgent && !oldest.urgent) oldest.urgent = true;
+        log(`[dedup] concurrency-cap: ${MAX_CONCURRENT_PER_DELEGATE} ${delegate} jobs already running — queued behind ${oldest.agent}-${oldest.shortId}; will spawn when it finishes.`);
+        return `${oldest.agent}-${oldest.shortId}`;
     }
     // Parallel atlas/vulkan jobs are allowed (cloud seats and local toolcall
     // seats both run concurrent; same local model = one loaded copy, Ollama
@@ -1723,7 +1731,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         }));
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
-    // ensureWatchdogTicker(context); // SUPERVISOR DISABLED 2026-08-29: false off-track flags killed healthy atlas read/idle phases (atlas-p7th). Commented out at every arming site; reinstated only when the supervisor is rebuilt to actually distinguish progress from veering.
     emitJobsStatus();
     return jobId;
 }
@@ -1752,9 +1759,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
 // fully offline is just a `supervisor:model` DB flip to the Granite model.
 
 const WATCHDOG_KEEP_ALIVE_S = 60;       // keep the small model resident briefly; at a 10-min cadence it unloads between ticks (no VRAM pinning)
-const WATCHDOG_FETCH_TIMEOUT_MS = 15_000;
-const WATCHDOG_MIN_JOB_AGE_S = 300;     // never flag a job younger than this — slow local-model warmup (zero calls / idle) reads as "stuck" otherwise
-const DEFAULT_WATCHDOG_TICK_MS = 600_000; // default self-audit cadence (10 min). The live interval is the dashboard `supervisor:interval_ms` setting (SUPERVISOR_INTERVAL_MS); this is the fallback.
 
 // Churn steering is the SUPERVISOR LLM's judgment, not a host-code counter.
 // There is no RESEARCH_TOOLS call-count detector: a fixed threshold cannot
@@ -1768,7 +1772,6 @@ const DEFAULT_WATCHDOG_TICK_MS = 600_000; // default self-audit cadence (10 min)
 // only code-enforced stop is the 3h wall-clock (WALL_CLOCK_MS), a last resort.
 // The decision to steer or stop is always the orchestrator's; code only ticks.
 const CHURN_EXEMPT_AGENTS = new Set(['artemis', 'sentry']); // read-only by design — never flag them for reading/probing
-const WATCHDOG_NUDGE_COOLDOWN_S = 1200; // min seconds between supervisor flags on the same job (20 min — at a 10-min cadence the old 120s was always satisfied, so a flagged job was re-flagged on the next tick before the orchestrator could act)
 
 // Write/edit tools whose `args` carry a file_path — used to render the OFF-TASK
 // label (writes landing outside the task's deliverable directory, e.g. throwaway
@@ -1884,94 +1887,6 @@ function writtenFilesSummary(files: WrittenFile[]): string {
 // senses and flags. CHURN_EXEMPT_AGENTS below is still used to skip flagging
 // read-only auditors.)
 
-// JSON schema handed to Ollama `format` to constrain decoding to valid JSON
-// with the exact enums — the single biggest lever for a small local model.
-// Used on the local Ollama path only; the OpenAI-style cloud proxy omits it.
-const WATCHDOG_FORMAT = {
-    type: 'object',
-    properties: {
-        complete: { type: 'boolean' },
-        jobs: {
-            type: 'array',
-            items: {
-                type: 'object',
-                properties: {
-                    id: { type: 'string' },
-                    status: { type: 'string', enum: ['ok', 'crashed', 'off_rails'] },
-                    reason: { type: 'string' },
-                },
-                required: ['id', 'status'],
-            },
-        },
-        nudge: {
-            type: 'array',
-            items: {
-                type: 'object',
-                properties: {
-                    id: { type: 'string' },
-                    text: { type: 'string' },
-                },
-                required: ['id', 'text'],
-            },
-        },
-        stuck: {
-            type: 'array',
-            items: {
-                type: 'object',
-                properties: {
-                    id: { type: 'string' },
-                    reason: { type: 'string' },
-                },
-                required: ['id', 'reason'],
-            },
-        },
-    },
-    required: ['complete', 'jobs'],
-};
-
-// Supervisor system prompt, aligned to IBM's Granite 4.0 prompt-engineering
-// guide: plain direct prose, explicit output constraint, no invented section
-// scaffolding. (The chat template itself is applied by Ollama; the JSON shape
-// is additionally enforced by the `format` schema on the local path.)
-const WATCHDOG_SYSTEM_PROMPT = `You are the Warden supervisor watchdog. You audit running background jobs about every 10 minutes and flag only obvious loops or veering for the orchestrator. You never start jobs.
-
-Each job shows its task, runtime, and recent tool calls. Decide each job's status:
-- ok: healthy or making progress. Mark ok when uncertain.
-- crashed: repeating the same failing call (a call line ending in → ERROR) with no change in approach.
-- off_rails: recent calls serve a goal unrelated to the task.
-
-Reading is normal, not a problem. These jobs run large local models where one task takes 10 to 30 minutes, mostly reading. Reading many files, re-reading a file, a long read streak with no write yet, high call counts, long elapsed time, and idle gaps between calls are all normal progress. The only read pattern that is a problem is a verbatim repeat of the SAME call with the SAME arguments many times in a row, with no new file and no write between the repeats. Never flag a job for being slow or for reading.
-
-Each recent-call line ends with its age, e.g. · 3m ago. Use it to tell progress from a loop: the same-looking call spread minutes apart is a slow read in progress, not a loop. A true loop is the same call bunched within a few seconds.
-
-crashed and off_rails are advisory; the job keeps running.
-
-Two actions, both keeping the job running:
-- nudge: one short instruction naming what to commit to next. Example: "Write the file now with the photo URLs you already have."
-- stuck: flag an obvious loop — the same lookup or file repeated verbatim many times with no progress.
-
-Do not start new jobs or follow-up steps — that is the orchestrator's role.
-
-OFF-TASK on a job line means recent writes went to scratch (/tmp) and none to the deliverable — a side-quest. Flag it and name the deliverable to return to. A Write that builds the deliverable never earns this label.
-
-→ ERROR on a call line means that call failed. Several on the same action mean the job is stuck retrying — flag it.
-
-Set complete true when the user's whole ask is achieved.
-
-Output the JSON verdict object only.
-{"complete": false, "jobs": [{"id": "atlas-abcd", "status": "ok", "reason": ""}], "nudge": [], "stuck": []}`;
-
-interface WatchdogVerdict {
-    complete?: boolean;
-    jobs?: { id?: string; status?: string; reason?: string }[];
-    nudge?: { id?: string; text?: string }[];
-    stuck?: { id?: string; reason?: string }[];
-    // delegate is intentionally absent — the supervisor no longer delegates
-    // (only the orchestrator spawns jobs). Kept tolerant at parse time, so a
-    // model that still emits it is simply ignored.
-    delegate?: { agent?: string; task?: string }[];
-}
-
 // Tolerant JSON extraction: strip code fences / prose, pull the first balanced
 // object. The local path has Ollama `format` enforcing valid JSON, but the
 // cloud-proxy path does not, so this stays as the safety net.
@@ -2001,328 +1916,6 @@ function extractJsonObject(text: string): any | null {
         }
     }
     return null;
-}
-
-function watchdogNote(text: string, toolContext: any): void {
-    try {
-        writeCallback('progress_event', {
-            chatJid: toolContext.chatJid,
-            groupFolder: toolContext.groupFolder,
-            text,
-            timestamp: new Date().toISOString(),
-        });
-    } catch (err: any) {
-        log(`[watchdog] progress_event failed: ${err?.message ?? err}`);
-    }
-}
-
-// Hand a supervisor judgment about a STILL-RUNNING job to the orchestrator as
-// an urgent inbox item (kind: 'supervisor_flag'). The orchestrator — not the
-// watchdog — decides what to do: steer it (nudge_agent), kill it (stop_agent),
-// or let it run. The watchdog only senses; the orchestrator acts. This is the
-// user's design: "the supervisor should pass it [to] the orch who should nudge
-// it based on what was happening." The flag is urgent so it interrupts a
-// mid-turn orchestrator or wakes an idle one. The prepared message (carried in
-// fullResult) names the job, the supervisor's reason + suggested redirect, and
-// the recent activity, then lays out the orchestrator's three options. The
-// shared nudge cooldown (watchdogNudgedAt) is set here so the watchdog does not
-// re-flag the same job every tick while the orchestrator is still deciding.
-// supervisorNudges is NOT incremented here — it counts orchestrator-delivered
-// nudges (nudge_agent), which is the persistence ceiling the abort backstop
-// keys on.
-function flagJobForOrchestrator(job: BackgroundJob, id: string, reason: string, suggested: string, toolContext: any): void {
-    const recent = job.activityLog.slice(-8)
-        .map(a => `  • ${a.tool}(${shortArgs(a.args)})${looksLikeError(a.result) ? ' → ERROR' : ''} · ${fmtCallAge(a.t, Date.now())}`)
-        .join('\n');
-    const age = Math.round((Date.now() - job.startedAt) / 1000);
-    const msg =
-        `The supervisor watchdog flagged your running job ${id} (${job.agent}, ${age}s elapsed, ${job.toolCallCount} tool calls).\n` +
-        `Task: "${job.task.slice(0, 200)}"\n` +
-        `Supervisor's reason: ${reason || '(no reason given)'}\n` +
-        `Supervisor's suggested redirect: ${suggested || '(none)'}\n` +
-        `Recent calls:\n${recent || '  • (none yet)'}\n\n` +
-        `Decide now based on what it is actually doing:\n` +
-        `- nudge_agent({job_id: "${id}", message: "<your own short instruction naming what it should commit to next>"}) — redirect it without killing it.\n` +
-        `- stop_agent({job_id: "${id}"}) — kill it if the work is wrong; then re-delegate ONCE with a corrected brief if the task still needs doing.\n` +
-        `- Do nothing — only if the supervisor is wrong and the job is legitimately on track.\n` +
-        `The supervisor re-flags if it stays off-track. You may nudge it as many times as it takes — the runner NEVER auto-stops on a nudge count. When YOU decide the job is not recovering, call stop_agent yourself.`;
-    inbox.push({
-        jobId: id,
-        agent: job.agent,
-        task: job.task,
-        fullResult: msg,
-        status: 'done',
-        urgent: true,
-        kind: 'supervisor_flag',
-    });
-    job.watchdogNudgedAt = Date.now();
-    log(`[watchdog] flagged ${id} → orchestrator (orchestrator nudges so far ${job.supervisorNudges}): ${(reason || suggested).slice(0, 140)}`);
-    watchdogNote(`Supervisor flagged ${id} for you to review: ${(reason || suggested).slice(0, 160)}`, toolContext);
-}
-
-// One supervisor watchdog tick. `ask` is the original user request (one line),
-// captured by the caller from the conversation. Runs a single tool-less LLM
-// call and executes the JSON verdict against the running jobs.
-async function runSupervisorWatchdog(opts: { tickNum: number; ask: string; toolContext: any }): Promise<void> {
-    // SUPERVISOR DISABLED 2026-08-29 — hard no-op. A tick should never fire
-    // (ensureWatchdogTicker is no-op'd); this guarantees no flag is ever raised
-    // to the orchestrator even if a stale ticker somehow persists. The `opts`
-    // destructure is left unreached on purpose.
-    return;
-    const { tickNum, ask, toolContext } = opts;
-    if (!SUPERVISOR_ENABLED) return; // supervisor Off — no self-audit
-    const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
-    if (running.length === 0) return; // jobs finished during the tick window
-
-    // ── Steering is the supervisor LLM's decision, not host automation ──────
-    // A model-judged "crashed" verdict is advisory-only by design (a cloud API
-    // stall looks identical to a dead job from the one-line summary). Churn
-    // steering is likewise decided by the SUPERVISOR LLM (verdict.nudge[] /
-    // verdict.stuck[]), not by host-code counters: a fixed call-count cannot
-    // tell a legitimate research-first read pass from a grind (it killed atlas
-    // mid-Edit today for downloading images via Bash). Host code holds NO
-    // persistence ceiling: a supervisor nudge/stuck verdict is handed to the
-    // orchestrator as an urgent inbox flag (flagJobForOrchestrator) — the
-    // orchestrator decides whether to nudge_agent, stop_agent, or let it run.
-    // nudge_agent increments supervisorNudges (informational — how many times
-    // the orchestrator has steered); the orchestrator may nudge indefinitely
-    // and the runner NEVER auto-stops on a nudge count. When the orchestrator
-    // decides the job is not recovering, it calls stop_agent itself. The only
-    // code-enforced stop is the wall-clock safety net.
-
-    const jobLines = running.map(j => {
-        const now = Date.now();
-        const elapsed = Math.round((now - j.startedAt) / 1000);
-        const sinceLast = Math.round((now - j.lastActionAt) / 1000);
-        const warming = elapsed < WATCHDOG_MIN_JOB_AGE_S && j.toolCallCount === 0 ? ' — WARMING UP (model loading)' : '';
-        // Recent tool-call sequence so the supervisor can judge PROGRESS across
-        // turns — wasted turns = repeating the same lookup, circling, or
-        // searching/reading with no action toward the deliverable. The last
-        // action alone can't show this; the sequence can.
-        const recent = j.activityLog.slice(-8)
-            .map(a => `  • ${a.tool}(${shortArgs(a.args)})${looksLikeError(a.result) ? ' → ERROR' : ''} · ${fmtCallAge(a.t, now)}`)
-            .join('\n');
-        // OFF-TASK SIGNAL (label only): among recent calls, count Write/Edit
-        // calls whose file_path lands in a THROWAWAY/scratch location (/tmp,
-        // /var/tmp, /dev/shm) versus a real workspace path. The canonical case
-        // is a job that writes several /tmp solver scripts while the deliverable
-        // sits untouched — that reads as "busy committing" without this. We
-        // classify by scratch-vs-workspace rather than "inside the group folder"
-        // because groupFolder is a logical name ('owner'), not an absolute path,
-        // and the agent's deliverable path can be any absolute workspace path.
-        // The label fires only when the recent writes are ALL scratch with none
-        // in the workspace — a job writing its real deliverable never earns it.
-        // This is a fact the model judges; no host action keys off it.
-        const tail = j.activityLog.slice(-12);
-        let scratchWrites = 0;
-        let workspaceWrites = 0;
-        let firstScratchT: number | null = null;
-        for (const a of tail) {
-            if (!WRITE_PATH_TOOLS.has(a.tool)) continue;
-            const fp = filePathFromArgs(a.args);
-            if (!fp) continue;
-            const isScratch = fp.startsWith('/tmp/') || fp === '/tmp'
-                || fp.startsWith('/var/tmp/') || fp.startsWith('/dev/shm/');
-            if (isScratch) { scratchWrites++; if (firstScratchT === null) firstScratchT = a.t; }
-            else if (fp.startsWith('/')) workspaceWrites++; // absolute workspace path = on-task
-            // relative filenames are ambiguous (could be CWD = deliverable dir) — skip
-        }
-        const scratchS = firstScratchT ? Math.round((Date.now() - firstScratchT) / 1000) : 0;
-        const offTask = (scratchWrites >= 2 && workspaceWrites === 0)
-            ? ` — OFF-TASK: ${scratchWrites} recent write(s) to scratch (/tmp) over the last ${Math.round(scratchS / 60)} min, none to the workspace/deliverable`
-            : '';
-        return `- ${j.agent}-${j.shortId}: ${elapsed}s elapsed, ${j.toolCallCount} tool call(s), last action ${sinceLast}s ago (${j.lastAction})${warming}${offTask}. Task: "${j.task.slice(0, 160)}"\n  recent calls:\n${recent || '  • (none yet)'}`;
-    }).join('\n');
-
-    const userMsg =
-        `User request: ${ask.trim().slice(0, 400) || '(not available)'}\n\n` +
-        `Running background jobs (${running.length}):\n${jobLines}\n\n` +
-        `Output the JSON verdict.`;
-
-    const model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
-    if (!model) { log(`[watchdog] tick #${tickNum}: no supervisor/orchestrator model — skipping`); return; }
-
-    const apiProxyUrl = process.env.API_PROXY_URL || '';
-    const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
-    const chatUrl = apiProxyUrl ? `${apiProxyUrl}/api/chat` : `${ollamaUrl}/api/chat`;
-    const isLocal = !apiProxyUrl;
-
-    const body: any = {
-        model,
-        messages: [
-            { role: 'system', content: WATCHDOG_SYSTEM_PROMPT },
-            { role: 'user', content: userMsg },
-        ],
-        stream: false,
-        keep_alive: WATCHDOG_KEEP_ALIVE_S,
-        options: { temperature: 0, num_predict: 512, ...qwenSampling(model) },
-    };
-    if (isLocal) body.format = WATCHDOG_FORMAT;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), WATCHDOG_FETCH_TIMEOUT_MS);
-    let verdict: WatchdogVerdict | null = null;
-    let raw = '';
-    try {
-        const resp = await fetch(chatUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-        });
-        if (resp.ok) {
-            const data: any = await resp.json();
-            raw = typeof data?.message?.content === 'string' ? data.message.content
-                : typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content
-                : typeof data?.content === 'string' ? data.content : '';
-            verdict = extractJsonObject(raw);
-        } else {
-            log(`[watchdog] tick #${tickNum}: HTTP ${resp.status} ${resp.statusText}`);
-        }
-    } catch (err: any) {
-        log(`[watchdog] tick #${tickNum}: call failed — ${err?.message ?? err}`);
-    } finally {
-        clearTimeout(timer);
-    }
-
-    if (!verdict) {
-        log(`[watchdog] tick #${tickNum} (model=${model}): no JSON verdict (raw: "${raw.slice(0, 120)}") — staying silent`);
-        return;
-    }
-    log(`[watchdog] tick #${tickNum} (model=${model}) verdict: complete=${verdict.complete === true}, jobs=${verdict.jobs?.length ?? 0}, delegate=${verdict.delegate?.length ?? 0}, nudge=${verdict.nudge?.length ?? 0}, stuck=${verdict.stuck?.length ?? 0}`);
-
-    // ── Execute decisions (host code; the model never calls tools) ────────
-    const isComplete = verdict.complete === true;
-
-    if (isComplete) {
-        // Advisory only: do NOT stop running jobs. A false "complete" verdict
-        // would abort in-flight work — the supervisor judges from one-line
-        // summaries and gets this wrong. Warn the user; they stop_agent if
-        // they agree.
-        watchdogNote(`Supervisor: overall request may be complete — ${running.length} job(s) still running. Review and stop them if done.`, toolContext);
-        log(`[watchdog] complete advisory — not stopping ${running.length} job(s)`);
-        emitJobsStatus();
-        return; // advisory only — ignore any delegate
-    }
-
-    // ── jobs[].status crashed/off_rails: the supervisor judged a running job's
-    // trajectory wrong (crashing repeatedly, or serving a goal unrelated to its
-    // task). This is the same kind of flag as nudge/stuck and routes the SAME
-    // way — to the orchestrator via flagJobForOrchestrator, not to a kill. The
-    // watchdog never aborts on a trajectory judgment: a cloud API stall (90-120s
-    // of no tool calls while waiting on a cloud model response) looks identical
-    // to a dead job from the one-line summary, and aborting on that call killed
-    // good work before. The orchestrator decides; host code never auto-aborts
-    // on a nudge count — the orchestrator nudges as many times as it takes and
-    // calls stop_agent itself when it decides the job is not recovering.
-    const warned: string[] = [];
-    for (const jv of verdict.jobs || []) {
-        const id = String(jv.id || '');
-        const status = String(jv.status || '').toLowerCase();
-        const reason = String(jv.reason || '').trim();
-        if (status !== 'crashed' && status !== 'off_rails') {
-            const j = backgroundJobs.get(id);
-            if (j) j.watchdogBadStreak = 0;
-            continue;
-        }
-        const job = backgroundJobs.get(id);
-        if (!job) { log(`[watchdog] warn: no running job "${id}"`); continue; }
-        if (job.status !== 'running') { log(`[watchdog] warn: "${id}" already ${job.status}`); continue; }
-        if (CHURN_EXEMPT_AGENTS.has(job.agent)) continue;
-        const age = Math.round((Date.now() - job.startedAt) / 1000);
-        if (age < WATCHDOG_MIN_JOB_AGE_S) {
-            log(`[watchdog] warn: "${id}" ${age}s old (<${WATCHDOG_MIN_JOB_AGE_S}s, warming up) — not flagging`);
-            continue;
-        }
-        const sinceNudge = (Date.now() - job.watchdogNudgedAt) / 1000;
-        if (job.watchdogNudgedAt > 0 && sinceNudge < WATCHDOG_NUDGE_COOLDOWN_S) continue; // flagged recently
-        const label = status === 'off_rails'
-            ? `the job's recent calls serve a goal unrelated to its task${reason ? `: ${reason}` : ''}`
-            : `the job is repeating the same failing call with no change${reason ? `: ${reason}` : ''}`;
-        const suggested = status === 'off_rails'
-            ? `The job has wandered off its task — redirect it to the actual deliverable this turn and drop the side-quest it's on.`
-            : `The job is repeating a failing call — redirect it to change its approach or commit to the deliverable this turn.`;
-        flagJobForOrchestrator(job, id, label, suggested, toolContext);
-        warned.push(`${id} — ${reason || status}`);
-    }
-
-    // The supervisor NO LONGER DELEGATES. A 3b model spawning follow-up jobs
-    // was the root cause of the delegate-kill-respawn cycle: it hallucinated
-    // tasks (e.g. "web search, page fetching, and document conversion" — a
-    // fragment of atlas's own capability description, not a real task), and each
-    // spawn hit the one-atlas gate which ABORTS the running job ("new task
-    // supersedes") — murdering legitimate in-flight work to chase a
-    // hallucination. Delegation is the ORCHESTRATOR's job; the watchdog only
-    // senses and flags. verdict.delegate is ignored here, and the field is
-    // removed from the schema/prompt so the model does not waste output on it.
-    if ((verdict.delegate || []).length > 0) {
-        log(`[watchdog] ignoring ${verdict.delegate.length} delegate verdict(s) — the supervisor does not delegate; only the orchestrator spawns jobs`);
-    }
-
-    if (warned.length > 0) {
-        // Per-job watchdogNote already fired in flagJobForOrchestrator; this is
-        // the tick summary. The orchestrator (not the user) is the actor now.
-        log(`[watchdog] flagged ${warned.length} off_rails/crashed job(s) for orchestrator review: ${warned.join('; ')}`);
-    }
-    // (the "all on track" note is emitted after the nudge/stuck loops, so it
-    // only fires when NOTHING was flagged this tick — warned, nudge, or stuck.)
-
-    // ── Stuck + Nudge: the supervisor judged a running job off-track. The
-    // watchdog does NOT steer the job itself — it hands the judgment to the
-    // orchestrator as an urgent inbox flag (flagJobForOrchestrator), and the
-    // orchestrator decides: nudge_agent / stop_agent / let it run. Rate-limited
-    // per job by the shared nudge cooldown so a circling job is flagged once,
-    // not every tick. There is NO persistence ceiling: the orchestrator may
-    // nudge the same job indefinitely, and host code never auto-stops on a
-    // nudge count. Every step is a model judgment — the watchdog sensed, the
-    // orchestrator chose; when the orchestrator decides the job is not
-    // recovering, it calls stop_agent itself.
-    let flagged = 0;
-    for (const s of verdict.stuck || []) {
-        const id = String(s.id || '').trim();
-        const reason = String(s.reason || '').trim();
-        if (!id) continue;
-        const job = backgroundJobs.get(id);
-        if (!job) { log(`[watchdog] stuck: no running job "${id}" — skipping`); continue; }
-        if (job.status !== 'running') continue;
-        if (CHURN_EXEMPT_AGENTS.has(job.agent)) continue;
-        const age = Math.round((Date.now() - job.startedAt) / 1000);
-        if (age < WATCHDOG_MIN_JOB_AGE_S) continue;
-        const sinceNudge = (Date.now() - job.watchdogNudgedAt) / 1000;
-        if (job.watchdogNudgedAt > 0 && sinceNudge < WATCHDOG_NUDGE_COOLDOWN_S) continue; // flagged recently
-        const suggested = `The job is making no progress across recent turns — ${reason || 'it is repeating the same calls without moving toward the deliverable.'} Redirect it to commit to the deliverable this turn.`;
-        flagJobForOrchestrator(job, id, reason || 'making no progress across recent turns', suggested, toolContext);
-        flagged++;
-    }
-
-    for (const n of verdict.nudge || []) {
-        const id = String(n.id || '').trim();
-        const text = String(n.text || '').trim();
-        if (!id || !text) continue;
-        const job = backgroundJobs.get(id);
-        if (!job) { log(`[watchdog] nudge: no running job "${id}" — skipping`); continue; }
-        if (job.status !== 'running') continue;
-        if (CHURN_EXEMPT_AGENTS.has(job.agent)) continue; // read-only auditors: steering them is pointless
-        const age = Math.round((Date.now() - job.startedAt) / 1000);
-        if (age < WATCHDOG_MIN_JOB_AGE_S) { log(`[watchdog] nudge: "${id}" ${age}s old (<${WATCHDOG_MIN_JOB_AGE_S}s, warming) — skipping`); continue; }
-        const sinceNudge = Math.round((Date.now() - job.watchdogNudgedAt) / 1000);
-        if (job.watchdogNudgedAt > 0 && sinceNudge < WATCHDOG_NUDGE_COOLDOWN_S) continue; // not yet — rate limit
-        flagJobForOrchestrator(job, id, `grinding without delivering — suggested redirect: ${text}`, text, toolContext);
-        flagged++;
-        log(`[watchdog] nudge-flag → ${id} (${age}s elapsed, ${job.toolCallCount} calls, orchestrator nudges so far ${job.supervisorNudges}, last: ${job.lastAction.slice(0, 80)}): ${text.slice(0, 160)}`);
-    }
-    if (flagged > 0) {
-        // The per-flag watchdogNote already named each job; this is the tick
-        // summary. No "nudged" claim — the watchdog no longer nudges directly.
-        log(`[watchdog] flagged ${flagged} job(s) for orchestrator review this tick`);
-    } else if (warned.length === 0) {
-        // Nothing flagged this tick → everything reads on track. Only emitted
-        // here (after all flag paths) so it never contradicts a flag.
-        const allOk = (verdict.jobs || []).every(j => String(j.status || '').toLowerCase() === 'ok');
-        if (allOk) watchdogNote(`Supervisor check — ${running.length} job${running.length > 1 ? 's' : ''} running, all on track.`, toolContext);
-    }
-
-    emitJobsStatus();
 }
 
 // ── Completion verdict ─────────────────────────────────────────────────────
@@ -2470,17 +2063,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     return verdict;
 }
 
-// A single setInterval that ticks runSupervisorWatchdog every 30s WHILE any
-// background job is running — independent of the orchestrator's idle-loop race.
-// Today the watchdog only ticks in the post-turn idle loop, so a job dispatched
-// mid-turn (urgent, or any turn in progress) runs entirely unsupervised. Arming
-// from spawnBackgroundJob (and the artemis spawn path) covers every job; the
-// interval clears itself when no jobs remain. watchdogBusy guards overlapping
-// ticks (a slow cloud verdict can't stack a second tick on top of it).
 let watchdogTicker: ReturnType<typeof setInterval> | null = null;
-let watchdogTickNum = 0;
-let watchdogBusy = false;
-let watchdogToolContext: any = null;
 // True while the orchestrator is mid-turn (from turn start until it goes idle
 // waiting for the next message). The watchdog runs on the supervisor model —
 // historically a second, small model that Ollama often CPU-offloads when the
@@ -2494,40 +2077,6 @@ let watchdogToolContext: any = null;
 // dispatched mid-turn is not watchdog-ticked until the turn ends — acceptable,
 // the orchestrator is engaged and sees its result via inbox.
 let orchestratorTurnActive = false;
-
-function ensureWatchdogTicker(toolContext: any): void {
-    // SUPERVISOR DISABLED 2026-08-29 — see the arming-site note. Hard no-op so
-    // the ticker can never arm or tick even if a future call site is added.
-    return;
-    watchdogToolContext = toolContext;
-    if (!SUPERVISOR_ENABLED) return; // supervisor Off — never arm
-    if (watchdogTicker) return;
-    const interval = SUPERVISOR_INTERVAL_MS || DEFAULT_WATCHDOG_TICK_MS;
-    watchdogTicker = setInterval(async () => {
-        if (!SUPERVISOR_ENABLED) { // toggled Off mid-run via settings — stop the ticker
-            if (watchdogTicker) { clearInterval(watchdogTicker); watchdogTicker = null; }
-            log('[watchdog] disabled via settings — ticker stopped');
-            return;
-        }
-        if (watchdogBusy) return; // previous tick still awaiting its verdict
-        if (orchestratorTurnActive) return; // orchestrator is replying — don't contend with the resident model; tick resumes when it goes idle
-        const running = [...backgroundJobs.values()].filter(j => j.status === 'running');
-        if (running.length === 0) {
-            if (watchdogTicker) { clearInterval(watchdogTicker); watchdogTicker = null; }
-            return;
-        }
-        watchdogBusy = true;
-        try {
-            await runSupervisorWatchdog({ tickNum: ++watchdogTickNum, ask: lastUserAsk, toolContext: watchdogToolContext });
-        } catch (err: any) {
-            log(`[watchdog] tick threw: ${err?.message ?? err}`);
-        } finally {
-            watchdogBusy = false;
-        }
-    }, interval);
-    watchdogTicker.unref?.();
-    log(`[watchdog] ticker armed (${Math.round(interval / 1000)}s interval)`);
-}
 
 // kimi-k2.6:cloud is the known offender: when a request is sent with think:false
 // (iterations after planning), Ollama stops separating the reasoning stream and
@@ -3881,6 +3430,15 @@ const marmRecallSection = marmEnabled
     ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`marm_smart_recall\` (semantic search over every fact the memory distiller has ever logged). If a durable fact is missing from MARM and you just learned it, log it with \`marm_log_entry\` so it is recallable next time.\n`
     : '';
 
+// SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
+// live in the BRIEFING IRIS section below. The watchdog ticker was already no-op'd
+// (ensureWatchdogTicker/runSupervisorWatchdog returned early; zero ticks fired), but the
+// prompt paragraph still taught the orchestrator about [Supervisor flag] inbox items, so
+// the orchestrator ROLE-PLAYED a supervisor flag about its own read-only delegation
+// (atlas-czix, a file check it itself requested) and then stopped the re-delegation. With
+// this gone the orchestrator no longer emits or acts on supervisor flags. The deferred full
+// removal (flagJobForOrchestrator, runSupervisorWatchdog, ensureWatchdogTicker, the
+// WATCHDOG_* constants) happened 2026-09-17 — see git history for both.
 const ROUTING_CORE = `# CORE MANDATES (hard rules — follow exactly)
 
 1. Never dispatch a task that already has a running job — the runner refuses duplicates ("already running"); say so and wait. To change instructions, stop_agent first, then re-delegate.
@@ -3924,7 +3482,7 @@ Cue words:
 - A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
 
 Gotchas (the ones that actually trip routing):
-- An atlas job that failed or was stopped for churning (searching without delivering) → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. The supervisor often auto-escalates; if you see "Already auto-escalated to vulkan" in the result, do NOT re-delegate — just report vulkan's result when it lands.
+- An atlas job that failed or was stopped for churning (searching without delivering) → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. This escalation is always your own manual call — there is no auto-escalation signal to wait for.
 
 Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
 
@@ -3942,6 +3500,8 @@ PATTERN-SHAPED BRIEFS: when a RELEVANT PATTERNS entry fits the work you're deleg
 
 Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
 
+BATCHES OF INDEPENDENT ITEMS: a request naming N similar independent units — N files to post/convert/process, N pages, N accounts — is dispatched as N separate one-item delegate calls, never one bundled task covering all of them. Bundling forces the specialist to grind through every item alone with no checkpoint back to you, and one bad item (a format quirk, a site's odd editor) blocks the rest. Fire the calls in one turn (at most 3 run concurrently per specialist — dispatch the rest anyway, they queue automatically and start as slots free), and check each result as it lands rather than waiting for all N. This is about COUNT, not method — you still name only the WHAT per item, never the HOW (the WHAT-not-HOW rule above still applies to each individual brief). Reserve ONE bundled call for work that genuinely needs a single coordinated pass — a multi-page site redesign that must stay visually consistent, a refactor touching related files — where splitting would produce inconsistent results, not just parallel ones.
+
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
 # BRIEFING IRIS
@@ -3953,16 +3513,6 @@ Iris makes up to 3 tool calls per dispatch, then returns. Write one imperative s
 - Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply." For an attachment: give the email id and the attachment filename — "Download the <filename> attachment from email <id>" — iris saves it and returns the saved file path; hand that path to whoever does the next step.
 - Calendar: "Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
 
-${'' /* SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction.
-   The watchdog ticker was already no-op'd (ensureWatchdogTicker/runSupervisorWatchdog
-   return early; zero ticks fire), but this prompt paragraph still taught the
-   orchestrator about [Supervisor flag] inbox items, so the orchestrator ROLE-PLAYED
-   a supervisor flag about its own read-only delegation (atlas-czix, a file check it
-   itself requested) and then stopped the re-delegation. With this gone the
-   orchestrator no longer emits or acts on supervisor flags. FULL supervisor removal
-   (flagJobForOrchestrator, the drain flagsBlock, nudge/stuck machinery, the
-   WATCHDOG_* constants, dashboard plumbing) is deferred for later — marked but
-   left dormant. Original text is in git history. */}
 
 # OUTPUT
 
@@ -4255,9 +3805,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         let forcedNoToolRetries = 0;       // #3b: times a forced tool-free round still returned phantom tool_calls
         const recentCallSigs: string[] = []; // #3: deque of last RECENT_CALL_SIG_DEPTH sigs
         const callFreq: Record<string, number> = {}; // #3: call signature → count
-        let verifierRoundsUsed = 0;        // #1: verifier sub-agent round cap
-        let verifierActions: string[] = []; // #1: accumulated snapshot for the verifier
-        let verifierTriggeredThisTurn = false; // #1: only fires once per turn (re-arms on new effectful work)
         // Pipe status updates through stdout — no file I/O. `fg:1` marks this
         // as the ORCHESTRATOR'S OWN turn status: the host routes fg entries to
         // the dashboard live label and uses them to flag a turn in flight.
@@ -4694,9 +4241,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     // runaway (same sig >= RUNAWAY_CALL_LIMIT) and circling
                     // (repeated recent sig + no answer text). Either forces a
                     // tool-free round on the next iteration.
-                    // #1 Verifier snapshot: append each effectful tool call to
-                    // the actions snapshot so a fresh-context verifier can judge
-                    // SUCCESS/FAIL after the turn.
                     const lastSigs = collectedToolCalls.map(tc => callSignature(tc.function?.name || '', tc.function?.arguments || {}));
                     const repeatsRecent = lastSigs.some(s => recentCallSigs.includes(s));
                     for (let k = 0; k < collectedToolCalls.length; k++) {
@@ -4710,11 +4254,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         if (SUBAGENT_BY_DELEGATE.has(name)) {
                             delegatedThisTurn = true;
                             delegatesCalledThisTurn.add(name);
-                        }
-                        if (VERIFIER_EFFECTFUL_TOOLS.has(name)) {
-                            const resultPreview = (toolResults[k]?.content || '').slice(0, 300).replace(/\n/g, ' ');
-                            verifierActions.push(`${name}(${JSON.stringify(args).slice(0, 200)}) → ${resultPreview}`);
-                            verifierTriggeredThisTurn = true;
                         }
                     }
                     const topFreqEntry = Object.entries(callFreq).sort((a, b) => b[1] - a[1])[0];
@@ -4856,60 +4395,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         continue;
                     }
                 }
-                /* VERIFIER DISABLED 2026-07-01 — it judges from a TEXT snapshot of effectful
-                   actions only (verifierActions) and cannot see screenshots or page/DOM state,
-                   so it systematically false-fails visual/browser tasks and makes the agent
-                   undo correct work (e.g. unpausing a video it had just paused). Re-enable
-                   only when it can inspect real state. See memory: project-verifier-disabled.
-                // No nudge fired — text-only response is the final answer,
-                // unless the fresh-context verifier (opt-in via
-                // AGENT_VERIFIER_SUBAGENT=1) judges the work FAIL. The verifier
-                // sees the user's original request + a snapshot of effectful
-                // tool calls — NOT the conversation history — so it can't
-                // rationalize the agent's own reasoning. Capped at
-                // VERIFIER_MAX_ROUNDS per turn.
-                if (AGENT_VERIFIER_SUBAGENT && verifierTriggeredThisTurn && verifierRoundsUsed < VERIFIER_MAX_ROUNDS && toolIteration < MAX_TOOL_ITERATIONS) {
-                    verifierRoundsUsed++;
-                    const userRequest = (input.prompt || '').slice(0, 1000);
-                    const actionsSnap = verifierActions.length > 0 ? verifierActions.join('\n') : '(no effectful actions taken)';
-                    const verifierPrompt = `You are a strict verifier. Judge whether the agent successfully completed the user's request.\n\nUSER REQUEST:\n${userRequest}\n\nACTIONS TAKEN BY THE AGENT (effectful tool calls only, with result preview):\n${actionsSnap}\n\nReply with one of:\n- SUCCESS: <one-line reason>\n- FAIL: <bullet list of specific issues the agent should fix>\n\nBe strict. If any concrete deliverable the user asked for is missing or unverified, reply FAIL. If the agent claims success but no effectful action was taken, reply FAIL.`;
-                    log(`[verifier] Round ${verifierRoundsUsed}/${VERIFIER_MAX_ROUNDS}: running fresh-context check (${verifierActions.length} actions)`);
-                    appendStatus({ phase: 'artemis', label: `Verifier round ${verifierRoundsUsed}/${VERIFIER_MAX_ROUNDS}: checking work...` });
-                    try {
-                        const verifierResp = await fetch(CHAT_URL, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                model,
-                                messages: [
-                                    { role: 'system', content: 'You are a strict verifier. Judge SUCCESS or FAIL only. Do not engage with the request itself.' },
-                                    { role: 'user', content: untrustedContextMessage(verifierPrompt) },
-                                ],
-                                stream: false,
-                                keep_alive: -1,
-                                options: { num_predict: 1024, temperature: 0.2, num_ctx: getNumCtx(model, orchestratorCtxOverride()), ...qwenSampling(model) },
-                            }),
-                        });
-                        if (verifierResp.ok) {
-                            const verifierData = await verifierResp.json();
-                            const verdict = ((verifierData.message?.content || '') + '').trim();
-                            log(`[verifier] Verdict: ${verdict.slice(0, 200)}`);
-                            if (/^FAIL/i.test(verdict) || /^FAIL:/.test(verdict) || /\bFAIL:/i.test(verdict)) {
-                                appendStatus({ phase: 'artemis', label: `Verifier: FAIL — pushing issues back to the agent` });
-                                messages.push({ role: 'user', content: `[Verifier feedback — a fresh-context check found issues with your work]\n\n${verdict}\n\nFix these issues. Do not claim success until each one is addressed with a concrete tool call that verifies or corrects the deliverable.` });
-                                verifierActions = [];
-                                verifierTriggeredThisTurn = false;
-                                continue;
-                            } else {
-                                appendStatus({ phase: 'artemis', label: 'Verifier: SUCCESS' });
-                            }
-                        } else {
-                            log(`[verifier] HTTP ${verifierResp.status} — accepting the answer without verification`);
-                        }
-                    } catch (verifierErr) {
-                        log(`[verifier] Failed: ${verifierErr.message} — accepting the answer without verification`);
-                    }
-                } */
                 finalContent = historyContent;
                 finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
                 break;
@@ -5700,7 +5185,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             });
         jobRecord.promise = job;
         backgroundJobs.set(jobId, jobRecord);
-        // ensureWatchdogTicker(context); // SUPERVISOR DISABLED 2026-08-29: false off-track flags killed healthy atlas read/idle phases (atlas-p7th). Commented out at every arming site; reinstated only when the supervisor is rebuilt to actually distinguish progress from veering.
         emitJobsStatus();
         result = `Artemis ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the audit result will arrive in your inbox. (job id: ${jobId})`;
         } // retryGate else
