@@ -168,3 +168,4 @@ Thumbs.db
 # Local Sentry policy — edit locally, not tracked
 security/sentry.md
 CameraWebServer/
+unsloth_compiled_cache/

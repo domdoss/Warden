@@ -17,7 +17,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, pushSupervisorNote, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
 import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
@@ -158,6 +158,98 @@ const MERCURY_MEMORY_FILE = 'MERCURY_MEMORY.md';
 const MERCURY_RECENT_MESSAGES = 12;
 const MERCURY_CONTEXT_TURNS = 8;
 
+// Mercury's I/O contract. Mercury shares the toolcall fine-tune with iris, so
+// the task is shaped the way Granite is strongest and the way that model is
+// already trained: STRUCTURED IN, STRUCTURED OUT. State goes in as JSON, the
+// merged state comes back as JSON, and `format` (below) constrains decoding on
+// the local path. Prose summarization was the old shape and was off
+// distribution for a tool-call fine-tune — it kept emitting JSON anyway.
+//
+// This prompt is the CANONICAL source: training/gen_mercury_sft.mjs extracts
+// it verbatim from this file, exactly as the iris rows extract theirs from the
+// agent-runner, so the fine-tune can never drift from what production sends.
+// Editing it here changes the next dataset. Keep the marker comments intact —
+// extraction anchors on them.
+// MERCURY_SYSTEM_PROMPT_START
+const MERCURY_SYSTEM_PROMPT = `You are Mercury: rolling conversation memory for Warden.
+
+CONTRACT: one compaction request → one JSON object. You merge the state you are given with new turns and return the merged state.
+
+INPUT
+- STATE: the memory you already hold, as JSON. It is empty on the first compaction.
+- TURNS: conversation turns that have scrolled out of the live window, oldest first. The most recent turns are kept verbatim elsewhere and are not shown to you.
+
+FIELDS
+- facts: durable statements about the user, the project, or the world.
+- decisions: choices that were made, each with the reason when the turns give one.
+- open: questions still unanswered and tasks still outstanding.
+- refs: file paths, URLs, and ids worth keeping.
+
+GUIDELINES
+- Carry every STATE item forward unless a turn supersedes it or resolves it.
+- Add what the TURNS establish, placing each item in the field that fits it.
+- Merge two items that say the same thing into one. Replace a superseded item with its current version.
+- Drop an open item once a turn answers it, and record the answer as a fact or a decision.
+- Compress the oldest material hardest: keep its conclusion, shed its detail.
+- Write each item as one standalone sentence that reads correctly on its own, with no pronouns pointing outside it.
+- Keep 40 items or fewer across all four fields.
+
+FORMAT
+Output one JSON object only.
+{"facts": [], "decisions": [], "open": [], "refs": []}`;
+// MERCURY_SYSTEM_PROMPT_END
+
+// Ollama `format` schema — the single biggest lever for holding a 3B to valid
+// structured output. Local path only; a cloud seat ignores it and relies on
+// the FORMAT block above plus the parser's tolerance.
+const MERCURY_FORMAT = {
+  type: 'object',
+  properties: {
+    facts: { type: 'array', items: { type: 'string' } },
+    decisions: { type: 'array', items: { type: 'string' } },
+    open: { type: 'array', items: { type: 'string' } },
+    refs: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['facts', 'decisions', 'open', 'refs'],
+};
+
+interface MercuryState { facts: string[]; decisions: string[]; open: string[]; refs: string[] }
+const MERCURY_FIELDS: (keyof MercuryState)[] = ['facts', 'decisions', 'open', 'refs'];
+const EMPTY_MERCURY_STATE: MercuryState = { facts: [], decisions: [], open: [], refs: [] };
+
+/** Coerce whatever the model returned into a MercuryState, dropping junk. */
+function parseMercuryState(raw: string): MercuryState | null {
+  if (!raw?.trim()) return null;
+  let text = raw.trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  let obj: any;
+  try { obj = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+  if (!obj || typeof obj !== 'object') return null;
+  const out: MercuryState = { facts: [], decisions: [], open: [], refs: [] };
+  for (const f of MERCURY_FIELDS) {
+    const v = obj[f];
+    if (!Array.isArray(v)) continue;
+    out[f] = v.map((x: any) => String(x ?? '').trim()).filter(Boolean);
+  }
+  return MERCURY_FIELDS.some((f) => out[f].length > 0) ? out : null;
+}
+
+/** Render state as the text pinned into every prompt as <mercury_summary>. */
+function renderMercuryState(s: MercuryState): string {
+  const section = (title: string, items: string[]) =>
+    items.length ? `${title}:\n${items.map((i) => `- ${i}`).join('\n')}` : '';
+  return [
+    section('Facts', s.facts),
+    section('Decisions', s.decisions),
+    section('Open', s.open),
+    section('References', s.refs),
+  ].filter(Boolean).join('\n\n');
+}
+
 function mercuryMode(): 'off' | 'rag' | 'summary' | 'full' {
   const m = (getRouterState('mercury:mode') || 'full').toLowerCase();
   if (m === 'off' || m === 'rag' || m === 'summary') return m;
@@ -261,7 +353,7 @@ function buildPrompt(newMessages: NewMessage[]): string {
   if (mode === 'summary' || mode === 'full') {
     const mercury = loadMercurySummary(clearAt);
     if (mercury) {
-      prompt += `<mercury_summary>\n${mercury}\n</mercury_summary>\n\n`;
+      prompt += `<mercury_summary>\n${mercury.replace(/^#\s*Mercury summary updated\s+\S+\s*\n/, '')}\n</mercury_summary>\n\n`;
     }
   }
 
@@ -1266,21 +1358,6 @@ export function buildAgentCallbacks(): CallbackMap {
       }
     },
 
-    // Orchestrator monitor-tick reports route HERE (not send_message), so the
-    // tick's supervision prose lands in the dashboard's progress panel instead
-    // of spamming the chat. The chat only carries completed-task reports
-    // (inbox digest) and interventions.
-    progress_event: async (args: any) => {
-      try {
-        const text = typeof args?.text === 'string' ? args.text : '';
-        if (!text.trim()) return { ok: true, skipped: true };
-        pushSupervisorNote(text);
-        return { ok: true };
-      } catch (err: any) {
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
-
     // Sentry scan submission. The agent collects the raw inventory with Bash,
     // JUDGES it itself (a smart model knows what a normal Linux desktop looks
     // like), and submits it ONCE with its `suspicious` flags. THIS handler
@@ -1662,8 +1739,17 @@ async function marmRpc(sessionId: string | undefined, body: Record<string, unkno
   }
 }
 
-function fileMercurySummaryToMarm(summary: string): void {
-  if (!summary.trim() || summary === getRouterState('mercury:marm_last_file')) return;
+function fileMercurySummaryToMarm(newItems: string[]): void {
+  // File only the DELTA — the items this compaction added that the previous
+  // state didn't hold — one entry per item, into the "mercury" session. The
+  // old shape filed the whole rendered summary on every compaction; since the
+  // summary is a rolling superset it never repeated byte-for-byte, so the
+  // last-file guard never skipped and a day of compactions left dozens of
+  // overlapping documents in MARM — which auto-recall then injected into every
+  // turn, crowding out distinct facts. Discrete delta items also recall
+  // better than blobs. Dedupe is by comparison against the previous state at
+  // the call site, not by string equality here.
+  if (!newItems.length) return;
   void (async () => {
     const init = await marmRpc(undefined, {
       jsonrpc: '2.0',
@@ -1680,24 +1766,28 @@ function fileMercurySummaryToMarm(summary: string): void {
       return;
     }
     await marmRpc(marmHostSessionId, { jsonrpc: '2.0', method: 'notifications/initialized' });
-    const res = await marmRpc(marmHostSessionId, {
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/call',
-      params: {
-        name: 'marm_log_entry',
-        arguments: {
-          session_name: 'mercury',
-          entry: `${new Date().toISOString().slice(0, 10)} - rolling conversation summary (auto-filed by mercury compaction):\n${summary}`,
+    let filed = 0;
+    for (const item of newItems) {
+      if (!item.trim()) continue;
+      const res = await marmRpc(marmHostSessionId, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'marm_log_entry',
+          arguments: {
+            session_name: 'mercury',
+            entry: `${new Date().toISOString().slice(0, 10)} - ${item}`,
+          },
         },
-      },
-    });
-    if (res?.error || res?.result?.isError) {
-      logger.warn({ err: res?.error?.message ?? 'tool error' }, 'Mercury→MARM filing failed');
-      return;
+      });
+      if (res?.error || res?.result?.isError) {
+        logger.warn({ err: res?.error?.message ?? 'tool error', item: item.slice(0, 80) }, 'Mercury→MARM filing failed');
+        return;
+      }
+      filed++;
     }
-    setRouterState('mercury:marm_last_file', summary);
-    logger.info({ chars: summary.length }, 'Mercury summary filed to MARM (session: mercury)');
+    if (filed > 0) logger.info({ count: filed }, 'Mercury delta items filed to MARM (session: mercury)');
   })().catch((err) => logger.warn({ err: err?.message ?? err }, 'Mercury→MARM filing failed'));
 }
 
@@ -1732,12 +1822,36 @@ async function updateMercurySummary(): Promise<void> {
       return `${role}: ${m.content}`;
     }).join('\n');
 
-    const summaryPrompt =
-      `You are Mercury — a conversation compaction layer for Warden. Summarize the following older conversation turns into a concise memory note. ` +
-      `Preserve facts, decisions, values, file paths, URLs, and any open tasks or questions. ` +
-      `Drop pleasantries, filler, and exact wording unless it's important. ` +
-      `Do NOT include the most recent ${MERCURY_RECENT_MESSAGES} turns; they are kept verbatim. ` +
-      `Write in short bullet/paragraph form so the main agent can scan it quickly.\n\n${olderLines}\n\nMercury summary:`;
+    // STRUCTURED CONTRACT — this is the shape the toolcall fine-tune is
+    // TRAINED on (training/gen_mercury_sft.mjs extracts MERCURY_SYSTEM_PROMPT
+    // from this file, so train can never drift from serve). The previous
+    // merged state goes in as JSON (STATE), the newly-dropped turns as
+    // ROLE: text lines (TURNS), and the merged state comes back as JSON held
+    // to MERCURY_FORMAT by constrained decoding. Folding is
+    // merge(STATE, TURNS) → new STATE, so nothing older than the verbatim
+    // window silently falls out — the thread-loss this layer exists to
+    // prevent. The old prose-summarizer shape was off-distribution for a
+    // tool-call fine-tune: it kept answering in JSON anyway, which is why a
+    // defensive JSON.parse unwrap used to sit below.
+    let state: MercuryState = EMPTY_MERCURY_STATE;
+    try {
+      const stored = getRouterState('mercury:state');
+      if (stored) {
+        const parsed = JSON.parse(stored) as { ts?: string; state?: Partial<MercuryState> };
+        // Same clearAt invalidation as the summary file: a context clear
+        // drops the memory along with the context it belonged to.
+        const stale = !!(parsed?.ts && clearAt && parsed.ts <= clearAt);
+        if (!stale && parsed?.state) {
+          const cand = parsed.state as Record<string, unknown>;
+          state = {
+            facts: Array.isArray(cand.facts) ? cand.facts.filter((x): x is string => typeof x === 'string') : [],
+            decisions: Array.isArray(cand.decisions) ? cand.decisions.filter((x): x is string => typeof x === 'string') : [],
+            open: Array.isArray(cand.open) ? cand.open.filter((x): x is string => typeof x === 'string') : [],
+            refs: Array.isArray(cand.refs) ? cand.refs.filter((x): x is string => typeof x === 'string') : [],
+          };
+        }
+      }
+    } catch { /* corrupt stored state — start empty */ }
 
     // Mercury's model comes ONLY from the dashboard Mercury row (mercury:model)
     // — no env override, no fallback to the shared Toolcall row. Settings is
@@ -1758,7 +1872,7 @@ async function updateMercurySummary(): Promise<void> {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 120_000);
-    let summary = '';
+    let merged: MercuryState | null = null;
     try {
       const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
         method: 'POST',
@@ -1767,7 +1881,14 @@ async function updateMercurySummary(): Promise<void> {
         body: JSON.stringify({
           model,
           stream: false,
-          messages: [{ role: 'user', content: summaryPrompt }],
+          // Constrained decoding: the single biggest lever for holding a 3B
+          // to valid structured output. Every model seat is Ollama in this
+          // install (local and cloud), so format applies on both paths.
+          format: MERCURY_FORMAT,
+          messages: [
+            { role: 'system', content: MERCURY_SYSTEM_PROMPT },
+            { role: 'user', content: `STATE:\n${JSON.stringify(state)}\n\nTURNS:\n${olderLines}` },
+          ],
           options: { temperature: 0, ...(numCtx ? { num_ctx: numCtx } : {}) },
           keep_alive: keepAlive,
         }),
@@ -1777,26 +1898,37 @@ async function updateMercurySummary(): Promise<void> {
         return;
       }
       const data = (await resp.json()) as { message?: { content?: string } };
-      summary = cleanAgentText(data.message?.content || '');
+      merged = parseMercuryState(cleanAgentText(data.message?.content || ''));
     } catch (err: any) {
-      logger.warn({ err: err?.message ?? err, model }, 'Mercury summary call failed');
+      logger.warn({ err: err?.message ?? err, model }, 'Mercury merge call failed');
       return;
     } finally {
       clearTimeout(timer);
     }
-    try {
-      const parsed = JSON.parse(summary);
-      if (parsed && typeof parsed === 'object' && typeof parsed.result === 'string') summary = cleanAgentText(parsed.result);
-    } catch { /* not JSON */ }
-    if (!summary.trim()) return;
+    if (!merged) {
+      logger.warn({ model }, 'Mercury merge returned no valid state — keeping previous summary');
+      return;
+    }
 
     const root = WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? '');
     const mercuryPath = path.join(root, MERCURY_MEMORY_FILE);
     const stamp = new Date().toISOString();
-    const entry = `# Mercury summary updated ${stamp}\n\n${summary}\n\n---\n\n`;
+    // The file holds the human/orchestrator-readable rendering (its header
+    // stamp is the clearAt invalidation marker); router state holds the raw
+    // JSON, which is what the next compaction's STATE input needs.
+    const rendered = renderMercuryState(merged);
+    const entry = `# Mercury summary updated ${stamp}\n\n${rendered}\n\n---\n\n`;
     fs.writeFileSync(mercuryPath, entry, 'utf8');
-    logger.info({ chars: summary.length }, 'Mercury summary updated');
-    fileMercurySummaryToMarm(summary);
+    setRouterState('mercury:state', JSON.stringify({ ts: stamp, state: merged }));
+    logger.info(
+      { facts: merged.facts.length, decisions: merged.decisions.length, open: merged.open.length, refs: merged.refs.length },
+      'Mercury state updated',
+    );
+    // Delta for MARM: items the previous state didn't already hold. Filed
+    // discretely; nothing is filed when the compaction added nothing.
+    const prevItems = new Set<string>(MERCURY_FIELDS.flatMap((f) => state[f]));
+    const delta = MERCURY_FIELDS.flatMap((f) => merged[f]).filter((i) => !prevItems.has(i));
+    fileMercurySummaryToMarm(delta);
   } catch (err: any) {
     logger.warn({ err: err?.message ?? err }, 'Mercury summary update failed');
   }
@@ -1908,12 +2040,11 @@ async function processOwnerMessages(): Promise<void> {
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
     vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
-    // Supervisor (monitor-tick) model — blank inherits the orchestrator model in
+    // Supervisor (completion-verdict) model — blank inherits the orchestrator model in
     // the runner. No ctx row: cloud/small models use their native window.
     supervisorModel: (getRouterState('supervisor:model') || '').replace(/^local:/, '') || undefined,
-    // Supervisor self-audit on/off + cadence (dashboard "Supervisor" row).
+    // Supervisor completion verdict on/off (dashboard "Supervisor" row).
     supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
-    supervisorIntervalMs: parseInt(getRouterState('supervisor:interval_ms') || '600000', 10) || 600000,
     // Iris is the single toolcall agent (byte merged in 2026-09-05) and runs
     // on the Toolcall model (dashboard "Toolcall model" row, persisted as
     // local:subagent_model).
@@ -2035,17 +2166,17 @@ const IRIS_DIGEST_TASKS = [
   {
     id: 'iris-digest-hourly',
     cron: '7 * * * *',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nWINDOW: This is the HOURLY digest. Only consider activity in the LAST HOUR (emails received in the last hour; calendar events in the next 2 hours; tasks that were created, completed, or updated in the last hour). Do NOT mention the user bio, sleep schedule, daily routine, or long-running projects unless something about them changed in the last hour.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 50, preview_only true). Do not invent your own timestamps.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nACTIONABLE EXTRACTION: From the emails you read with read_emails, also extract concrete actionable items the user must do or attend. This is separate from the "Recent Emails" display block — these drive task/event creation.\n- A task is a concrete to-do the user must do, expressed as an action the user performs: prepare, make sure, get ready, confirm, review, send, schedule, fix, follow up, deliver, pay, book, submit. Put "due" in ISO only when the message states a deadline; leave it empty otherwise.\n- An event is a scheduled meeting, appointment, or dated occasion the user will attend, where the date and start time are stated inside the message. Title it with the scheduled thing itself (a demo, a review, an appointment). Put "start" in ISO using that stated meeting time. Put "end" in ISO when an end time is stated; leave it empty otherwise. The receive/arrival date of an email is metadata — it is NEVER an event start time. Promotional emails, receipts, newsletters, account alerts, shipping notices, and automated reminders are NOT items.\n- A single message may yield both an event and a task. The scheduled thing at a stated time is an event; a readiness or follow-up action around it (prepare, make sure, get ready, confirm, follow up) is a separate task.\n- Set "project_hint" to "personal", "work", or a project name when the item clearly belongs to one; leave it empty otherwise.\n- Extract only items explicitly stated in the emails. Greetings, questions, opinions, status updates, and automated/bot-sent messages are not items. Empty arrays are the correct answer when nothing is actionable. Do not invent items.\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing, and [] for the actionable arrays when nothing is actionable):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown about what happened in the LAST HOUR only — or say it was quiet>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}],"actionable_tasks":[{"title":"","due":"","project_hint":""}],"actionable_events":[{"title":"","start":"","end":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nWINDOW: This is the HOURLY digest. Only consider activity in the LAST HOUR (emails received in the last hour; calendar events in the next 2 hours; tasks that were created, completed, or updated in the last hour). Do NOT mention the user bio, sleep schedule, daily routine, or long-running projects unless something about them changed in the last hour.\n\nGROUNDING: Use only facts in INPUT or in the email read results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call email with action="read" and the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 50, preview_only true). Do not invent your own timestamps.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or the email read results, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nACTIONABLE EXTRACTION: From the emails you read with email action="read", also extract concrete actionable items the user must do or attend. This is separate from the "Recent Emails" display block — these drive task/event creation.\n- A task is a concrete to-do the user must do, expressed as an action the user performs: prepare, make sure, get ready, confirm, review, send, schedule, fix, follow up, deliver, pay, book, submit. Put "due" in ISO only when the message states a deadline; leave it empty otherwise.\n- An event is a scheduled meeting, appointment, or dated occasion the user will attend, where the date and start time are stated inside the message. Title it with the scheduled thing itself (a demo, a review, an appointment). Put "start" in ISO using that stated meeting time. Put "end" in ISO when an end time is stated; leave it empty otherwise. The receive/arrival date of an email is metadata — it is NEVER an event start time. Promotional emails, receipts, newsletters, account alerts, shipping notices, and automated reminders are NOT items.\n- A single message may yield both an event and a task. The scheduled thing at a stated time is an event; a readiness or follow-up action around it (prepare, make sure, get ready, confirm, follow up) is a separate task.\n- Set "project_hint" to "personal", "work", or a project name when the item clearly belongs to one; leave it empty otherwise.\n- Extract only items explicitly stated in the emails. Greetings, questions, opinions, status updates, and automated/bot-sent messages are not items. Empty arrays are the correct answer when nothing is actionable. Do not invent items.\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing, and [] for the actionable arrays when nothing is actionable):\n{"title":"<current date and time as shown in INPUT>","summary":"<one or two sentences in markdown about what happened in the LAST HOUR only — or say it was quiet>","alerts":[],"blocks":[{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing in the next 2 hours."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}],"actionable_tasks":[{"title":"","due":"","project_hint":""}],"actionable_events":[{"title":"","start":"","end":""}]}',
   },
   {
     id: 'iris-digest-daily',
     cron: '17 21 * * *',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 100, preview_only true). Do not invent your own timestamps.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<Start with: Good morning. Then one or two sentences briefing Dominic on today — calendar events, active tasks, and notable emails. Do NOT mention sleep schedule, wake times, or daily routine.>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on calendar events, tasks, and emails for today from INPUT/emails — or empty if there is no data. Do not mention sleep schedule or daily routine.>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the email read results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call email with action="read" and the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 100, preview_only true). Do not invent your own timestamps.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or the email read results, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing):\n{"title":"<date from INPUT>","summary":"<Start with: Good morning. Then one or two sentences briefing Dominic on today — calendar events, active tasks, and notable emails. Do NOT mention sleep schedule, wake times, or daily routine.>","alerts":[],"blocks":[{"icon":"review","label":"Day in Review","type":"prose","text":"<one or two sentences on calendar events, tasks, and emails for today from INPUT/emails — or empty if there is no data. Do not mention sleep schedule or daily routine.>"},{"icon":"inbox","label":"Recent Emails","type":"list","items":["From: <sender>: <subject> (<time>)"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar today."]},{"icon":"tasks","label":"Active Tasks","type":"list","items":["No active tasks."]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"tomorrow","label":"Tomorrow","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
   {
     id: 'iris-digest-weekly',
     cron: '30 20 * * 0',
-    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the read_emails results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call read_emails with the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 200, preview_only true). Do not invent your own timestamps. Pick the 6-10 most relevant. For each picked email, write its list item from that email\'s actual snippet/body in the read_emails result — one short line saying what the email is about, grounded in its content. Do not invent details the email does not contain.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or read_emails, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing). Every "items" entry in every block is ONE plain string — never an object, never a nested list:\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>) — <one short line saying what the email says, from its snippet/body>"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
+    prompt: 'Scan INPUT and recent emails, then output a JSON object. No commentary, no markdown outside the JSON.\n\nGROUNDING: Use only facts in INPUT or in the email read results. Use the empty-state value shown for a section with no data. Do not invent emails, events, or tasks.\n\nEmails: call email with action="read" and the `since` and `before` values copied verbatim from the INPUT "Email window (UTC)" line (limit 200, preview_only true). Do not invent your own timestamps. Pick the 6-10 most relevant. For each picked email, write its list item from that email\'s actual snippet/body in the email read result — one short line saying what the email is about, grounded in its content. Do not invent details the email does not contain.\n\nLook Out For: INPUT has a "Look Out For" list. For each item, if it matches an email, calendar event, task, or weather in INPUT or the email read results, add to "alerts": "<item> - matched by <what matched>". Otherwise alerts is [].\n\nOutput this shape (fill every field from INPUT/emails; use "" for a field with nothing). Every "items" entry in every block is ONE plain string — never an object, never a nested list:\n{"title":"<week-of date from INPUT>","summary":"<two or three sentences in markdown summarizing the shape of the week, from INPUT/emails>","alerts":[],"blocks":[{"icon":"review","label":"Week in Review","type":"prose","text":"<two or three sentences on the shape of the week from INPUT/emails, or empty if there is no data>"},{"icon":"inbox","label":"Email Activity","type":"list","items":["From: <sender>: <subject> (<date>) — <one short line saying what the email says, from its snippet/body>"]},{"icon":"calendar","label":"Calendar","type":"list","items":["Nothing on the calendar this week."]},{"icon":"tasks","label":"Tasks","type":"list","items":["[status] <title>"]},{"icon":"weather","label":"Weather","type":"prose","text":""},{"icon":"nudge","label":"Nudge","type":"prose","text":""}]}',
   },
 ];
 
@@ -3019,15 +3150,13 @@ function seedPerAgentModelSettings(): void {
   seed('atlas:model', orch);
   seed('vulkan:model', orch);
   seed('mercury:model', orch);
-  // Supervisor (monitor-tick) model inherits the orchestrator on first boot —
+  // Supervisor (completion-verdict) model inherits the orchestrator on first boot —
   // no blank anywhere: every dashboard model dropdown always shows a concrete
   // model. The user picks a small/cloud one afterward if they want.
   seed('supervisor:model', orch);
-  // Supervisor self-audit: on by default, 10-min cadence. Large local models
-  // routinely spend 10-30 min on one task; a faster cadence flags healthy slow
-  // work as stuck. The user can toggle it off or change the interval in settings.
+  // Supervisor completion verdict: on by default. Large local models
+  // routinely spend 10-30 min on one task. The user can toggle it off in settings.
   seed('supervisor:enabled', 'true');
-  seed('supervisor:interval_ms', '600000');
 }
 
 /**

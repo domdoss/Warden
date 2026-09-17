@@ -810,37 +810,47 @@ MEMORY — before re-deriving a fact, prior decision, or how something was built
         // schemas; projects/work-tasks stay OUT (2026-09-11: the merged
         // `project` tool is orchestrator-direct instead — see toolsets.ts).
         // No BOTH-tier/skill/MCP merges, terse structured prompt, no examples.)
+        // 2026-09-17 — prompt slimmed to identity + contract + tool/action map +
+        // time anchor + schedule_value formats. The behavioural RULES block
+        // (id-vs-list, reminder+calendar in one turn, ask back on a half
+        // request, actionable/non-actionable inbox marking, only-real-ids/
+        // addresses, the OUTPUT paragraph) is TRAINED IN via the toolcall-ft
+        // SFT dataset, not prompted: a 3b fine-tune follows its weights, and
+        // every prompted rule is context the fine-tune already carries. Telling
+        // iris HOW to behave is now the ORCHESTRATOR's job — the counterpart
+        // brief-writing rules live in ROUTING_CORE's `# BRIEFING IRIS` section,
+        // so a bad iris run is a briefing defect, fixed there (or in the
+        // dataset), never by regrowing this prompt. The INPUT block is the one
+        // exception that must stay prompted: the dispatch is a LABELLED brief
+        // (local-time line, then `TASK:` + one imperative sentence with every
+        // id/address/value inline) because
+        // Granite reads structure better than prose, and a wire format can't be
+        // inferred from weights alone. Emitting it is the orchestrator's job
+        // (BRIEFING IRIS + the iris delegate tool's `task` description); the
+        // time line is prepended by the iris branch of executeXmlTool.
         maxIterations: 3,
         summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email, download email attachments. Use for inbox tasks, alarm and scheduling requests.',
         systemPrompt: `You are Iris: alarms, reminders, calendar, email.
 
-CONTRACT: one request → up to 3 tool calls → one result line. Each call must use a fact an earlier call returned (an id from a read/list). Never repeat a call that already succeeded.
+CONTRACT: one request → up to 3 tool calls → one result line. Each call uses a fact an earlier call returned. Never repeat a call that succeeded.
 
-TOOLS — one tool per noun; the 'action' parameter selects the operation.
-- alarm: action=create (label + alarm_time HH:MM; alarm_date, repeat_type none/daily/weekdays/custom, repeat_days), action=list, action=update (alarm_id + fields), action=delete (alarm_id)
-- task: action=schedule (prompt + schedule_type + schedule_value), action=list, action=update (task_id + fields), action=pause, action=resume, action=cancel (task_id)
-- calendar: action=create (title + start_time), action=list (start/end range), action=update (event_id + fields), action=delete (event_id)
-- email: action=read (recent emails; since/before for a date range), action=get (email_id), action=download (email_id + filename from the get result; saves the file, returns its path), action=send (to, subject, body), action=refresh, action=cached
+TOOLS — one tool per noun; 'action' selects the operation.
+- alarm: create (label + alarm_time HH:MM; alarm_date, repeat_type none/daily/weekdays/custom, repeat_days), list, update (alarm_id + fields), delete (alarm_id)
+- task: schedule (prompt + schedule_type + schedule_value), list, update (task_id + fields), pause, resume, cancel (task_id)
+- calendar: create (title + start_time), list (start/end range), update (event_id + fields), delete (event_id)
+- email: read (since/before for a date range), get (email_id), download (email_id + filename), send (to, subject, body), refresh, cached
 
 INPUT
-Line 1 of the task is the local time: "Current local time is YYYY-MM-DDTHH:MM:SS (timezone ...)" — compute every timestamp from it.
+- Line 1 is the current local time — compute every absolute timestamp from it.
+- TASK: one imperative sentence naming the outcome, carrying every id, address, and value it needs inline.
 
-schedule_value (task action=schedule or update)
-- once, relative ("in 2 minutes", "tomorrow"): ISO-8601 duration — PT2M, PT1H30M, P1D
-- once, absolute ("at 3pm today"): local YYYY-MM-DDTHH:MM:SS
-- interval ("every 5 minutes"): milliseconds string — 300000
-- recurring ("every weekday at 9am"): 5-field cron — 0 9 * * 1-5
+schedule_value
+- once, relative: ISO-8601 duration — PT2M, PT1H30M, P1D
+- once, absolute: local YYYY-MM-DDTHH:MM:SS
+- interval: milliseconds string — 300000
+- recurring: 5-field cron — 0 9 * * 1-5
 
-RULES
-- Manage an existing record by the id given in the request; list actions only for list requests.
-- Reminder and calendar event both named: both calls in one turn.
-- Time given but no content: one short line asking for the content.
-- Content given but no time (a plain to-do): one short line asking for a time, then it becomes a scheduled reminder.
-- Inbox scan: email action=read with the window the request names, then report, marking actionable vs non-actionable (newsletters, confirmations, receipts, shipping notices, ads).
-- Use only ids and data your tools return. Keep real email addresses.
-
-OUTPUT
-One plain-text line naming the ids returned, or the result found.`,
+Answer with one plain-text line.`,
         toolsets: ['iris-core'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
         // structured tool use (so Iris reliably calls the email/task/calendar/alarm
@@ -1153,6 +1163,30 @@ function delegateToolDef(s: SubAgentDef) {
             },
         };
     }
+    // Iris takes a LABELLED brief, not prose: the toolcall-ft fine-tune is
+    // trained on a `TASK:` + imperative-sentence input shape (Granite reads
+    // structure better than a prose sentence), so its `task` description
+    // overrides the plain-language one every other delegate gets — atlas,
+    // vulkan, artemis and sentry keep prose briefs.
+    if (s.delegate === 'iris') {
+        return {
+            type: 'function',
+            function: {
+                name: s.delegate,
+                description: `Delegate to ${s.label} for ${s.summary}. You do NOT have these tools directly — send a structured brief and you will receive one short result line.`,
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        task: {
+                            type: 'string',
+                            description: 'A structured brief and nothing else — no preamble, no explanation, and no time (the runner prepends the current local time). One line: "TASK: <one imperative sentence naming the outcome>". Every id, address, filename and value the sentence needs goes INLINE in that sentence. Example:\nTASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41.',
+                        },
+                    },
+                    required: ['task'],
+                },
+            },
+        };
+    }
     return {
         type: 'function',
         function: {
@@ -1205,12 +1239,12 @@ let lastContextClearAt = '';
 let COUNCIL_MODEL_SKEPTIC = '';
 let COUNCIL_MODEL_PRAGMATIST = '';
 let COUNCIL_MODEL_SYNTHESIST = '';
-// Supervisor watchdog model override — from the dashboard Supervisor dropdown.
-// Empty = the watchdog call inherits the orchestrator model. Set to a small
-// cloud or local model (e.g. granite4.1:3b) so the self-audit ticks run cheaply
-// and never churn VRAM or tie up the main model. The watchdog call is tool-less
-// and context-free, so a small model is enough. No ctx row: cloud/small models
-// use their native context window.
+// Supervisor model override — from the dashboard Supervisor dropdown. Empty =
+// the completion verdict (runCompletionVerdict) inherits the orchestrator
+// model. Set to a small cloud or local model (e.g. granite4.1:3b) so the
+// verdict call runs cheaply and never churns VRAM or ties up the main model.
+// The verdict call is tool-less and context-free, so a small model is enough.
+// No ctx row: cloud/small models use their native context window.
 let SUPERVISOR_MODEL = '';
 // Supervisor on/off — the dashboard "Supervisor" row toggle. Off means the
 // completion verdict (the only supervision left after the periodic watchdog
@@ -1248,20 +1282,13 @@ interface BackgroundJob {
     abortFlag: { aborted: boolean; nudges: string[] };
     status: 'running' | 'done' | 'errored' | 'aborted';
     activityLog: { t: number; tool: string; args: string; result?: string }[];
-    // Watchdog stop hysteresis: consecutive ticks where the supervisor judged
-    // this job crashed/off_rails. A stop executes only on the SECOND
-    // consecutive bad verdict — a single tick can't kill a job mid-API-call
-    // (cloud model latency of 90-120s looks identical to a stall from the
-    // one-line summary the watchdog sees).
     // When the orchestrator last steered this job with nudge_agent. A nudge
     // never kills; it steers. (Kept after the LLM supervisor was removed
     // 2026-09-17 — the orchestrator is the only nudger now.)
     watchdogNudgedAt: number;
-    // Supervisor-intervention state. The ONLY steering levers are the watchdog
-    // LLM's judged nudge/stuck verdicts — host code never injects a nudge on a
-    // bare call-count or timer, and host code NEVER aborts on a nudge count.
-    // supervisorNudges counts how many steering messages the orchestrator has
-    // delivered to this job — informational only, so the orchestrator can see
+    // Orchestrator steering count. supervisorNudges counts how many steering
+    // messages the orchestrator has delivered to this job — informational
+    // only, so the orchestrator can see
     // how many times it has nudged when deciding whether to stop_agent. There is
     // no code ceiling: the orchestrator decides when to stop, and may nudge
     // indefinitely until it does. The 3h wall-clock is the only code-enforced stop.
@@ -1432,15 +1459,15 @@ function recordConfirmedFailure(task: string, reason: string): void {
     log(`[retry-ledger] confirmed failure reported for goal: ${[...goal].slice(0, 12).join(' ')} — ${reason.slice(0, 160)}`);
 }
 // ─── In-flight duplicate-dispatch gate ─────────────────────────────────────
-// The orchestrator and the supervisor watchdog can both dispatch a background
-// job for the same task while one is already running — today that spawned
-// near-identical atlas/vulkan jobs that raced one file and false-reported
-// success. `dupSig` is a longer key than `taskSig` (200 vs 80 chars) so it
-// catches near-identical paraphrases of the same long preamble. The backstop
-// lives inside spawnBackgroundJob so every dispatch source — orchestrator
-// tool calls, watchdog delegate[], and the atlas-direct "go" spawn — hits one
-// guard. The handler-layer notice (findDuplicateRunningJob) tells the model the
-// job is already running without consuming a retry credit.
+// The orchestrator can dispatch a background job for a task while an
+// identical one is already running — that spawned near-identical atlas/vulkan
+// jobs that raced one file and false-reported success. `dupSig` is a longer
+// key than `taskSig` (200 vs 80 chars) so it catches near-identical
+// paraphrases of the same long preamble. The backstop lives inside
+// spawnBackgroundJob so every dispatch source — orchestrator tool calls and
+// the atlas-direct "go" spawn — hits one guard. The handler-layer notice
+// (findDuplicateRunningJob) tells the model the job is already running
+// without consuming a retry credit.
 function dupSig(task: string): string {
     return task.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
 }
@@ -1603,7 +1630,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // Dedup backstop: if an identical task for the same agent is already
     // running, refuse the duplicate and hand back the existing job id. This
     // is the single guard every dispatch source passes through — orchestrator
-    // tool calls, watchdog delegate[], and the atlas-direct "go" spawn. A
+    // tool calls and the atlas-direct "go" spawn. A
     // near-identical paraphrase of the same long preamble matches (200-char
     // signature). If the new call is urgent and the running one isn't, promote
     // it so the result interrupts when ready.
@@ -1639,7 +1666,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // running writer job would clobber it. Don't spawn now and don't disturb
     // the running job — queue the follow-up on it and spawn when it finishes.
     // This protects every dispatch source that hits spawnBackgroundJob
-    // directly (watchdog delegate[], atlas-direct "go"), which bypass the
+    // directly (the atlas-direct "go" spawn), which bypasses the
     // handler-layer notice below.
     const overlap = findRunningJobTargetingSameFiles(task);
     if (overlap) {
@@ -1889,11 +1916,6 @@ function writtenFilesSummary(files: WrittenFile[]): string {
     return lines.join('\n');
 }
 
-// (The watchdog no longer delegates, so the delegate-roster constants that used
-// to live here are gone. Only the orchestrator spawns jobs; the supervisor only
-// senses and flags. CHURN_EXEMPT_AGENTS below is still used to skip flagging
-// read-only auditors.)
-
 // Tolerant JSON extraction: strip code fences / prose, pull the first balanced
 // object. The local path has Ollama `format` enforcing valid JSON, but the
 // cloud-proxy path does not, so this stays as the safety net.
@@ -1927,8 +1949,7 @@ function extractJsonObject(text: string): any | null {
 
 // ── Completion verdict ─────────────────────────────────────────────────────
 // A tool-less second reader that judges a FINISHED job's output against the
-// original ask. Distinct from the running-job watchdog tick (which can only
-// see one-line summaries of live jobs, never the finished output). The
+// original ask. The
 // orchestrator's own CONFIRM step grades its own chain's homework — it
 // declared "Done" today while a second job was still regressing the file.
 // This is the independent backstop: prompt + output + a compact activity
@@ -2074,20 +2095,6 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     log(`[completion-verdict] (model=${model}) verdict=${verdict.verdict}, followup=${verdict.followup?.length ?? 0} — ${String(verdict.reason || '').slice(0, 160)}`);
     return verdict;
 }
-
-let watchdogTicker: ReturnType<typeof setInterval> | null = null;
-// True while the orchestrator is mid-turn (from turn start until it goes idle
-// waiting for the next message). The watchdog runs on the supervisor model —
-// historically a second, small model that Ollama often CPU-offloads when the
-// orchestrator's model fills VRAM. A granite/gemma-on-CPU tick in flight when
-// the orchestrator tries to reply serializes ahead of the resident GPU model,
-// producing a ~30s "0 GPU activity" stall before every post-job reply. The
-// watchdog only monitors RUNNING jobs; an orchestrator turn (especially a
-// digest turn) means a job just finished and the orchestrator is the active
-// thread, so deferring the tick until it goes idle costs no supervision that
-// the orchestrator isn't already providing itself. Trade-off: a job
-// dispatched mid-turn is not watchdog-ticked until the turn ends — acceptable,
-// the orchestrator is engaged and sees its result via inbox.
 
 // kimi-k2.6:cloud is the known offender: when a request is sent with think:false
 // (iterations after planning), Ollama stops separating the reasoning stream and
@@ -3138,7 +3145,6 @@ interface ContainerInput {
     councilSynthesistModel?: string;
     supervisorModel?: string;
     supervisorEnabled?: boolean;
-    supervisorIntervalMs?: number;
     userId?: string;
     userKeyId?: string;
     verbose?: boolean;
@@ -3469,7 +3475,7 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
 - **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas. Context size is also a routing signal: work that needs to hold a lot at once (many files, a long document, a big log) goes to vulkan even when it is not strictly coding — atlas may be on a much smaller window.
-- **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris can make up to 3 tool calls per dispatch, but keep each dispatch one short step (e.g. just the attachment download with the email id and filename) and let it chain list→id→act itself.
+- **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris chains list→id→act itself within a dispatch, so a brief can name the outcome without the id and iris resolves it. Its brief is one imperative sentence prefixed TASK: — write it by BRIEFING IRIS below; iris carries no rules of its own.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
 - **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
@@ -3516,12 +3522,25 @@ A result comes back wrong → re-delegate naming the GAP (what they wanted vs wh
 
 # BRIEFING IRIS
 
-Iris makes up to 3 tool calls per dispatch, then returns. Write one imperative sentence naming the outcome and the facts it can't guess, then stop.
+Iris is a 3b tool-caller. It makes up to 3 tool calls per dispatch and returns one short line of ids. It holds no context between dispatches, knows nothing about this system, and does no research. Its own prompt is deliberately bare — the instruction weight is HERE: how iris performs is how you briefed it, so a bad iris run is your defect, not its.
 
-- One step per dispatch — but iris chains the id lookups itself: if you don't have the email id yet, one brief ("find the email from <sender> about <subject>") and iris reads, picks the id, and acts. For cancel/pause/resume/update, hand it the id if you have it.
-- Reminders: name the kind — one-time, recurring interval, or recurring cron — and give the message verbatim. A delay with no clock time: "Set a one-time reminder to <message> in <delay>." A clock time: "Set a one-time reminder to <message> at <clock time>." Recurring: "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
-- Email: give the full \`to\` address. For a reply, resolve the named sender to an address: "Reply to Sarah and tell her <what> — send the reply." For an attachment: give the email id and the attachment filename — "Download the <filename> attachment from email <id>" — iris saves it and returns the saved file path; hand that path to whoever does the next step.
-- Calendar: "Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
+The \`{task}\` you send iris is one imperative sentence prefixed TASK: — nothing else (no preamble, no explanation, no time: the runner prepends the current local time itself). Every id, address, and value the sentence needs goes INLINE — iris copies it straight into the tool argument:
+
+TASK: Set a one-time reminder to call the dentist in twenty minutes.
+TASK: Cancel the standup reminder 7f31a2c8.
+TASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41.
+
+- Literal values only. Resolve every reference before you send: "her" becomes the address, "that event" becomes the title, "the one you just made" becomes the id from the last result. One TASK sentence — no conditionals ("if there's nothing, then…"), no alternatives, no follow-on clause.
+- One outcome per dispatch — with one exception: when the user names a reminder AND a calendar event for the same thing, both go in the SAME TASK sentence ("Create a calendar event … and set a one-time reminder …"); iris does the pair in one dispatch. Two unrelated asks are still two dispatches.
+- Never send a half brief. A time with no message ("set something for 6pm") or a message with no time ("remind me to call the dentist") comes back as a question instead of an action — supply both, or ask the user for the missing half first.
+- Ids: for update, delete, cancel, pause, or resume, name the id inline whenever a previous result already gave it to you. If you don't have it, name the outcome and let iris chain the lookup itself — "TASK: Cancel the scheduled task that posts the morning digest." — it lists, takes the id, and acts in the same dispatch. Ask for a bare list only when the user actually wants the list read back.
+- Alarm vs reminder: a wake-up or a ring at a clock time is an ALARM — "TASK: Set an alarm for 06:30 labelled 'gym'." — naming daily/weekdays/the weekday list in the sentence if it repeats. Something that should SAY or DO something later is a reminder task.
+- Reminders: name the kind in the sentence — one-time, recurring interval, or recurring cron — and give the message verbatim. "Set a one-time reminder to <message> in <delay>." / "Set a one-time reminder to <message> at <clock time>." / "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
+- A scheduled prompt fires back to YOU at its time, verbatim, as a message from Scheduler — so write it as an instruction to your future self with the facts already in it. Iris cannot look anything up on its behalf: if the prompt needs a price, a status, or a number, get that from atlas first and hand iris the finished sentence.
+- Email: \`to\` must be a real, complete address — never a first name alone, never a placeholder — named inline with the subject. For a reply, resolve the named sender to an address first. For an attachment, name the email id and the filename inline; iris saves the file and returns its path — hand that path to whoever does the next step.
+- Inbox: name the window in the sentence and ask for the split you want back — "TASK: Read the last 24 hours of email and report which items need a reply and which are just newsletters, receipts, confirmations or ads." Iris reports what it read; it doesn't decide what matters unless the brief asks.
+- Calendar: "TASK: Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
+- What comes back is ids and a bare result line — turn it into plain speech and never read an id aloud.
 
 
 # OUTPUT
@@ -3844,31 +3863,19 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             }
 
             // Urgent inbox items interrupt the current task mid-turn; normal items
-            // wait for the turn-end drain. Supervisor flags (kind:
-            // 'supervisor_flag') are urgent and are rendered separately from
-            // finished-job results — a flag is a request for the orchestrator to
-            // DECIDE about a still-running job, not a result to confirm.
+            // wait for the turn-end drain. All urgent items are finished-job
+            // results the orchestrator must confirm.
             const urgentItems = inbox.unreadUrgent();
             if (urgentItems.length > 0) {
                 for (const item of urgentItems) inbox.markRead(item.jobId);
-                const flags = urgentItems.filter(i => i.kind === 'supervisor_flag');
-                const results = urgentItems.filter(i => i.kind !== 'supervisor_flag');
-                const parts: string[] = [];
-                if (results.length > 0) {
-                    const body = results.map(i => {
-                        const v = i.verdict ? `Supervisor verdict: ${i.verdict.toUpperCase()} — ${i.verdictReason || ''}\n` : '';
-                        return `${i.jobId} (${i.status}) — task: "${i.task.slice(0, 160)}"\n${v}Result:\n${i.fullResult.slice(0, 4000)}`;
-                    }).join('\n\n---\n\n');
-                    const stillRunning = [...backgroundJobs.values()].filter(j => j.status === 'running' && !results.some(u => u.jobId === `${j.agent}-${j.shortId}`));
-                    const stillLine = stillRunning.length > 0 ? `\n\nSTILL RUNNING (do not report complete until these land): ${stillRunning.map(j => `${j.agent}-${j.shortId}`).join(', ')}` : '';
-                    parts.push(`[Inbox — urgent background result${results.length > 1 ? 's' : ''}, delivered mid-task as requested. Confirm each against the original ask first: relay confirmed results in a sentence or fold them into what you are doing; if a result proves its deliverable wrong or missing (or the supervisor verdict is FAILED), call report_task_failure and re-delegate once naming the gap (the runner caps automatic retries); if success can only be judged by screen state, trust it. Do not paste raw output verbatim.]\n\n${body}${stillLine}`);
-                }
-                if (flags.length > 0) {
-                    const fbody = flags.map(i => i.fullResult).join('\n\n---\n\n');
-                    parts.push(`[Supervisor flag${flags.length > 1 ? 's' : ''} — a running job need${flags.length > 1 ? '' : 's'} your decision now. Act on each before continuing your current work.]\n\n${fbody}`);
-                }
-                messages.push({ role: 'user', content: parts.join('\n\n') });
-                log(`[inbox] injected ${urgentItems.length} urgent item(s) mid-turn (${results.length} result(s), ${flags.length} supervisor flag(s))`);
+                const body = urgentItems.map(i => {
+                    const v = i.verdict ? `Supervisor verdict: ${i.verdict.toUpperCase()} — ${i.verdictReason || ''}\n` : '';
+                    return `${i.jobId} (${i.status}) — task: "${i.task.slice(0, 160)}"\n${v}Result:\n${i.fullResult.slice(0, 4000)}`;
+                }).join('\n\n---\n\n');
+                const stillRunning = [...backgroundJobs.values()].filter(j => j.status === 'running' && !urgentItems.some(u => u.jobId === `${j.agent}-${j.shortId}`));
+                const stillLine = stillRunning.length > 0 ? `\n\nSTILL RUNNING (do not report complete until these land): ${stillRunning.map(j => `${j.agent}-${j.shortId}`).join(', ')}` : '';
+                messages.push({ role: 'user', content: `[Inbox — urgent background result${urgentItems.length > 1 ? 's' : ''}, delivered mid-task as requested. Confirm each against the original ask first: relay confirmed results in a sentence or fold them into what you are doing; if a result proves its deliverable wrong or missing (or the supervisor verdict is FAILED), call report_task_failure and re-delegate once naming the gap (the runner caps automatic retries); if success can only be judged by screen state, trust it. Do not paste raw output verbatim.]\n\n${body}${stillLine}` });
+                log(`[inbox] injected ${urgentItems.length} urgent item(s) mid-turn`);
             }
             if (!outputStarted) {
                 outputStarted = true;
@@ -4871,19 +4878,13 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 writeStatus({ phase: 'thinking', label: 'Reporting back on finished work…', fg: 1, ts: Date.now() });
                 for (const item of unreadItems) inbox.markRead(item.jobId);
                 drainedDigestJobIds = unreadItems.map(i => i.jobId); // for one-shot requeue if this digest turn errors out
-                // Supervisor flags (kind: 'supervisor_flag') are NOT finished
-                // results — they are requests to decide about a still-running
-                // job. Render them separately so the CONFIRM framing below does
-                // not misread a flag as a completed result.
-                const flagItems = unreadItems.filter(i => i.kind === 'supervisor_flag');
-                const resultItems = unreadItems.filter(i => i.kind !== 'supervisor_flag');
                 // Inline each result body (capped) — the orchestrator cannot
                 // confirm what it cannot see. Longer results stay reachable via
                 // read_job_result. Each item carries the supervisor's completion
                 // verdict (confirmed/failed/unverifiable) — a FAILED verdict is
                 // PROVEN-FAILED automatically: report_task_failure + one corrected
                 // re-delegate, no re-reading required.
-                const body = resultItems.map(i => {
+                const body = unreadItems.map(i => {
                     const v = i.verdict ? `Supervisor verdict: ${i.verdict.toUpperCase()} — ${i.verdictReason || ''}\n` : '';
                     return `- ${i.jobId} (${i.agent}, ${i.status}) — task: "${i.task.slice(0, 160)}"\n${v}Result:\n${i.fullResult.slice(0, 2000)}${i.fullResult.length > 2000 ? `\n(result truncated — read_job_result {job_id: "${i.jobId}"} has the full text)` : ''}`;
                 }).join('\n\n');
@@ -4895,8 +4896,8 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     ? `\n\nSTILL RUNNING (results have NOT landed — do not report their work as done, and do not call the overall request complete until each lands):\n` +
                       stillRunning.map(j => `- ${j.agent}-${j.shortId}: ${Math.round((Date.now() - j.startedAt) / 1000)}s elapsed, ${j.toolCallCount} call(s) — "${j.task.slice(0, 120)}"`).join('\n')
                     : '';
-                const resultsBlock = resultItems.length > 0
-                    ? `[Inbox] ${resultItems.length} background job result${resultItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
+                const resultsBlock = unreadItems.length > 0
+                    ? `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
                       `For each result, run the CONFIRM step before anything else: compare it against what the user originally asked for — that ask is in your context.\n` +
                       `1. CONFIRMED — the deliverable the user asked for is present and right. Relay it in one or two plain sentences, or stay silent if the user can already see or hear it (media playing, a window opened, volume changed) or it only feeds a chained next step.\n` +
                       `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call browser_snapshot and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
@@ -4904,11 +4905,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                       `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.` +
                       stillRunningBlock
                     : '';
-                const flagsBlock = flagItems.length > 0
-                    ? `[Supervisor flag${flagItems.length > 1 ? 's' : ''} — a running job need${flagItems.length > 1 ? '' : 's'} your decision now. Act on each before anything else.]\n\n` +
-                      flagItems.map(i => i.fullResult).join('\n\n---\n\n')
-                    : '';
-                nextInput = [resultsBlock, flagsBlock].filter(Boolean).join('\n\n');
+                nextInput = resultsBlock;
                 log(`[inbox] draining ${unreadItems.length} item(s) into a digest turn`);
                 break;
             }
@@ -4929,14 +4926,13 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             if (!nextInput) {
                 log('Idle timeout or close signal — exiting.');
                 await disconnectMcpClients();
-                if (watchdogTicker) { clearInterval(watchdogTicker); watchdogTicker = null; }
                 return;
             }
             break;
         }
         prompt = nextInput as string;
-        // Capture the genuine user ask for the supervisor watchdog and the
-        // completion verdict (Step 2). Tag-stripped, never set from digest
+        // Capture the genuine user ask for the completion verdict (Step 2).
+        // Tag-stripped, never set from digest
         // compositions or urgent injections — those would poison the verdict.
         lastUserAsk = String(nextInput).replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400) || lastUserAsk;
     }
@@ -5539,18 +5535,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             }
         }
     } else if (toolName === 'nudge_agent') {
-        // The orchestrator's steering lever for a running job. The supervisor
-        // watchdog flags off-track jobs to the orchestrator (an urgent inbox
-        // item, kind: 'supervisor_flag'); the orchestrator decides what to do
-        // and, if steering is right, calls this. The message is pushed into the
+        // The orchestrator's steering lever for a running job. It decides what
+        // to do about a job it judges off-track and, if steering is right,
+        // calls this. The message is pushed into the
         // job's abortFlag.nudges, which runSubAgent drains into the job's next
-        // turn — the same channel the old direct-supervisor-nudge used.
-        // supervisorNudges counts THESE orchestrator-delivered nudges —
+        // turn. supervisorNudges counts THESE orchestrator-delivered nudges —
         // informational only (how many times the orchestrator has steered this
         // job), so the orchestrator can see its own nudge count when deciding
         // whether to stop_agent. There is NO ceiling: the runner never
-        // auto-stops on a nudge count. watchdogNudgedAt is reset so the watchdog
-        // does not re-flag while the nudge is being absorbed.
+        // auto-stops on a nudge count. watchdogNudgedAt timestamps the latest
+        // nudge so Oversight shows when steering last happened.
         const targetId = String(args?.job_id || '');
         const message = String(args?.message || '').trim();
         if (!targetId || !message) {
