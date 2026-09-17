@@ -23,6 +23,7 @@ import { registry } from './tool-registry.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
+import { ownerALS, releaseOwnerPages } from './browser.js';
 import { marmAutoRecall, noteMarmActivity } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
@@ -1584,23 +1585,13 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         if (urgent && !dup.urgent) { dup.urgent = true; log(`[dedup] promoted ${existingId} to urgent`); }
         return existingId;
     }
-    // One-atlas-at-a-time: at most ONE atlas job may run concurrently, whatever
-    // the dispatch source (orchestrator tool call, watchdog delegate[], or the
-    // atlas-direct "go" spawn — all funnel through here). A second atlas while
-    // one is already running is the double-launch that races files. Kill the
-    // running one (the new task supersedes it) before spawning; its loop exits
-    // within its current iteration and reports 'aborted'. Vulcan is exempt —
-    // the watchdog's churn-escalation deliberately spawns vulkan while an atlas
-    // is winding down, and vulkan is the bigger brother that may need to run.
-    if (delegate === 'atlas') {
-        const runningAtlas = [...backgroundJobs.values()].find(j => j.agent === 'atlas' && j.status === 'running');
-        if (runningAtlas) {
-            const rid = `atlas-${runningAtlas.shortId}`;
-            runningAtlas.abortFlag.aborted = true;
-            runningAtlas.status = 'aborted';
-            log(`[gate] one-atlas: aborting running ${rid} to spawn a new atlas; new task supersedes.`);
-        }
-    }
+    // Parallel atlas/vulkan jobs are allowed (cloud seats and local toolcall
+    // seats both run concurrent; same local model = one loaded copy, Ollama
+    // parallelism). The old one-atlas-at-a-time gate existed to stop two jobs
+    // racing the browser's single activePage global; browser pages are now
+    // owner-scoped (ownerALS in browser.ts — each job drives its own claimed
+    // tab), so the race is structurally gone. File races are still covered by
+    // the same-file backstop below and duplicate dispatches by the dedup above.
     // Same-file backstop: a differently-worded task on the SAME file(s) as a
     // running writer job would clobber it. Don't spawn now and don't disturb
     // the running job — queue the follow-up on it and spawn when it finishes.
@@ -1665,7 +1656,10 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // abort — the orchestrator alone decides stops.
     let churnStreak = 0;
     let churnNudges = 0;
-    const job = runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
+    // Owner-scope the whole job (model turns + tool execution) so its browser
+    // calls resolve to THIS job's tab — parallel jobs each drive their own
+    // page instead of racing the process-global activePage.
+    const job = ownerALS.run({ owner: jobId }, () => runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
         jobRecord.toolCallCount++;
         jobRecord.lastAction = `${toolName}(${argsSummary})`;
         jobRecord.lastActionAt = Date.now();
@@ -1718,12 +1712,15 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         })
         .finally(() => {
             if (jobRecord.status === 'running') jobRecord.status = 'done';
+            // Drop this job's browser-owner state (its tab stays open — the
+            // result often lives in it) so the map doesn't grow per job.
+            releaseOwnerPages(jobId);
             // Refresh the jobs indicator: shows remaining running jobs, or
             // emits the zero-count clearing line when this was the last job
             // (emitJobsStatus handles the transition-to-zero itself).
             emitJobsStatus();
             setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
-        });
+        }));
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
     // ensureWatchdogTicker(context); // SUPERVISOR DISABLED 2026-08-29: false off-track flags killed healthy atlas read/idle phases (atlas-p7th). Commented out at every arming site; reinstated only when the supervisor is rebuilt to actually distinguish progress from veering.
@@ -2541,8 +2538,11 @@ function ensureWatchdogTicker(toolContext: any): void {
 // fullThinking (never shown to users). Models that already behave with the
 // iteration-1-only policy (nemotron, deepseek, etc.) are deliberately NOT listed,
 // to avoid changing their token usage/latency; extend the pattern if another model
-// is caught leaking untagged reasoning.
-const ALWAYS_THINK_MODEL_RE = /^kimi/i;
+// is caught leaking untagged reasoning. glm leaks: with think off (atlas/vulkan
+// only think on iteration 0), glm-5.3:cloud streamed tool-mechanics reasoning as
+// CONTENT on later iterations (atlas-10gs iter 44, vulkan-8vzh iter 5, both
+// narrating about browser_type internals instead of calling it).
+const ALWAYS_THINK_MODEL_RE = /^(kimi|glm)/i;
 function modelRequiresThink(model: string): boolean {
     return ALWAYS_THINK_MODEL_RE.test(model || '');
 }

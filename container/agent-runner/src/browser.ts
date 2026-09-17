@@ -2,6 +2,7 @@ import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { log } from './ipc-helpers.js';
 
@@ -42,6 +43,36 @@ const DISPLAY_ENV = {
 
 let browser: Browser | null = null;
 let activePage: Page | null = null;
+
+// ── Per-job browser isolation ── Parallel atlas/vulkan jobs each drive their
+// OWN tab. Jobs run inside ownerALS.run({ owner: jobId }) (spawnBackgroundJob),
+// and every per-conversation state that used to be a module global — the
+// active page and the changed-snapshot comparison key — keys by that owner.
+// The old one-atlas-at-a-time gate existed because two jobs sharing one
+// activePage raced the same tab; with owner scoping the race is structurally
+// impossible. Ownerless flows (orchestrator passthrough, direct tool calls)
+// keep the legacy globals. Adopted pages are claimed so a second job never
+// lands on a tab the first job (or the legacy flow) is working in: a job's
+// FIRST getPage adopts the most recent open tab only if unclaimed, otherwise
+// it opens a fresh one.
+export const ownerALS = new AsyncLocalStorage<{ owner: string }>();
+interface OwnerState { page: Page | null; lastSnapKey: string; }
+const ownerStates = new Map<string, OwnerState>();
+const claimedPages = new WeakSet<Page>();
+
+function ownerState(): OwnerState | null {
+    const owner = ownerALS.getStore()?.owner;
+    if (!owner) return null;
+    let st = ownerStates.get(owner);
+    if (!st) { st = { page: null, lastSnapKey: '' }; ownerStates.set(owner, st); }
+    return st;
+}
+
+/** Drop a finished job's browser state. The tab itself is left open — Chrome
+ * is the user's persistent window and the job's result often lives in it. */
+export function releaseOwnerPages(owner: string): void {
+    ownerStates.delete(owner);
+}
 
 async function cdpUp(timeoutMs = 1000): Promise<boolean> {
     return (await cdpBase(timeoutMs)) !== null;
@@ -164,6 +195,7 @@ export async function getBrowser(): Promise<Browser> {
     browser.on('disconnected', () => {
         browser = null;
         activePage = null;
+        ownerStates.clear();
         cdpHost = null; // re-probe on next connect (Chrome may have rebound the other stack)
     });
     return browser;
@@ -176,15 +208,27 @@ function isUsable(p: Page | null): p is Page {
 /** The page the agent is currently working in. Falls back to the most recent open tab. */
 export async function getPage(): Promise<Page> {
     const b = await getBrowser();
-    if (isUsable(activePage)) return activePage;
     const context = b.contexts()[0] ?? (await b.newContext());
-    const pages = context.pages().filter((p) => !p.isClosed());
-    activePage = pages.length > 0 ? pages[pages.length - 1] : await context.newPage();
+    const openPages = context.pages().filter((p) => !p.isClosed());
+    const st = ownerState();
+    if (st) {
+        if (isUsable(st.page)) return st.page;
+        const adopt = openPages[openPages.length - 1];
+        st.page = (adopt && !claimedPages.has(adopt)) ? adopt : await context.newPage();
+        claimedPages.add(st.page);
+        return st.page;
+    }
+    if (isUsable(activePage)) return activePage;
+    const unclaimed = openPages.filter((p) => !claimedPages.has(p));
+    activePage = unclaimed.length > 0 ? unclaimed[unclaimed.length - 1] : await context.newPage();
     return activePage;
 }
 
 export function setActivePage(p: Page): void {
-    activePage = p;
+    claimedPages.add(p);
+    const st = ownerState();
+    if (st) st.page = p;
+    else activePage = p;
 }
 
 export async function listPages(): Promise<Page[]> {
@@ -218,7 +262,8 @@ function formatSnapshot(s: { text: string; title: string; url: string }): string
 /** Aria snapshot with [ref=eN] element refs, capped so a huge page can't flood the context. */
 export async function snapshot(page: Page): Promise<string> {
     const s = await takeAria(page);
-    lastSnapKey = s.key;
+    const st = ownerState();
+    if (st) st.lastSnapKey = s.key; else lastSnapKey = s.key;
     return formatSnapshot(s);
 }
 
@@ -231,8 +276,14 @@ export async function snapshot(page: Page): Promise<string> {
  * instead of snapshot/screenshot/re-click loops. */
 export async function changedSnapshot(page: Page): Promise<string | null> {
     const s = await takeAria(page);
-    if (s.key === lastSnapKey) return null;
-    lastSnapKey = s.key;
+    const st = ownerState();
+    if (st) {
+        if (s.key === st.lastSnapKey) return null;
+        st.lastSnapKey = s.key;
+    } else {
+        if (s.key === lastSnapKey) return null;
+        lastSnapKey = s.key;
+    }
     return formatSnapshot(s);
 }
 
