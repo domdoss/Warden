@@ -38,14 +38,16 @@ import sys
 # Reduce fragmentation on the 16 GB cards before CUDA initializes.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-# One GPU per process, set BEFORE torch initializes CUDA:
-#  - under torchrun DDP, each rank pins to its own LOCAL_RANK GPU (unsloth's
-#    default auto device-map would otherwise shard ONE model across BOTH
-#    cards, which breaks DDP and leaves the desktop-holding GPU half-stolen);
-#  - a plain single-process run stays on cuda:0 only, like the old build.
-if "LOCAL_RANK" in os.environ:
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["LOCAL_RANK"]
-elif "CUDA_VISIBLE_DEVICES" not in os.environ:
+# GPU placement, set BEFORE torch initializes CUDA:
+#  - under torchrun DDP, do NOTHING — unsloth's DDP support selects each
+#    rank's GPU from LOCAL_RANK itself, and pinning CUDA_VISIBLE_DEVICES per
+#    rank collapses the visible set to one card, making unsloth's
+#    cuda:{LOCAL_RANK} placement go out of range (IndexError in
+#    _get_stream on rank 1, 2026-09-17 torchrun run);
+#  - a plain single-process run stays on cuda:0 only, like the old build
+#    (unsloth's default auto device-map would otherwise shard ONE model
+#    across BOTH cards, stealing the desktop-holding GPU).
+if "LOCAL_RANK" not in os.environ and "CUDA_VISIBLE_DEVICES" not in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
