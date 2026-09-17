@@ -1364,6 +1364,47 @@ function emitJobsStatus() {
     writeStatus({ phase: head.agent, label, jobs: running.length, jobsList: currentJobsList(), ts: Date.now() });
 }
 
+// ─── Running-jobs roster (survives a hard-kill) ────────────────────────────
+// A "stop" hard-kill SIGKILLs this runner, which drops the in-memory
+// backgroundJobs map AND the inbox together — the orchestrator's next turn then
+// sees "no jobs running" next to its own earlier "atlas-XXXX is posting" and
+// concludes the delegation "didn't stick", re-dispatching the same task as a
+// duplicate loop. Persist the running-jobs roster to disk on every start/stop;
+// on the next process start, rehydrate any job that never reached a terminal
+// status into the inbox as "interrupted — result lost" so the orchestrator
+// treats it as stopped, never as never-run.
+const JOBS_ROSTER_PATH = '/tmp/warden-jobs.json';
+
+function persistJobRoster(): void {
+    try {
+        const running = [...backgroundJobs.values()]
+            .filter((j) => j.status === 'running')
+            .map((j) => ({ jobId: `${j.agent}-${j.shortId}`, agent: j.agent, task: j.task, startedAt: j.startedAt, urgent: j.urgent }));
+        fs.writeFileSync(JOBS_ROSTER_PATH, JSON.stringify(running), 'utf-8');
+    } catch { /* best-effort — never crash the runner over the roster */ }
+}
+
+function rehydrateOrphanedJobs(): void {
+    try {
+        const raw = fs.readFileSync(JOBS_ROSTER_PATH, 'utf-8');
+        const jobs = JSON.parse(raw);
+        fs.unlinkSync(JOBS_ROSTER_PATH);
+        if (!Array.isArray(jobs) || jobs.length === 0) return;
+        for (const j of jobs) {
+            if (!j || !j.jobId || !j.task) continue;
+            inbox.push({
+                jobId: j.jobId,
+                agent: j.agent || 'atlas',
+                task: j.task,
+                fullResult: `${j.agent || 'atlas'} was interrupted by a runner restart while working on this task — its result was lost. It was NOT a failed attempt: do not re-dispatch the identical task as if it never ran. Tell the user the previous attempt was interrupted and ask whether to retry.`,
+                status: 'aborted',
+                urgent: false,
+            });
+        }
+        log(`[jobs-roster] rehydrated ${jobs.length} orphaned job(s) from a prior runner (interrupted, results lost)`);
+    } catch { /* no roster or malformed — nothing to reconcile */ }
+}
+
 // ─── Direct Atlas passthrough ───────────────────────────────────────────
 // When the user asks to talk to Atlas directly, the orchestrator calls the
 // `atlas_direct` tool. That sets `atlasDirect.active` and the orchestrator's
@@ -1778,11 +1819,13 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             // emits the zero-count clearing line when this was the last job
             // (emitJobsStatus handles the transition-to-zero itself).
             emitJobsStatus();
+            persistJobRoster();
             setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
         }));
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
     emitJobsStatus();
+    persistJobRoster();
     return { jobId, outcome: 'started' };
 }
 
@@ -3457,9 +3500,9 @@ const marmRecallSection = marmEnabled
 // WATCHDOG_* constants) happened 2026-09-17 — see git history for both.
 const ROUTING_CORE = `# CORE MANDATES (hard rules — follow exactly)
 
-1. Never dispatch a task that already has a running job — the runner refuses duplicates ("already running"); say so and wait. To change instructions, stop_agent first, then re-delegate.
+1. Before ANY delegate call, run \`list_running_agents\` and read the ids. Never dispatch a task that already has a running job — the runner refuses duplicates ("already running"); say so and wait. To change instructions, stop_agent first, then re-delegate.
 2. Never report a job's outcome before its result lands in your inbox — not "done", "opened", "playing", or "fixed". Until the result is in front of you, you know nothing.
-3. When a result lands, read it against the original ask. "done" means it didn't crash, not that it's right. Each result carries a supervisor verdict (CONFIRMED / FAILED / UNVERIFIABLE); a FAILED verdict, or a result proving the deliverable wrong or missing, is PROVEN-FAILED: call report_task_failure with the task and reason, then re-delegate ONCE naming the GAP (what was wanted vs what came back) — never the fix. If the runner refuses the re-delegation, that's final: tell the user plainly what failed and stop.
+3. When a result lands, read it against the original ask. "done" means it didn't crash, not that it's right. Each result carries a completion verdict (CONFIRMED / FAILED / UNVERIFIABLE); a FAILED verdict, or a result proving the deliverable wrong or missing, is PROVEN-FAILED: call report_task_failure with the task and reason, then re-delegate ONCE naming the GAP (what was wanted vs what came back) — never the fix. If the runner refuses the re-delegation, that's final: tell the user plainly what failed and stop.
 4. Every ask in the message gets handled. When a result is one step of a larger request and the supervisor hasn't already started the next step, delegate it yourself now — don't wait for the user. Stop only when the whole request is done or you're genuinely blocked; never call it complete while jobs are still running (the digest names them).
 5. Report completion once, in plain speech, carrying the actual answer — the number, the name, the contents, the yes/no. The user sees only your reply; anything you leave out is lost.
 6. A clear instruction is permission. Act, then report. Don't ask "shall I proceed?" or narrate a plan. Ask one short question only when the request is genuinely ambiguous — and genuine ambiguity means the INTENT has two plausible readings. A missing fact (path, id, name, value) is never ambiguity: discover it with your crew (see DELEGATING — never ask the captain for a fact your crew can find).
@@ -3498,7 +3541,7 @@ Cue words:
 - A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
 
 Gotchas (the ones that actually trip routing):
-- An atlas job that failed or was stopped for churning (searching without delivering) → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. This escalation is always your own manual call — there is no auto-escalation signal to wait for.
+- An atlas job whose RESULT HAS LANDED and is wrong/missing → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. Never stop a still-running atlas job to reroute it — only reroute after its result is in front of you and you've judged it wrong. This escalation is always your own manual call — there is no auto-escalation signal to wait for.
 
 Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
 
@@ -3516,9 +3559,9 @@ PATTERN-SHAPED BRIEFS: when a RELEVANT PATTERNS entry fits the work you're deleg
 
 Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
 
-BATCHES: if the user's ask names a plural deliverable (five posts, three files, N pages), the ask IS a batch — break it up, decide the order, then delegate ONE ITEM AT A TIME: send one one-item brief, wait for its result to land in your inbox, CONFIRM it against the ask, then delegate the next. Never one bundled task — bundling leaves one specialist grinding all N alone with no checkpoint, and a single bad item blocks the rest. This is about COUNT, not method — WHAT-not-HOW still applies to each brief. Bundle only when one item's content depends on another's outcome (one site redesign, a refactor across related files). Sharing a site, account, or browser does NOT make items dependent — five posts to five subreddits are five independent briefs even though they land on the same Reddit account.
+BATCHES: if the user's ask names a plural deliverable (five posts, three files, N pages), the ask IS a batch — break it up, decide the order, then delegate ONE ITEM AT A TIME: send one one-item brief, wait for its result to land in your inbox, CONFIRM it against the ask, then delegate the next. Never one bundled task — bundling leaves one specialist grinding all N alone with no checkpoint, and a single bad item blocks the rest. This is about COUNT, not method — WHAT-not-HOW still applies to each brief. Bundle only when one item's content depends on another's outcome (one site redesign, a refactor across related files). Sharing a site, account, or browser does NOT make items dependent — five posts to five subreddits are still five one-at-a-time briefs even though they land on the same Reddit account.
 
-A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Before delegating anything, check \`list_running_agents\`: if a running job is already doing this outcome for this specialist — even if your brief would be worded differently — do NOT dispatch again; that's a duplicate, and the running job owns it. Emit delegate calls for DIFFERENT unrelated asks in one turn — they run in parallel; batch items (BATCHES above) go one at a time, and serialize any delegation whose result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
+A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Before delegating anything, check \`list_running_agents\`: if a running job is already doing this outcome for this specialist — even if your brief would be worded differently — do NOT dispatch again; that's a duplicate, and the running job owns it. The ONLY parallel dispatch is two asks the captain made in the same message that are unrelated — emit those delegate calls together and they run in parallel. Batch items (BATCHES above) go one at a time, and serialize any delegation whose result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
 # BRIEFING IRIS
 
@@ -5936,6 +5979,11 @@ Call email(action="read") once if the task needs recent inbox activity, then out
 
     log(`Using Ollama runner for model: ${containerInput.model || 'default'}`);
     try {
+        // Reconcile any job orphaned by a prior hard-kill ("stop") before the
+        // first turn drains the inbox — otherwise the orchestrator sees its own
+        // earlier "atlas-XXXX is posting" next to an empty jobs list and
+        // re-dispatches the same task as "didn't stick".
+        rehydrateOrphanedJobs();
         await runNativeOllama(containerInput);
     }
     catch (err) {
