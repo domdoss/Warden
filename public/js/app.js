@@ -396,8 +396,22 @@
       const idle = Number(j.idle) || 0;
       const elapsed = Number(j.elapsed) || 0;
       const calls = Number(j.calls) || 0;
-      const meta = [calls + ' call' + (calls === 1 ? '' : 's'), ovDur(elapsed), idle > 0 ? 'idle ' + ovDur(idle) : ''].filter(Boolean).join(' · ');
-      rows.push(ovRow(j.agent, j.task, j.lastAction || 'starting…', meta, 'job', j.task, idle > 300 ? 'stalled' : ''));
+      // Live output scrollby: the runner streams a capped tail of the job's
+      // thinking/content, refreshed ~2.5x/s during generation. "streaming"
+      // (a chunk in the last 15s) means the model is actively producing
+      // tokens even with 0 tool calls — a long think pass used to read as
+      // "idle Ns / stalled" while it was writing.
+      const streamTail = String(j.streamContent || j.streamThinking || '').replace(/\s+/g, ' ').trim();
+      const streaming = Number(j.streamAt) > 0 && (Date.now() - Number(j.streamAt) < 15000);
+      const meta = [calls + ' call' + (calls === 1 ? '' : 's'), ovDur(elapsed),
+        streaming ? 'streaming' : (idle > 0 ? 'idle ' + ovDur(idle) : '')].filter(Boolean).join(' · ');
+      rows.push(ovRow(j.agent, j.task, j.lastAction || 'starting…', meta, 'job', j.task,
+        !streaming && idle > 300 ? 'stalled' : ''));
+      if (streamTail) {
+        const mode = j.streamContent ? 'writing' : 'thinking';
+        rows.push('<div class="ov-stream' + (streaming ? ' live' : '') + '" title="' + esc(streamTail) + '">' +
+          '<span class="ov-stream-mode">' + mode + '</span>' + esc(streamTail.slice(-160)) + '</div>');
+      }
     }
     // Supervisor's latest monitor-tick note (prose, routed here instead of chat).
     const sups = (d.progress || []).filter(e => e.kind === 'supervisor' && e.label);

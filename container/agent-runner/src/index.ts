@@ -251,6 +251,36 @@ const SUB_INTENT_RE = /\b(?:now|i'?ll|i will|next,?\s+i'?ll|let me|let'?s|i'?m g
 const SUB_INTENT_FILE_WRITE_RE = /\b(?:write|create|make|build|save|generate)\b[\s\S]{0,40}?[\w~./@-]+\.[a-z0-9]{1,6}\b/i;
 const SUB_INTENT_MAX_NUDGES = 2;
 
+// ── Deterministic churn + narration watchdogs (count/volume-based, NOT time) ──
+// Speed-invariant by design: local models stream slower than cloud ones, so
+// elapsed seconds can't distinguish "slow but working" from "circling". Both
+// detectors key on WHAT the job emits, not how long it takes.
+// Research streak (restored from 2727c1e, removed 2026-08-25 in 7123b6b when
+// the LLM supervisor took over sensing — then the supervisor was hard-disabled
+// 2026-08-29, leaving NOTHING sensing stuck jobs. Nudges only, never abort:
+// only the orchestrator decides stops; the 3h wall-clock is the sole code-side kill.)
+const CHURN_NUDGE_AFTER = 12;    // consecutive research-class calls → commit nudge
+const CHURN_RENUDGE_EVERY = 10;  // re-nudge interval after the first
+const CHURN_MIN_AGE_S = 60;      // don't churn-nudge a job younger than this
+const RESEARCH_TOOLS = new Set([
+    'Read', 'Grep', 'Glob', 'Bash', 'WebSearch', 'WebFetch',
+    'read_file', 'list_file', 'get_chat_history', 'list_running_agents',
+    'read_job_result', 'agent_logs',
+    // Browser probes count as research: atlas-10gs circled 40+ iterations on
+    // browser_evaluate probes of Reddit's shadow-DOM composer without acting.
+    'browser_navigate', 'browser_snapshot', 'browser_evaluate',
+    'browser_current_url', 'browser_tabs', 'browser_screenshot',
+    'browser_wait_for', 'desktop_screenshot',
+    'mcp__marm__marm_smart_recall',
+]);
+// Narration cap: a stream that has produced this many chars of CONTENT with
+// zero tool_call chunks is writing an essay, not working. A legitimate long
+// generation (big Write/browser_type payload) emits tool_call chunks from the
+// first fragments, and thinking is exempt (sanctioned planning), so neither
+// trips it regardless of model speed.
+const NARRATION_MAX_CHARS = 6000;
+const NARRATION_MAX_NUDGES = 3;
+
 // Narrated-but-never-dispatched guard (Atlas regression): the model narrates a
 // delegation in present-progressive ("Atlas is opening the page now") or future
 // ("I'll have Atlas do X — I'll let you know") then ends the turn with no tool
@@ -1270,6 +1300,10 @@ interface BackgroundJob {
     streamThinking?: string;
     streamContent?: string;
     streamTools?: { name: string; args: string; t: number }[];
+    // ms timestamp of the last streamed chunk — lets Oversight say "streaming"
+    // (writing/thinking right now) instead of a growing "idle Ns" that read as
+    // a stall during a long zero-tool-call generation.
+    streamAt?: number;
 }
 const backgroundJobs = new Map<string, BackgroundJob>();
 // Emit a live verbose-status line summarizing the background jobs currently
@@ -1290,6 +1324,13 @@ function currentJobsList() {
         lastAction: (j.lastAction || '').slice(0, 120),
         elapsed: Math.round((now - j.startedAt) / 1000),
         idle: Math.round((now - j.lastActionAt) / 1000),
+        // Live output scrollby for the Oversight window — tail of the most
+        // recent streamed thinking/content (capped on the job record; sliced
+        // again here to keep the status line lean). streamAt lets the UI tell
+        // "actively generating" from a genuine stall.
+        streamThinking: (j.streamThinking || '').slice(-400),
+        streamContent: (j.streamContent || '').slice(-400),
+        streamAt: j.streamAt || 0,
     }));
 }
 // The dashboard's Oversight window replaces its job list ONLY when a status
@@ -1618,12 +1659,37 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             }
         }
     };
+    // Deterministic churn sensing (restored from 2727c1e, count-based — never
+    // time-based): N consecutive research-class calls with no action call
+    // between them means the job is circling. Inject a commit nudge; NEVER
+    // abort — the orchestrator alone decides stops.
+    let churnStreak = 0;
+    let churnNudges = 0;
     const job = runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
         jobRecord.toolCallCount++;
         jobRecord.lastAction = `${toolName}(${argsSummary})`;
         jobRecord.lastActionAt = Date.now();
         jobRecord.activityLog.push({ t: Date.now(), tool: toolName, args: argsSummary, result: resultPreview });
         if (jobRecord.activityLog.length > 200) jobRecord.activityLog.shift();
+        // Research-class call → grow the streak; anything else (Write, Edit,
+        // browser_click/type, send, …) is action and resets it. Exempt agents
+        // whose job IS read-only; skip young jobs (warmup, CHURN_MIN_AGE_S).
+        if (!CHURN_EXEMPT_AGENTS.has(delegate) && (Date.now() - jobRecord.startedAt) > CHURN_MIN_AGE_S * 1000) {
+            if (RESEARCH_TOOLS.has(toolName)) {
+                churnStreak++;
+                const dueAt = churnNudges === 0
+                    ? CHURN_NUDGE_AFTER
+                    : CHURN_NUDGE_AFTER + CHURN_RENUDGE_EVERY * churnNudges;
+                if (churnStreak >= dueAt) {
+                    churnNudges++;
+                    abortFlag.nudges.push(`NUDGE: You have made ${churnStreak} consecutive read/inspection calls (latest: ${toolName}) with no action between them. You have enough information — act NOW: produce the deliverable (write the file, click, type, submit, send). If you are genuinely missing one piece of information, get it in a single call and then act immediately. Do not keep probing.`);
+                    log(`[churn] ${delegate} ${jobShortId}: ${churnStreak} consecutive research calls — injected commit nudge ${churnNudges} (no abort)`);
+                    writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${churnStreak} consecutive inspection calls — nudging to act`, ts: Date.now() });
+                }
+            } else {
+                churnStreak = 0;
+            }
+        }
         emitJobsStatus();
     }, def.temperature)
         .then(async saResult => {
@@ -1704,7 +1770,7 @@ const DEFAULT_WATCHDOG_TICK_MS = 600_000; // default self-audit cadence (10 min)
 // there is no persistence ceiling, no abortIgnoredJob, no auto-escalate. The
 // only code-enforced stop is the 3h wall-clock (WALL_CLOCK_MS), a last resort.
 // The decision to steer or stop is always the orchestrator's; code only ticks.
-const CHURN_EXEMPT_AGENTS = new Set(['artemis']); // read-only by design — supervisor is told not to flag them for reading
+const CHURN_EXEMPT_AGENTS = new Set(['artemis', 'sentry']); // read-only by design — never flag them for reading/probing
 const WATCHDOG_NUDGE_COOLDOWN_S = 1200; // min seconds between supervisor flags on the same job (20 min — at a 10-min cadence the old 120s was always satisfied, so a flagged job was re-flagged on the next tick before the orchestrator could act)
 
 // Write/edit tools whose `args` carry a file_path — used to render the OFF-TASK
@@ -3030,6 +3096,7 @@ async function runSubAgent(
     let transientRetries = 0;  // transient provider errors get retries-with-backoff, not instant job death
     let imageInputRefusals = 0; // 400 "does not support image input" — strip images + retry, once
     let subIntentNudges = 0;   // announced-tool-action-without-call nudges (SUB_INTENT_RE), per run
+    let narrationNudges = 0;   // content-only-stream narration aborts (NARRATION_MAX_CHARS), per run
     const toolsRun: string[] = [];  // tools the sub-agent actually executed (fallback summary if it goes silent)
 
     log(`[${agentName}] Starting sub-agent: model=${model}, tools=${tools.length}, maxIter=${maxIterations > 0 ? maxIterations : '∞ (ceiling ' + HARD_CEILING + ')'}, task="${task.slice(0, 80)}"`);
@@ -3139,12 +3206,44 @@ async function runSubAgent(
         // growing transcript instead of unrelated fragments.
         let iterContent = '';
         let iterThinking = '';
+        // Narration watchdog state for THIS stream: narration is prose content
+        // with no tool call behind it. Tool-call fragments (m.tool_calls) mark a
+        // stream as action, however slow; their absence marks narration.
+        let narrationFired = false;
+        let streamToolCallSeen = false;
         const onChunk = (chunk: any) => {
+            // stop_agent hard-kill: the abort flag is only checked at iteration
+            // boundaries, so a job cancelled mid-generation kept streaming —
+            // vulkan-cxei kept drafting in think-pass for minutes AFTER its
+            // stop_agent (2026-09-17), burning tokens on a dead job while the
+            // user watched "no tool calls". Abort the in-flight stream on the
+            // next chunk; the catch below exits as a cancellation, no retry.
+            if (abortFlag?.aborted) { try { silenceController.abort(); } catch { /* already aborted */ } return; }
             resetSilence();
             const m = chunk?.message;
             if (!m) return;
             if (m.thinking) iterThinking += String(m.thinking);
             if (m.content) iterContent += String(m.content);
+            if (Array.isArray(m.tool_calls) && m.tool_calls.length) streamToolCallSeen = true;
+            // Narration watchdog: >NARRATION_MAX_CHARS of content with zero
+            // tool-call chunks means the model is writing prose instead of
+            // acting (atlas-10gs narrated a Reddit plan for minutes mid-stream;
+            // the intent nudge below only fires at stream END). Volume-based,
+            // not time-based: a slow local model emitting a big tool-call
+            // payload never trips it (tool_calls chunks arrive from the start),
+            // and thinking is exempt — only CONTENT counts. Abort the stream,
+            // inject an act-now nudge, and the catch retries the iteration
+            // immediately. Capped per run so a prose-happy model can't ping-pong.
+            if (!streamToolCallSeen && !narrationFired && iterContent.length > NARRATION_MAX_CHARS
+                && narrationNudges < NARRATION_MAX_NUDGES && !abortFlag?.aborted) {
+                narrationFired = true;
+                narrationNudges++;
+                abortFlag?.nudges?.push(`NUDGE: You have written ${iterContent.length} characters of prose this turn without a single tool call. In a sub-agent turn, prose is not progress. Either make the tool call that does the work NOW (in this turn), or — if the task is genuinely complete — end with a short final report of the result. Never narrate plans or describe actions instead of performing them.`);
+                log(`[${agentName}] Narration nudge ${narrationNudges}/${NARRATION_MAX_NUDGES}: ${iterContent.length} content chars, no tool-call chunks — aborting stream, retrying iteration ${i + 1}`);
+                writeStatus({ phase: agentName, label: `${agentName}: narration without action (${iterContent.length} chars) — nudging to act`, ts: Date.now() });
+                try { silenceController.abort(); } catch { /* already aborted */ }
+                return;
+            }
             // Accumulate a capped streaming transcript on the job record so
             // Oversight can show the live output / thinking / tool calls.
             if (job) {
@@ -3161,22 +3260,22 @@ async function runSubAgent(
             const now = Date.now();
             if (now - lastStatusAt > 400) {
                 lastStatusAt = now;
+                if (job) job.streamAt = now;
                 // Prefer content; fall back to thinking when the iteration
                 // has only reasoned so far. Whitespace-collapsed tail slice.
                 const acc = (iterContent || iterThinking).replace(/\s+/g, ' ').trim();
                 const preview = acc.slice(-60);
-                if (preview) writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — ${iterContent ? 'generating' : 'thinking'} ${preview}`, ts: now });
+                // Carry the jobsList on the throttled stream status so
+                // Oversight's rows (and their output scrollby) refresh
+                // DURING a generation — emitJobsStatus only fires on job
+                // start and tool calls, so a long zero-tool-call think-pass
+                // froze the Oversight row at "starting… 0 calls" while
+                // tokens streamed (looked dead, 2026-09-17).
+                if (preview) writeStatus({ phase: agentName, label: `${agentName}: iteration ${i + 1} — ${iterContent ? 'generating' : 'thinking'} ${preview}`, ts: now, jobsList: currentJobsList() });
             }
         };
         try {
             const provider = getProvider();
-            // Trim history to fit context budget before each chat call — budget
-            // scaled to this agent's num_ctx (see subAgentMsgBudgetChars) so a
-            // large-window agent spends its window on tool results, not the flat 24k.
-            const sysChars = estimateMessagesChars([messages[0]!]);
-            const toolChars = JSON.stringify(tools).length;
-            const trimmed = trimMessagesToBudget(messages, subAgentMsgBudgetChars(model, ctxOverride, sysChars, toolChars));
-            if (trimmed !== messages) { messages.length = 0; messages.push(...trimmed); }
             resetSilence();
             const subThink = ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model);
             const chatResult = await provider.chatStream({
@@ -3384,6 +3483,27 @@ async function runSubAgent(
         } catch (err: any) {
             clearTimeout(silenceTimer);  // release the silence watchdog on any throw
             const errMsg = err?.message || String(err);
+            // stop_agent fired mid-generation (onChunk hard-killed the stream
+            // above). Exit as a cancellation with the same message shape the
+            // loop-top check uses — do NOT fall into the transient-retry path
+            // (the aborted-fetch error matches its "abort" pattern and would
+            // sleep 8s then re-check).
+            if (abortFlag?.aborted) {
+                log(`[${agentName}] Stream aborted mid-generation by stop_agent after ${i} iteration(s)`);
+                const partial = lastContent ? ` Partial output before cancellation: "${lastContent.slice(0, 200)}".` : '';
+                return {
+                    content: `${agentName} was CANCELLED externally (stop_agent) after ${i} iteration(s) — no failure, no limit hit.${partial} Tell the user it was cancelled. Retry at most once, only with a concrete fix.`,
+                    modifiedFiles: [...modifiedFiles],
+                };
+            }
+            // Narration watchdog fired mid-stream (onChunk above): the aborted
+            // fetch lands here. Retry the SAME iteration immediately — the
+            // nudge was pushed to abortFlag.nudges and drains at the loop top.
+            // Must precede the transient-retry path: the abort error matches
+            // its "abort" pattern and would otherwise burn an 8s backoff.
+            if (narrationFired && !abortFlag?.aborted) {
+                i--; continue;
+            }
             // A 400 "this model does not support image input" means an image
             // reached a visionless model (e.g. glm-5.3:cloud killed both
             // vulkan-7qm8 and vulkan-gdpo this way, 2026-09-03). That must NOT
