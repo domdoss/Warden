@@ -554,10 +554,6 @@ function applySettingsSync(data: any) {
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
-    if (data.supervisorIntervalMs !== undefined) {
-        const ms = Math.floor(Number(data.supervisorIntervalMs)) || 0;
-        SUPERVISOR_INTERVAL_MS = ms > 0 ? ms : 0; // 0 = use DEFAULT_WATCHDOG_TICK_MS
-    }
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
@@ -1216,13 +1212,11 @@ let COUNCIL_MODEL_SYNTHESIST = '';
 // and context-free, so a small model is enough. No ctx row: cloud/small models
 // use their native context window.
 let SUPERVISOR_MODEL = '';
-// Supervisor on/off + cadence — dashboard "Supervisor" row toggle + interval
-// select. SUPERVISOR_ENABLED false = the watchdog never arms (the "Off" setting
-// the user can pick). SUPERVISOR_INTERVAL_MS is the self-audit cadence in ms;
-// 0 = use DEFAULT_WATCHDOG_TICK_MS (10 min). Large local models routinely spend
-// 10-30 min on one task, so a short cadence flags healthy slow work as stuck.
+// Supervisor on/off — the dashboard "Supervisor" row toggle. Off means the
+// completion verdict (the only supervision left after the periodic watchdog
+// tick was removed 2026-09-17) does not run. There is no cadence setting any
+// more: nothing ticks, so an interval had nothing to pace.
 let SUPERVISOR_ENABLED = true;
-let SUPERVISOR_INTERVAL_MS = 0;
 // Live state of the most recent Council deliberation. The background council
 // loop is the only writer; the council_status tool handler only reads, so the
 // orchestrator can peek at an in-flight deliberation without touching it.
@@ -1259,14 +1253,9 @@ interface BackgroundJob {
     // consecutive bad verdict — a single tick can't kill a job mid-API-call
     // (cloud model latency of 90-120s looks identical to a stall from the
     // one-line summary the watchdog sees).
-    watchdogBadStreak: number;
-    // Wall-clock nudge (time-based, distinct from the call-count churn nudge).
-    // The watchdog LLM may steer a slow/over-researching job with a directional
-    // nudge every tick; watchdogNudgedAt rate-limits it so a job is not nagged
-    // more than once per WATCHDOG_NUDGE_COOLDOWN_S. The call-count churn detector
-    // can't see a job that makes FEW calls but each one stalls for minutes on a
-    // slow cloud model — only elapsed time + the action description can, and
-    // that's exactly what the watchdog sees. A nudge never kills; it steers.
+    // When the orchestrator last steered this job with nudge_agent. A nudge
+    // never kills; it steers. (Kept after the LLM supervisor was removed
+    // 2026-09-17 — the orchestrator is the only nudger now.)
     watchdogNudgedAt: number;
     // Supervisor-intervention state. The ONLY steering levers are the watchdog
     // LLM's judged nudge/stuck verdicts — host code never injects a nudge on a
@@ -1371,10 +1360,9 @@ let atlasDirect: { active: boolean; messages: { role: string; content: string }[
 // is composed.)
 let turnWasInboxDigest = false;
 // The genuine user ask, captured from real user input only (initial prompt +
-// each IPC-winning nextInput), tag-stripped. Fed to runSupervisorWatchdog and
-// runCompletionVerdict so their verdicts judge against the real request —
-// never against an injected [Inbox] digest or urgent push (the old watchdog
-// scanned messages for the latest role:'user' line, which could be a digest).
+// each IPC-winning nextInput), tag-stripped. Fed to runCompletionVerdict so
+// its verdict judges against the real request — never against an injected
+// [Inbox] digest or urgent push.
 let lastUserAsk = '';
 interface RetryLedgerEntry { failCount: number; lastAt: number; goal: string[]; }
 const retryLedger = new Map<string, RetryLedgerEntry>();
@@ -1560,10 +1548,57 @@ function selectAtlasTools(allTools: any[], task: string): any[] {
 // this restores a ceiling without going back to serial-only.
 const MAX_CONCURRENT_PER_DELEGATE = 3;
 
+// What actually happened to a dispatch. Callers MUST distinguish these when
+// reporting back to the orchestrator: a queued dispatch returns the id of the
+// job it is waiting behind, not a new one, so reporting it as "started" tells
+// the orchestrator a job exists that doesn't — and it then treats that other
+// job's result as this dispatch's result. (Concretely: "post 5 reddit posts
+// and a linkedin post" fires 6 calls, 3 start and 3 queue behind job 1; if all
+// six read as "started" the orchestrator sees job 1's id four times and calls
+// the linkedin post done when it never ran.)
+type SpawnOutcome = { jobId: string; outcome: 'started' | 'duplicate' | 'queued-cap' | 'queued-file' };
+
+// Turn a dispatch outcome into what the orchestrator is told. Every branch must
+// be honest about whether a NEW job exists: on a queued outcome the id belongs
+// to the job being waited behind, so the text must not imply this dispatch has
+// its own running job, and must tell the orchestrator not to re-send it.
+function describeSpawn(label: string, sp: SpawnOutcome, urgent: boolean): string {
+    const u = urgent ? ' (urgent — its result will interrupt you when ready)' : '';
+    switch (sp.outcome) {
+        case 'started':
+            return `${label} ${sp.jobId.split('-').pop()} started${u} — the result will arrive in your inbox. (job id: ${sp.jobId})`;
+        case 'duplicate':
+            return `${label} is already running this exact task as ${sp.jobId} — its result will arrive in your inbox. Do not dispatch it again.`;
+        case 'queued-cap':
+            return `Accepted and QUEUED — ${MAX_CONCURRENT_PER_DELEGATE} ${label.toLowerCase()} jobs are already running, so this one starts automatically when a slot frees. It has no job id of its own yet; it is waiting behind ${sp.jobId}. Its result will arrive in your inbox like any other. Do not re-dispatch it, and do not treat ${sp.jobId}'s result as this task's result.`;
+        case 'queued-file':
+            return `Accepted and QUEUED — ${sp.jobId} is still working on the same file(s), so this one starts when that finishes. It has no job id of its own yet. Its result will arrive in your inbox. Do not re-dispatch it, and do not treat ${sp.jobId}'s result as this task's result.`;
+    }
+}
+
+// Spawn whatever was queued on a finished job. Both queueing paths land here:
+// the same-file backstop (a follow-up naming a file a running writer holds) and
+// the per-delegate concurrency cap above. Must be called on ANY terminal status
+// — the file/slot is freed either way, and an undrained queue is a silently
+// dropped dispatch nobody ever hears about again. Re-spawning through
+// spawnBackgroundJob re-applies both gates, so queued items cascade correctly.
+function drainJobFollowups(jobRecord: BackgroundJob, jobId: string, context: any): void {
+    if (jobRecord.pendingFollowups.length === 0) return;
+    const queued = jobRecord.pendingFollowups.splice(0);
+    for (const q of queued) {
+        try {
+            const spawned = spawnBackgroundJob(q.delegate, q.task, context, q.urgent);
+            log(`[dedup] drained follow-up after ${jobId} finished (${q.delegate}): ${spawned.outcome} → ${spawned.jobId}`);
+        } catch (e: any) {
+            log(`[dedup] queued follow-up spawn failed after ${jobId}: ${e?.message ?? e}`);
+        }
+    }
+}
+
 // Spawn a background job for an async delegate (atlas or vulkan). Used by
 // the delegate tool handlers and by the "go" exit from direct Atlas
 // passthrough. Returns the job id.
-function spawnBackgroundJob(delegate: string, task: string, context: any, urgent: boolean): string {
+function spawnBackgroundJob(delegate: string, task: string, context: any, urgent: boolean): SpawnOutcome {
     const def = SUBAGENT_BY_DELEGATE.get(delegate)!;
     // Dedup backstop: if an identical task for the same agent is already
     // running, refuse the duplicate and hand back the existing job id. This
@@ -1578,7 +1613,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         const elapsed = Math.round((Date.now() - dup.startedAt) / 1000);
         log(`[dedup] refusing duplicate dispatch of ${existingId} (${delegate}, already running ${elapsed}s)`);
         if (urgent && !dup.urgent) { dup.urgent = true; log(`[dedup] promoted ${existingId} to urgent`); }
-        return existingId;
+        return { jobId: existingId, outcome: 'duplicate' };
     }
     // Concurrency cap: MAX_CONCURRENT_PER_DELEGATE jobs of this delegate
     // already running — queue behind the oldest one rather than spawn a 4th.
@@ -1591,7 +1626,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         oldest.pendingFollowups.push({ delegate, task, urgent });
         if (urgent && !oldest.urgent) oldest.urgent = true;
         log(`[dedup] concurrency-cap: ${MAX_CONCURRENT_PER_DELEGATE} ${delegate} jobs already running — queued behind ${oldest.agent}-${oldest.shortId}; will spawn when it finishes.`);
-        return `${oldest.agent}-${oldest.shortId}`;
+        return { jobId: `${oldest.agent}-${oldest.shortId}`, outcome: 'queued-cap' };
     }
     // Parallel atlas/vulkan jobs are allowed (cloud seats and local toolcall
     // seats both run concurrent; same local model = one loaded copy, Ollama
@@ -1611,7 +1646,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         overlap.pendingFollowups.push({ delegate, task, urgent });
         if (urgent && !overlap.urgent) { overlap.urgent = true; }
         log(`[dedup] target-overlap: queued ${delegate} follow-up behind ${overlap.agent}-${overlap.shortId} (same file(s)); will spawn when it finishes.`);
-        return `${overlap.agent}-${overlap.shortId}`;
+        return { jobId: `${overlap.agent}-${overlap.shortId}`, outcome: 'queued-file' };
     }
     const model = delegate === 'vulkan' ? VULKAN_MODEL : (delegate === 'sentry' ? SENTRY_MODEL : ATLAS_MODEL);
     const jobShortId = Math.random().toString(36).slice(2, 6);
@@ -1638,7 +1673,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     const jobRecord: BackgroundJob = {
         promise: null as any, startedAt: Date.now(), agent: delegate, task, shortId: jobShortId,
         urgent, toolCallCount: 0, lastAction: 'starting', lastActionAt: Date.now(), abortFlag,
-        status: 'running', activityLog: [], watchdogBadStreak: 0, watchdogNudgedAt: 0, supervisorNudges: 0,
+        status: 'running', activityLog: [], watchdogNudgedAt: 0, supervisorNudges: 0,
         pendingFollowups: [],
     };
     // Spawn follow-ups that were queued on this job because they named the same
@@ -1646,18 +1681,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // through spawnBackgroundJob re-applies the same-file gate, so multiple
     // queued follow-ups on one file cascade (the 2nd queues behind the 1st).
     // Called on any terminal status — the file is freed either way.
-    const drainFollowups = () => {
-        if (jobRecord.pendingFollowups.length === 0) return;
-        const queued = jobRecord.pendingFollowups.splice(0);
-        for (const q of queued) {
-            try {
-                const newId = spawnBackgroundJob(q.delegate, q.task, context, q.urgent);
-                log(`[dedup] spawned queued follow-up ${newId} after ${jobId} finished (${q.delegate}).`);
-            } catch (e: any) {
-                log(`[dedup] queued follow-up spawn failed after ${jobId}: ${e?.message ?? e}`);
-            }
-        }
-    };
+    const drainFollowups = () => drainJobFollowups(jobRecord, jobId, context);
     // Deterministic churn sensing (restored from 2727c1e, count-based — never
     // time-based): N consecutive research-class calls with no action call
     // between them means the job is circling. Inject a commit nudge; NEVER
@@ -1732,42 +1756,25 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
     emitJobsStatus();
-    return jobId;
+    return { jobId, outcome: 'started' };
 }
 
-// ── Supervisor watchdog (monitor tick) ───────────────────────────────────
-// FIXME LATER — FULL SUPERVISOR REMOVAL DEFERRED 2026-08-29. The ticker is no-op'd
-// (ensureWatchdogTicker/runSupervisorWatchdog return early) and the orchestrator
-// prompt no longer mentions [Supervisor flag], so nothing fires and the
-// orchestrator no longer role-plays flags. The machinery below (flagJobForOrchestrator,
-// the drain flagsBlock at the turn-end drain, nudge/stuck/churn steering, WATCHDOG_*
-// constants, SUPERVISOR_* state, dashboard plumbing) is left dormant, not deleted —
-// rip it all out in a dedicated pass once the replacement supervision approach is decided.
-// A context-free, tool-less watchdog call that fires every MONITOR_TICK_MS
-// while background jobs are active. Unlike the old monitor tick it does NOT
-// ride the orchestrator turn — no 57-skill system prompt, no 27 tool schemas,
-// no conversation history. It sees only: the original user ask, a one-line
-// summary of each running job, and a static roster of delegate-able agents.
-// It returns strict JSON; host code executes the decisions (stop a crashed /
-// off-rails job, re-delegate / chain a next step, or stop all when the overall
-// request is complete). The LLM never calls a tool.
-//
-// Built for a small local model (e.g. granite4.1:3b): a few hundred tokens,
-// temperature 0, Ollama `format` JSON-schema constraining output to valid JSON
-// with exact enums, and a short structured positive-only system prompt (no
-// negative examples — those seed the exact hallucination in Granite). Going
-// fully offline is just a `supervisor:model` DB flip to the Granite model.
+// ── Job supervision ──────────────────────────────────────────────────────
+// The periodic LLM watchdog was removed 2026-09-17 (it false-flagged healthy
+// read/idle phases; disabled 2026-08-29, deleted once the replacement landed).
+// What supervises a job now: the deterministic count-based churn detector in
+// spawnBackgroundJob, the narration-volume watchdog in the stream loop, and
+// runCompletionVerdict below (a tool-less second reader judging a FINISHED
+// job's output). The orchestrator is the only thing that steers or stops a
+// running job. See git history for the removed ticker.
 
-const WATCHDOG_KEEP_ALIVE_S = 60;       // keep the small model resident briefly; at a 10-min cadence it unloads between ticks (no VRAM pinning)
+const VERDICT_KEEP_ALIVE_S = 60;        // keep the verdict model resident briefly between job completions (no VRAM pinning)
 
-// Churn steering is the SUPERVISOR LLM's judgment, not a host-code counter.
-// There is no RESEARCH_TOOLS call-count detector: a fixed threshold cannot
-// distinguish a legitimate research-first read pass from a grind (it kept
-// killing atlas mid-Edit because Bash image downloads counted as research).
-// The supervisor judges a job off-track and hands the judgment to the
-// ORCHESTRATOR (an urgent inbox flag, flagJobForOrchestrator). The orchestrator
-// decides what to do — nudge_agent, stop_agent, or let it run — and may nudge
-// repeatedly until IT decides to stop. Host code NEVER aborts on a nudge count:
+// Churn sensing is a deterministic host-side call-count detector (restored
+// 2026-09-17 with the LLM supervisor's removal): N consecutive research-class
+// calls with no action between them injects a commit nudge. It only ever
+// NUDGES. The orchestrator decides what to do — nudge again, stop_agent, or
+// let it run — and may nudge indefinitely. Host code NEVER aborts on a count:
 // there is no persistence ceiling, no abortIgnoredJob, no auto-escalate. The
 // only code-enforced stop is the 3h wall-clock (WALL_CLOCK_MS), a last resort.
 // The decision to steer or stop is always the orchestrator's; code only ticks.
@@ -1972,6 +1979,11 @@ interface CompletionVerdict {
 
 async function runCompletionVerdict(opts: { task: string; fullResult: string; activityLog: { t: number; tool: string; args: string; result?: string }[]; toolContext: any }): Promise<CompletionVerdict> {
     const { task, fullResult, activityLog } = opts;
+    // The dashboard's supervisor On/Off now gates THIS — the completion verdict
+    // is the only surviving supervisor (the periodic watchdog tick was removed
+    // 2026-09-17), so "supervisor Off" has to mean "no second-reader pass" or
+    // the setting controls nothing at all.
+    if (!SUPERVISOR_ENABLED) { log('[completion-verdict] supervisor Off — skipping verdict'); return { verdict: 'unverifiable', reason: 'supervisor disabled in settings' }; }
     const model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
     if (!model) { log('[completion-verdict] no supervisor/orchestrator model — skipping'); return { verdict: 'unverifiable', reason: 'no model configured' }; }
 
@@ -2003,7 +2015,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
             { role: 'user', content: userMsg },
         ],
         stream: false,
-        keep_alive: WATCHDOG_KEEP_ALIVE_S,
+        keep_alive: VERDICT_KEEP_ALIVE_S,
         options: { temperature: 0, num_predict: 512, ...qwenSampling(model) },
     };
     if (isLocal) body.format = COMPLETION_VERDICT_FORMAT;
@@ -2076,7 +2088,6 @@ let watchdogTicker: ReturnType<typeof setInterval> | null = null;
 // the orchestrator isn't already providing itself. Trade-off: a job
 // dispatched mid-turn is not watchdog-ticked until the turn ends — acceptable,
 // the orchestrator is engaged and sees its result via inbox.
-let orchestratorTurnActive = false;
 
 // kimi-k2.6:cloud is the known offender: when a request is sent with think:false
 // (iterations after planning), Ollama stops separating the reasoning stream and
@@ -3386,7 +3397,6 @@ async function runNativeOllama(input: ContainerInput) {
     let messages: any[] = [];
     // Load the durable project journal (JOURNAL.md) so lessons learned persist across turns.
 let journalSection = '';
-let marmRecalledSection = '';
 try {
     const journalPath = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'JOURNAL.md');
     if (fs.existsSync(journalPath)) {
@@ -3458,7 +3468,7 @@ When an ask has more than one step ("build X, then style it", "do A, then B, the
 Each specialist is a separate model with its own tools and context — it can't see this conversation and you can't see its tools. Call its delegate tool with a \`{task}\` string; it returns a short result. atlas, vulkan, and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn — call and move on, never block.
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
-- **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas.
+- **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas. Context size is also a routing signal: work that needs to hold a lot at once (many files, a long document, a big log) goes to vulkan even when it is not strictly coding — atlas may be on a much smaller window.
 - **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris can make up to 3 tool calls per dispatch, but keep each dispatch one short step (e.g. just the attachment download with the email id and filename) and let it chain list→id→act itself.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
@@ -3500,7 +3510,7 @@ PATTERN-SHAPED BRIEFS: when a RELEVANT PATTERNS entry fits the work you're deleg
 
 Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
 
-BATCHES OF INDEPENDENT ITEMS: a request naming N similar independent units — N files to post/convert/process, N pages, N accounts — is dispatched as N separate one-item delegate calls, never one bundled task covering all of them. Bundling forces the specialist to grind through every item alone with no checkpoint back to you, and one bad item (a format quirk, a site's odd editor) blocks the rest. Fire the calls in one turn (at most 3 run concurrently per specialist — dispatch the rest anyway, they queue automatically and start as slots free), and check each result as it lands rather than waiting for all N. This is about COUNT, not method — you still name only the WHAT per item, never the HOW (the WHAT-not-HOW rule above still applies to each individual brief). Reserve ONE bundled call for work that genuinely needs a single coordinated pass — a multi-page site redesign that must stay visually consistent, a refactor touching related files — where splitting would produce inconsistent results, not just parallel ones.
+BATCHES: N independent items (N posts, N files, N pages) → N separate one-item delegate calls, never one bundled task. Bundling leaves one specialist grinding all N alone with no checkpoint, and a single bad item blocks the rest. Fire them in one turn (3 run at once per specialist; the rest queue and start as slots free) and check each result as it lands. This is about COUNT, not method — WHAT-not-HOW still applies to each brief. Bundle only when the items must come out consistent with each other (one site redesign, a refactor across related files).
 
 A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Emit independent delegate calls in one turn — they run in parallel; serialize only when one result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
@@ -3585,7 +3595,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             }
         }
         if (!preamble) preamble = DEFAULT_PREAMBLE;
-        return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine + marmRecallSection + marmRecalledSection;
+        return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine + marmRecallSection;
     };
     // Per-agent model system — every agent has its own concrete model from
     // dashboard settings, re-synced each turn via applySettingsSync(). No
@@ -3607,10 +3617,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
     SUPERVISOR_MODEL = (input.supervisorModel || '').replace(/^local:/, '');
     SUPERVISOR_ENABLED = input.supervisorEnabled !== false;
-    {
-        const ms = Math.floor(Number(input.supervisorIntervalMs)) || 0;
-        SUPERVISOR_INTERVAL_MS = ms > 0 ? ms : 0; // 0 = use DEFAULT_WATCHDOG_TICK_MS
-    }
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
     ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
     SENTRY_MODEL = (input.sentryModel || '').replace(/^local:/, '');
@@ -3622,12 +3628,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     COUNCIL_MODEL_PRAGMATIST = (input.councilPragmatistModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
     const toolContext = { chatJid: input.chatJid, groupFolder: input.groupFolder, isMain: input.isMain, userId: process.env.WARDEN_USER_ID || '' };
-    // Auto-recall: pull MARM memories relevant to this ask into the prompt —
-    // recall that does not depend on the model choosing to call the tool.
-    // Fail-open by contract: any error, timeout, or down MARM yields ''.
-    if (marmEnabled) {
-        marmRecalledSection = await marmAutoRecall(String(input.prompt || ''));
-    }
     messages.push({ role: 'system', content: buildSystemPrompt() });
     let prompt = input.prompt;
     lastUserAsk = String(input.prompt || '').replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400);
@@ -3661,7 +3661,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     // OUTPUT, so the reply must be routed through send_message to reach the
     // user (otherwise the host drops it). Empty replies send nothing.
     while (true) {
-        orchestratorTurnActive = true; // suppress watchdog ticks this turn (see ensureWatchdogTicker)
         // Context clear (driving-force switch, or the clear_context tool): drop
         // the in-memory conversation and rebuild the system prompt so the new
         // preamble takes effect. isFirstUserTurn is reset so the host's next
@@ -3677,9 +3676,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // applySettingsSync() keeps fresh on every IPC message. Without this the
         // local `model` stays pinned to the first turn's value and dashboard model
         // changes never reach the actual LLM call (the "settings didn't apply" bug).
-        // The supervisor watchdog runs its own dedicated tool-less call outside
-        // the turn loop (see runSupervisorWatchdog), so every orchestrator turn
-        // uses the orchestrator model directly.
         model = ORCHESTRATOR_MODEL;
         // Warm/refresh the native-ctx cache for this turn's model so getNumCtx can
         // cap the dashboard override at the model's real window (and serve it as
@@ -3752,15 +3748,31 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             // live conversation, strip them once so the permanent first-ask slot is
             // just the ask (the summary lives merged in the system prompt, never here).
             const m2 = messages[1];
-            if (m2 && typeof m2?.content === 'string' && /<(chat_history|mercury_context)/.test(m2.content)) {
+            if (m2 && typeof m2?.content === 'string' && /<(chat_history|mercury_context|recalled_memories)/.test(m2.content)) {
                 m2.content = m2.content
                     .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
                     .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '')
+                    .replace(/<recalled_memories>[\s\S]*?<\/recalled_memories>\s*/g, '')
                     .trim();
             }
         }
         isFirstUserTurn = false;
-        const userMsg: any = { role: 'user', content: cleanedPrompt.trim() };
+        // MARM auto-recall runs PER TURN and rides this turn's user message.
+        // It used to be computed once from the process's first prompt and baked
+        // into the system prompt, which froze it: every later turn re-injected
+        // turn 1's memories, unrelated to the current ask. It cannot move into
+        // the system prompt refresh either — messages[0] must stay byte-stable
+        // for the prompt cache (the mercury slot depends on that). Tagged so the
+        // previous turn's block is stripped from the permanent first-ask slot
+        // below instead of accumulating. Fail-open: errors/timeouts yield ''.
+        let recallBlock = '';
+        if (marmEnabled) {
+            try {
+                const recalled = await marmAutoRecall(cleanedPrompt);
+                if (recalled.trim()) recallBlock = `<recalled_memories>${recalled}</recalled_memories>\n\n`;
+            } catch { /* fail-open — recall never blocks a turn */ }
+        }
+        const userMsg: any = { role: 'user', content: recallBlock + cleanedPrompt.trim() };
         // Attach any pending images from Read tool (vision) — but only when the
         // orchestrator's context can hold them; an over-limit attach 400s the
         // next request and kills the turn (same defect as the sub-agent drain).
@@ -4687,8 +4699,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // error path already spoke). A reply that is only punctuation/whitespace
         // ("---", "...", "–") is the model's way of saying "nothing to report" —
         // treat it as silence and send/drop nothing, otherwise the user gets a
-        // blank message. (Supervisor watchdog notes go via progress_event in
-        // runSupervisorWatchdog, not here.)
+        // blank message.
         const substantiveReply = !!(outputContent && /[A-Za-z0-9]/.test(outputContent));
         if (turnWasInboxDigest && !errorOutputWritten && substantiveReply) {
             try {
@@ -4759,12 +4770,8 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
         // messages.length = 0;
         // messages.push(...collapsed);
         // Persistent mode: wait for the next message via IPC instead of exiting.
-        // The supervisor watchdog now runs on its own always-on 30s ticker
-        // (ensureWatchdogTicker, armed from spawnBackgroundJob + the artemis
-        // path) — it no longer rides this idle loop, so jobs dispatched mid-turn
-        // are supervised too. This loop just waits for the next user message or
-        // an inbox item (a finished job triggering a digest turn).
-        orchestratorTurnActive = false; // going idle — watchdog may tick again to monitor running jobs
+        // This loop just waits for the next user message or an inbox item (a
+        // finished job triggering a digest turn).
         log('Query complete — waiting for next message via IPC...');
         let nextInput: string | null = null;
         while (nextInput === null) {
@@ -4810,9 +4817,11 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                             .map(m => `${m.role === 'user' ? 'User' : 'Atlas'}: ${m.content}`)
                             .join('\n\n');
                         const kickoffTask = `The user worked through this task with you one-on-one to get it right. Here is the full conversation:\n\n${transcript}\n\nNow execute the agreed task — the user has confirmed the details above. Proceed with your tools and report when done.`;
-                        const jobId = spawnBackgroundJob('atlas', kickoffTask, toolContext, false);
+                        const kickoff = spawnBackgroundJob('atlas', kickoffTask, toolContext, false);
                         atlasDirect = null;
-                        atlasDirectSend(`Atlas is starting on that now — I'll report back when it's done. (job ${jobId.slice('atlas-'.length)})`);
+                        atlasDirectSend(kickoff.outcome === 'started'
+                            ? `Atlas is starting on that now — I'll report back when it's done. (job ${kickoff.jobId.slice('atlas-'.length)})`
+                            : `That's queued behind ${kickoff.jobId}, which is still running — it'll start when that finishes and I'll report back then.`);
                         continue; // back to the idle loop; Atlas runs in the background
                     }
                     // Chat turn: send the user's message to Atlas and speak its reply.
@@ -4904,10 +4913,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 break;
             }
             // Wait for the next user message via IPC, waking early if a
-            // background job finishes (inbox). The supervisor watchdog now runs
-            // on its own always-on 30s ticker (ensureWatchdogTicker, armed from
-            // spawnBackgroundJob and the artemis path) — it no longer rides this
-            // idle-loop race, so jobs dispatched mid-turn are supervised too.
+            // background job finishes (inbox).
             const idleIpcCancel = { cancelled: false };
             const winner = await Promise.race([
                 waitForIpcMessageWithTimeout(IDLE_TIMEOUT_MS, idleIpcCancel).then(v => v as string | null),
@@ -5126,7 +5132,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             abortFlag,
             status: 'running',
             activityLog: [],
-            watchdogBadStreak: 0,
             watchdogNudgedAt: 0, supervisorNudges: 0,
             pendingFollowups: [],
         };
@@ -5165,6 +5170,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 status: jobRecord.abortFlag.aborted ? 'aborted' : 'done',
                 fullResult: savedTo ? `${content}\n\n(Artemis's notes saved to ${savedTo})` : content,
             });
+            drainJobFollowups(jobRecord, jobId, context);
         })()
             .catch(err => {
                 if (jobRecord.status === 'running') jobRecord.status = 'errored';
@@ -5173,6 +5179,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                     status: 'errored',
                     fullResult: `Error: ${err?.message ?? err}`,
                 });
+                drainJobFollowups(jobRecord, jobId, context);
             })
             .finally(() => {
                 if (jobRecord.status === 'running') jobRecord.status = 'done';
@@ -5354,9 +5361,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             } else if (retryGate(task)) {
                 result = retryGate(task); // second call never consumes — refusal text is stable
             } else {
-                const jobId = spawnBackgroundJob('atlas', task, context, urgent);
-                const jobShortId = jobId.slice('atlas-'.length);
-                result = `Atlas ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
+                const sp = spawnBackgroundJob('atlas', task, context, urgent);
+                result = describeSpawn('Atlas', sp, urgent);
             }
         }
     } else if (toolName === 'vulkan') {
@@ -5384,9 +5390,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             } else if (retryGate(task)) {
                 result = retryGate(task);
             } else {
-                const jobId = spawnBackgroundJob('vulkan', task, context, urgent);
-                const jobShortId = jobId.slice('vulkan-'.length);
-                result = `Vulkan ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the result will arrive in your inbox. (job id: ${jobId})`;
+                const sp = spawnBackgroundJob('vulkan', task, context, urgent);
+                result = describeSpawn('Vulkan', sp, urgent);
             }
         }
     } else if (toolName === 'sentry') {
@@ -5400,9 +5405,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         if (!task) {
             result = 'Error: task is required';
         } else {
-            const jobId = spawnBackgroundJob('sentry', task, context, urgent);
-            const jobShortId = jobId.slice('sentry-'.length);
-            result = `Sentry ${jobShortId} started${urgent ? ' (urgent — its result will interrupt you when ready)' : ''} — the scan result will arrive in your inbox. (job id: ${jobId})`;
+            const sp = spawnBackgroundJob('sentry', task, context, urgent);
+            result = describeSpawn('Sentry', sp, urgent);
         }
     } else if (toolName === 'atlas_direct') {
         // Enter direct Atlas passthrough mode. The orchestrator speaks a short
