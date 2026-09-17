@@ -1222,10 +1222,14 @@ let ARTEMIS_MODEL = '';
 let SENTRY_MODEL = '';
 // The vision explainer — the model that answers image questions for visionless
 // seats (askVisionModel / the query_image tool). Resolution order: an explicit
-// VISION_MODEL override, else the atlas seat, else the orchestrator — seats the
-// operator keeps vision-capable. Resolved lazily per call, so dashboard model
-// changes apply immediately.
-setVisionModelResolver(() => (process.env.VISION_MODEL || ATLAS_MODEL || ORCHESTRATOR_MODEL || '').trim());
+// VISION_MODEL override, then a discovered LOCAL vision-capable model (the
+// operator's usual = local qwen), then the atlas/orchestrator seats if
+// vision-capable. A text-only seat (glm-5.3:cloud) is never handed to
+// askVisionModel — that is what blinded visionless agents before (2026-09-17).
+// Resolved lazily per call, so dashboard model changes apply immediately.
+setVisionModelResolver(() => [process.env.VISION_MODEL, ATLAS_MODEL, ORCHESTRATOR_MODEL]
+    .map((m) => (m || '').trim())
+    .filter(Boolean));
 // Driving force — the orchestrator's selected preamble preset id
 // (data/driving-forces/<id>.md). Empty = built-in default preamble.
 // CONTEXT_CLEAR_AT is a timestamp from the host; when it changes, the
