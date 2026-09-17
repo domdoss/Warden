@@ -15,8 +15,10 @@ record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
   the chat view never shows it — only his spoken words appear) → poll for
   the reply → speak it → listen again. Back and forth until the stop sign
   is pressed (stops everything — recording, waiting, or speaking; voice
-  out) or he says "that's all for now". The stop sign flashes the whole
-  time it runs.
+  out), or the conversation ends on its own: he says "that's all for now",
+  or — the one he never remembers — he simply goes quiet, and a sustained
+  run of silent listens means he's done talking. The stop sign flashes the
+  whole time it runs.
 - Audible cues for a blind user: short high beep when listening starts,
   low beep when the turn finishes, long buzz if it failed.
 
@@ -67,6 +69,17 @@ from ears.tts import TTS  # noqa: E402
 
 DEFAULT_WARDEN = "http://127.0.0.1:3200"
 REPLY_TIMEOUT_S = 300  # how long to wait for the orchestrator's reply
+
+# Voice mode also ends on its own — he never remembers the end phrase. The
+# recorder's record_until_silence returns empty ONLY when a whole listening
+# window (no_speech_timeout, 15s) passes with no confirmed speech: it records
+# straight through mid-speech pauses and closes an utterance only on 1s of
+# trailing silence, so a breath between sentences can never produce one. This
+# many empty windows IN A ROW — each right after she finished speaking, since
+# play_bytes returns only when playback is done — means he's done talking and
+# the mode ends with the low beep. One quiet window is just a pause: it only
+# re-arms the listen.
+SILENT_LISTENS_TO_END = 2
 
 # The Steve persona lives HERE — the standalone app owns it completely.
 # Warden itself has zero Steve knowledge (other people run Warden): this
@@ -458,7 +471,9 @@ def warden_url_from_config() -> str:
 
 
 def voice_mode_done(text: str) -> bool:
-    """'that's all for now' — any casing/punctuation — ends voice mode."""
+    """'that's all for now' — any casing/punctuation — ends voice mode.
+    Fallback hard signal: the loop primarily ends on sustained silence
+    (see _voice_loop), but when the phrase does appear it ends at once."""
     norm = re.sub(r"[^a-z0-9]+", " ", text.lower().replace("'", "")).strip()
     return "thats all for now" in norm or "that is all for now" in norm
 
@@ -588,8 +603,12 @@ class SteveApp:
     # ----- Turn worker -----
     def _voice_loop(self) -> None:
         """Voice mode: back and forth — listen, send, speak the reply —
-        until the stop sign is pressed or he says 'that's all for now'."""
+        until the stop sign is pressed, he says 'that's all for now', or
+        he goes quiet: he's done speaking when the mic hears nothing for
+        SILENT_LISTENS_TO_END listening windows in a row. The phrase alone
+        used to be the only end signal — he never remembered to say it."""
         failed = False
+        silent = 0  # consecutive listening windows with no speech at all
         try:
             self.claps.pause()  # recorder owns the mic for the whole loop
             while not self._stop.is_set():
@@ -597,7 +616,19 @@ class SteveApp:
                 wav = self.recorder.record_until_silence()
                 if self._stop.is_set():
                     return
-                text = (self.stt.transcribe(wav) or "").strip() if wav else ""
+                if not wav:
+                    # A whole window (~15s) with no confirmed speech — he's
+                    # being quiet, not pausing mid-sentence (the VAD records
+                    # through those and only closes a turn on 1s of trailing
+                    # silence, so a pause inside an utterance never lands
+                    # here). A run of these ends the mode; one only re-arms
+                    # the listen.
+                    silent += 1
+                    if silent >= SILENT_LISTENS_TO_END:
+                        break  # done speaking — hand the mic back
+                    continue
+                silent = 0
+                text = (self.stt.transcribe(wav) or "").strip()
                 if self._stop.is_set():
                     return
                 if not text:
@@ -619,8 +650,19 @@ class SteveApp:
                     failed = True  # asked, but no answer came back
                     break
                 audio = self.tts.synthesize(reply)
-                if audio and not self._stop.is_set():
-                    self.player.play_bytes(audio)
+                if self._stop.is_set():
+                    return
+                if not audio:
+                    # TTS produced nothing for the reply — count the turn
+                    # as done (error beep below) instead of looping on a
+                    # voice that will never come. Synthesis/playback errors
+                    # raise and take the same exit via the except below.
+                    failed = True
+                    break
+                self.player.play_bytes(audio)
+                # play_bytes blocks until playback really finishes (or STOP
+                # aborts it) — she is done speaking here, and the loop goes
+                # back to listening with the silence counter at zero.
         except Exception as e:
             failed = True
             print(f"[steve] voice mode failed: {e}", file=sys.stderr)
