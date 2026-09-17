@@ -76,10 +76,10 @@ else
 fi
 
 # ---- 3. free Ollama VRAM, then train -------------------------------------
-# A resident Ollama model (e.g. a 27b) hogs ~10 GB per card and starves the
-# 3B LoRA training (needs ~12 GB). Unload every resident model right before
-# training so the GPUs are clear; Ollama stays up and reloads on demand later.
-# Set UNLOAD_OLLAMA=0 to skip (e.g. if you already freed VRAM manually).
+# The unsloth build (2026-09-17) trains 4-bit QLoRA and needs far less VRAM
+# than the old fp16 pipeline (~5-6 GB/card vs ~12), but a resident Ollama model
+# can still crowd a 16 GB card that's also holding the desktop, so keep the
+# unload. Set UNLOAD_OLLAMA=0 to skip (e.g. if you already freed VRAM manually).
 UNLOAD_OLLAMA="${UNLOAD_OLLAMA:-1}"
 if [ "$UNLOAD_OLLAMA" = "1" ] && command -v ollama >/dev/null 2>&1; then
   phase "unloading resident Ollama models (free VRAM for training)"

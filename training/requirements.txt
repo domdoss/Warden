@@ -4,7 +4,7 @@
 #   pip install -r requirements.txt
 # PyTorch is installed separately with the bundled CUDA wheel (no system CUDA
 # needed) — see the README. The versions below are minimums.
-torch>=2.2
+torch>=2.12
 # Pin transformers to 4.x: granite-4.1 was tested on 4.53.3, and transformers 5.x
 # breaks apply_chat_template (returns a dict by default) and TrainingArguments
 # (warmup_ratio removed) — both would silently wreck this SFT.
@@ -13,3 +13,8 @@ peft>=0.10
 datasets>=2.18
 accelerate>=0.27
 huggingface_hub>=0.20
+# unsloth (2026-09-17 switch): fast Granite patch + 4-bit QLoRA default in
+# train_iris_lora.py — roughly half the VRAM of the old fp16 + HF/peft build.
+# Installing it resolves/pins its own triton/xformers/trl companions and may
+# move torch within the >=2.12 range; let it.
+unsloth>=2026.9

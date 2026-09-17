@@ -2,6 +2,12 @@
 """
 Toolcall (iris) LoRA SFT — fine-tune granite-4.1-3b on the toolcall (iris) dataset.
 
+UNSLOTH build (2026-09-17): loads via unsloth's FastLanguageModel, which has a
+native fast-G Granite patch, and defaults to 4-bit QLoRA — roughly half the
+VRAM of the old fp16 + HF/peft pipeline (the 16 GB RTX 5000s no longer need
+the ollama-unload dance, though run.sh keeps it). The dataset/collator below
+are UNCHANGED from the HF build — they are the load-bearing part.
+
 Trains ONLY the assistant turns (the Granite <|tool_call|> JSON and the final
 one-sentence summary); system / user / tool-result turns are masked to -100 so
 the model never wastes capacity learning to parrot inputs. Tools are rendered
@@ -14,18 +20,17 @@ traced to the mismatch). Training on the Ollama bytes closes the gap.
 
 Not run automatically by Warden. To train:
     . .venv/bin/activate
-    python train_iris_lora.py            # single GPU (cuda:0 only)
+    python train_iris_lora.py            # single GPU (cuda:0, 4-bit QLoRA)
 
-To use BOTH RTX 5000s (DDP — fills both cards, bigger effective batch):
+To use BOTH RTX 5000s (DDP — one GPU per rank):
     torchrun --nproc_per_node=2 train_iris_lora.py
 
-Outputs an adapter (training/toolcall-lora) and a merged model
+Outputs an adapter (training/toolcall-lora) and a merged fp16 model
 (training/toolcall-lora-merged) ready for GGUF conversion (see pack_iris.sh).
 The merge + disk writes run on the main process only; other ranks wait at the
 barrier, so no races and no duplicate artifacts.
 """
 import argparse
-import gc
 import json
 import os
 import sys
@@ -33,22 +38,20 @@ import sys
 # Reduce fragmentation on the 16 GB cards before CUDA initializes.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# One GPU per process, set BEFORE torch initializes CUDA:
+#  - under torchrun DDP, each rank pins to its own LOCAL_RANK GPU (unsloth's
+#    default auto device-map would otherwise shard ONE model across BOTH
+#    cards, which breaks DDP and leaves the desktop-holding GPU half-stolen);
+#  - a plain single-process run stays on cuda:0 only, like the old build.
+if "LOCAL_RANK" in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["LOCAL_RANK"]
+elif "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import torch
 from torch.utils.data import Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    Trainer,
-    TrainingArguments,
-)
-from peft import (
-    LoraConfig,
-    PeftModel,
-    TaskType,
-    get_peft_model,
-    prepare_model_for_kbit_training,
-)
+from transformers import Trainer, TrainingArguments
+from unsloth import FastLanguageModel
 from accelerate import PartialState
 
 
@@ -308,23 +311,17 @@ def main():
     ap.add_argument("--epochs", type=float, default=2.0)
     ap.add_argument("--lr", type=float, default=1e-4)
     # per-device batch. With torchrun --nproc=2 the effective batch is
-    # batch * grad_accum * 2. batch=1 + grad-accum=2 keeps effective batch 4 (×2
-    # DDP). Since the byte merge (2026-09-05) EVERY example carries the full
-    # 41-tool iris schema block: seq min/mean/max = 1401/4702/4994 — the cap
-    # must sit above that or it left-truncates the system prompt off nearly the
-    # whole dataset (left-truncation keeps the tail). 6144 clears the max with
-    # headroom while still bounding the logits-upcast peak (batch×seq×vocab×4B
-    # — the OOM chunk on 16 GB cards). If a desktop-taxed GPU (Chrome/kwin
-    # ~1.4 GB on GPU 1) still OOMs, drop to --grad-accum 4, not a lower cap.
-    ap.add_argument("--batch", type=int, default=1)
-    ap.add_argument("--grad-accum", type=int, default=2)
-    ap.add_argument("--grad-ckpt", action=argparse.BooleanOptionalAction, default=True,
-                    help="gradient checkpointing (on by default; --no-grad-ckpt disables)")
-    ap.add_argument("--qlora", action="store_true",
-                    help="QLoRA: load base in 4-bit NF4 (bitsandbytes). For 12 GB "
-                         "cards where the fp16 base + logits upcast peak OOMs. The "
-                         "merge at the end reloads the base in fp16 so the saved "
-                         "merged model is a normal HF model, not a 4-bit one.")
+    # batch * grad_accum * 2. batch=2 + grad-accum=1 keeps effective batch 4
+    # (×2 DDP) — the 4-bit unsloth base leaves room for batch 2 where the old
+    # fp16 build only managed 1. Effective batch 4 matches the old build
+    # (1 × 2 × 2), so the training math is unchanged.
+    ap.add_argument("--batch", type=int, default=2)
+    ap.add_argument("--grad-accum", type=int, default=1)
+    # 4-bit QLoRA is the DEFAULT now (the whole point of the unsloth switch):
+    # ~half the VRAM of the fp16 base. --no-4bit loads the fp16 base for the
+    # old heavyweight path.
+    ap.add_argument("--no-4bit", action="store_true",
+                    help="load the base in fp16 instead of 4-bit QLoRA")
     ap.add_argument("--max-len", type=int, default=6144,
                     help="cap rendered seq length; longer examples are left-truncated "
                          "(keep last N) so the assistant labels at the tail are preserved. "
@@ -335,44 +332,51 @@ def main():
                          "Pass 0 to disable the cap entirely.")
     ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--lora-alpha", type=int, default=32)
+    # dropout 0, not 0.05: unsloth's fast Granite patch only engages its fused
+    # kernels when LoRA dropout is 0 (with dropout > 0 it patches every layer
+    # the slow way and prints a performance-hit warning — measured at the
+    # 2026-09-17 smoke test). 281→1K short examples don't overfit enough to
+    # need it.
+    ap.add_argument("--lora-dropout", type=float, default=0.0)
     args = ap.parse_args()
 
-    print(f"[toolcall-sft] model={args.model} data={args.data}", flush=True)
+    print(f"[toolcall-sft] model={args.model} data={args.data} "
+          f"{'fp16' if args.no_4bit else '4bit-QLoRA'}", flush=True)
     state = PartialState()
     if state.num_processes > 1:
         print(f"[toolcall-sft] DDP across {state.num_processes} GPUs "
               f"(rank {state.process_index})", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+
+    # fp16 — RTX 5000 (Turing) has no native bf16, so use fp16 not bf16.
+    # CUDA_VISIBLE_DEVICES (set at the top of this file) pins this process to
+    # one GPU; under torchrun each rank trains its own copy.
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=args.model,
+        max_seq_length=args.max_len or 6144,
+        dtype=torch.float16,
+        load_in_4bit=not args.no_4bit,
+        full_finetuning=False,
+        trust_remote_code=True,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # fp16 — RTX 5000 (Turing) has no native bf16, so use fp16 not bf16.
-    # Load on the rank's own GPU; under torchrun DDP each rank loads its copy.
-    quant = None
-    if args.qlora:
-        quant = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float16, trust_remote_code=True,
-        quantization_config=quant,
+    # LoRA on every linear layer — this is tool-call transcription (style), not
+    # new knowledge, so a small rank is plenty. use_gradient_checkpointing=
+    # "unsloth" is unsloth's own checkpointing (it handles input-grad enabling
+    # for the frozen base internally — no manual prepare/enable dance needed).
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
     )
-    model.config.use_cache = False
-    if args.qlora:
-        # Frozen 4-bit base: upcast norms, enable grads for checkpointed inputs.
-        model = prepare_model_for_kbit_training(model)
-    # Gradient checkpointing ON by default: the tools block makes sequences
-    # ~2K tokens, so batch>2 with no checkpointing OOMs a 16 GB card. Checkpointing
-    # trades recompute for memory, letting a bigger batch fill the cards.
-    if args.grad_ckpt:
-        if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable()
-        # Frozen base + grad checkpointing needs this or the first backward errors.
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
+    model.print_trainable_parameters()
 
     examples = load_examples(args.data)
     print(f"[toolcall-sft] {len(examples)} examples", flush=True)
@@ -380,17 +384,6 @@ def main():
     lens = [d["length"] for d in dataset.cache]
     print(f"[toolcall-sft] seq len min/mean/max = {min(lens)}/{sum(lens)//len(lens)}/{max(lens)}"
           + (f" (capped at {args.max_len})" if args.max_len else ""), flush=True)
-
-    # LoRA on every linear layer — this is tool-call transcription (style), not
-    # new knowledge, so a small rank is plenty.
-    lora = LoraConfig(
-        r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=0.05, bias="none",
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-    )
-    model = get_peft_model(model, lora)
-    model.print_trainable_parameters()
 
     targs = TrainingArguments(
         output_dir=args.out,
@@ -417,30 +410,19 @@ def main():
     )
     trainer.train()
 
-    # Save the adapter (small) AND a merged model (for GGUF conversion).
-    # Under DDP the local `model` is the unwrapped PeftModel (Trainer keeps its
-    # own DDP copy), so merge_and_unload works on it directly. Writes are
-    # main-process-only; other ranks wait at the barrier — no races, no dupes.
+    # Save the adapter (small) AND a merged fp16 model (for GGUF conversion).
+    # Writes are main-process-only; other ranks wait at the barrier — no
+    # races, no dupes. save_pretrained_merged("merged_16bit") dequantizes the
+    # 4-bit base + LoRA into a plain fp16 HF model, exactly what
+    # convert_hf_to_gguf.py expects.
     if state.is_main_process:
         model.save_pretrained(args.out)
         tokenizer.save_pretrained(args.out)
         print(f"[toolcall-sft] adapter saved → {args.out}", flush=True)
 
-        if args.qlora:
-            # Don't merge into the 4-bit weights — the result would stay in
-            # bitsandbytes format, unreadable by GGUF conversion, and the LoRA
-            # deltas would be re-quantized to 4-bit. Reload the base in fp16
-            # and merge into that instead: plain merge, no training state.
-            del model
-            gc.collect()
-            torch.cuda.empty_cache()
-            base = AutoModelForCausalLM.from_pretrained(
-                args.model, dtype=torch.float16, trust_remote_code=True)
-            merged = PeftModel.from_pretrained(base, args.out).merge_and_unload()
-        else:
-            merged = model.merge_and_unload()
-        merged.save_pretrained(args.merged_out)
-        tokenizer.save_pretrained(args.merged_out)
+        model.save_pretrained_merged(
+            args.merged_out, tokenizer, save_method="merged_16bit",
+        )
         print(f"[toolcall-sft] merged model saved → {args.merged_out}", flush=True)
         print("[toolcall-sft] next: ./pack_iris.sh (convert to GGUF + ollama create)",
               flush=True)
