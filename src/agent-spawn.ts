@@ -525,13 +525,12 @@ export function getLiveJobs(): LiveJob[] {
 
 // Ring buffer of recent progress events for the dashboard's collapsible
 // "Live activity" panel. Each entry is one real status change (an atlas tool
-// call, a council round, a delegation) or a supervisor note from an
-// orchestrator monitor-tick. The dashboard polls /api/status and renders the
-// last N here as a grouped, expandable history — so progress lives in the
-// dashboard instead of as a stream of canned chat bubbles.
+// call, a council round, a delegation). The dashboard polls /api/status and
+// renders the last N here as a grouped, expandable history — so progress lives
+// in the dashboard instead of as a stream of canned chat bubbles.
 export interface ProgressEvent {
   ts: number;
-  kind: 'status' | 'supervisor' | 'done' | 'error';
+  kind: 'status' | 'done' | 'error';
   phase: string;
   label: string;
   jobs: number;
@@ -549,21 +548,6 @@ function pushProgress(entry: ProgressEvent): void {
   if (progressHistory.length > PROGRESS_MAX) {
     progressHistory.splice(0, progressHistory.length - PROGRESS_MAX);
   }
-}
-
-/** Append a supervisor note (an orchestrator monitor-tick report). Public so
- *  the progress_event callback in src/index.ts can route tick prose here
- *  instead of to the chat. */
-export function pushSupervisorNote(text: string): void {
-  const trimmed = (text || '').trim();
-  if (!trimmed) return;
-  pushProgress({
-    ts: Date.now(),
-    kind: 'supervisor',
-    phase: liveStatus.phase || 'orchestrator',
-    label: trimmed.slice(0, 240),
-    jobs: liveStatus.jobs,
-  });
 }
 
 /** Publish a one-off agent status line to the progress ring buffer, for
@@ -913,7 +897,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             vulkanModel: input.vulkanModel,
             supervisorModel: input.supervisorModel,
             supervisorEnabled: input.supervisorEnabled,
-            supervisorIntervalMs: input.supervisorIntervalMs,
             irisModel: input.irisModel,
             artemisModel: input.artemisModel,
             sentryModel: input.sentryModel,
@@ -972,7 +955,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       vulkanModel: input.vulkanModel,
       supervisorModel: input.supervisorModel,
       supervisorEnabled: input.supervisorEnabled,
-      supervisorIntervalMs: input.supervisorIntervalMs,
       irisModel: input.irisModel,
       artemisModel: input.artemisModel,
       sentryModel: input.sentryModel,

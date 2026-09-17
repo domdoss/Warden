@@ -41,6 +41,9 @@
 // clean tool args from emphatic prose.
 
 import { readFileSync, writeFileSync } from 'node:fs';
+// Mercury memory rows — the other job toolcall-ft does in production.
+// Structured in / structured out; contract extracted from src/index.ts.
+import { examples as mercuryExamples } from './gen_mercury_sft.mjs';
 // Sentry run-mode rows REMOVED 2026-09-08: the user switched sentry to share
 // the orchestrator/atlas model (dashboard-set), so the toolcall fine-tune no
 // longer covers sentry — this dataset trains only what toolcall-ft runs.
@@ -83,11 +86,34 @@ function assertIris(agent) {
 // separate assistant turn after a synthetic tool result). Every request gets
 // the ANCHOR prepended — the dispatch path injects the time header into ALL
 // iris tasks, work management included. 2-turn chains use exMulti below.
+// ---- the orch→iris wire format ------------------------------------------
+// Granite is strongest on labelled input, so the orchestrator emits a
+// labelled brief rather than a prose sentence: one TASK: line naming the
+// outcome, with every id, address, filename and value INLINE in that
+// sentence (there is no FACTS: line — iris copies the values straight from
+// the sentence into the tool arguments). The dispatch path prepends the
+// ANCHOR; the orchestrator supplies only the TASK line. This shape is
+// specified in three places that must agree — the `# BRIEFING IRIS`
+// section of ROUTING_CORE and the iris delegate tool's `task` description
+// (what the orchestrator emits), iris's INPUT block (what iris parses),
+// and here (what the model is trained on). Change one, change all three.
+//
+// UNLABELLED_EVERY: one row in N is left as a bare prose brief with no
+// TASK: label at all. The orchestrator will not always be perfect, and iris
+// must not become brittle about the label — the rules are what's trained,
+// the format is only the happy path.
+const UNLABELLED_EVERY = 8;
+let briefCount = 0;
+function brief(request) {
+  if (++briefCount % UNLABELLED_EVERY === 0) return `${ANCHOR}\n\n${request}`;
+  return `${ANCHOR}\n\nTASK: ${request}`;
+}
+
 function ex(agent, request, toolCalls, opts = {}) {
   assertIris(agent);
   const msgs = [
     { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: `${ANCHOR}\n\n${request}` },
+    { role: 'user', content: brief(request) },
   ];
   msgs.push({
     role: 'assistant', content: '',
@@ -107,7 +133,7 @@ function exText(agent, request, reply) {
   return {
     messages: [
       { role: 'system', content: IRIS_SYSTEM },
-      { role: 'user', content: `${ANCHOR}\n\n${request}` },
+      { role: 'user', content: brief(request) },
       { role: 'assistant', content: reply },
     ],
     tools: TOOLS.iris,
@@ -122,10 +148,10 @@ function exText(agent, request, reply) {
 function exManage(agent, request, { actionTool, actionArgs, actionResult, reply }) {
   assertIris(agent);
   const idKey = Object.keys(actionArgs).find((k) => /_id$/.test(k));
-  const brief = idKey ? `${request} (id: ${actionArgs[idKey]} — use that exact id.)` : request;
+  const briefText = idKey ? `${request} (id: ${actionArgs[idKey]} — use that exact id.)` : request;
   const msgs = [
     { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: `${ANCHOR}\n\n${brief}` },
+    { role: 'user', content: brief(briefText) },
     { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: actionTool, arguments: actionArgs } }] },
     { role: 'tool', name: actionTool, content: actionResult },
     { role: 'assistant', content: reply },
@@ -142,7 +168,7 @@ function exMulti(agent, request, steps, reply) {
   assertIris(agent);
   const msgs = [
     { role: 'system', content: IRIS_SYSTEM },
-    { role: 'user', content: `${ANCHOR}\n\n${request}` },
+    { role: 'user', content: brief(request) },
   ];
   for (const s of steps) {
     msgs.push({ role: 'assistant', content: '', tool_calls: [{ type: 'function', function: s.call }] });
@@ -1668,7 +1694,7 @@ examples.push(exText('iris', 'How much RAM does the server have?',
   'I do not have a system-info tool here. The CI bot emails build reports — I can search those if that helps.'));
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const all = [...examples];
+  const all = [...examples, ...mercuryExamples];
   const lines = all.map(e => JSON.stringify(e));
   writeFileSync(new URL('./toolcall-sft.jsonl', import.meta.url), lines.join('\n') + '\n');
   console.log(`Wrote ${all.length} examples to toolcall-sft.jsonl`);
@@ -1678,6 +1704,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const e of all) {
     const sys = e.messages[0].content;
     const agent = sys.startsWith('You are Iris') ? 'iris'
+      : sys.startsWith('You are Mercury') ? 'mercury'
       : sys.startsWith('Scan the INPUT block') ? 'digest'
       : '?';
     byAgent[agent] = (byAgent[agent] || 0) + 1;

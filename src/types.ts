@@ -41,9 +41,8 @@ export interface AgentInput {
   orchestratorModel?: string; // Warden (orchestrator) model
   model?: string;             // Atlas model
   vulkanModel?: string;    // Vulkan (coding) model
-  supervisorModel?: string; // Supervisor (monitor-tick) model; blank = inherit orchestrator
-  supervisorEnabled?: boolean; // Supervisor self-audit on/off (default true)
-  supervisorIntervalMs?: number; // Supervisor self-audit cadence in ms (default 600000 = 10 min)
+  supervisorModel?: string; // Supervisor (completion-verdict) model; blank = inherit orchestrator
+  supervisorEnabled?: boolean; // Supervisor completion verdict on/off (default true)
   // Per-agent models — every agent has its own concrete model selected from the
   // Agents-panel dropdown (no blank, no runtime fallback). The host resolves each
   // from its router_state key; the agent-runner uses it directly and errors if empty.
