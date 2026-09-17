@@ -17,6 +17,29 @@ const ACTION_SETTLE_MS = 500;
 let lastNavUrl = '';
 let lastNavAt = 0;
 
+// Shadow-DOM helper prepended to every browser_evaluate. document.querySelector
+// can't see inside web components (shadow roots) — Reddit's submit button lives
+// in <shreddit-post-composer>'s shadow root, so plain querySelector returns
+// null and the agent circles (atlas-jldr burned 40+ probes on this, 2026-09-17).
+// __warden pierces shadow roots recursively so the agent can find/click those
+// elements directly.
+const SHADOW_HELPER = `(() => {
+  if (!window.__warden) {
+    const walk = (root, sel, out) => {
+      try { root.querySelectorAll(sel).forEach(e => out.push(e)); } catch {}
+      try { root.querySelectorAll('*').forEach(e => { if (e.shadowRoot) walk(e.shadowRoot, sel, out); }); } catch {}
+    };
+    const qa = (sel) => { const out = []; walk(document, sel, out); return out; };
+    window.__warden = {
+      queryAll: (sel) => qa(sel),
+      query: (sel) => qa(sel)[0] || null,
+      byText: (txt) => qa('*').filter(e => !e.children.length && (e.textContent || '').toLowerCase().includes(String(txt).toLowerCase())),
+      click: (sel) => { const el = qa(sel)[0]; if (!el) return 'no match for ' + sel; el.click(); return 'clicked ' + sel; },
+    };
+  }
+})();`;
+
+
 registry.register({
     name: 'browser_navigate',
     description: 'Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type. Accepts http(s):// URLs, file:// URLs, or a bare local path (e.g. /home/dominic/Warden/baben-sushi.html, ~/site/index.html, ./page.html) — a bare path is resolved to a file:// URL and opened IN the Warden Chrome itself (its persistent profile, no fresh "Welcome to Chrome" session), and the page is snapshotted so you can verify it. This is the right way to show the user a local HTML/PDF/image. Do NOT spawn a separate chrome/google-chrome-stable via Bash to open a local file — that creates a throwaway profile and a "sign in / welcome" screen. Only use open_app (xdg-open) for a local file you specifically want in its OS-default app rather than the browser.',
@@ -263,7 +286,7 @@ registry.register({
 
 registry.register({
     name: 'browser_evaluate',
-    description: 'Run JavaScript in the page and return the JSON-serialized result. Use for reading data the snapshot misses, dispatching events, or controlling media (e.g. document.querySelector("video").pause()).',
+    description: 'Run JavaScript in the page and return the JSON-serialized result. Use for reading data the snapshot misses, dispatching events, or controlling media (e.g. document.querySelector("video").pause()). NOTE: document.querySelector does NOT see inside web components (shadow DOM) — e.g. Reddit\'s submit button lives in <shreddit-post-composer>\'s shadow root, so querySelector("button[type=submit]") returns null. Use the injected helper instead: window.__warden.query("button[type=submit]") (first match), window.__warden.queryAll("button") (all matches, pierces shadow roots), window.__warden.byText("Post") (leaf elements whose text contains it), or window.__warden.click("button[type=submit]") (clicks the first match).',
     schema: {
         type: 'object',
         properties: {
@@ -274,7 +297,7 @@ registry.register({
     handler: async (args) => {
         try {
             const page = await getPage();
-            const result = await page.evaluate(String(args.js));
+            const result = await page.evaluate(`${SHADOW_HELPER}\n${String(args.js)}`);
             const text = result === undefined ? 'undefined' : JSON.stringify(result);
             return text.length > 10000 ? text.slice(0, 10000) + '\n[... result truncated at 10000 chars]' : text;
         } catch (err: any) {
