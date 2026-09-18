@@ -17,12 +17,6 @@ function run(cmd: string, extraEnv: Record<string, string> = {}): string {
     }).trim();
 }
 
-/** POSIX-shell-quote a string (single quotes) so execSync(/bin/sh -c) passes it
- * verbatim — no $/backtick/backslash expansion, no newline mangling. */
-function shq(s: string): string {
-    return "'" + s.replace(/'/g, "'\\''") + "'";
-}
-
 /** Push a base64 image into the vision-context queue consumed after this tool call. */
 function queueForVision(b64: string): void {
     if (!b64) return;
@@ -184,22 +178,7 @@ registry.register({
 
         if (args.text) {
             try {
-                // Multi-line text MUST be typed line-by-line. The old code passed
-                // JSON.stringify(args.text) to xdotool, which turned every real
-                // newline into the literal characters "\n" (backslash + n) — xdotool
-                // typed them verbatim, so markdown came out as a wall of text full
-                // of backslash-n's. A bare newline is ALSO wrong: xdotool maps no
-                // keysym to it and silently drops it. So type each line, then send
-                // Return between lines — that's what produces real markdown breaks.
-                const lines = String(args.text).split('\n').map((l) => l.replace(/\r$/, ''));
-                for (let i = 0; i < lines.length; i++) {
-                    if (lines[i].length > 0) {
-                        run(`xdotool type --clearmodifiers --delay ${delay} -- ${shq(lines[i])}`);
-                    }
-                    if (i < lines.length - 1) {
-                        run(`xdotool key --clearmodifiers Return`);
-                    }
-                }
+                run(`xdotool type --clearmodifiers --delay ${delay} -- ${JSON.stringify(args.text)}`);
                 return `Typed: ${args.text.slice(0, 80)}${args.text.length > 80 ? '…' : ''}`;
             } catch (err: any) {
                 return `Error typing text: ${err.message}`;

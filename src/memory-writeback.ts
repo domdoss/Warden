@@ -29,8 +29,8 @@ import { logger } from './logger.js';
 // is a hoisted function declaration.
 import { noteTreeActivity } from './memory-tree.js';
 
-const COOLDOWN_MS = 2 * 60 * 1000; // max one writeback per chat per 2 min
-const MIN_NEW_MESSAGES = 6; // wait for a short run of conversation before distilling
+const COOLDOWN_MS = 15 * 60 * 1000; // max one writeback per chat per 15 min
+const MIN_NEW_MESSAGES = 25; // wait for a real run of conversation before distilling
 const TRANSCRIPT_LIMIT = 30; // messages fed to the distiller
 const MEMORY_COMPACT_THRESHOLD = 16_000; // chars — compact MEMORY.md beyond this
 const MEMORY_COMPACT_TARGET = 8_000;
@@ -256,7 +256,7 @@ function parseDistilled(raw: string): Distilled | null {
     if (start === -1 || end <= start) return null;
     const obj = JSON.parse(cleaned.slice(start, end + 1));
     const memory = Array.isArray(obj.memory)
-      ? obj.memory.filter((m: unknown) => typeof m === 'string' && (m as string).trim().length > 0).slice(0, 6)
+      ? obj.memory.filter((m: unknown) => typeof m === 'string' && (m as string).trim().length > 0).slice(0, 5)
       : [];
     const journal = typeof obj.journal === 'string' ? obj.journal.trim() : '';
     if (memory.length === 0 && !journal) return null;
@@ -381,9 +381,8 @@ export async function runMemoryWriteback(chatJid: string): Promise<void> {
 Task: From the user's own messages below, extract DURABLE facts an assistant would still want to know months from now.
 
 Guidelines:
-- Standing instructions about HOW the user wants work done are the highest-value memory — the lines they get angry about repeating. Capture each one verbatim and put it first: "don't X", "do Y this way", "the window is already focused". Losing one of these is the worst memory failure.
-- Then keep the other permanent facts the user personally stated: tastes, preferences, habits, people and relationships, permanent setup or identity facts, long-term goals and decisions.
-- Select at most 6 facts total. Quality over quantity. Return an empty array if the user said nothing durable.
+- Keep only permanent facts the user personally stated: tastes, preferences, habits, people and relationships, permanent setup or identity facts, standing instructions, long-term goals and decisions.
+- Select at most 3 facts. Quality over quantity. Return an empty array if the user said nothing durable.
 - Skip any fact already present in the existing memory file.
 - Keep each fact to one short line.
 

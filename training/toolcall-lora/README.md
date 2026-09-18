@@ -6,7 +6,6 @@ tags:
 - base_model:adapter:ibm-granite/granite-4.1-3b
 - lora
 - transformers
-- unsloth
 ---
 
 # Model Card for Model ID
