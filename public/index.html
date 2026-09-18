@@ -229,11 +229,22 @@
           <div class="task-queue-body">
             <div class="tq-label">Active <span class="tq-count" id="tqActiveCount">0</span></div>
             <div class="task-stack" id="taskStack">
-              <div class="tq-empty" id="taskStackEmpty">No active task.</div>
+              <div class="tq-empty" id="taskStackEmpty">Nothing running.</div>
             </div>
             <div class="tq-label">Backlog</div>
             <div class="task-backlog" id="taskBacklog">
               <div class="tq-empty" id="taskBacklogEmpty">Nothing finished yet.</div>
+            </div>
+
+            <!-- ===== Memory brain — what Warden is filing and recalling ===== -->
+            <div class="tq-sep"></div>
+            <div class="tq-label">
+              Memory
+              <span class="mem-dot" id="memDot" title="Classifier state"></span>
+              <span class="tq-count" id="memFactCount">0</span>
+            </div>
+            <div class="mem-brain" id="memBrain">
+              <div class="tq-empty" id="memBrainEmpty">Nothing filed yet.</div>
             </div>
           </div>
         </aside>
