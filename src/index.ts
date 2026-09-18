@@ -62,9 +62,8 @@ import {
   getAgentTask,
   getAgentTaskBacklog,
   getAgentTaskBacklogSize,
-  createAgentTask,
   appendAgentTaskHistory,
-  updateAgentTask,
+  claimNextAgentTask,
   finishAgentTask,
   getUserApiKeys,
   getActiveUserApiKeyByType,
@@ -2085,8 +2084,9 @@ async function processOwnerMessages(): Promise<void> {
     .map((m) => m.content || '')
     .join('\n')
     .trim();
-  const activeTask = userCommand ? createAgentTask(userCommand) : undefined;
-  if (activeTask) updateAgentTask(activeTask.id, { status: 'running' });
+  // Claim the queued task created at ingestion (queued → running). Falls back
+  // to creating one for messages ingested before task tracking was on.
+  const activeTask = userCommand ? claimNextAgentTask(userCommand) : undefined;
   const taskContext = activeTask ? `${activeTask.command}\n\n[Task history:]\n${activeTask.history}` : undefined;
 
   const input: AgentInput = {

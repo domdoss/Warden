@@ -1430,6 +1430,38 @@ export function createAgentTask(command: string): AgentTask {
   return getAgentTask(id)!;
 }
 
+/**
+ * Enqueue a user command as an agent task at INGESTION time, so queued commands
+ * are visible in the dashboard queue before their turn starts (the "stacked
+ * queue"). Coalesces into the existing queued task when one is already waiting,
+ * matching processOwnerMessages' single-turn batch of pending messages.
+ */
+export function queueAgentTaskCommand(command: string): AgentTask {
+  const queued = db.prepare(
+    "SELECT id FROM agent_tasks WHERE status = 'queued' ORDER BY position ASC, created_at ASC LIMIT 1",
+  ).get() as { id: string } | undefined;
+  if (queued) {
+    const t = getAgentTask(queued.id)!;
+    const merged = [t.command, command].filter(Boolean).join('\n');
+    return updateAgentTask(queued.id, { command: merged })!;
+  }
+  return createAgentTask(command);
+}
+
+/**
+ * Claim the oldest queued task for this turn (queued → running), or create one
+ * on the spot as a fallback for messages ingested before task tracking was on.
+ */
+export function claimNextAgentTask(command: string): AgentTask | undefined {
+  if (!command) return undefined;
+  const queued = db.prepare(
+    "SELECT id FROM agent_tasks WHERE status = 'queued' ORDER BY position ASC, created_at ASC LIMIT 1",
+  ).get() as { id: string } | undefined;
+  if (queued) return updateAgentTask(queued.id, { status: 'running' });
+  const t = createAgentTask(command);
+  return updateAgentTask(t.id, { status: 'running' });
+}
+
 export function updateAgentTask(taskId: string, updates: Partial<AgentTask>): AgentTask | undefined {
   const existing = getAgentTask(taskId);
   if (!existing) return undefined;
