@@ -272,7 +272,7 @@ const RESEARCH_TOOLS = new Set([
     'browser_navigate', 'browser_snapshot', 'browser_evaluate',
     'browser_current_url', 'browser_tabs', 'browser_screenshot',
     'browser_wait_for', 'desktop_screenshot',
-    'mcp__marm__marm_smart_recall', 'mcp__marm__marm_concept_recall',
+    'mcp__marm__marm_smart_recall',
 ]);
 // Narration cap: a stream that has produced this many chars of CONTENT with
 // zero tool_call chunks is writing an essay, not working. A legitimate long
@@ -786,7 +786,7 @@ FINISHING — you declare done, not a timer or tool cap (you have up to 100 roun
 
 PREMISE CHECK — a search that keeps coming back empty is an answer, not a reason to try a new search term. When the task names a target you haven't yet seen (a page, file, feature, route), find the TARGET ITSELF first — Glob/find by its name, or one ls of the directory it should live in — before you study anything around it. If three different searches for the same target all come back empty, the premise is broken: widen ONCE to the other tree it could live in — user data and deliverables are in the workspace (\`~/Warden\`, e.g. \`data/work/\`), while \`/opt/Warden\` is the application's own source, which almost never holds a user's artifact — and if it still doesn't appear, end BLOCKED: name the target, say exactly where you looked, and ask for its location. Searching is only progress while each call narrows toward the target; hunting an application's source for a user artifact that was never there is the classic spiral.
 
-KNOWLEDGE GRAPH — for how a thing relates to what we already know from past conversation (entities, people, projects, concept links), call \`mcp__marm__marm_concept_recall\` with the topic or "related to X"; it searches the entity/relationship graph built from memory. Distinct from \`mcp__marm__marm_smart_recall\` (raw remembered facts).
+CODE GRAPH — for structural questions about a repo (where a symbol/route lives, who calls a function, how A flows to B), use \`mcp__marm__marm_code_lookup\` (find a symbol/definition — replaces grep), \`mcp__marm__marm_graph_trace\` (callers/callees/data-flow), \`mcp__marm__marm_graph_architecture\` (module layout), \`mcp__marm__marm_graph_impact\` (what a change breaks) before manual Grep/Read. /opt/Warden is indexed; omit \`project\` to auto-resolve.
 
 MEMORY — before hunting for a fact, prior decision, or how something was done, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it. Log a durable fact you just established (a confirmed path, a decision, a fix) with \`mcp__marm__marm_log_entry\` so it's recallable next time. Memory is checked once per fact, not a substitute for the task's own tools.`,
         toolsets: ['atlas-core'],
@@ -808,7 +808,12 @@ MAKE THE CALL — work happens through tool calls, not narration. The turn that 
 
 CODE — Read or Grep before you change anything: understand the real data flow (written → read → rendered) end to end before editing. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). Match the surrounding style — naming, indentation, comment density. Run the build and the tests to confirm a change; a successful Edit is not a working change. When your code references something defined elsewhere (a fetch→route, a field, an export), Grep that file once to confirm the contract exists before relying on it.
 
-KNOWLEDGE GRAPH — for how a thing relates to what we already know from past conversation (entities, people, projects, one concept's connection to another), call \`mcp__marm__marm_concept_recall\` with the topic or "related to X". It searches the entity/relationship graph extracted from memory — distinct from \`mcp__marm__marm_smart_recall\`, which returns raw remembered facts. The graph builds itself from memory in the background; if recall comes back empty, fall back to smart_recall.
+CODE GRAPH — for structural questions about the repo (who calls a function, how does data flow from A to B, where a symbol/route/table lives, what a change breaks), call the graph tools BEFORE manual Grep/Read:
+- \`mcp__marm__marm_code_lookup\` — find a symbol, definition, or text pattern by name/keyword (replaces grep/glob for "where is X defined").
+- \`mcp__marm__marm_graph_trace\` — trace callers/callees/data-flow from a function ("who calls X", impact).
+- \`mcp__marm__marm_graph_architecture\` — one-shot module/package layout of the project.
+- \`mcp__marm__marm_graph_impact\` — blast radius of a git change (diff → affected symbols).
+/opt/Warden is already indexed; omit \`project\` to auto-resolve. Use them for orientation and dependency questions, then Grep/Read only the specific lines the graph points at.
 
 VERIFYING — Match the check to the task. A successful Edit/Write/Bash call IS applied — don't re-Read the file to double-check it. For a behavioral change, run the build and the relevant test (or a focused reproduction) and read its actual output; "it should work" is not verification. When you change a contract (a route, a function signature, a config shape), Grep for the old form and update every caller — don't leave the build broken.
 
