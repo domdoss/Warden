@@ -189,11 +189,12 @@ import {
   getAgentTask,
   getAgentTaskBacklog,
   getAgentTaskBacklogSize,
-  queueAgentTaskCommand,
   reorderAgentTasks,
   deleteAgentTask,
   finishAgentTask,
+  closeAgentTaskByOutcome,
   appendAgentTaskHistory,
+  getAgentTaskSteps,
 } from './db.js';
 import { AgentSessionStore } from './agent-session-store.js';
 import { encryptApiKey } from './encryption.js';
@@ -799,11 +800,17 @@ function getStatusData() {
     // Agent-task queue (internal run record + shared history). Active = queued +
     // running in drain order; backlog = most recent finished (done/stopped).
     tasks: {
-      active: getActiveAgentTasks(),
-      backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
+      active: withAgentTaskSteps(getActiveAgentTasks()),
+      backlog: withAgentTaskSteps(getAgentTaskBacklog(getAgentTaskBacklogSize())),
       backlogSize: getAgentTaskBacklogSize(),
     },
   };
+}
+
+/** Attach each task's steps — the delegated jobs, which is the grain the
+ *  dashboard queue renders. */
+function withAgentTaskSteps<T extends { id: string }>(tasks: T[]): Array<T & { steps: ReturnType<typeof getAgentTaskSteps> }> {
+  return tasks.map((t) => ({ ...t, steps: getAgentTaskSteps(t.id) }));
 }
 
 // ── summaries (Iris digest) ──────────────────────────────────────────
@@ -993,9 +1000,11 @@ async function handleMessages(
     };
     deps.storeMessage(msg);
 
-    // Create the agent-task record at ingestion so queued commands are visible
-    // in the dashboard queue before their turn starts (the "stacked queue").
-    queueAgentTaskCommand(body.text);
+    // NO task record here. A chat message is not a task: most turns are a
+    // question and an answer, and minting a queue row for each one filled the
+    // panel with every sentence Dominic typed. A task is what a turn BECOMES
+    // when it goes multistep, so the runner opens one on its first delegation
+    // (open_agent_task) and each delegated job lands as a step.
 
     // Relay to the actual channel if it's not a web-only JID
     if (!jid.startsWith('web:')) {
@@ -2597,9 +2606,10 @@ async function handleChatStop(
   // finishAgentTask calls live inside the turn body, which an interrupt or kill
   // can skip entirely — so without this the queue keeps showing the task as
   // running after the user has stopped it, and nothing ever clears it.
+  // Outcome-aware: pressing stop must not relabel steps that already finished
+  // cleanly as a failure. Only genuinely unfinished work closes as stopped.
   for (const open of getActiveAgentTasks()) {
-    appendAgentTaskHistory(open.id, 'stopped from the dashboard stop button');
-    finishAgentTask(open.id, 'stopped');
+    closeAgentTaskByOutcome(open.id, 'stopped', 'stopped from the dashboard stop button');
   }
   if (body.soft) {
     // Soft stop: queue is a stub now; no-op.
@@ -3877,8 +3887,8 @@ export function startStatusServer(d: StatusDeps): void {
       // ── Agent-task queue (internal run record + shared history) ──────────
       if (pathname === '/api/agent-tasks' && req.method === 'GET') {
         return json(res, {
-          active: getActiveAgentTasks(),
-          backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
+          active: withAgentTaskSteps(getActiveAgentTasks()),
+          backlog: withAgentTaskSteps(getAgentTaskBacklog(getAgentTaskBacklogSize())),
           backlogSize: getAgentTaskBacklogSize(),
         });
       }
@@ -3896,8 +3906,8 @@ export function startStatusServer(d: StatusDeps): void {
             interrupted = cancelCurrentTurn();
             if (!interrupted) interrupted = killCurrentAgent(false);
           }
-          const task = finishAgentTask(ms[1], 'stopped');
-          logger.info({ taskId: ms[1], wasStatus: t.status, interrupted }, 'Agent task stopped from dashboard');
+          const task = closeAgentTaskByOutcome(ms[1], 'stopped', 'cancelled from the dashboard queue');
+          logger.info({ taskId: ms[1], wasStatus: t.status, interrupted, now: task?.status }, 'Agent task cancelled from dashboard');
           return json(res, { ok: !!task, interrupted, task });
         }
       }
@@ -3932,7 +3942,8 @@ export function startStatusServer(d: StatusDeps): void {
               channel: 'web',
             };
             deps.storeMessage(msg);
-            queueAgentTaskCommand(t.command);
+            // No task row here either: the replayed command is just a message
+            // again, and it earns a task only if its turn delegates.
             return json(res, { ok: true, replayed: t.command.slice(0, 200) });
           }
           if (!pathname.endsWith('/recall') && req.method === 'DELETE') {

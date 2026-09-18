@@ -15,12 +15,16 @@ record-until-silence), Whisper STT, Warden HTTP round-trip, and TTS playback.
   the chat view never shows it — only his spoken words appear) → poll for
   the reply → speak it → listen again. Back and forth until the stop sign
   is pressed (stops everything — recording, waiting, or speaking; voice
-  out), or the conversation ends on its own: he says "that's all for now",
-  or — the one he never remembers — he simply goes quiet, and a sustained
-  run of silent listens means he's done talking. The stop sign flashes the
-  whole time it runs.
+  out), or the conversation ends on its own: he says an end phrase ("that's
+  all for now", "stop listening", "that's enough", "be quiet", "goodbye",
+  or a bare "stop"), or — the one he never remembers — he simply goes
+  quiet, and a sustained run of silent listens means he's done talking.
+  The stop sign flashes the whole time it runs.
 - Audible cues for a blind user: short high beep when listening starts,
-  low beep when the turn finishes, long buzz if it failed.
+  a falling two-tone cue the instant it stops listening and starts
+  thinking, low beep when the whole exchange finishes, long buzz if it
+  failed (with a spoken reason where one exists — Warden unreachable, no
+  reply in time), and a double chirp when nothing usable was heard.
 
 MEMORIES — this app owns them too (Warden knows nothing about Steve).
 At startup it makes sure they're up to date, all by itself: cached
@@ -93,7 +97,8 @@ PERSONA — you are Petal, a warm Northern companion in the Donna Noble mould: k
 
 - Reply conversationally and briefly, in plain short sentences. No lists, no markdown, no emoji — the reply goes through text-to-speech.
 - Do NOT act on vague or rambling requests: no tasks, projects, reminders, jobs, messages, or file changes unless the request is explicit and unambiguous.
-- If he asks you to FIX, debug, or change anything technical or complex (a broken app, a slow tool, a setting, a server): do NOT attempt the fix — never, no matter how he phrases it, and never change anything on this machine. In your own warm words, tell him you can't sort that one out yourself but you've passed it to Dominic and he'll look after it. Then offer ONE simple spoken alternative if there is one (something Petal can actually do: chat, read something, look something simple up). Then send exactly one email to dom.doss@gmail.com — his words, what he said happened, today's date — and stop.
+- Petal never operates this computer on his behalf: never open, close, restart, install, or otherwise control any application, window, file, media player, or device — not to fix something, not as an ordinary favour like playing a film or turning something off. If he wants something on the machine controlled, tell him gently that isn't something you can do yourself.
+- If — and only if — he is CLEARLY AND DIRECTLY asking for something technical to be fixed, debugged, or changed (a broken app, a slow tool, a setting, a server): do NOT attempt it — never, no matter how he phrases it. A story, a passing complaint, or background chatter about something being broken, slow, or on the blink is NOT a fix request — just chat about it normally. For a genuine, direct ask: tell him warmly, in your own words, that you can't sort that one out yourself but you've passed it to Dominic and he'll look after it — always leave him something to do meanwhile (chat, read something, look something simple up, or just reassurance Dominic's on it), never a dead end. Then send exactly one email to dom.doss@gmail.com — his words, what he said happened, today's date — and say so OUT LOUD in the same reply (e.g. "I've sent that over to Dominic") so he knows it actually happened; never send it silently. If you already emailed Dominic about this same issue earlier in this conversation, do not send another — just remind him warmly that Dominic already knows.
 - Nonsensical or impossible requests: respond gently and briefly; do not attempt to fulfill them.
 - If the intent is unclear, ask ONE short clarifying question instead of acting.
 - Small talk and stories are fine — engage naturally."""
@@ -123,35 +128,79 @@ STEVE_PROMPT = STEVE_PROMPT + "\n" + HOST_NOTE
 
 # Backstop for the fix-request rule above: when his words look like a technical
 # fix/change request, _send appends a hard-rule block so the curation survives
-# even when the general prompt block has scrolled far back in context. False
-# positives are harmless — the block only ever tells the orchestrator to
-# refuse-and-report, which is the right default for Steve anyway.
+# even when the general prompt block has scrolled far back in context.
+#
+# An issue-word alone used to be enough to trigger this ("slow", "install",
+# "restart", "broken" etc. are all common, harmless words in an ordinary
+# ramble or story), which is why Petal was firing off bug-report emails
+# unprompted — he'd mention his telly was slow and she'd email Dominic about
+# it. Now it only fires when an issue word AND an explicit ask/imperative
+# shape are BOTH present in the same utterance, so a passing complaint or a
+# story never matches on its own.
 BUG_REPORT_EMAIL = "dom.doss@gmail.com"
-FIX_REQUEST_RE = re.compile(
+# 30 minutes: a repeat mention of the same kind of problem within this
+# window gets the "already reported" block instead of a fresh email — he
+# tends to bring the same grumble up more than once in a conversation.
+FIX_REPORT_COOLDOWN_S = 1800
+_FIX_ISSUE_RE = re.compile(
     r"\b(fix|repai?r|broken|broke|bug|debug|error|crash(?:e[ds]?|ing)?|"
     r"doesn'?t\s+(?:work|load|open|respond|start)|not\s+working|stopped\s+working|"
-    r"won'?t\s+(?:work|open|start|stop)|install|uninstall|update|upgrade|reboot|restart|"
+    r"won'?t\s+(?:work|open|start|stop)|reinstall|uninstall|update|upgrade|reboot|restart|"
     r"frozen|hang(?:s|ed|ing)?|slow|taking\s+(?:forever|ages|a\s+long\s+time))\b",
     re.I,
 )
+_ASK_RE = re.compile(
+    r"\b(?:can|could|would|will)\s+you\b|\bplease\b|\bhelp\s+me\b|"
+    r"\bneed\s+(?:you\s+)?to\b|\b(?:can|could)\s+(?:someone|anyone)\b|"
+    r"^\s*(?:fix|sort|restart|reboot|repai?r|reinstall|update)\b|"
+    r"\b(?:fix|sort\s+out|restart|reboot|repai?r)\s+(?:it|this|that|the\s+\w+)\b",
+    re.I,
+)
+
+
+def is_fix_request(text: str) -> bool:
+    """A genuine ask for a technical fix, not just a passing mention. An
+    issue word by itself ("the telly's been slow lately") is ordinary
+    chatter; it only counts once there's also an explicit request or
+    imperative shape in the same utterance."""
+    return bool(_FIX_ISSUE_RE.search(text) and _ASK_RE.search(text))
 
 
 def fix_request_block(text: str) -> str:
     """The appended hard rule for a detected fix request. Never blocks the
     send — it only steers the orchestrator to refuse-and-report."""
     return (
-        "TECHNICAL FIX REQUEST DETECTED in his words above. HARD RULE: do not attempt any "
-        "fix, debug step, investigation, setting change, install, update, or file change "
-        "for it — no exceptions, however he phrased it, and never change anything on this "
-        "machine. Your entire reply to him: tell him warmly, in your own words, that you "
-        "can't sort that one out yourself but you've passed it to Dominic, and offer one "
-        "simple spoken alternative if there is one (only something Petal can actually do: "
-        "chat, read something out, look something simple up). Then send exactly one email "
+        "TECHNICAL FIX REQUEST DETECTED in his words above — he is CLEARLY AND DIRECTLY "
+        "asking for something to be fixed, not just describing or complaining about it. "
+        "HARD RULE: do not attempt any fix, debug step, investigation, setting change, "
+        "install, update, or file change for it — no exceptions, however he phrased it, "
+        "and never open, close, restart, or otherwise operate anything on this machine. "
+        "Your entire reply to him: tell him warmly, in your own words, that you can't sort "
+        "that one out yourself but you've passed it to Dominic, and always leave him "
+        "something to do meanwhile — one simple thing Petal can actually do (chat, read "
+        "something out, look something simple up) or just reassurance Dominic's on it; "
+        "never a dead end. Then send exactly one email "
         f"to {BUG_REPORT_EMAIL} with subject \"Bug report: <the thing>\", containing his "
-        "request in his words, what he said happened, and today's date — and stop. Do not "
-        "investigate on this machine; the email itself is the handoff to Dominic. If his "
-        "words turn out to be small talk or a story rather than a technical request (e.g. "
-        "he was talking about a slow movie), ignore this block entirely and just chat."
+        "request in his words, what he said happened, and today's date. State OUT LOUD in "
+        "the same reply, in plain words, that you've emailed Dominic about it (for example "
+        "\"I've sent that over to Dominic\") — never send it silently; that is the only way "
+        "he can know it happened. Do not investigate on this machine; the email itself is "
+        "the handoff to Dominic. If his words turn out to be small talk or a story rather "
+        "than a direct request (e.g. he was talking about a slow movie), ignore this block "
+        "entirely and just chat."
+    )
+
+
+def fix_repeat_block() -> str:
+    """Appended instead of fix_request_block() when the same kind of fix
+    request already triggered an email recently this session (see
+    FIX_REPORT_COOLDOWN_S) — stops him bringing the same broken thing up
+    twice from firing a fresh email each time."""
+    return (
+        "TECHNICAL FIX REQUEST DETECTED again — but a bug report about this kind of issue "
+        "was already emailed to Dominic very recently in this conversation. Do NOT send "
+        "another email. Just tell him warmly that Dominic already knows and is on it, and "
+        "do not attempt any fix yourself."
     )
 
 # ---------- Steve's own memories (scanned from ~/.claude, local 8b) ----------
@@ -457,15 +506,23 @@ def memory_startup_check(set_note, on_ready) -> None:
     changed since the last scan, file their new facts into MARM (recall
     dedup skips what's already filed); then the app announces it's ready
     (spoken — the user is blind)."""
-    changed = claude_files_since(read_scan_ts())
-    if changed:
-        set_note("Updating memories…")
-        ollama_unload_all()
-        fresh = classify_lines(scan_claude_lines(changed))
-        if fresh:
-            filed = marm_file_new(fresh)
-            print(f"[steve] filed {filed} new facts into MARM", file=sys.stderr)
-        write_scan_ts()
+    try:
+        changed = claude_files_since(read_scan_ts())
+        if changed:
+            set_note("Updating memories…")
+            ollama_unload_all()
+            fresh = classify_lines(scan_claude_lines(changed))
+            if fresh:
+                filed = marm_file_new(fresh)  # not best-effort itself (MARM down raises)
+                print(f"[steve] filed {filed} new facts into MARM", file=sys.stderr)
+            write_scan_ts()
+    except Exception as e:
+        # marm_file_new/_marm_rpc raise on a network failure (MARM not
+        # running, etc.) — this whole scan is documented as best-effort, but
+        # an uncaught exception here used to kill this background thread
+        # before on_ready() ran, so he'd wait forever with no "Petal ready."
+        # and no error either. Log it and still announce ready.
+        print(f"[steve] memory startup scan failed: {e}", file=sys.stderr)
     set_note("")
     on_ready()
 
@@ -493,12 +550,30 @@ def warden_url_from_config() -> str:
     return ""
 
 
+# Spoken end signals, checked on every utterance (not just a silence
+# fallback) — "stop listening" was reported as not working at all: it was
+# never checked for, only the one fixed phrase below was. A blind user has
+# no other reliable way to end the loop than his own voice — the STOP
+# button needs sight or luck to find on a strip he can't see.
+VOICE_END_PHRASES = (
+    "thats all for now", "that is all for now",
+    "stop listening", "thats enough", "that is enough",
+    "be quiet", "goodbye", "bye now", "bye bye",
+)
+
+
 def voice_mode_done(text: str) -> bool:
-    """'that's all for now' — any casing/punctuation — ends voice mode.
-    Fallback hard signal: the loop primarily ends on sustained silence
-    (see _voice_loop), but when the phrase does appear it ends at once."""
+    """Any casing/punctuation of the phrases above ends voice mode at once.
+    A bare "stop" also ends it, but only for a short utterance (<=2 words)
+    — "stop" said in passing inside a longer ramble (e.g. a story) must not
+    cut the whole conversation out from under him."""
     norm = re.sub(r"[^a-z0-9]+", " ", text.lower().replace("'", "")).strip()
-    return "thats all for now" in norm or "that is all for now" in norm
+    if not norm:
+        return False
+    if any(p in norm for p in VOICE_END_PHRASES):
+        return True
+    words = norm.split()
+    return len(words) <= 2 and "stop" in words
 
 
 class SteveApp:
@@ -518,17 +593,36 @@ class SteveApp:
             output_device=find_device("output"),
             sample_rate=48000,
         )
+        # Built before the STT/TTS load below, which is the riskiest part of
+        # startup (model files, GPU/driver, downloads) — so a load failure
+        # still has something to beep with. Blind user: the beeps ARE the
+        # feedback. High = go, low = done, long buzz = something failed.
+        self.beeps = BeepGenerator(sample_rate=48000)
         # Same device split as the main app: Whisper on CPU keeps the GPU free
         # for TTS (loading both on one GPU segfaults — see ears/main.py).
-        self.stt = STT(model="base", device="cpu")
-        self.stt.warmup()  # load Whisper now, not during the first turn
-        self.tts = TTS(engine="kokoro")
-        warm = getattr(self.tts._impl, "warmup", None)
-        if warm:
-            warm()
-        # Blind user: the beeps ARE the feedback. High = go, low = done,
-        # long buzz = something failed.
-        self.beeps = BeepGenerator(sample_rate=48000)
+        try:
+            self.stt = STT(model="base", device="cpu")
+            self.stt.warmup()  # load Whisper now, not during the first turn
+            self.tts = TTS(engine="kokoro")
+            warm = getattr(self.tts._impl, "warmup", None)
+            if warm:
+                warm()
+        except Exception as e:
+            # An uncaught exception here used to propagate straight out of
+            # main() with nothing spoken — a total silent crash is the worst
+            # outcome for a blind user, who'd have no way to know the app
+            # never came up. He can't fix this himself either way, but three
+            # buzzes at least tell him something is badly wrong instead of
+            # dead silence, before the process exits and Dominic sees the
+            # traceback in the logs.
+            print(f"[steve] startup failed loading STT/TTS: {e}", file=sys.stderr)
+            for _ in range(3):
+                try:
+                    self.player.play_bytes(self.beeps.error_beep())
+                    time.sleep(0.15)
+                except Exception:
+                    break
+            raise
         self.player.play_bytes(self.beeps.start_beep())  # "online" cue
 
         self.warden = warden_url.rstrip("/")
@@ -538,6 +632,8 @@ class SteveApp:
         # True from _send() until the reply lands — STOP uses it to know
         # whether a Warden turn is actually in flight and must be stopped.
         self._awaiting_reply = False
+        # 0.0 = never reported yet this run — see FIX_REPORT_COOLDOWN_S.
+        self._last_fix_report_ts = 0.0
         # 3 taps on the mic wake the conversation — same as the TALK button.
         # Paused while a conversation runs (the recorder owns the mic then).
         self.claps = ClapDetector(
@@ -573,6 +669,47 @@ class SteveApp:
         except Exception:
             pass
 
+    def _speak_fail(self, text: str) -> None:
+        """Spoken explanation for a turn failure. A bare buzz tells him
+        something broke but never why — he can't see a status line, so the
+        reason has to be said out loud or it doesn't exist for him. Falls
+        back to the long buzz if TTS itself can't produce audio."""
+        try:
+            audio = self.tts.synthesize(text)
+            if audio:
+                self.player.play_bytes(audio)
+                return
+        except Exception:
+            pass
+        try:
+            self.player.play_bytes(self.beeps.error_beep())
+        except Exception:
+            pass
+
+    def _no_speech_cue(self) -> None:
+        """Distinct double-chirp for 'didn't catch that, go again' — must
+        read differently from the single start_beep ('go ahead, I'm
+        listening') or he can't tell the two apart by ear."""
+        try:
+            chirp = self.beeps.generate_beep(660, 0.05, 0.10, fade=True)
+            self.player.play_bytes(chirp)
+            time.sleep(0.05)
+            self.player.play_bytes(chirp)
+        except Exception:
+            pass
+
+    def _thinking_cue(self) -> None:
+        """Two-tone falling cue for 'mic's closed, your turn landed, I'm
+        thinking now' — the moment recording stops. Needed alongside the
+        single-tone start_beep (listening opens) so the open/close pair is
+        audibly distinct from each other and from _no_speech_cue's double
+        same-pitch chirp."""
+        try:
+            self.player.play_bytes(self.beeps.generate_beep(500, 0.07, 0.12, fade=True))
+            self.player.play_bytes(self.beeps.generate_beep(340, 0.09, 0.12, fade=True))
+        except Exception:
+            pass
+
     # ----- Warden HTTP (urllib — no main-app client) -----
     def _http(self, method: str, path: str, body: dict | None = None, timeout: int = 10):
         data = json.dumps(body).encode() if body is not None else None
@@ -591,8 +728,13 @@ class SteveApp:
         shows only his spoken words. Returns the stored message id (an
         opaque string)."""
         parts = ["<!--hidden-->", STEVE_PROMPT]
-        if FIX_REQUEST_RE.search(text):
-            parts.append(fix_request_block(text))
+        if is_fix_request(text):
+            now = time.time()
+            if now - self._last_fix_report_ts < FIX_REPORT_COOLDOWN_S:
+                parts.append(fix_repeat_block())
+            else:
+                parts.append(fix_request_block(text))
+                self._last_fix_report_ts = now
         about = marm_recall_about(text)
         if about:
             parts.append("ABOUT THE USER — what you remember about him:\n" + about)
@@ -649,17 +791,31 @@ class SteveApp:
                     silent += 1
                     if silent >= SILENT_LISTENS_TO_END:
                         break  # done speaking — hand the mic back
+                    self._no_speech_cue()  # heard nothing — audibly distinct from "go ahead"
                     continue
                 silent = 0
+                self._thinking_cue()  # mic just closed — his turn landed, now she's thinking
                 text = (self.stt.transcribe(wav) or "").strip()
                 if self._stop.is_set():
                     return
                 if not text:
+                    self._no_speech_cue()  # VAD heard speech but Whisper got nothing usable
                     continue  # nothing said — listen again
                 if voice_mode_done(text):
                     break
                 self._awaiting_reply = True  # a Warden turn is in flight
-                my_id = self._send(text)
+                try:
+                    my_id = self._send(text)
+                except Exception as e:
+                    # Warden (or MARM, which _send also calls) unreachable —
+                    # a bare buzz here used to be all he got, with no way to
+                    # know why. Say so; TTS itself needs no network.
+                    self._awaiting_reply = False
+                    print(f"[steve] send failed: {e}", file=sys.stderr)
+                    if not self._stop.is_set():
+                        self._speak_fail("Sorry sweety, I can't get through right now. Try again in a bit.")
+                    failed = True
+                    break
                 if self._stop.is_set():
                     # STOP fired while the message was still in flight — the
                     # turn starts after it, so kill it now that it exists.
@@ -670,6 +826,8 @@ class SteveApp:
                 if self._stop.is_set():
                     return
                 if not reply:
+                    if not self._stop.is_set():
+                        self._speak_fail("Sorry sweety, that's taking too long. I didn't hear back.")
                     failed = True  # asked, but no answer came back
                     break
                 audio = self.tts.synthesize(reply)
@@ -767,7 +925,7 @@ def main() -> None:
 
     app = SteveApp(url)
     scr = webview.screens[0]  # property, not a call — park bottom-left, on top
-    webview.create_window(
+    window = webview.create_window(
         "Steve",
         os.path.join(HERE, "ui", "ptt.html"),
         js_api=app,
@@ -777,6 +935,18 @@ def main() -> None:
         resizable=True,
         background_color="#050508",
     )
+
+    def _on_closing() -> None:
+        # He has no visual confirmation the window is going away — a short
+        # tone at least tells him the app is really closing, not just gone
+        # unresponsive. should_lock=True on this pywebview event runs it
+        # synchronously, so the beep plays before the window is torn down.
+        try:
+            app.player.play_bytes(app.beeps.stop_beep())
+        except Exception:
+            pass
+
+    window.events.closing += _on_closing
     webview.start()
 
 
