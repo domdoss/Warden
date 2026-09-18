@@ -248,7 +248,40 @@ async function takeAria(page: Page): Promise<{ key: string; text: string; title:
     try { title = await page.title(); } catch { /* navigating */ }
     const snap = await page.ariaSnapshot({ mode: 'ai', timeout: 10000 });
     const url = page.url();
-    return { key: `${url}\n${snap}`, text: snap, title, url };
+    // Form-field VALUES: the aria snapshot names a textbox but never its
+    // value, so a filled title/body still looks EMPTY in the snapshot — the
+    // agent concludes "my fill didn't land" and churns into browser_evaluate
+    // DOM injection, and the completion verdict can't judge the real content.
+    // Read visible fields' values and append them so both can see the truth.
+    let fieldValues = '';
+    try {
+        fieldValues = await page.evaluate(() => {
+            const HIDDEN_INPUT_TYPES = new Set(['hidden', 'password', 'submit', 'button', 'reset', 'checkbox', 'radio', 'file', 'image']);
+            const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'))
+                .filter((el) => {
+                    const tag = el.tagName.toLowerCase();
+                    const type = (el.getAttribute('type') || '').toLowerCase();
+                    if (tag === 'input' && HIDDEN_INPUT_TYPES.has(type)) return false;
+                    if (el.closest('[aria-hidden="true"]')) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 && r.height === 0) return false;
+                    return true;
+                })
+                .slice(0, 20);
+            return fields.map((elRaw) => {
+                const el = elRaw as any;
+                const tag = el.tagName.toLowerCase();
+                const label = el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('placeholder') || el.getAttribute('data-testid') || tag;
+                const val = (tag === 'input' || tag === 'textarea') ? el.value : (el.innerText || el.textContent || '');
+                return `- ${label}: ${val ? JSON.stringify(val.slice(0, 500)) : '(EMPTY)'}`;
+            }).join('\n');
+        });
+    } catch { /* evaluate may fail mid-navigation */ }
+    // Field values go in the TEXT the agent/verdict sees, NOT in the change
+    // key — change detection stays aria-based so a fill doesn't masquerade as
+    // a click/press "page changed".
+    const text = fieldValues ? `${snap}\n\n[Field values]\n${fieldValues}` : snap;
+    return { key: `${url}\n${snap}`, text, title, url };
 }
 
 function formatSnapshot(s: { text: string; title: string; url: string }): string {

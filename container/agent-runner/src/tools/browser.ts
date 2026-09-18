@@ -24,7 +24,10 @@ let lastNavAt = 0;
 // __warden pierces shadow roots recursively so the agent can find/click those
 // elements directly.
 const SHADOW_HELPER = `(() => {
-  if (!window.__warden) {
+  // Re-define whenever the resident helper is stale (e.g. a page that still
+  // carries the pre-setValue __warden from an earlier build) — otherwise new
+  // methods never land on a page the agent has already touched.
+  if (!window.__warden || !window.__warden.setValue) {
     const walk = (root, sel, out) => {
       try { root.querySelectorAll(sel).forEach(e => out.push(e)); } catch {}
       try { root.querySelectorAll('*').forEach(e => { if (e.shadowRoot) walk(e.shadowRoot, sel, out); }); } catch {}
@@ -35,9 +38,107 @@ const SHADOW_HELPER = `(() => {
       query: (sel) => qa(sel)[0] || null,
       byText: (txt) => qa('*').filter(e => !e.children.length && (e.textContent || '').toLowerCase().includes(String(txt).toLowerCase())),
       click: (sel) => { const el = qa(sel)[0]; if (!el) return 'no match for ' + sel; el.click(); return 'clicked ' + sel; },
+      // React-controlled fill. Setting el.value = x directly does NOT stick
+      // (React patches the instance setter and dedupes the change) — use the
+      // prototype's NATIVE value setter + a bubbling input event instead, the
+      // same technique browser-use ships. Handles input/textarea/contenteditable.
+      setValue: (el, value) => {
+        const text = String(value);
+        if (!el) return 'no element';
+        try {
+          if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            setter.call(el, text);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (el.isContentEditable || (el.getAttribute && (el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === ''))) {
+            el.focus();
+            el.textContent = text;
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+          } else {
+            el.value = text;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          return 'set <' + el.tagName.toLowerCase() + '> to "' + text.slice(0, 40) + '"';
+        } catch (e) { return 'setValue error: ' + e.message; }
+      },
+      // Click the CONTROL whose visible text matches (a web-component radio,
+      // button, or option that the accessibility snapshot gave no ref for).
+      clickByText: (txt) => {
+        const t = String(txt).trim().toLowerCase();
+        const all = qa('*');
+        let best = null, bestScore = Infinity;
+        for (const e of all) {
+          const tc = (e.textContent || '').trim().toLowerCase();
+          if (!tc || !tc.includes(t)) continue;
+          const role = e.getAttribute && e.getAttribute('role');
+          const clickable = /^(button|a|input|label|select|summary)$/i.test(e.tagName);
+          // prefer the control (has role / clickable tag) and the shallowest subtree
+          const score = (role || clickable ? 0 : 10000) + e.querySelectorAll('*').length;
+          if (score < bestScore) { bestScore = score; best = e; }
+        }
+        if (!best) return 'no match for text "' + txt + '"';
+        let el = best;
+        while (el && el.parentElement) {
+          const role = el.getAttribute && el.getAttribute('role');
+          if (role || /^(button|a|input|label|select|summary)$/i.test(el.tagName)) break;
+          el = el.parentElement;
+        }
+        el.click();
+        return 'clicked <' + el.tagName.toLowerCase() + '> text "' + txt + '"';
+      },
     };
   }
 })();`;
+
+
+// Shadow-DOM-piercing `document`, scoped to a single browser_evaluate. It
+// shadows the global `document` (a `let` binding, so the page's own scripts —
+// which read the real window.document — are untouched) and makes
+// querySelector/querySelectorAll fall back to a recursive shadow-root walk when
+// the light-DOM query returns nothing. This is the browser-use "pierce" step:
+// without it, document.querySelector("button[type=submit]") returns null for a
+// control that lives in <shreddit-post-composer>'s shadow root.
+const SHADOW_DOC = `let document = (() => {
+  const _doc = window.document;
+  const _qs = _doc.querySelector.bind(_doc);
+  const _qsa = _doc.querySelectorAll.bind(_doc);
+  const pierceAll = (sel) => {
+    const out = [];
+    const walk = (root) => {
+      try { root.querySelectorAll(sel).forEach((e) => out.push(e)); } catch {}
+      try { root.querySelectorAll('*').forEach((e) => { if (e.shadowRoot) walk(e.shadowRoot); }); } catch {}
+    };
+    walk(_doc);
+    return out;
+  };
+  return new Proxy(_doc, {
+    get(t, k) {
+      if (k === 'querySelector') return (sel) => _qs(sel) || pierceAll(sel)[0] || null;
+      if (k === 'querySelectorAll') return (sel) => { const l = _qsa(sel); return l.length ? l : pierceAll(sel); };
+      const v = t[k];
+      return typeof v === 'function' ? v.bind(t) : v;
+    }
+  });
+})();`;
+
+
+/** True when two URLs point at the same page (same origin + pathname, trailing
+ * slash and query/hash ignored) — used to detect "this page is already open in
+ * a tab" so the agent reuses the visible tab instead of navigating a duplicate
+ * background tab the user can't see. */
+function samePageUrl(a: string, b: string): boolean {
+    try {
+        const A = new URL(a), B = new URL(b);
+        if (A.origin !== B.origin) return false;
+        const pa = A.pathname.replace(/\/+$/, '') || '/';
+        const pb = B.pathname.replace(/\/+$/, '') || '/';
+        return pa === pb;
+    } catch {
+        return a === b;
+    }
+}
 
 
 registry.register({
@@ -66,6 +167,16 @@ registry.register({
                 const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
                 url = pathToFileURL(abs).href;
             }
+            // If the target page is ALREADY open in a tab (the user navigated
+            // there, or an earlier step did), switch to that tab and bring it to
+            // the front — the agent fills the tab the user is looking at, never
+            // a duplicate background tab they can't see.
+            const alreadyOpen = (await listPages()).find((p) => samePageUrl(p.url(), url));
+            if (alreadyOpen) {
+                setActivePage(alreadyOpen);
+                await alreadyOpen.bringToFront().catch(() => {});
+                return await snapshot(alreadyOpen);
+            }
             const page = await getPage();
             if (url === lastNavUrl && Date.now() - lastNavAt < 15_000 && page.url() === url) {
                 return await snapshot(page); // already there — don't reload/window again
@@ -73,6 +184,7 @@ registry.register({
             lastNavUrl = url;
             lastNavAt = Date.now();
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.bringToFront().catch(() => {});
             return await snapshot(page);
         } catch (err: any) {
             return `Error navigating: ${err.message}`;
@@ -131,34 +243,57 @@ registry.register({
 
 registry.register({
     name: 'browser_type',
-    description: 'Type text into an input/textarea identified by its snapshot ref. Replaces the current value.',
+    description: 'Type text into a text field — an input, textarea, or rich-text editor (a contenteditable composer). Replaces the current value and works on shadow-DOM editors. Target the field with EITHER a snapshot ref, OR a stable selector/label. PREFER selector or label for any field you have already identified: snapshot refs go stale the moment the page re-renders, but a CSS selector like \'[aria-label="Post body text field"]\' or an accessible name like "Post body text field" keeps working, so you never have to re-snapshot and re-find the field.',
     schema: {
         type: 'object',
         properties: {
-            ref: { type: 'string', description: 'Element ref from the snapshot, e.g. "e12".' },
+            ref: { type: 'string', description: 'Element ref from the snapshot, e.g. "e12". Volatile — use only immediately after a snapshot.' },
+            selector: { type: 'string', description: 'CSS selector that uniquely matches the field, e.g. \'[aria-label="Post body text field"]\' or \'input[name="title"]\'. STABLE — preferred for a field you have already identified.' },
+            label: { type: 'string', description: 'The field\'s accessible name / aria-label, e.g. "Post body text field" or "Title". Resolved to the matching field. STABLE.' },
             text: { type: 'string', description: 'Text to enter.' },
             submit: { type: 'boolean', description: 'Press Enter after typing (default false).' },
         },
-        required: ['ref', 'text'],
+        required: ['text'],
     },
     handler: async (args) => {
         try {
             const page = await getPage();
-            const loc = refLocator(page, String(args.ref));
+            const loc = args.ref ? refLocator(page, String(args.ref))
+                : args.selector ? page.locator(String(args.selector))
+                : args.label ? page.getByLabel(String(args.label), { exact: false })
+                : null;
+            if (!loc) return 'No target given — pass ref, selector, or label.';
+            const target = args.selector || args.label || args.ref;
             const urlBefore = page.url();
+            // fill() handles <input>, <textarea>, AND [contenteditable] rich-text
+            // editors: it focuses, clears, types, and fires the input event a
+            // React-controlled composer (e.g. Reddit's title/body) needs to enable
+            // submit. The old click+Ctrl+A+insertText path did NOT persist on
+            // contenteditable and timed out — fill() persists.
             await loc.fill(String(args.text), { timeout: ACTION_TIMEOUT });
+            // Read back the field's actual value and report it. The aria
+            // snapshot does NOT show a filled textbox's value, so a follow-up
+            // browser_snapshot makes the agent believe the fill failed ("I
+            // typed but the body is empty") and it churns into browser_evaluate
+            // DOM injection — which React/Lexical editors silently ignore. The
+            // read-back is the verification the snapshot can't give.
+            let val = '';
+            try { val = await loc.inputValue(); } catch { try { val = (await loc.textContent()) || ''; } catch { /* read-back unavailable */ } }
+            const confirm = val
+                ? `Verified: the field now holds ${val.length} chars — "${val.slice(0, 80)}${val.length > 80 ? '…' : ''}".`
+                : 'Warning: read-back was EMPTY — the field may not have committed the text (React/Lexical can ignore raw DOM writes). Do NOT retry the same way; take a browser_snapshot and act on a fresh ref/selector.';
             if (args.submit) {
                 await loc.press('Enter', { timeout: ACTION_TIMEOUT });
                 await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
                 if (page.url() === urlBefore) {
-                    return `Typed into ${args.ref} and pressed Enter, but the page did NOT navigate (still on ${urlBefore}). Do not retry Enter — take a browser_snapshot, find the form's submit/search button, and browser_click it instead.`;
+                    return `Typed into ${target} and pressed Enter, but the page did NOT navigate (still on ${urlBefore}). Do not retry Enter — take a browser_snapshot, find the form's submit/search button, and browser_click it instead. ${confirm}`;
                 }
                 await page.waitForTimeout(ACTION_SETTLE_MS);
-                return (await changedSnapshot(page)) ?? `Typed into ${args.ref} and pressed Enter. Call browser_snapshot to read the updated page.`;
+                return (await changedSnapshot(page)) ?? `Typed into ${target} and pressed Enter. ${confirm}`;
             }
-            return `Typed into ${args.ref}. Call browser_snapshot to read the updated page.`;
+            return `Typed into ${target}. ${confirm}`;
         } catch (err: any) {
-            return `Error typing into ${args.ref}: ${err.message}. Take a fresh browser_snapshot — refs go stale when the page changes.`;
+            return `Error typing into ${args.selector || args.label || args.ref}: ${err.message}. Take a fresh browser_snapshot — refs go stale when the page changes.`;
         }
     },
     toolset: 'browser',
@@ -286,7 +421,7 @@ registry.register({
 
 registry.register({
     name: 'browser_evaluate',
-    description: 'Run JavaScript in the page and return the JSON-serialized result. Use for reading data the snapshot misses, dispatching events, or controlling media (e.g. document.querySelector("video").pause()). NOTE: document.querySelector does NOT see inside web components (shadow DOM) — e.g. Reddit\'s submit button lives in <shreddit-post-composer>\'s shadow root, so querySelector("button[type=submit]") returns null. Use the injected helper instead: window.__warden.query("button[type=submit]") (first match), window.__warden.queryAll("button") (all matches, pierces shadow roots), window.__warden.byText("Post") (leaf elements whose text contains it), or window.__warden.click("button[type=submit]") (clicks the first match).',
+    description: 'Run JavaScript in the page and return the JSON-serialized result. Use for reading data the snapshot misses, dispatching events, or controlling media (e.g. document.querySelector("video").pause()). NOTE: document.querySelector now pierces shadow DOM automatically (web-component controls like Reddit\'s submit button are found even inside <shreddit-post-composer>\'s shadow root). To FILL a React-controlled field so it actually sticks, do NOT assign el.value = "..." directly — call window.__warden.setValue(el, "text"), which uses the native setter + input event (works on input, textarea, and contenteditable). Other helpers: window.__warden.query("button[type=submit]"), window.__warden.queryAll("button"), window.__warden.byText("Post"), window.__warden.click("button[type=submit]"), window.__warden.clickByText("Best Practices") (clicks a web-component radio/button/option by its visible text).',
     schema: {
         type: 'object',
         properties: {
@@ -297,7 +432,7 @@ registry.register({
     handler: async (args) => {
         try {
             const page = await getPage();
-            const result = await page.evaluate(`${SHADOW_HELPER}\n${String(args.js)}`);
+            const result = await page.evaluate(`${SHADOW_HELPER}\n${SHADOW_DOC}\n${String(args.js)}`);
             const text = result === undefined ? 'undefined' : JSON.stringify(result);
             return text.length > 10000 ? text.slice(0, 10000) + '\n[... result truncated at 10000 chars]' : text;
         } catch (err: any) {

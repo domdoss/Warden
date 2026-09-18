@@ -38,6 +38,11 @@ export interface TreeNode { n: string; q?: string; c?: TreeNode[]; }
 const MTREE_MODEL = process.env.MTREE_MODEL || 'granite4.1:30b';
 const CURSOR_KEY = 'mtree:cursor';
 const IDLE_CHECK_MS = 5 * 60 * 1000; // cadence for the idle-gated autostart probe
+// Continuous quiet time before the idle run is allowed to dump resident models
+// and take the GPU. Settings-driven: '' → default, '0' → never dump at idle
+// (wait for the GPU to free itself, which a keep_alive -1 model never does).
+const IDLE_DUMP_KEY = 'mtree:idle_dump_minutes';
+const IDLE_DUMP_DEFAULT_MIN = 10;
 const BIG_VRAM = 8 * 1024 ** 3;      // "big" = a model holding ≥8 GB of VRAM
 const BATCH_LINES = 200;
 const LINE_TRUNC = 400;
@@ -51,6 +56,7 @@ const LOG_PATH = path.join(process.cwd(), 'logs', 'warden.log');
 let cachedTree: TreeNode[] | null = null;
 let running = false;
 let lastIdleCheck = 0;
+let idleSince = 0; // when the machine last went quiet (0 = busy / unknown)
 
 // Recently-filed facts + assistant recalls, newest last — served to the
 // eyes_ears galaxy for its brain-scan flares (GET /api/memory-tree/activity;
@@ -140,6 +146,14 @@ async function dumpBigModels(): Promise<string[]> {
     big = await bigModelsLoaded();
   }
   return big;
+}
+
+/** Continuous-quiet threshold before the idle run may dump VRAM, in ms.
+ *  0 = never dump at idle (manual runs still do). */
+function idleDumpMs(): number {
+  const raw = (getRouterState(IDLE_DUMP_KEY) || '').trim();
+  const n = raw === '' ? IDLE_DUMP_DEFAULT_MIN : parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n * 60 * 1000 : 0;
 }
 
 interface Batch { lines: string[]; nextCursor: number }
@@ -713,10 +727,12 @@ export interface ClassifyResult { ok: boolean; reason?: string; batches: number;
  *  written meanwhile are the next run's backlog, so the target is always
  *  finite and the run always finishes. Cursor persisted per batch.
  *  The idle gate is just that: a big model loaded means the machine is in
- *  use — the run stays off. Only the on-request run (the user fired it)
- *  auto-dumps big models (keep_alive 0) first. Aborts mid-run if the
- *  machine is claimed again. */
-export async function runMemoryClassification(force = false): Promise<ClassifyResult> {
+ *  use — the run stays off, UNLESS the caller says the machine has been quiet
+ *  long enough (dumpVram), in which case the squatters are dumped
+ *  (keep_alive 0) and granite takes the GPU. The on-request run (the user
+ *  fired it) always dumps first. Aborts mid-run if the machine is claimed
+ *  again. */
+export async function runMemoryClassification(force = false, dumpVram = false): Promise<ClassifyResult> {
   if (running) return { ok: false, reason: 'already running', batches: 0, facts: 0 };
   scanAbortRequested = false;
   // Snapshot: classify exactly what existed when the run began.
@@ -731,8 +747,18 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
   if (!hasBacklog && claudeScanTried) return { ok: false, reason: 'no backlog', batches: 0, facts: 0 };
   if (!force) {
     if (scanConfig().paused) return { ok: false, reason: 'paused', batches: 0, facts: 0 };
-    // Idle-gated: a big model loaded means the machine is in use — stay off.
-    const busy = await bigModelsLoaded();
+    // Idle-gated. A loaded big model normally means the machine is in use —
+    // but a RESIDENT one (keep_alive -1, warmed at boot) never expires on its
+    // own, so "wait for the GPU to free itself" waits forever and the idle
+    // scan never runs. Once the caller has seen a long enough quiet stretch it
+    // passes dumpVram, and we free the GPU ourselves before loading granite.
+    // The next real turn reloads the resident models, and the mid-run probe
+    // below aborts the scan as soon as that happens.
+    let busy = await bigModelsLoaded();
+    if (busy.length && dumpVram && !busy.includes('ps-unreachable')) {
+      logger.info({ busy }, 'memory-tree: idle long enough — dumping VRAM for the classifier');
+      busy = await dumpBigModels();
+    }
     if (busy.length) return { ok: false, reason: 'gpu busy: ' + busy.join(','), batches: 0, facts: 0 };
   } else {
     // On-request (the user fired the scan): auto-dump whatever's squatting —
@@ -835,9 +861,16 @@ export async function runMemoryClassification(force = false): Promise<ClassifyRe
  *  backlog check is synchronous and the /api/ps probe is throttled to one
  *  per IDLE_CHECK_MS. */
 export function maybeClassifyMemoryTree(agentBusy: boolean): void {
-  if (agentBusy || running) return;
+  if (agentBusy) { idleSince = 0; return; } // machine in use — restart the quiet clock
+  if (running) return;
   if (scanConfig().paused) return; // suspended from the galaxy expand panel
+  if (!idleSince) idleSince = Date.now();
   if (Date.now() - lastIdleCheck < IDLE_CHECK_MS) return;
   lastIdleCheck = Date.now();
-  void runMemoryClassification(false).catch((err) => logger.warn({ err }, 'memory-tree: idle run failed'));
+  // Resident models (keep_alive -1) never expire, so without this the idle run
+  // is permanently gated off by the pinned orchestrator. After idleDumpMs of
+  // continuous quiet, let the run dump them and claim the GPU for granite.
+  const dumpMs = idleDumpMs();
+  const mayDump = dumpMs > 0 && Date.now() - idleSince >= dumpMs;
+  void runMemoryClassification(false, mayDump).catch((err) => logger.warn({ err }, 'memory-tree: idle run failed'));
 }

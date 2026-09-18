@@ -2,7 +2,11 @@
   "alora_invocation_tokens": null,
   "alpha_pattern": {},
   "arrow_config": null,
-  "auto_mapping": null,
+  "auto_mapping": {
+    "base_model_class": "GraniteForCausalLM",
+    "parent_library": "transformers.models.granite.modeling_granite",
+    "unsloth_fixed": true
+  },
   "base_model_name_or_path": "ibm-granite/granite-4.1-3b",
   "bias": "none",
   "corda_config": null,
@@ -18,7 +22,7 @@
   "loftq_config": {},
   "lora_alpha": 32,
   "lora_bias": false,
-  "lora_dropout": 0.05,
+  "lora_dropout": 0.0,
   "lora_ga_config": null,
   "megatron_config": null,
   "megatron_core": "megatron.core",
@@ -30,15 +34,7 @@
   "r": 16,
   "rank_pattern": {},
   "revision": null,
-  "target_modules": [
-    "q_proj",
-    "gate_proj",
-    "up_proj",
-    "o_proj",
-    "down_proj",
-    "v_proj",
-    "k_proj"
-  ],
+  "target_modules": "(?:.*?(?:language|text).*?(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer).*?(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))|(?:\\bmodel\\.layers\\.[\\d]{1,}\\.(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer)\\.(?:(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)))",
   "target_parameters": null,
   "task_type": "CAUSAL_LM",
   "trainable_token_indices": null,

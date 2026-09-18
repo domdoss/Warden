@@ -2269,23 +2269,31 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     return verdict;
 }
 
-// kimi-k2.6:cloud is the known offender: when a request is sent with think:false
-// (iterations after planning), Ollama stops separating the reasoning stream and
-// kimi dumps its full chain-of-thought as plain UNTAGGED text in message.content —
-// bypassing the <think>/<reasoning> tag stripping and leaking to users.
-// For these models we keep think:true on every request so reasoning arrives in the
-// separate message.thinking field, which the stream handlers already route to
-// fullThinking (never shown to users). Models that already behave with the
-// iteration-1-only policy (nemotron, deepseek, etc.) are deliberately NOT listed,
-// to avoid changing their token usage/latency; extend the pattern if another model
-// is caught leaking untagged reasoning. glm leaks: with think off (atlas/vulkan
-// only think on iteration 0), glm-5.3:cloud streamed tool-mechanics reasoning as
-// CONTENT on later iterations (atlas-10gs iter 44, vulkan-8vzh iter 5, both
-// narrating about browser_type internals instead of calling it).
-const ALWAYS_THINK_MODEL_RE = /^(kimi|glm)/i;
-function modelRequiresThink(model: string): boolean {
-    return ALWAYS_THINK_MODEL_RE.test(model || '');
-}
+// Why this matters: with think:false, Ollama stops separating the reasoning
+// stream and the model dumps its chain-of-thought as plain UNTAGGED text in
+// message.content, which is the field that becomes the user's chat message.
+// Observed on kimi-k2.6:cloud, on glm-5.3:cloud (atlas-10gs iter 44,
+// vulkan-8vzh iter 5, narrating browser_type internals instead of calling it),
+// and on qwen3.5:cloud. With think on, reasoning arrives in message.thinking,
+// which the stream handlers route to fullThinking and never show.
+//
+// Thinking is a USER SETTING — the dashboard thinking row, arriving as
+// AgentInput.showThinking. It is never a per-model or per-iteration code
+// decision. Set once per run below (see thinkingEnabled) and read by every
+// model call: orchestrator, its retry and forced-text passes, and subagents.
+//
+// The policy this replaces made the code fight the setting two ways: thinking
+// was forced OFF after iteration 1 even with the setting ON, and a hardcoded
+// /^(kimi|glm)/ allowlist re-enabled it only for models already caught leaking.
+// Any model NOT on that list dumped its untagged chain-of-thought into
+// message.content on later iterations — and content goes straight to the user,
+// since only <think>/<reasoning> tags and the separate `thinking` field are ever
+// stripped. That is how qwen3.5 printed its full deliberation into Dominic's
+// chat on 2026-09-17 ("What to report:", "Hmm — is that a false claim?",
+// "Let me phrase:", "End turn"). Adding qwen to the list would have been the
+// third patch on a defect whose real cause is the list existing at all.
+// One switch, every model, every iteration.
+let thinkingEnabled = false;
 
 // Qwen-documented sampling (Qwen3.5 model card): any qwen model gets these;
 // everything else keeps its own settings. Spread AFTER the existing options
@@ -3017,19 +3025,14 @@ async function runSubAgent(
         try {
             const provider = getProvider();
             resetSilence();
-            const subThink = ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model);
+            const subThink = thinkingEnabled;
             const chatResult = await provider.chatStream({
                 model,
                 messages,
                 tools,
                 options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride), ...qwenSampling(model, subThink) },
                 keep_alive: subAgentKeepAlive(agentName),
-                // First iteration lets atlas/vulkan think/plan before acting — a
-                // planning step up front stops it diving into a read-edit-read-edit
-                // re-reading loop (it decides what it needs once, then reads each
-                // file a single time). Later iterations keep think off to preserve
-                // context for the visible answer. kimi and other leak-when-disabled
-                // models keep think on every request.
+                // Follows the thinking setting, same as every other model call.
                 think: subThink,
                 ...(format !== undefined ? { format } : {}),
                 signal: silenceController.signal,
@@ -3357,6 +3360,8 @@ async function runNativeOllama(input: ContainerInput) {
     // first planning turn; anything else lets the model decide per request.
     const thinkingMode = String(input.showThinking || '');
     const showThinking = thinkingMode === 'true' || thinkingMode === 'max';
+    // Publish the setting for every model call in this run (subagents included).
+    thinkingEnabled = showThinking;
     log(`Using ${API_PROXY_URL ? 'proxy' : 'Ollama'}: ${API_PROXY_URL || OLLAMA_URL}`);
     log(`Idle timeout: ${IDLE_TIMEOUT_MS / 1000 / 60} minutes`);
     // Orchestrator sees: every tool not owned by a sub-agent (plus shared tools), and one delegate stub per sub-agent.
@@ -4114,12 +4119,9 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 }
                 const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
                 const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: _orchCtx } };
-                // First turn uses thinking so the orchestrator can plan; later iterations
-                // keep it off to preserve context for the visible answer. Models that leak
-                // reasoning when thinking is disabled (kimi) stay on every round.
-                // 'max' forces thinking on every iteration; 'false'/'off' disables it.
+                // The setting decides, on every iteration and every model.
                 if (showThinking) {
-                    requestBody.think = (thinkingMode === 'max') || toolIteration === 1 || modelRequiresThink(model);
+                    requestBody.think = true;
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
@@ -4628,11 +4630,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                             const trimmedRetry = trimMessagesToBudget(messages, retryBudget);
                             if (trimmedRetry !== messages) { messages.length = 0; messages.push(...trimmedRetry); }
                             const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
-                            if (toolIteration <= 1 || modelRequiresThink(model)) {
-                                retryBody.think = true;
-                            } else {
-                                retryBody.think = false;
-                            }
+                            retryBody.think = thinkingEnabled;
                             Object.assign(retryBody.options, qwenSampling(model, !!retryBody.think));
                             const retryController = new AbortController();
                             const retryResp = await fetch(CHAT_URL, {
@@ -4763,7 +4761,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     options: { num_predict: 8192, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
-                if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
+                forcedBody.think = thinkingEnabled;
                 Object.assign(forcedBody.options, qwenSampling(model, !!forcedBody.think));
                 const forcedController = new AbortController();
                 const forcedResp = await fetch(CHAT_URL, {

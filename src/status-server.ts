@@ -192,6 +192,8 @@ import {
   queueAgentTaskCommand,
   reorderAgentTasks,
   deleteAgentTask,
+  finishAgentTask,
+  appendAgentTaskHistory,
 } from './db.js';
 import { AgentSessionStore } from './agent-session-store.js';
 import { encryptApiKey } from './encryption.js';
@@ -777,7 +779,12 @@ function getStatusData() {
     channels: deps.channels.map((c) => c.name),
     activeContainers: Math.max(queueStatus.activeCount, queueStatus.groups.filter((g: any) => g.active).length),
     scheduledTasks: deps.getAllTasks().length,
-    runningJobs: getLiveStatus().jobs || 0,
+    // Counted from the roster, never from the last heartbeat's `jobs` number:
+    // that number is whatever the final status line happened to say, so a runner
+    // that exits without one leaves it stuck above zero — the dashboard then
+    // shows "1 job" against an empty job list. The roster drops a job the moment
+    // it finishes, so count and list can no longer disagree.
+    runningJobs: getLiveJobs().length,
     // Structured per-job snapshot for the Oversight window (replaces the old
     // parse-the-label-string approach).
     jobs: getLiveJobs(),
@@ -2586,6 +2593,14 @@ async function handleChatStop(
     killed = cancelCurrentTurn();
     if (!killed) killed = killCurrentAgent(false);
   }
+  // Stop means stop: close every open agent task too. The turn's own
+  // finishAgentTask calls live inside the turn body, which an interrupt or kill
+  // can skip entirely — so without this the queue keeps showing the task as
+  // running after the user has stopped it, and nothing ever clears it.
+  for (const open of getActiveAgentTasks()) {
+    appendAgentTaskHistory(open.id, 'stopped from the dashboard stop button');
+    finishAgentTask(open.id, 'stopped');
+  }
   if (body.soft) {
     // Soft stop: queue is a stub now; no-op.
     deps.queue.closeStdin(jid);
@@ -3866,6 +3881,25 @@ export function startStatusServer(d: StatusDeps): void {
           backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
           backlogSize: getAgentTaskBacklogSize(),
         });
+      }
+      // POST /api/agent-tasks/:id/stop — cancel from the dashboard queue.
+      // A running task also interrupts the turn in flight (same soft-interrupt
+      // the chat stop button uses, so the warm runner child survives); a merely
+      // queued task is just closed, leaving the live turn alone.
+      {
+        const ms = pathname.match(/^\/api\/agent-tasks\/([^/]+)\/stop$/);
+        if (ms && req.method === 'POST') {
+          const t = getAgentTask(ms[1]);
+          if (!t) return json(res, { error: 'not found' }, 404);
+          let interrupted = false;
+          if (t.status === 'running') {
+            interrupted = cancelCurrentTurn();
+            if (!interrupted) interrupted = killCurrentAgent(false);
+          }
+          const task = finishAgentTask(ms[1], 'stopped');
+          logger.info({ taskId: ms[1], wasStatus: t.status, interrupted }, 'Agent task stopped from dashboard');
+          return json(res, { ok: !!task, interrupted, task });
+        }
       }
       if (pathname === '/api/agent-tasks/reorder' && req.method === 'POST') {
         const body = parseJson(await parseBody(req)) as { orderedIds?: string[] };
