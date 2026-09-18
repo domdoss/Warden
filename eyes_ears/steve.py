@@ -98,29 +98,6 @@ PERSONA — you are Petal, a warm Northern companion in the Donna Noble mould: k
 - If the intent is unclear, ask ONE short clarifying question instead of acting.
 - Small talk and stories are fine — engage naturally."""
 
-# Whose machine is this? steve.py is written to run ON Steve's own computer,
-# but it is developed and tested on Dominic's desktop — where the local screen,
-# apps, TV and downloads are NOT his and he is not sitting in front of them.
-# The orchestrator has no way to tell the two deployments apart, so the host
-# fact is stated in every turn. Default is "not his machine": on a test box a
-# wrong assumption is harmless, whereas on his box the line below is simply
-# replaced. Set STEVE_MACHINE=1 in the environment on Steve's computer.
-IS_STEVE_MACHINE = os.environ.get("STEVE_MACHINE", "0").strip().lower() in ("1", "true", "yes")
-HOST_NOTE = (
-    "- THIS COMPUTER IS STEVE'S OWN: the local desktop, screen and speakers are his, "
-    "so anything you put on screen is in front of him — but he is blind, so it is the "
-    "spoken reply that reaches him, never the screen."
-    if IS_STEVE_MACHINE else
-    "- THIS IS NOT STEVE'S COMPUTER: it is Dominic's desktop, where this app is being "
-    "tested. Steve is not at this machine. He cannot see or hear anything on this screen "
-    "— only your spoken reply reaches him. Nothing here is his: the apps, windows, files, "
-    "TV, media player and downloads on this box belong to Dominic. His own TV, media and "
-    "downloads are on his own equipment, which is NOT reachable from here. Never open, "
-    "play, download or change anything locally as if he could see or use it, and never "
-    "tell him something is playing or downloading for him when it is happening here."
-)
-STEVE_PROMPT = STEVE_PROMPT + "\n" + HOST_NOTE
-
 # Backstop for the fix-request rule above: when his words look like a technical
 # fix/change request, _send appends a hard-rule block so the curation survives
 # even when the general prompt block has scrolled far back in context. False

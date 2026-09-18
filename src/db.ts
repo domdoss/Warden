@@ -1504,50 +1504,6 @@ export function appendAgentTaskHistory(taskId: string, text: string): AgentTask 
   return updateAgentTask(taskId, { history });
 }
 
-/** Grace window before the sweep will close an open task. Only has to cover the
- *  few hundred ms between createAgentTask and the turn registering as active —
- *  the caller's `busy` flag does the real work, so this stays short. Anything
- *  longer is time the dashboard spends claiming something runs when nothing does. */
-const AGENT_TASK_STALE_MS = 5_000;
-
-/** Continuous version of the boot reconciliation, for the poll loop. A task is
- *  only legitimately open while its turn is in flight or its dispatched jobs are
- *  still working; `busy` carries both. When nothing is busy, anything still open
- *  past the grace window is an orphan whose closing call was skipped (an
- *  interrupt, a kill, a crash) — so it gets closed here instead of sitting in
- *  the dashboard as "running" until someone clears it by hand.
- *  Returns how many it closed. */
-export function sweepStaleAgentTasks(busy: boolean): number {
-  if (busy) return 0;
-  const cutoff = new Date(Date.now() - AGENT_TASK_STALE_MS).toISOString();
-  const stale = db.prepare(
-    "SELECT id FROM agent_tasks WHERE status IN ('queued','running') AND updated_at < ?",
-  ).all(cutoff) as Array<{ id: string }>;
-  for (const s of stale) {
-    appendAgentTaskHistory(s.id, 'no turn or job left running — closed as stopped by the queue sweep');
-    updateAgentTask(s.id, { status: 'stopped', position: -1, finished_at: new Date().toISOString() });
-  }
-  if (stale.length) pruneAgentTaskBacklog(getAgentTaskBacklogSize());
-  return stale.length;
-}
-
-/** Boot-time reconciliation: a task is only 'queued'/'running' while a turn is
- *  in flight, and at startup no turn is. Anything still open was orphaned when
- *  the host died or was restarted mid-turn, so its run is gone — close it as
- *  stopped instead of leaving a phantom that the dashboard reports as running
- *  forever (and that no stop button can reach). Returns how many it closed. */
-export function reconcileOrphanedAgentTasks(): number {
-  const orphans = db.prepare(
-    "SELECT id FROM agent_tasks WHERE status IN ('queued','running')",
-  ).all() as Array<{ id: string }>;
-  for (const o of orphans) {
-    appendAgentTaskHistory(o.id, 'host restarted while this task was open — run abandoned, task closed as stopped');
-    updateAgentTask(o.id, { status: 'stopped', position: -1, finished_at: new Date().toISOString() });
-  }
-  if (orphans.length) pruneAgentTaskBacklog(getAgentTaskBacklogSize());
-  return orphans.length;
-}
-
 export function finishAgentTask(taskId: string, status: 'done' | 'stopped'): AgentTask | undefined {
   const existing = getAgentTask(taskId);
   if (!existing) return undefined;
