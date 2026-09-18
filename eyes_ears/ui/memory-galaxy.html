@@ -522,26 +522,6 @@
       return data;  // { roots, facts }
     }
 
-    // Concept graph fetch — the entity/relationship network MARM extracts from
-    // memory content (conversation-derived knowledge). Served read-only from
-    // /api/concept-graph. Absent/empty is fine: the galaxy renders the tree alone.
-    async function fetchConceptGraph() {
-      let text = '';
-      if (window.pywebview && window.pywebview.api &&
-          typeof window.pywebview.api.warden_api === 'function') {
-        text = await window.pywebview.api.warden_api('/api/concept-graph', 'GET', '');
-      } else {
-        const r = await fetch(WARDEN_BASE + '/api/concept-graph');
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        text = await r.text();
-      }
-      const data = JSON.parse(text);
-      return {
-        entities: Array.isArray(data.entities) ? data.entities : [],
-        relationships: Array.isArray(data.relationships) ? data.relationships : []
-      };
-    }
-
     // Flatten the taxonomy into render nodes: every node carries its full
     // path ("User > Preferences > Desktop"), its MARM recall query (defaults
     // to the path), its parent, its depth and its root index (branch color).
@@ -610,40 +590,6 @@
     nodes[NU].children = nodes.filter(n => n.depth === 0).map(n => n.id);
     distributeFacts(bootFacts);
 
-    // ---------- Concept graph: topics + similarity edges from conversation ----------
-    // Append MARM's entity/relationship network (extracted from memory CONTENT —
-    // what Warden learned from conversation) as an outer "knowledge halo" of topic
-    // stars linked by their similarity edges. The taxonomy tree is the inner
-    // structure; this is the surrounding web of related things Warden knows.
-    // Fetched once at boot — absent/empty just renders the tree alone.
-    let conceptCount = 0;
-    let conceptRels = [];
-    const conceptIndex = new Map();   // entity id -> node index
-    try {
-      const cg = await fetchConceptGraph();
-      conceptRels = cg.relationships;
-      cg.entities.forEach((en, k) => {
-        const idx = nodes.length;
-        conceptIndex.set(en.id, idx);
-        nodes.push({
-          id: idx, label: prettyLabel(en.name), path: prettyLabel(en.name),
-          query: en.name, parent: null, depth: null, rootIdx: -1,
-          children: [], mention_count: 0, memories: null,
-          concept: true, conceptIndex: k
-        });
-      });
-      conceptCount = cg.entities.length;
-    } catch (e) { /* concept graph unavailable — render the tree alone */ }
-    // Outer-shell radius + Fibonacci direction for the halo (topic stars).
-    const CONCEPT_R = 218;
-    function conceptDir(k, M) {
-      const ga = Math.PI * (3 - Math.sqrt(5));
-      const y = 1 - (2 * k + 1) / M;
-      const r = Math.sqrt(Math.max(0, 1 - y * y));
-      const th = ga * k;
-      return new THREE.Vector3(Math.cos(th) * r, y, Math.sin(th) * r).normalize();
-    }
-
     // Edges: parent→child streams + root→nucleus spokes. adj[][] drives the
     // edge rendering, hover highlighting and the branch lists.
     const adj = nodes.map(() => []);
@@ -658,22 +604,6 @@
       }
       n.degree = adj[i].length;
     });
-    // Concept similarity edges (deduped: each unordered pair becomes one line).
-    {
-      const seen = new Set();
-      for (const r of conceptRels) {
-        const a = conceptIndex.get(r.source_id);
-        const b = conceptIndex.get(r.target_id);
-        if (a == null || b == null || a === b) continue;
-        const key = a < b ? a + ':' + b : b + ':' + a;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        adj[a].push({ j: b, weight: 0.4 });
-        adj[b].push({ j: a, weight: 0.4 });
-      }
-    }
-    // Recompute degree now that concept edges are in (drives star size + hover).
-    for (let i = 0; i < nodes.length; i++) nodes[i].degree = adj[i].length;
     const N = nodes.length;  // tree nodes + nucleus
 
     // Debug handle (matches the window.memoryMap convention below).
@@ -712,14 +642,6 @@
       return branchDir(nd.parent).lerp(fibDir(i, NU), 0.5).normalize();
     }
     function position(i, shSeed) {
-      if (nodes[i].concept) {
-        const dir = conceptDir(nodes[i].conceptIndex, Math.max(1, conceptCount));
-        return dir.clone().multiplyScalar(CONCEPT_R).add(new THREE.Vector3(
-          (jit(i, shSeed, 1) - 0.5) * 16,
-          (jit(i, shSeed, 2) - 0.5) * 16,
-          (jit(i, shSeed, 3) - 0.5) * 16
-        ));
-      }
       if (i === NU) return new THREE.Vector3(0, 0, 0);
       const nd = nodes[i];
       const R = DEPTH_R[Math.min(nd.depth, DEPTH_R.length - 1)];
@@ -1036,29 +958,21 @@
       starPos[i*3+1] = p.y;
       starPos[i*3+2] = p.z;
 
-      const isConcept = !!n.concept;
-      const mf = isConcept ? 0 : mentionFactor(n.mention_count);
+      const mf = mentionFactor(n.mention_count);
       const deg = n.degree;
       // Roots sit bigger than leaves (degree = child count), and a star
-      // brightens/grows as MARM counts land on its node. Concept topics size
-      // by how many other topics they relate to (their graph degree).
-      const baseSize = isConcept
-        ? (2.6 + Math.log1p(deg) * 1.1)
-        : ((i === NU) ? 10.0 : (3.2 + Math.pow(deg, 0.7) * 1.2 + mf * 1.9));
+      // brightens/grows as MARM counts land on its node.
+      const baseSize = (i === NU) ? 10.0 : (3.2 + Math.pow(deg, 0.7) * 1.2 + mf * 1.9);
       starSize[i] = baseSize;
       starPhase[i] = rnd() * Math.PI * 2;
       starSpeed[i] = 0.4 + rnd() * 1.2;
 
       // One color per BRANCH (root) — each organ of the brain reads as a
-      // coherent stream, not confetti. Concept topics are the cyan knowledge
-      // halo — distinct from the tree's stellar palette.
-      const c = isConcept
-        ? new THREE.Color(0x4ec9ff)
-        : new THREE.Color(starPalette[(n.rootIdx >= 0 ? n.rootIdx : 0) % starPalette.length]);
+      // coherent stream, not confetti.
+      const c = new THREE.Color(starPalette[(n.rootIdx >= 0 ? n.rootIdx : 0) % starPalette.length]);
       // Nucleus is warm galactic core
       if (i === NU) c.set(0xffe8c0);
-      const bright = (i === NU) ? 1.0
-        : (isConcept ? (0.5 + 0.25 * Math.min(1, Math.log1p(deg) / 3)) : (0.5 + mf * 0.5));
+      const bright = (i === NU) ? 1.0 : (0.5 + mf * 0.5);
       starCol[i*3] = c.r * bright;
       starCol[i*3+1] = c.g * bright;
       starCol[i*3+2] = c.b * bright;
@@ -1234,10 +1148,7 @@
 
     for (let i = 0; i < adj.length; i++) {
       for (const { j, weight } of adj[i]) {
-        if (i < j) {
-          const isConcept = !!(nodes[i].concept || nodes[j].concept);
-          makeEdgeLine(i, j, weight, isConcept ? 0x2f8aa8 : (j === NU ? 0xe0b870 : 0x90a8e8));
-        }
+        if (i < j) makeEdgeLine(i, j, weight, j === NU ? 0xe0b870 : 0x90a8e8);
       }
     }
 
@@ -1735,12 +1646,6 @@
         mini = n.children.length + ' branches of the brain';
         body = '<h3>Branches of the brain</h3>' + n.children.map(j =>
           `<div class="row"><span>${esc(nodes[j].label)}</span><span class="w">${nodes[j].children.length}</span></div>`).join('');
-      } else if (n.concept) {
-        mini = 'topic · relates to ' + n.degree + (n.degree === 1 ? ' other' : ' others');
-        const rels = adj[idx].map(e => nodes[e.j]).sort((a, b) => b.degree - a.degree);
-        body = '<h3>Related topics</h3>' + (rels.length
-          ? rels.map(r => `<div class="row"><span>${esc(r.label)}</span><span class="w">${r.degree}</span></div>`).join('')
-          : '<div style="color:#7d8db3;font-size:12px;">no relationships extracted yet.</div>');
       } else {
         mini = (n.children.length ? n.children.length + (n.children.length === 1 ? ' branch · ' : ' branches · ') : '') +
           n.mention_count + (n.mention_count === 1 ? ' memory' : ' memories');
@@ -1789,7 +1694,7 @@
         <div class="card">
           <button class="x" id="x" title="Close">✕</button>
           <h1>${esc(n.label)}</h1>
-          <div class="mini">${esc(mini)}${idx !== NU && !n.concept ? ' · ' + esc(n.path) : ''}</div>
+          <div class="mini">${esc(mini)}${idx !== NU ? ' · ' + esc(n.path) : ''}</div>
           ${body}
         </div>
         <div class="drag">drag anywhere to move this window</div>
@@ -1815,23 +1720,18 @@
       selected = idx;
       highlightNode(idx);
       const n = nodes[idx];
-      const isConcept = !!n.concept;
       document.getElementById('npName').textContent = n.label;
       document.getElementById('npMini').textContent = idx === NU
         ? n.children.length + ' branches of the brain'
-        : isConcept
-          ? 'topic · relates to ' + n.degree + (n.degree === 1 ? ' other' : ' others')
-          : (n.children.length ? n.children.length + (n.children.length === 1 ? ' branch · ' : ' branches · ') : '') +
-            n.mention_count + (n.mention_count === 1 ? ' memory' : ' memories');
+        : (n.children.length ? n.children.length + (n.children.length === 1 ? ' branch · ' : ' branches · ') : '') +
+          n.mention_count + (n.mention_count === 1 ? ' memory' : ' memories');
       const list = document.getElementById('npConns');
       list.innerHTML = '';
-      const connIdx = isConcept ? adj[idx].map(e => e.j) : n.children;
-      connIdx.forEach(j => {
-        const val = nodes[j].concept ? nodes[j].degree : nodes[j].mention_count;
+      n.children.forEach(j => {
         const row = document.createElement('div');
         row.className = 'conn';
         row.title = nodes[j].path;
-        row.innerHTML = `<span>${nodes[j].label}</span><span class="w">${val}</span>`;
+        row.innerHTML = `<span>${nodes[j].label}</span><span class="w">${nodes[j].mention_count}</span>`;
         row.addEventListener('click', () => selectNode(j));
         list.appendChild(row);
       });
