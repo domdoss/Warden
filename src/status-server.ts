@@ -10,7 +10,6 @@ import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory, STOP_COMMAND_RE } from './agent-spawn.js';
 import { syncAgentCtxEnv } from './index.js';
-import { loadConceptGraph } from './concept-graph.js';
 import { parseRelativeDuration } from './task-scheduler.js';
 import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts, scanConfig, setScanConfig, requestScanAbort } from './memory-tree.js';
 import {
@@ -4264,19 +4263,6 @@ export function startStatusServer(d: StatusDeps): void {
           return json(res, { roots: loadMemoryTree(), facts: filedTreeFacts() });
         } catch (e: any) {
           return error(res, 'memory-tree.json unreadable: ' + e.message, 500);
-        }
-      }
-
-      // GET /api/concept-graph — the MARM concept graph (entities +
-      // relationships extracted from memory content = conversation-derived
-      // knowledge). Read-only from ~/.marm/index/marm_index.db; the galaxy
-      // renders it as its outer "knowledge halo" of topic stars + similarity
-      // links. Absent/empty returns empty lists — the galaxy renders the tree alone.
-      if (req.method === 'GET' && pathname === '/api/concept-graph') {
-        try {
-          return json(res, loadConceptGraph());
-        } catch (e: any) {
-          return error(res, 'concept graph unavailable: ' + e.message, 500);
         }
       }
 
