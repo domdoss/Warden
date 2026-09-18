@@ -2000,7 +2000,11 @@ function extractJsonObject(text: string): any | null {
 // once per job completion, before inbox.push, on the supervisor model (falls
 // back to the orchestrator model — logged). Timeout/error → unverifiable,
 // never blocks reporting.
-const VERDICT_FETCH_TIMEOUT_MS = 12_000;
+// 12s measured as too tight: the supervisor model (toolcall-ft) is often not
+// resident (evicted by VRAM pressure from concurrent local jobs) and a cold
+// reload plus inference can exceed 12s, aborting the fetch and throwing the
+// whole verdict away as "unverifiable". 20s gives that reload room to finish.
+const VERDICT_FETCH_TIMEOUT_MS = 20_000;
 const COMPLETION_VERDICT_FORMAT = {
     type: 'object',
     properties: {
@@ -2313,6 +2317,13 @@ function keepAliveEnv(name: string, dflt: number): number {
 function subAgentKeepAlive(agent: string): number {
     if (['iris', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
+    }
+    // Sentry gets its own knob (local:sentry_keep_alive). It used to fall
+    // through to the atlas knob, so an hourly security scan on a large local
+    // model pinned VRAM resident between runs — for a job that works a minute
+    // an hour. Atlas being resident is deliberate; sentry borrowing it was not.
+    if (agent === 'sentry') {
+        return keepAliveEnv('SENTRY_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
 }

@@ -420,6 +420,13 @@ let claudeScanTried = false;
 function memoryFileLine(file: string): string | null {
   try {
     const md = fs.readFileSync(file, 'utf-8');
+    // Claude Code memory files are the assistant's own notes, tagged by
+    // frontmatter metadata.type. Only `user` ("who the user is") belongs in
+    // the user's memory tree; project/reference/feedback are dev and
+    // working-relationship notes, not facts about the person. Skip those.
+    const fm = (md.match(/^---\s*\n([\s\S]*?)\n---/) || [])[1] || '';
+    const type = (fm.match(/^\s*type:\s*(\w+)\s*$/m) || [])[1];
+    if (type !== 'user') return null;
     // Curated memory files carry one fact in their frontmatter description;
     // generic .md files fall back to the first non-empty body line.
     const desc = (md.match(/^description:\s*"?(.+?)"?\s*$/m) || [])[1]?.trim();
