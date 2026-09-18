@@ -2130,6 +2130,17 @@ function writtenFilesSummary(files: WrittenFile[]): string {
     return lines.join('\n');
 }
 
+// Media/audio jobs (media_control / audio_volume / mic_volume) succeed by the
+// tool's successful return — audio state is NOT visible in the DOM, so a live
+// page snapshot can only false-fail them ("the title still shows X" when the
+// track actually changed). The agent's own VERIFYING rule says a successful
+// media_control / video.play() return IS completion. So the completion verdict
+// must NOT feed an authoritative browser snapshot for these jobs.
+const MEDIA_TOOLS = new Set(['media_control', 'audio_volume', 'mic_volume']);
+function isMediaJob(activityLog: { t: number; tool: string; args: string; result?: string }[]): boolean {
+    return activityLog.some(e => MEDIA_TOOLS.has(e.tool));
+}
+
 // Tolerant JSON extraction: strip code fences / prose, pull the first balanced
 // object. The local path has Ollama `format` enforcing valid JSON, but the
 // cloud-proxy path does not, so this stays as the safety net.
@@ -2247,9 +2258,11 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     // Only fire when a browser tool actually returned a page snapshot (its
     // result carries a "URL:" header), which proves the job drove a live page;
     // this avoids getPage() launching Chrome / opening a tab for a browser call
-    // that errored before ever claiming a page.
+    // that errored before ever claiming a page. Media/audio jobs are skipped
+    // outright — their success lives in the audio output, not the DOM, so a
+    // snapshot is an oracle for the wrong signal and only false-fails them.
     let browserBlock = '';
-    if (activityLog.some(e => e.tool.startsWith('browser_') && /URL:/.test(e.result || ''))) {
+    if (!isMediaJob(activityLog) && activityLog.some(e => e.tool.startsWith('browser_') && /URL:/.test(e.result || ''))) {
         try {
             const page = await getPage();
             const snap = await snapshot(page);
