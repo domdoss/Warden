@@ -714,16 +714,22 @@ export function buildAgentCallbacks(): CallbackMap {
             continue;
           }
           try {
-            // Prefer the warm INBOX cache (refreshed every ~5 min by
-            // startInboxCacheWarmer). The agent usually wants "recent mail
-            // since X" — the cached recent batch covers that and avoids a live
-            // fetch of up to `limit` messages one-by-one from the provider
-            // (Gmail does sequential per-message GETs → tens of seconds for
-            // limit 500). Serve the cache without a length check: the agent's
-            // limit is an upper bound, not a minimum, and the date filter
-            // narrows the cached set.
+            // Serve the warm INBOX cache (refreshed every ~5 min by
+            // startInboxCacheWarmer) ONLY for a plain "recent emails" read.
+            // A search must hit the provider (Gmail q=) — the cache drops the
+            // search term and hands iris ~20 recent emails to scan by hand, so
+            // a "find emails about X" comes back with the handful iris happens
+            // to spot. A date-range query is the same: the cache holds only ~20
+            // recent emails, so a "last 30 days" read silently misses anything
+            // older. Both bypass the cache and fetch live — reads are
+            // preview-only (metadata/snippets), which is the fast path, not the
+            // sequential full-body GETs the cache was built to avoid.
+            const hasQuery =
+              (typeof search === 'string' && search.length > 0) ||
+              !Number.isNaN(sinceMs) ||
+              !Number.isNaN(beforeMs);
             let emails: any[];
-            const cached = getCachedInboxEmails(account.id, folder);
+            const cached = hasQuery ? undefined : getCachedInboxEmails(account.id, folder);
             if (cached) {
               emails = cached.emails;
             } else {
@@ -3142,6 +3148,7 @@ function seedPerAgentModelSettings(): void {
   // as the default so the checkbox reflects reality. Toolcall/Atlas stay unset →
   // the runner defaults to 300 (their historic sub-agent TTL).
   seed('local:orch_keep_alive', '-1');
+  seed('local:sentry_keep_alive', '300');
   // New per-agent model keys inherit the legacy shared value.
   seed('iris:model', toolcall);
   seed('artemis:model', atlas);
@@ -3190,6 +3197,7 @@ export function syncAgentCtxEnv(): void {
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
   process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
+  process.env.SENTRY_KEEP_ALIVE = getRouterState('local:sentry_keep_alive') || '';
 }
 
 /**
