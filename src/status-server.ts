@@ -189,6 +189,7 @@ import {
   getAgentTask,
   getAgentTaskBacklog,
   getAgentTaskBacklogSize,
+  queueAgentTaskCommand,
   reorderAgentTasks,
   deleteAgentTask,
 } from './db.js';
@@ -984,6 +985,10 @@ async function handleMessages(
       channel: 'web',
     };
     deps.storeMessage(msg);
+
+    // Create the agent-task record at ingestion so queued commands are visible
+    // in the dashboard queue before their turn starts (the "stacked queue").
+    queueAgentTaskCommand(body.text);
 
     // Relay to the actual channel if it's not a web-only JID
     if (!jid.startsWith('web:')) {
@@ -3893,6 +3898,7 @@ export function startStatusServer(d: StatusDeps): void {
               channel: 'web',
             };
             deps.storeMessage(msg);
+            queueAgentTaskCommand(t.command);
             return json(res, { ok: true, replayed: t.command.slice(0, 200) });
           }
           if (!pathname.endsWith('/recall') && req.method === 'DELETE') {
