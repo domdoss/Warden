@@ -8,7 +8,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
-import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory, STOP_COMMAND_RE } from './agent-spawn.js';
+import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { syncAgentCtxEnv } from './index.js';
 import { parseRelativeDuration } from './task-scheduler.js';
 import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts, scanConfig, setScanConfig, requestScanAbort } from './memory-tree.js';
@@ -184,14 +184,6 @@ import {
   getUserByEmail,
 } from './db.js';
 import { getDb, getSatelliteIp } from './db.js';
-import {
-  getActiveAgentTasks,
-  getAgentTask,
-  getAgentTaskBacklog,
-  getAgentTaskBacklogSize,
-  reorderAgentTasks,
-  deleteAgentTask,
-} from './db.js';
 import { AgentSessionStore } from './agent-session-store.js';
 import { encryptApiKey } from './encryption.js';
 import httpProxy from 'http-proxy';
@@ -788,13 +780,6 @@ function getStatusData() {
     defaultModelMode: DEFAULT_MODEL_MODE,
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     system: getSystemMetrics(),
-    // Agent-task queue (internal run record + shared history). Active = queued +
-    // running in drain order; backlog = most recent finished (done/stopped).
-    tasks: {
-      active: getActiveAgentTasks(),
-      backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
-      backlogSize: getAgentTaskBacklogSize(),
-    },
   };
 }
 
@@ -897,15 +882,13 @@ async function handleMessages(
 
     const jid = body.jid || WEB_DASHBOARD_JID;
 
-    // Panic word: a bare stop-word ("stop", "cancel", "shut up", …) hard-kills
-    // the whole system instead of being delivered to the agent as a chat
-    // message. Matches the same STOP_COMMAND_RE the channel onMessage path
-    // uses, so the word works identically from web and Telegram/voice. The
-    // message is NOT stored, relayed, or queued — it is a control word.
-    if (!body.is_bot_message && STOP_COMMAND_RE.test(body.text || '')) {
+    // Panic word: a bare "stop" hard-kills the whole system instead of being
+    // delivered to the agent as a chat message. The message is NOT stored,
+    // relayed, or queued — it is a control word, not a chat message.
+    if (!body.is_bot_message && body.text.trim().toLowerCase() === 'stop') {
       const killed = killCurrentAgent(true);
       setRouterState('agent:processing', 'false');
-      logger.info({ jid, killed }, 'Hard-kill control word received');
+      logger.info({ jid, killed }, 'Hard-kill control word "stop" received');
       return json(res, { ok: true, hardKill: true, killed });
     }
 
@@ -3853,54 +3836,6 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
       if (pathname === '/api/status') return json(res, getStatusData());
-
-      // ── Agent-task queue (internal run record + shared history) ──────────
-      if (pathname === '/api/agent-tasks' && req.method === 'GET') {
-        return json(res, {
-          active: getActiveAgentTasks(),
-          backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
-          backlogSize: getAgentTaskBacklogSize(),
-        });
-      }
-      if (pathname === '/api/agent-tasks/reorder' && req.method === 'POST') {
-        const body = parseJson(await parseBody(req)) as { orderedIds?: string[] };
-        if (!Array.isArray(body.orderedIds)) return json(res, { error: 'orderedIds required' }, 400);
-        reorderAgentTasks(body.orderedIds.map(String));
-        return json(res, { ok: true, active: getActiveAgentTasks() });
-      }
-      // /api/agent-tasks/:id/recall (POST) and /api/agent-tasks/:id (DELETE).
-      {
-        const m = pathname.match(/^\/api\/agent-tasks\/([^/]+)(?:\/recall)?$/);
-        if (m) {
-          if (pathname.endsWith('/recall') && req.method === 'POST') {
-            const t = getAgentTask(m[1]);
-            if (!t) return json(res, { error: 'not found' }, 404);
-            // Re-run a past command by re-injecting its text as a fresh user
-            // message. The message loop picks it up on the next tick and runs a
-            // normal turn (→ a NEW task record seeded from the same command).
-            // The old record stays in the backlog as run history. Re-injecting
-            // (rather than re-queueing the record) reuses the entire verified
-            // turn path — no separate queue-drain loop to keep in sync.
-            const msg: NewMessage = {
-              id: `recall-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-              chat_jid: OWNER_JID,
-              sender: 'dashboard',
-              sender_name: 'Admin',
-              content: t.command,
-              timestamp: new Date().toISOString(),
-              is_from_me: true,
-              is_bot_message: false,
-              channel: 'web',
-            };
-            deps.storeMessage(msg);
-            return json(res, { ok: true, replayed: t.command.slice(0, 200) });
-          }
-          if (!pathname.endsWith('/recall') && req.method === 'DELETE') {
-            return json(res, { ok: deleteAgentTask(m[1]), id: m[1] });
-          }
-        }
-      }
-
       if (pathname === '/api/summaries') {
         if (req.method === 'POST') {
           const body = parseJson(await parseBody(req)) as { span?: string; text?: string };

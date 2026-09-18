@@ -27,17 +27,6 @@ export function setActivityPublisher(fn: (userId: string, line: string, chatJid:
   pushActivityLineFn = fn;
 }
 
-// A bare stop command a user can send from ANY channel (Telegram / web /
-// voice) to hard-kill everything: the current turn, every background job, the
-// whole agent child. Deliberately strict — the message must be nothing but the
-// stop word, so "stop by the store" never triggers it.
-export const STOP_COMMAND_RE = /^\s*(stop|cancel|abort|halt|never\s?mind|nvm|shut up)[\s.!]*$/i;
-
-/** True when `text` is a standalone stop word (nothing else in the message). */
-export function isStopWord(text: unknown): boolean {
-  return typeof text === 'string' && STOP_COMMAND_RE.test(text);
-}
-
 export type AgentRunInput = AgentInput & {
   executable?: string;
   executableArgs?: string[];
@@ -916,8 +905,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             councilSynthesistModel: input.councilSynthesistModel,
             drivingForce: input.drivingForce || '',
             contextClearAt: input.contextClearAt || '',
-            taskId: input.taskId || '',
-            taskContext: input.taskContext || '',
             subagentModel: process.env.SUBAGENT_MODEL || '',
             orchestratorCtx: process.env.ORCHESTRATOR_NUM_CTX || '',
             subagentCtx: process.env.SUBAGENT_NUM_CTX || '',
@@ -981,8 +968,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       history: input.history,
       timeoutMs: input.timeoutMs,
       memoryContext: input.memoryContext,
-      taskId: input.taskId,
-      taskContext: input.taskContext,
       showThinking: input.showThinking,
       verbose: input.verbose,
     });
