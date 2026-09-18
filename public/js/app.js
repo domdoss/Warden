@@ -347,6 +347,7 @@
       // (foreground), and the latest supervisor note in d.progress.
       const progress = d.progress || [];
       renderOversight(d);
+      renderTaskQueue(d);
       syncThinkingBar();
 
       // stop button enable/disable
@@ -426,6 +427,92 @@
       ? `${jobCount} job${jobCount > 1 ? 's' : ''}${fg ? ' · reply in progress' : ''}`
       : (fg ? 'reply in progress' : '');
     rowsEl.innerHTML = rows.length ? rows.join('') : ovRow('quiet', '', 'nothing running right now', '', 'quiet');
+  }
+
+  // ── Agent-task queue (internal run record + shared history) ──
+  // Right-hand sidebar: active tasks as a draggable stack (drag reorders the
+  // drain order via POST /api/agent-tasks/reorder) + a backlog of finished
+  // tasks with recall/delete. Driven by the 5s pollStatus payload (d.tasks).
+  let taskDragInProgress = false;
+  function taskItemHtml(t, isActive) {
+    const label = String(t.summary || t.command || '').trim() || '(unnamed task)';
+    const status = String(t.status || 'queued');
+    const badge = `<span class="t-status ${esc(status)}">${esc(status)}</span>`;
+    if (isActive) {
+      return `<div class="task-item" draggable="true" data-id="${esc(t.id)}">` +
+        `<span class="grip" title="drag to reorder">⠿</span>` +
+        `<div class="t-body"><div class="t-summary">${esc(label)}</div>${badge}</div>` +
+        `</div>`;
+    }
+    return `<div class="task-item ${esc(status)}" data-id="${esc(t.id)}">` +
+      `<div class="t-body"><div class="t-summary">${esc(label)}</div>${badge}</div>` +
+      `<button class="t-recall" data-id="${esc(t.id)}" title="Re-queue this task">↺</button>` +
+      `<button class="t-del" data-id="${esc(t.id)}" title="Delete from backlog">×</button>` +
+      `</div>`;
+  }
+  function attachTaskDrag(stackEl) {
+    if (!stackEl) return;
+    stackEl.querySelectorAll('.task-item[draggable]').forEach((el) => {
+      el.addEventListener('dragstart', (e) => {
+        taskDragInProgress = true;
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', el.dataset.id);
+      });
+      el.addEventListener('dragend', () => { el.classList.remove('dragging'); taskDragInProgress = false; });
+      el.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('drag-over'); });
+      el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+      el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        el.classList.remove('drag-over');
+        const fromId = e.dataTransfer.getData('text/plain');
+        const toId = el.dataset.id;
+        if (!fromId || fromId === toId) return;
+        const ids = [...stackEl.querySelectorAll('.task-item[draggable]')].map((x) => x.dataset.id);
+        const fromIdx = ids.indexOf(fromId), toIdx = ids.indexOf(toId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        ids.splice(fromIdx, 1);
+        ids.splice(toIdx, 0, fromId);
+        postJson('/api/agent-tasks/reorder', { orderedIds: ids }).catch((err) => console.warn('task reorder failed', err));
+        // Optimistic local reorder; the next poll confirms against positions.
+        [...stackEl.querySelectorAll('.task-item[draggable]')].forEach((node) => {
+          const at = ids.indexOf(node.dataset.id);
+          if (at >= 0) stackEl.insertBefore(node, stackEl.children[at] || null);
+        });
+      });
+    });
+  }
+  function renderTaskQueue(d) {
+    const tasks = d.tasks || {};
+    const active = Array.isArray(tasks.active) ? tasks.active : [];
+    const backlog = Array.isArray(tasks.backlog) ? tasks.backlog : [];
+
+    // Task-mode chip in the topbar.
+    const chip = $('taskModeChip'), countEl = $('taskModeCount');
+    if (chip) chip.classList.toggle('hidden', active.length === 0);
+    if (countEl) countEl.textContent = active.length;
+    const panel = $('taskQueue');
+    if (panel) panel.classList.toggle('busy', active.length > 0);
+
+    // Skip a full re-render while a drag is in flight, and when nothing changed
+    // (avoids tearing the user's pointer away from a mid-drag item every 5s).
+    const sig = active.map((t) => t.id + ':' + t.status).join('|') + '#' + backlog.map((t) => t.id).join('|');
+    if (taskDragInProgress || sig === STATE.taskSig) return;
+    STATE.taskSig = sig;
+
+    const stack = $('taskStack');
+    if (stack) {
+      stack.innerHTML = active.length
+        ? active.map((t) => taskItemHtml(t, true)).join('')
+        : '<div class="tq-empty" id="taskStackEmpty">No active task.</div>';
+      attachTaskDrag(stack);
+    }
+    const bl = $('taskBacklog');
+    if (bl) {
+      bl.innerHTML = backlog.length
+        ? backlog.map((t) => taskItemHtml(t, false)).join('')
+        : '<div class="tq-empty" id="taskBacklogEmpty">Nothing finished yet.</div>';
+    }
   }
 
   function startStatusPolling() {
@@ -2585,6 +2672,20 @@
     $('btnRestart').addEventListener('click', restartServer);
     $('btnSwitchUser').addEventListener('click', openSwitchUser);
     $('btnNewThought').addEventListener('click', newThought);
+    // Agent-task queue: collapse toggle + delegated recall/delete.
+    const tqToggle = $('btnTaskQueueToggle');
+    if (tqToggle) tqToggle.addEventListener('click', () => { const q = $('taskQueue'); if (q) q.classList.toggle('closed'); });
+    const tqBacklog = $('taskBacklog');
+    if (tqBacklog) tqBacklog.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-id]'); if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.classList.contains('t-recall')) {
+        try { await postJson('/api/agent-tasks/' + encodeURIComponent(id) + '/recall', {}); } catch (err) { console.warn('recall failed', err); }
+      } else if (btn.classList.contains('t-del')) {
+        try { await del('/api/agent-tasks/' + encodeURIComponent(id)); } catch (err) { console.warn('delete failed', err); }
+      }
+      pollStatus();
+    });
     // Mobile-only relocated buttons. Hidden on desktop via CSS.
     const ntMobile = $('btnNewThoughtMobile');
     if (ntMobile) ntMobile.addEventListener('click', newThought);

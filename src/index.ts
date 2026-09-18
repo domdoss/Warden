@@ -17,7 +17,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive, STOP_COMMAND_RE, isStopWord } from './agent-spawn.js';
 import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
@@ -58,6 +58,14 @@ import {
   createWorkTask,
   updateWorkTask,
   deleteWorkTask,
+  getActiveAgentTasks,
+  getAgentTask,
+  getAgentTaskBacklog,
+  getAgentTaskBacklogSize,
+  createAgentTask,
+  appendAgentTaskHistory,
+  updateAgentTask,
+  finishAgentTask,
   getUserApiKeys,
   getActiveUserApiKeyByType,
   getAllUserApiKeys,
@@ -70,7 +78,6 @@ import {
   getFiredCalendarReminderIds,
   markCalendarReminderFired,
   getTaskById,
-  getSatelliteIp,
   logSentryScan,
   createAlarm,
   getUserAlarms,
@@ -90,7 +97,7 @@ import { startStatusServer, pushNotification, pushActivityLine, getCachedInboxEm
 import { startLogCap } from './log-rotator.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
-import { captureScreenshotFromSecurityApp, captureWebcamFromSecurityApp, readHostImage } from './capture.js';
+import { captureScreenshot, captureWebcam, readHostImage } from './capture.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -177,15 +184,17 @@ CONTRACT: one compaction request → one JSON object. You merge the state you ar
 
 INPUT
 - STATE: the memory you already hold, as JSON. It is empty on the first compaction.
-- TURNS: conversation turns that have scrolled out of the live window, oldest first. The most recent turns are kept verbatim elsewhere and are not shown to you.
+- TURNS: the user's own messages that have scrolled out of the live window, oldest first. These are the user's own words. The assistant's replies are not shown to you.
 
 FIELDS
-- facts: durable statements about the user, the project, or the world.
-- decisions: choices that were made, each with the reason when the turns give one.
+- facts: durable statements about the user or the project — including how the user wants work done (their standing preferences and constraints). Never describe what the assistant is or does.
+- decisions: choices that were made, each with the reason when the turns give one — including the user's standing instructions about how work should be done.
 - open: questions still unanswered and tasks still outstanding.
 - refs: file paths, URLs, and ids worth keeping.
 
 GUIDELINES
+- TURNS are the user's own words. Record what the user said, wants, or decided — never what the assistant is or does.
+- A user's standing instruction or preference is the highest-value thing to keep: when a turn shows the user telling the assistant HOW to work, record it as a fact or decision and carry it even after the task that prompted it is done. Losing one of these is exactly what makes the user repeat themselves.
 - Carry every STATE item forward unless a turn supersedes it or resolves it.
 - Add what the TURNS establish, placing each item in the field that fits it.
 - Merge two items that say the same thing into one. Replace a superseded item with its current version.
@@ -1148,6 +1157,51 @@ export function buildAgentCallbacks(): CallbackMap {
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
 
+    // ─── Agent tasks (internal run records + shared history) ───────────────
+    // The runner auto-scribes job outcomes here, and the agent-task tools
+    // (iris/orchestrator) read/append/finish the same records.
+    list_agent_tasks: async (_args: any) => {
+      try {
+        return {
+          ok: true,
+          data: {
+            active: getActiveAgentTasks(),
+            backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
+          },
+        };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    read_agent_task: async (args: any) => {
+      try {
+        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+        const t = taskId ? getAgentTask(taskId) : undefined;
+        return t ? { ok: true, data: t } : { ok: false, error: 'task not found' };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    append_agent_task_history: async (args: any) => {
+      try {
+        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+        const text = typeof args?.text === 'string' ? args.text : '';
+        if (!taskId || !text.trim()) return { ok: false, error: 'missing taskId or text' };
+        const t = appendAgentTaskHistory(taskId, text);
+        return t ? { ok: true, data: t } : { ok: false, error: 'task not found' };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    complete_agent_task: async (args: any) => {
+      try {
+        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+        const t = taskId ? finishAgentTask(taskId, 'done') : undefined;
+        return t ? { ok: true, data: t } : { ok: false, error: 'task not found' };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+    stop_agent_task: async (args: any) => {
+      try {
+        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+        const t = taskId ? finishAgentTask(taskId, 'stopped') : undefined;
+        return t ? { ok: true, data: t } : { ok: false, error: 'task not found' };
+      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+    },
+
     install_mcp_server: async (args: any) => {
       try {
         const name = typeof args?.name === 'string' ? args.name : '';
@@ -1298,11 +1352,7 @@ export function buildAgentCallbacks(): CallbackMap {
 
     desktop_screenshot: async (args: any) => {
       try {
-        // The Pi is headless — it has no display to capture. The screenshot is
-        // pulled from the laptop satellite's /screenshot endpoint (the security
-        // app's frame server, which runs in the laptop's graphical session).
-        // Region is cropped here from the full-screen PNG. window_title is not
-        // supported remotely (no way to focus a window on the laptop from here).
+        // This host IS the desktop — capture the screen locally, no satellite.
         let region: { x: number; y: number; w: number; h: number } | undefined;
         const r = args?.region;
         if (r && typeof r === 'object') {
@@ -1312,11 +1362,10 @@ export function buildAgentCallbacks(): CallbackMap {
             region = { x: Math.round(+r.x || 0), y: Math.round(+r.y || 0), w, h };
           }
         }
-        const shotUrl = `http://${getSatelliteIp()}:8765/screenshot`;
-        const cap = await captureScreenshotFromSecurityApp(shotUrl, region);
+        const cap = await captureScreenshot({ windowTitle: args?.window_title, region });
         logger.info(
-          { width: cap.width, height: cap.height, mediaType: cap.mediaType, region, url: shotUrl },
-          'desktop_screenshot: captured from laptop satellite',
+          { width: cap.width, height: cap.height, mediaType: cap.mediaType, region, window_title: args?.window_title },
+          'desktop_screenshot: captured local desktop',
         );
         return { ok: true, image: cap.image, mediaType: cap.mediaType, width: cap.width, height: cap.height };
       } catch (err: any) {
@@ -1326,16 +1375,11 @@ export function buildAgentCallbacks(): CallbackMap {
 
     webcam_capture: async (args: any) => {
       try {
-        // The webcam lives on the laptop, and the security detector owns
-        // /dev/video0 there. Pull the latest frame from the satellite's /frame
-        // endpoint — the one way Warden gets a webcam photo. No ffmpeg/local
-        // fallback: the Pi has no webcam, and a fallback would mask the real
-        // path failing.
-        const frameUrl = `http://${getSatelliteIp()}:8765/frame`;
-        const cap = await captureWebcamFromSecurityApp(frameUrl);
+        // The webcam is on this host (/dev/video0), captured locally.
+        const cap = await captureWebcam({ device: args?.device, width: args?.width });
         logger.info(
-          { width: cap.width, height: cap.height, mediaType: cap.mediaType, url: frameUrl },
-          'webcam_capture: captured from laptop satellite',
+          { width: cap.width, height: cap.height, mediaType: cap.mediaType, device: args?.device },
+          'webcam_capture: captured local webcam',
         );
         return { ok: true, image: cap.image, mediaType: cap.mediaType, width: cap.width, height: cap.height };
       } catch (err: any) {
@@ -1817,10 +1861,17 @@ async function updateMercurySummary(): Promise<void> {
     const older = raw.slice(0, -MERCURY_RECENT_MESSAGES);
     if (older.length === 0) return;
 
-    const olderLines = older.map((m) => {
-      const role = m.is_bot_message ? ASSISTANT_NAME : (m.sender_name || 'User');
-      return `${role}: ${m.content}`;
-    }).join('\n');
+    // Only the USER's own messages. Feeding the assistant's turns too is what
+    // produced the useless summary: the assistant's self-narration (results,
+    // "Atlas is a digital assistant…", tool output) drowns out the user's few
+    // terse instructions, so the distiller filed what the assistant DOES as
+    // facts instead of what the user TOLD it. Mirrors the memory-writeback
+    // user-only filter.
+    const olderLines = older
+      .filter((m) => !m.is_bot_message)
+      .map((m) => `User: ${m.content}`)
+      .join('\n');
+    if (!olderLines.trim()) return;
 
     // STRUCTURED CONTRACT — this is the shape the toolcall fine-tune is
     // TRAINED on (training/gen_mercury_sft.mjs extracts MERCURY_SYSTEM_PROMPT
@@ -2022,6 +2073,22 @@ async function processOwnerMessages(): Promise<void> {
     } catch { return undefined; }
   })();
 
+  // ── Agent task (internal run record + shared history) ────────────────────
+  // Every user command becomes an "agent task": a persistent record whose
+  // shared history every specialist reads (the anti-"marco polo" bus) and the
+  // dashboard shows. The task id + history ride into the runner via AgentInput;
+  // the runner auto-scribes each background job's outcome back into the history.
+  // Marked done on completion, stopped on user stop. Bot-only turns (digest,
+  // reminders) and control words don't create a task.
+  const userCommand = pending
+    .filter((m) => !m.is_bot_message)
+    .map((m) => m.content || '')
+    .join('\n')
+    .trim();
+  const activeTask = userCommand ? createAgentTask(userCommand) : undefined;
+  if (activeTask) updateAgentTask(activeTask.id, { status: 'running' });
+  const taskContext = activeTask ? `${activeTask.command}\n\n[Task history:]\n${activeTask.history}` : undefined;
+
   const input: AgentInput = {
     prompt,
     sessionId: 'owner',
@@ -2037,6 +2104,8 @@ async function processOwnerMessages(): Promise<void> {
     // killed real work. Cleared on normal completion (agent-spawn turnTimeout clear).
     timeoutMs: 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
     memoryContext,
+    taskId: activeTask?.id,
+    taskContext,
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
     vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
@@ -2074,6 +2143,7 @@ async function processOwnerMessages(): Promise<void> {
     agentProcessing = false;
     setRouterState('agent:processing', 'false');
     logger.error({ err }, 'runAgent threw');
+    if (activeTask) finishAgentTask(activeTask.id, 'stopped');
     // Keep the cursor advanced so the failed turn is not retried indefinitely
     // and the user doesn't get a re-reply to the same message every loop tick.
     return;
@@ -2081,6 +2151,7 @@ async function processOwnerMessages(): Promise<void> {
   agentProcessing = false;
   setRouterState('agent:processing', 'false');
   if (output.userStopped) {
+    if (activeTask) finishAgentTask(activeTask.id, 'stopped');
     // Mark the window BEFORE this turn's first message so the next real message
     // re-includes the stopped turn's text (see the extension above). `since`
     // still holds the pre-turn cursor value at this point.
@@ -2094,6 +2165,7 @@ async function processOwnerMessages(): Promise<void> {
   // If result is null/empty/non-string, the agent produced no user-facing reply — drop it
   // rather than forwarding the raw envelope (e.g. '{"status":"success","result":null}') to the chat.
   let spontaneousDigest = false;
+  let delegated = false;
   try {
     const parsed = JSON.parse(rawText);
     if (parsed && typeof parsed === 'object') {
@@ -2107,11 +2179,16 @@ async function processOwnerMessages(): Promise<void> {
       // concurrently and left a resolve pending, this OUTPUT would ALSO be
       // delivered below — the double report observed 2026-08-24. Suppress here.
       if (parsed.spontaneous === true) spontaneousDigest = true;
+      // The runner flagged that a background subagent is still running when this
+      // OUTPUT was emitted — the task's chain is not finished yet. The host must
+      // NOT mark the agent_task done here; the final non-delegated turn will.
+      if (parsed.delegated === true) delegated = true;
     }
   } catch { /* not JSON, use as-is */ }
   const text = rawText;
   if (spontaneousDigest) {
     logger.info('spontaneous (digest) OUTPUT suppressed — send_message path owns digest delivery');
+    if (activeTask && !delegated) finishAgentTask(activeTask.id, 'done');
     return;
   }
   if (!text) {
@@ -2120,11 +2197,15 @@ async function processOwnerMessages(): Promise<void> {
         { error: output.error, exitCode: output.exitCode },
         'Agent returned no text + an error',
       );
+      if (activeTask) finishAgentTask(activeTask.id, 'stopped');
+    } else if (activeTask && !delegated) {
+      finishAgentTask(activeTask.id, 'done');
     }
     return;
   }
 
   await deliverReply(text);
+  if (activeTask && !delegated) finishAgentTask(activeTask.id, 'done');
 
   // Mercury compaction now runs on the 2s poll loop (maybeScheduleMercury in
   // startMessageLoop) on a time/downtime schedule — not after every turn.
@@ -2152,9 +2233,8 @@ async function processOwnerMessages(): Promise<void> {
 }
 
 // Bare stop commands a user can send as a chat message (Telegram/voice) to
-// kill an in-flight agent run. Deliberately strict — the message must be
-// nothing but the stop word, so "stop by the store" never triggers it.
-const STOP_COMMAND_RE = /^\s*(stop|cancel|abort|halt|never\s?mind|nvm|shut up)[\s.!]*$/i;
+// kill an in-flight agent run. STOP_COMMAND_RE is imported from agent-spawn
+// (shared with the /api/messages hard-kill path so both match identically).
 
 // ── Iris digest task seeding ──────────────────────────────────────────────
 // Three recurring tasks (hourly/daily/weekly) that ask Iris to compile a
@@ -3314,6 +3394,15 @@ async function main(): Promise<void> {
   // Channel callbacks — every channel routes inbound messages to OWNER_JID.
   const channelOpts = {
     onMessage: (_chatJid: string, msg: NewMessage) => {
+      // Panic word from ANY channel (Telegram/web/voice): a bare stop-word
+      // hard-kills everything — current turn, all background jobs, the whole
+      // agent child — and is consumed as a control word, never stored.
+      if (!msg.is_bot_message && isStopWord(msg.content)) {
+        const killed = killCurrentAgent(true);
+        setRouterState('agent:processing', 'false');
+        logger.info({ chatJid: _chatJid, text: msg.content, killed }, 'Hard-kill control word received via channel');
+        return;
+      }
       // Force every inbound message to OWNER_JID — the single chat.
       storeMessage({ ...msg, chat_jid: OWNER_JID });
     },
@@ -3409,7 +3498,15 @@ async function main(): Promise<void> {
         // WhatsApp needs forceConnect to generate a QR code when creds are missing
         const isWa = type === 'whatsapp';
         const newChannel = factory({
-          onMessage: (chatJid, msg) => storeMessage({ ...msg, chat_jid: OWNER_JID }),
+          onMessage: (chatJid, msg) => {
+            if (!msg.is_bot_message && isStopWord(msg.content)) {
+              const killed = killCurrentAgent(true);
+              setRouterState('agent:processing', 'false');
+              logger.info({ chatJid, text: msg.content, killed }, 'Hard-kill control word received via reconnected channel');
+              return;
+            }
+            storeMessage({ ...msg, chat_jid: OWNER_JID });
+          },
           ...(isWa ? { forceConnect: true } : {}),
         });
         if (!newChannel) return false;

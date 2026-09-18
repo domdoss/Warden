@@ -150,6 +150,26 @@ function createSchema(database: Database.Database): void {
       confirmed INTEGER DEFAULT 1
     );
 
+    -- Agent tasks (internal run records). One row per user command; the shared
+    -- history column is the anti-"marco polo" bus that every specialist reads
+    -- and iris writes. Active (queued/running) rows carry a position for the
+    -- ordered, draggable queue; finished (done/stopped) rows have position -1
+    -- and form the bounded backlog kept for recall. Distinct from
+    -- user_work_tasks (board to-dos) and scheduled_tasks (reminders/cron).
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+      id TEXT PRIMARY KEY,
+      command TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      status TEXT DEFAULT 'queued',
+      history TEXT DEFAULT '',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_agent_tasks_position ON agent_tasks(position);
+
     CREATE TABLE IF NOT EXISTS project_priorities (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -1350,6 +1370,143 @@ export function deleteWorkTask(taskId: string): boolean {
   }
   return ok;
 }
+
+// --- Agent tasks (internal run records + shared history) ---
+// One row per user command. The `history` column is the accumulating shared log
+// that every specialist reads and iris writes (the anti-"marco polo" bus).
+// Active rows (queued/running) carry a queue `position`; finished rows
+// (done/stopped) are position -1 and form the bounded recall backlog.
+
+const AGENT_TASK_HISTORY_CAP = 8000; // chars — fold older lines beyond this
+
+export interface AgentTask {
+  id: string;
+  command: string;
+  summary: string;
+  status: string; // queued | running | done | stopped
+  history: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export function getActiveAgentTasks(): AgentTask[] {
+  return db.prepare(
+    "SELECT * FROM agent_tasks WHERE status IN ('queued','running') ORDER BY position ASC, created_at ASC",
+  ).all() as AgentTask[];
+}
+
+export function getAgentTask(taskId: string): AgentTask | undefined {
+  return db.prepare('SELECT * FROM agent_tasks WHERE id = ?').get(taskId) as AgentTask | undefined;
+}
+
+export function getAgentTaskBacklog(n: number): AgentTask[] {
+  return db.prepare(
+    "SELECT * FROM agent_tasks WHERE status IN ('done','stopped') ORDER BY finished_at DESC LIMIT ?",
+  ).all(n) as AgentTask[];
+}
+
+/** Backlog size is a live Settings value (router_state `task:backlog_size`). */
+export function getAgentTaskBacklogSize(): number {
+  const raw = getRouterState('task:backlog_size');
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 10;
+}
+
+function nextAgentTaskPosition(): number {
+  const row = db.prepare(
+    "SELECT COALESCE(MAX(position), -1) AS m FROM agent_tasks WHERE status IN ('queued','running')",
+  ).get() as { m: number };
+  return row.m + 1;
+}
+
+export function createAgentTask(command: string): AgentTask {
+  const id = `atask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO agent_tasks (id, command, summary, status, history, position, created_at, updated_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, command, '', 'queued', '', nextAgentTaskPosition(), now, now, null);
+  return getAgentTask(id)!;
+}
+
+export function updateAgentTask(taskId: string, updates: Partial<AgentTask>): AgentTask | undefined {
+  const existing = getAgentTask(taskId);
+  if (!existing) return undefined;
+  const fields: string[] = [];
+  const values: any[] = [];
+  if (updates.command !== undefined) { fields.push('command = ?'); values.push(updates.command); }
+  if (updates.summary !== undefined) { fields.push('summary = ?'); values.push(updates.summary); }
+  if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }
+  if (updates.history !== undefined) { fields.push('history = ?'); values.push(updates.history); }
+  if (updates.position !== undefined) { fields.push('position = ?'); values.push(updates.position); }
+  if (updates.finished_at !== undefined) { fields.push('finished_at = ?'); values.push(updates.finished_at); }
+  if (fields.length === 0) return existing;
+  fields.push('updated_at = ?');
+  values.push(new Date().toISOString());
+  values.push(taskId);
+  db.prepare(`UPDATE agent_tasks SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return getAgentTask(taskId)!;
+}
+
+export function appendAgentTaskHistory(taskId: string, text: string): AgentTask | undefined {
+  const existing = getAgentTask(taskId);
+  if (!existing) return undefined;
+  const line = text.trim();
+  if (!line) return existing;
+  const ts = new Date().toISOString();
+  let history = (existing.history ? existing.history + '\n' : '') + `- ${ts} ${line}`;
+  if (history.length > AGENT_TASK_HISTORY_CAP) {
+    const lines = history.split('\n');
+    const kept: string[] = [];
+    let n = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (n + lines[i].length + 1 > AGENT_TASK_HISTORY_CAP) break;
+      kept.unshift(lines[i]);
+      n += lines[i].length + 1;
+    }
+    history = kept.length < lines.length
+      ? `- …earlier entries trimmed (${lines.length - kept.length} dropped)\n${kept.join('\n')}`
+      : kept.join('\n');
+  }
+  return updateAgentTask(taskId, { history });
+}
+
+export function finishAgentTask(taskId: string, status: 'done' | 'stopped'): AgentTask | undefined {
+  const existing = getAgentTask(taskId);
+  if (!existing) return undefined;
+  const done = updateAgentTask(taskId, { status, position: -1, finished_at: new Date().toISOString() });
+  if (done) pruneAgentTaskBacklog(getAgentTaskBacklogSize());
+  return done;
+}
+
+export function reorderAgentTasks(orderedIds: string[]): void {
+  const tx = db.transaction(() => {
+    orderedIds.forEach((id, i) => {
+      db.prepare('UPDATE agent_tasks SET position = ?, updated_at = ? WHERE id = ?')
+        .run(i, new Date().toISOString(), id);
+    });
+  });
+  tx();
+}
+
+/** Permanently drop a task record (backlog tidy-up from the dashboard). */
+export function deleteAgentTask(taskId: string): boolean {
+  const r = db.prepare('DELETE FROM agent_tasks WHERE id = ?').run(taskId);
+  return r.changes > 0;
+}
+
+/** Drop finished tasks beyond the newest `keep`, oldest-first. */
+export function pruneAgentTaskBacklog(keep: number): void {
+  const finished = db.prepare(
+    "SELECT id FROM agent_tasks WHERE status IN ('done','stopped') ORDER BY finished_at DESC",
+  ).all() as { id: string }[];
+  const doomed = finished.slice(keep).map((r) => r.id);
+  if (doomed.length === 0) return;
+  const placeholders = doomed.map(() => '?').join(',');
+  db.prepare(`DELETE FROM agent_tasks WHERE id IN (${placeholders})`).run(...doomed);
+}
+
 
 // --- Dashboard Users ---
 
