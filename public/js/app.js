@@ -434,25 +434,43 @@
   // drain order via POST /api/agent-tasks/reorder) + a backlog of finished
   // tasks with recall/delete. Driven by the 5s pollStatus payload (d.tasks).
   let taskDragInProgress = false;
+  // "3s" / "4m 12s" / "1h 06m" — compact enough for the 9px meta row.
+  function tqAgo(iso) {
+    const t = Date.parse(iso || '');
+    if (!t) return '';
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
+    return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+  }
   function taskItemHtml(t, isActive) {
     const label = String(t.summary || t.command || '').trim() || '(unnamed task)';
     const status = String(t.status || 'queued');
-    const badge = `<span class="t-status ${esc(status)}">${esc(status)}</span>`;
-    if (isActive) {
-      return `<div class="task-item" draggable="true" data-id="${esc(t.id)}">` +
-        `<span class="grip" title="drag to reorder">⠿</span>` +
-        `<div class="t-body"><div class="t-summary">${esc(label)}</div>${badge}</div>` +
-        `</div>`;
-    }
-    return `<div class="task-item ${esc(status)}" data-id="${esc(t.id)}">` +
-      `<div class="t-body"><div class="t-summary">${esc(label)}</div>${badge}</div>` +
-      `<button class="t-recall" data-id="${esc(t.id)}" title="Re-queue this task">↺</button>` +
-      `<button class="t-del" data-id="${esc(t.id)}" title="Delete from backlog">×</button>` +
-      `</div>`;
+    // Active cards show how long the task has been open; finished ones show how
+    // long ago they closed — the same column, so the rows stay aligned.
+    const stamp = isActive
+      ? (tqAgo(t.created_at) ? 'up ' + tqAgo(t.created_at) : '')
+      : (tqAgo(t.finished_at) ? tqAgo(t.finished_at) + ' ago' : '');
+    const actions = isActive
+      ? `<button class="tq-btn tq-stop" data-id="${esc(t.id)}" title="Cancel this task" aria-label="Cancel task">✕</button>`
+      : `<button class="tq-btn tq-recall" data-id="${esc(t.id)}" title="Run this command again" aria-label="Re-run task">↺</button>` +
+        `<button class="tq-btn tq-del" data-id="${esc(t.id)}" title="Delete from backlog" aria-label="Delete task">🗑</button>`;
+    return `<div class="tq-item ${esc(status)}"${isActive ? ' draggable="true"' : ''} data-id="${esc(t.id)}" title="${esc(String(t.command || label))}">` +
+      `<div class="tq-head">` +
+        (isActive ? `<span class="grip" title="Drag to reorder the queue">⠿</span>` : '') +
+        `<div class="tq-summary">${esc(label)}</div>` +
+      `</div>` +
+      `<div class="tq-meta">` +
+        `<span class="tq-pill"><span class="dot"></span>${esc(status)}</span>` +
+        `<span class="tq-time">${esc(stamp)}</span>` +
+        `<span class="tq-actions">${actions}</span>` +
+      `</div>` +
+    `</div>`;
   }
   function attachTaskDrag(stackEl) {
     if (!stackEl) return;
-    stackEl.querySelectorAll('.task-item[draggable]').forEach((el) => {
+    stackEl.querySelectorAll('.tq-item[draggable]').forEach((el) => {
       el.addEventListener('dragstart', (e) => {
         taskDragInProgress = true;
         el.classList.add('dragging');
@@ -468,14 +486,14 @@
         const fromId = e.dataTransfer.getData('text/plain');
         const toId = el.dataset.id;
         if (!fromId || fromId === toId) return;
-        const ids = [...stackEl.querySelectorAll('.task-item[draggable]')].map((x) => x.dataset.id);
+        const ids = [...stackEl.querySelectorAll('.tq-item[draggable]')].map((x) => x.dataset.id);
         const fromIdx = ids.indexOf(fromId), toIdx = ids.indexOf(toId);
         if (fromIdx === -1 || toIdx === -1) return;
         ids.splice(fromIdx, 1);
         ids.splice(toIdx, 0, fromId);
         postJson('/api/agent-tasks/reorder', { orderedIds: ids }).catch((err) => console.warn('task reorder failed', err));
         // Optimistic local reorder; the next poll confirms against positions.
-        [...stackEl.querySelectorAll('.task-item[draggable]')].forEach((node) => {
+        [...stackEl.querySelectorAll('.tq-item[draggable]')].forEach((node) => {
           const at = ids.indexOf(node.dataset.id);
           if (at >= 0) stackEl.insertBefore(node, stackEl.children[at] || null);
         });
@@ -496,7 +514,12 @@
 
     // Skip a full re-render while a drag is in flight, and when nothing changed
     // (avoids tearing the user's pointer away from a mid-drag item every 5s).
-    const sig = active.map((t) => t.id + ':' + t.status).join('|') + '#' + backlog.map((t) => t.id).join('|');
+    // The elapsed stamps live in the markup, so the signature carries a coarse
+    // time bucket too — otherwise "up 4m" would sit frozen until a status
+    // changed. Per-10s granularity keeps the re-render rate at the poll rate.
+    const bucket = Math.floor(Date.now() / 10000);
+    const sig = active.map((t) => t.id + ':' + t.status).join('|') + '#' +
+      backlog.map((t) => t.id).join('|') + '@' + (active.length ? bucket : 0);
     if (taskDragInProgress || sig === STATE.taskSig) return;
     STATE.taskSig = sig;
 
@@ -2677,13 +2700,30 @@
     if (tqToggle) tqToggle.addEventListener('click', () => { const q = $('taskQueue'); if (q) q.classList.toggle('closed'); });
     const tqBacklog = $('taskBacklog');
     if (tqBacklog) tqBacklog.addEventListener('click', async (e) => {
-      const btn = e.target.closest('[data-id]'); if (!btn) return;
+      const btn = e.target.closest('button[data-id]'); if (!btn) return;
       const id = btn.dataset.id;
-      if (btn.classList.contains('t-recall')) {
+      if (btn.classList.contains('tq-recall')) {
         try { await postJson('/api/agent-tasks/' + encodeURIComponent(id) + '/recall', {}); } catch (err) { console.warn('recall failed', err); }
-      } else if (btn.classList.contains('t-del')) {
+      } else if (btn.classList.contains('tq-del')) {
         try { await del('/api/agent-tasks/' + encodeURIComponent(id)); } catch (err) { console.warn('delete failed', err); }
       }
+      STATE.taskSig = null; // force a repaint on the next poll
+      pollStatus();
+    });
+    // Cancel an active task. A running one also interrupts the turn in flight
+    // (the endpoint decides); a queued one is just closed.
+    const tqStack = $('taskStack');
+    if (tqStack) tqStack.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button.tq-stop'); if (!btn) return;
+      const id = btn.dataset.id;
+      btn.disabled = true;
+      try {
+        await postJson('/api/agent-tasks/' + encodeURIComponent(id) + '/stop', {});
+      } catch (err) {
+        console.warn('task stop failed', err);
+        btn.disabled = false;
+      }
+      STATE.taskSig = null;
       pollStatus();
     });
     // Mobile-only relocated buttons. Hidden on desktop via CSS.

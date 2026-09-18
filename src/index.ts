@@ -17,7 +17,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive, STOP_COMMAND_RE, isStopWord } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive, getLiveJobs, STOP_COMMAND_RE, isStopWord } from './agent-spawn.js';
 import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
@@ -65,6 +65,8 @@ import {
   appendAgentTaskHistory,
   claimNextAgentTask,
   finishAgentTask,
+  reconcileOrphanedAgentTasks,
+  sweepStaleAgentTasks,
   getUserApiKeys,
   getActiveUserApiKeyByType,
   getAllUserApiKeys,
@@ -2938,6 +2940,15 @@ async function startMessageLoop(): Promise<void> {
       // peek / daily deep security scans directly as background sentry
       // spawns (no chat, no orchestrator turn) when their cron is due.
       void checkSentryDue();
+      // Agent-task queue sweep: close any task left open once neither a turn
+      // nor a background job is running, so a skipped finish (interrupt, kill,
+      // crash) can never leave a phantom "running" card in the dashboard.
+      {
+        const swept = sweepStaleAgentTasks(
+          agentRunInFlight || isForegroundTurnActive() || getLiveJobs().length > 0,
+        );
+        if (swept) logger.info({ swept }, 'Agent-task sweep closed orphaned tasks');
+      }
       // Mercury compaction scheduler: same poll loop, time/downtime trigger.
       // Fire-and-forget; idle-gated + shared cleaner lock so it never overlaps
       // a turn or another cleaner.
@@ -3352,6 +3363,13 @@ async function warmResidentOllamaModels(): Promise<void> {
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
+  // Close agent tasks orphaned by the last shutdown — no turn is in flight at
+  // boot, so any task still queued/running is a phantom the dashboard would
+  // otherwise show as running forever.
+  {
+    const orphaned = reconcileOrphanedAgentTasks();
+    if (orphaned) logger.info({ orphaned }, 'Closed agent tasks orphaned by the previous run');
+  }
   // The auto-spawned dedicated Chrome session was disabled (2026-09-03) but
   // re-enabled after Chrome was killed during debugging. Browser-automation
   // tools attach over CDP :9222 to this persistent Chrome instance.

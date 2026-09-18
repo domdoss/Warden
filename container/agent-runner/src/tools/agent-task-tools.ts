@@ -27,7 +27,7 @@ function fmtResult(resp: any, okPrefix: string, failPrefix: string): string {
 
 registry.register({
     name: 'agent_task',
-    description: 'The internal agent-task queue — user commands recorded as tasks with a shared history that every specialist reads, so a chain never redoes work a sibling already finished. action=list: active queue + recallable backlog. action=read: full history for one task (task_id). action=append: add a note/decision line to a task history (task_id, text). action=complete: mark a task done (task_id). action=stop: mark a task stopped (task_id).',
+    description: 'The internal agent-task run record + shared history. You own exactly ONE task at a time: the RUNNING one (your current turn). action=list: see your running task + finished backlog (queued tasks are never shown — the host starts those in later turns itself). action=read: full history for one task (task_id). action=append: add a note/decision line to a task history (task_id, text). action=complete: mark your RUNNING task done (task_id). action=stop: mark a task stopped (task_id).',
     schema: {
         type: 'object',
         properties: {
@@ -41,7 +41,24 @@ registry.register({
         const action = String(args.action || '');
         if (action === 'list') {
             const resp = await callHost('list_agent_tasks', {});
-            return fmtResult(resp, 'Agent tasks:', 'list_agent_tasks failed');
+            if (!resp?.ok) return `list_agent_tasks failed: ${resp?.error || 'unknown error'}`;
+            const { active = [], backlog = [] } = resp.data || {};
+            // Queued tasks (future commands the host starts in later turns) are
+            // deliberately NOT listed — they are not this turn's job and seeing
+            // them made the orchestrator try to execute them.
+            const running = active.filter((t: any) => t.status === 'running');
+            const out: string[] = [];
+            if (running.length) {
+                out.push('RUNNING — your current task:');
+                for (const t of running) out.push(`  - ${String(t.command || '').slice(0, 100)} (${t.id})`);
+            } else {
+                out.push('No running task.');
+            }
+            if (backlog.length) {
+                out.push('BACKLOG — already finished:');
+                for (const t of backlog) out.push(`  - ${String(t.status || 'done')} ${String(t.command || '').slice(0, 60)}`);
+            }
+            return out.join('\n');
         }
         if (action === 'read') {
             if (!args.task_id) return 'read needs task_id (from agent_task list).';
