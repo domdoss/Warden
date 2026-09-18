@@ -23,7 +23,7 @@ import { registry } from './tool-registry.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
-import { ownerALS, releaseOwnerPages, getPage, snapshot } from './browser.js';
+import { ownerALS, releaseOwnerPages } from './browser.js';
 import { marmAutoRecall, noteMarmActivity } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
@@ -465,24 +465,11 @@ function drainInterruptOnly() {
             if (data && data.type === 'interrupt') {
                 try { fs.unlinkSync(filePath); } catch { /* ignore */ }
                 interruptRequested = true;
-                abortAllBackgroundJobs();
                 log('Interrupt signal received via IPC (mid-turn)');
             }
         }
     }
     catch { /* never break the loop on IPC errors */ }
-}
-
-/** Abort every in-flight background job (atlas/vulkan/iris). A host "stop"
- * writes ONE interrupt file, but that flag is consumed by whichever loop drains
- * it first — the old behavior stopped only that loop and left sibling jobs
- * running (a "stopped" Reddit post still reported back minutes later). Aborting
- * the roster here makes one stop kill ALL work: the orchestrator turn AND every
- * running job. */
-function abortAllBackgroundJobs(): void {
-    for (const job of backgroundJobs.values()) {
-        if (job.status === 'running') job.abortFlag.aborted = true;
-    }
 }
 
 /**
@@ -510,7 +497,6 @@ function drainIpcInput() {
                     applySettingsSync(data);
                 } else if (data.type === 'interrupt') {
                     interruptRequested = true;
-                    abortAllBackgroundJobs();
                     log('Interrupt signal received via IPC');
                 }
             }
@@ -565,18 +551,6 @@ function applySettingsSync(data: any) {
         if (v && v !== lastContextClearAt) (globalThis as any)._clearContextRequested = true;
         lastContextClearAt = v;
         CONTEXT_CLEAR_AT = v;
-    }
-    // Active agent-task id + shared history for this turn. A new task id means a
-    // new user command → reset the local history mirror; the digest turns that
-    // continue a chain happen inside this process (no new IPC message), so the
-    // mirror persists across them and the next specialist sees prior work.
-    if (data.taskId !== undefined) {
-        activeTaskId = data.taskId || '';
-        activeTaskHistoryLocal = '';
-    }
-    if (data.taskContext !== undefined) {
-        activeTaskContext = data.taskContext || '';
-        activeTaskHistoryLocal = '';
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
@@ -738,34 +712,29 @@ const SUBAGENTS: SubAgentDef[] = [
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
         systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the execution expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit your tools or a better approach exists, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\` (host) or \`npm run build:agent-runner\` (agent), then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
+WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
 
 FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read only that missed section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
 
 READ WHOLE, READ ONCE — read each file the task names in ONE full Read, no limit/offset paging in small line batches — tiny blocks hide the file's structure and waste the window. Only range-read a file that genuinely overflows your context. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
 
 WEB — Two tools, two jobs. No site-specific rituals — apply the same rule to every site:
-• \`WebFetch\` — READS a page server-side and returns clean Markdown (headings/links/lists/code/tables preserved; nav+footer+ads stripped) WITHOUT launching the browser. It is the DEFAULT for any "find X", "look up", "what does this page say", or "pull up the link for" task. If the ask can be answered from the DOM alone, use \`WebFetch\` and put the answer in your reply — do NOT open the browser. WebFetch is ANONYMOUS: it has none of the user's cookies/session/login, so every account-gated page it fetches comes back as the logged-out view.
+• \`WebFetch\` — READS a page server-side and returns clean Markdown (headings/links/lists/code/tables preserved; nav+footer+ads stripped) WITHOUT launching the browser. It is the DEFAULT for any "find X", "look up", "what does this page say", or "pull up the link for" task. If the ask can be answered from the DOM alone, use \`WebFetch\` and put the answer in your reply — do NOT open the browser.
 • \`browser_*\` — drives the user's REAL signed-in Chrome (CDP 9222) to DISPLAY a page in front of them or to INTERACT (click, type/submit a form, log in, control media). Call \`browser_navigate\` directly as the first action; it returns a snapshot with refs like [ref=e12] for click/type. \`browser_click\`/\`browser_press_key\`/\`browser_select_option\`/\`browser_hover\` return the updated snapshot themselves when the page changes (refs go stale) — call \`browser_snapshot\` only to re-read the page without acting. Never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins.
 Route by intent:
 - User just wants to KNOW something → \`WebFetch\`, answer in your reply, no browser.
 - User wants to SEE a page, watch/play media, or DO something (form, login, click) → find the real URL with \`WebFetch\`/\`WebSearch\`, then \`browser_navigate\` straight to that final URL so it opens in front of them. Reuse the shared browser — don't pile up new tabs.
-- Anything that needs the captain's ACCOUNT — post, submit, message, check an inbox, edit a profile, anything behind a login wall → the signed-in Chrome via \`browser_navigate\`, ALWAYS. Never try it with \`WebFetch\`/\`WebSearch\` (anonymous — they can't see the logged-in page, so they make you think "not logged in"), and never judge "am I logged in?" from a WebFetch result; the browser is where the session lives.
 - User wants to SEE a LOCAL file you just wrote or that already exists (an HTML page, a PDF, an image) → \`browser_navigate\` with the file's ABSOLUTE path as \`url\`. Bare paths open as file:// in the shared Warden Chrome and you get the snapshot back — check the snapshot shows the right page before you report done. Use \`open_app\` (xdg-open) only when the file belongs in its OS-default app (a PDF reader, an image viewer), not the browser. A local server IS the right call when the page genuinely needs one — it's the node/express/dev server you just built, or the page fails from file:// (fetch, CORS, service workers). Then: serve the directory that ACTUALLY contains the file, \`browser_navigate\` to the exact URL, and read the snapshot — a 404 or a different site means the server root is wrong; fix the root path, don't navigate again hoping it changed.
 - User is ALREADY on a page in the shared browser → work THERE. \`browser_current_url\` + \`browser_snapshot\` to see where they are, then act in that page (navigate onward, click, control media) instead of opening a new one.
-- Before navigating anywhere to FILL a form or SUBMIT (a post, a login, a checkout), call \`browser_tabs\` (list) FIRST: if a tab is already open at the target page — or at its /submit or form URL — switch to it and fill that form. It is already on screen; do NOT open a new tab and do NOT re-navigate to re-discover it. Same whenever the user says a tab/post/form is already open: use it, don't make another.
 - \`WebFetch\` comes back empty/blocked → the page is probably JS-rendered; fall back to \`browser_navigate\` + \`browser_snapshot\` to read it.
 - Filters and data extraction on results/marketplace pages → prefer ONE \`browser_evaluate\` that returns the structured items (title, price, link) or a URL with query parameters, over clicking through filter UIs. A "did not visibly change" result is the page telling you the action had no effect — switch method on the very next call; repeating the same click or Escape never helps.
-- A page's rich-text editor is a \`<div contenteditable>\` (often inside a web component's shadow root), not an \`<input>\`/\`<textarea>\` — the snapshot still gives it a ref, so type into it with \`browser_type\` on that ref (it fills contenteditable editors too). To locate one, use \`window.__warden.queryAll('[contenteditable="true"]')\`, which pierces shadow roots — don't fish for input/textarea when the page shows a rich editor.
-- FORM-FILLING IS CLICK + TYPE, NOT DOM FISHING. To fill or submit any form, take \`browser_snapshot\` once, then act on the refs it gives you — \`browser_click\` / \`browser_type\` / \`browser_press_key\` / \`browser_select_option\`. Do NOT switch to \`browser_evaluate\` with querySelector/queryAll to hunt for controls halfway through the task: that's for reading data the snapshot misses, not for driving a form that is already on screen. If a ref you need is missing, take a FRESH \`browser_snapshot\` and use its refs. Once you have identified a field, FILL IT BY ITS STABLE NAME, NOT ITS REF — pass \`selector\` (e.g. \`[aria-label="Post body text field"]\`) or \`label\` (e.g. \`Post body text field\`) to \`browser_type\`; refs go stale when the page re-renders, but a selector/label keeps working, so you never re-snapshot and re-find the same field. Fill the whole field in ONE \`browser_type\` call with the complete text — never type a fragment and loop. \`browser_type\` REPLACES a field's entire content: to strip formatting, remove markdown, or fix already-typed text in a rich-text editor, re-fill the WHOLE field in one \`browser_type\` call with the final text by its selector/label. Never surgically edit inside a rich-text editor (execCommand, paste events, selection APIs) — React/Lexical editors revert that, which is how a simple "remove the asterisks" turns into a 40-step churn.
-- A control that is VISIBLE but the snapshot gives NO ref for (a radio, button, or option rendered by a web component inside shadow DOM) is not missing — click it by its visible text: \`browser_evaluate\` with \`window.__warden.clickByText('exact visible text')\`. It pierces shadow roots and clicks the control itself, so a modal full of options is one click each. Never fall back to \`queryAll('*')\` and dump a list of whatever text it returns.
 For media playback on any site, drive the page's \`<video>\`/\`<audio>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the site's UI buttons.
 
 DOWNLOADS — \`browser_download\` saves any file a page offers (a PDF link, an export button, an email attachment card) and returns the saved path; give it the URL or the ref and the destination. It uses Chrome's own download, so signed-in pages work. This is the only way to fetch a file — never fish file bytes out of the DOM with \`browser_evaluate\`, and never report a file as saved unless browser_download (or Bash) returned its path.
 
 EMAIL — reading or searching the user's mail is the orchestrator's email specialist's work (iris): a task that wants mail content ends right away with "This is email work — it routes to the email specialist". Downloading a FILE a mail page offers, though, is a download: if you are already on the page, browser_download the attachment and report the path.
 
-NATIVE APPS — Two routes, pick by whether you need to drive it. (1) Fire-and-forget SHOW: the user just wants to see or launch something (open a PDF, open a folder, launch Stremio) → \`open_app\` with \`app: "xdg-open"\` (or the app binary) and the absolute path; it opens on the host display and returns immediately. (2) DRIVE: you need to click/type/screenshot controls inside a desktop app (a settings window, a media player, or any app you must steer). WHEN THE TASK SAYS A WINDOW IS ALREADY OPEN AND FOCUSED, THAT IS A FACT — trust it and act directly in that window with \`desktop_type\` (or \`desktop_click\` at the stated coordinates). Do NOT take a \`desktop_screenshot\` or click around to "find" a window the task already told you is focused — re-screenshotting a stated precondition is the one move you must skip without being told. Only screenshot when the task does NOT say the window is focused (you must locate it on screen), or when the task explicitly asks you to confirm the result on screen. If the window is genuinely NOT open, launch it with Bash (\`flatpak run …\` or the app command) and wait for it to appear, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the control's pixel coordinates, and \`desktop_type\`. Use xdg-open for showing, the CDP browser for pages you'll keep driving, and Bash+desktop tools for apps you must steer — never the wrong one.
+NATIVE APPS — Two routes, pick by whether you need to drive it. (1) Fire-and-forget SHOW: the user just wants to see or launch something (open a PDF, open a folder, launch Stremio) → \`open_app\` with \`app: "xdg-open"\` (or the app binary) and the absolute path; it opens on the host display and returns immediately. (2) DRIVE: you need to click/type/screenshot controls inside a desktop app (a settings window, a media player you must steer) → launch it with Bash (\`flatpak run …\` or the app command), wait for it to open, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the control's pixel coordinates, and \`desktop_type\` to type or send keys. Take a fresh \`desktop_screenshot\` after each action. Use xdg-open for showing, the CDP browser for pages you'll keep driving, and Bash+desktop tools for apps you must steer — never the wrong one.
 
 AUDIO & MEDIA — Use the dedicated tools, not Bash amixer/playerctl commands. \`audio_volume\` (action get/set/toggle_mute, level 0-100) for the SPEAKER loudness; \`mic_volume\` for the MIC sensitivity; \`media_control\` (play/pause/play_pause/next/previous/stop) for a running media player (browser YouTube, Spotify, mpv). "Turn it up/down", "mute", "make it louder", "volume to 50" → audio_volume; "mute the mic", "mic too quiet/loud" → mic_volume; "pause/skip/next song" → media_control.
 
@@ -782,9 +751,11 @@ DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issu
 FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
 - **DONE**: every deliverable the user asked for actually exists (file written, edit applied, command clean, expected state shown). Stop calling tools and write the final report — list exactly the files you changed, nothing more, and never claim a change unless its tool call succeeded this task. Generated files: write then \`attach_file\` so the user gets them.
 - **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result or write a vague "limitations" line.
-- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call. Never call a task "impossible" or "limited by the browser" until three distinct approaches all failed with concrete errors — pages are just DOM trees: snapshot, find the element, interact; try another approach (search-results URL, type+Enter, browser_evaluate click, keyboard). If all three fail, report what each returned and what the next attempt would be.
+- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
 
-PREMISE CHECK — a search that keeps coming back empty is an answer, not a reason to try a new search term. When the task names a target you haven't yet seen (a page, file, feature, route), find the TARGET ITSELF first — Glob/find by its name, or one ls of the directory it should live in — before you study anything around it. If three different searches for the same target all come back empty, the premise is broken: widen ONCE to the other tree it could live in — user data and deliverables are in the workspace (\`~/Warden\`, e.g. \`data/work/\`), while \`/opt/Warden\` is the application's own source, which almost never holds a user's artifact — and if it still doesn't appear, end BLOCKED: name the target, say exactly where you looked, and ask for its location. Searching is only progress while each call narrows toward the target; hunting an application's source for a user artifact that was never there is the classic spiral.
+PERSISTENCE — never call a task "impossible", "not supported", or "limited by the browser/tool" until you've tried at least three distinct approaches that all failed with concrete errors. "I can't control media playback" / "complex JavaScript" / "dynamic rendering" are excuses, not conclusions — pages are just DOM trees: snapshot them, find the element, interact. If one approach fails, try another (search-results URL, type+Enter, browser_eval click, keyboard shortcut). If you truly can't finish after three attempts, report what each returned and what the next would be.
+
+PREMISE CHECK — PERSISTENCE governs approaches that FAIL WITH ERRORS; this governs searches that SUCCEED WITH NOTHING. A search that keeps coming back empty is an answer, not a reason to try a new search term. When the task names a target you haven't yet seen (a page, file, feature, route), find the TARGET ITSELF first — Glob/find by its name, or one ls of the directory it should live in — before you study anything around it. If three different searches for the same target all come back empty, the premise is broken: widen ONCE to the other tree it could live in — user data and deliverables are in the workspace (\`~/Warden\`, e.g. \`data/work/\`), while \`/opt/Warden\` is the application's own source, which almost never holds a user's artifact — and if it still doesn't appear, end BLOCKED: name the target, say exactly where you looked, and ask for its location. Searching is only progress while each call narrows toward the target; hunting an application's source for a user artifact that was never there is the classic spiral.
 
 MEMORY — before hunting for a fact, prior decision, or how something was done, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it. Log a durable fact you just established (a confirmed path, a decision, a fix) with \`mcp__marm__marm_log_entry\` so it's recallable next time. Memory is checked once per fact, not a substitute for the task's own tools.`,
         toolsets: ['atlas-core'],
@@ -796,7 +767,7 @@ MEMORY — before hunting for a fact, prior decision, or how something was done,
         summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
         systemPrompt: `You are Vulkan, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` (host) or \`npm run build:agent-runner\` (agent) then \`systemctl --user restart warden\` to deploy.
+WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
 
 FILES — Read only the files your task names — don't explore unrelated files. You have full filesystem access — use absolute paths outside the workspace (\`~/Projects/\`, \`~/Documents/\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right directory instead of repeating full paths.
 
@@ -815,7 +786,9 @@ DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issu
 FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
 - **DONE**: every deliverable the task asked for actually exists on disk — the file is written, the edit is applied, the build is clean, and the tests pass (or you ran a focused repro showing it works). Stop calling tools and write the final report — list exactly the files you changed and the commands you ran, nothing more, and never claim a change unless its tool call succeeded this task.
 - **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result.
-- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call. Never call a task "impossible" or "not supported" until three distinct approaches all failed with concrete errors; if one fails, try another (different file, different API, a workaround); if all three fail, report what each returned and what the next would be.
+- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
+
+PERSISTENCE — never call a task "impossible" or "not supported" until you've tried at least three distinct approaches that all failed with concrete errors. If one approach fails, try another (different file, different API, a workaround). If you truly can't finish after three attempts, report what each returned and what the next would be.
 
 MEMORY — before re-deriving a fact, prior decision, or how something was built, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it (past fixes, project history, decisions). Log a durable fact you just established (a root cause, a confirmed contract, a decision) with \`mcp__marm__marm_log_entry\` so it's recallable next time.`,
         toolsets: ['vulkan-core'],
@@ -946,16 +919,19 @@ const SUBAGENT_BY_DELEGATE = new Map<string, SubAgentDef>(SUBAGENTS.map(s => [s.
 
 const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'convert_file', 'api_request', 'list_api_keys',
-    // The orchestrator's own ONE-SHOT tools: read a file, quick web
-    // lookup/search, open a local file, pause/skip media, volume — a single
-    // call it can make itself. Browser tools are NOT shared (2026-09-17):
-    // the orchestrator never drives the signed-in Chrome. Any web/browser
-    // work — open a page, read a signed-in page, click, type, submit, post —
-    // delegates to atlas, which owns the full browser toolset. Multi-page
+    // Atlas's lesser ONE-SHOT tools, shared with the orchestrator (2026-09-12):
+    // the orchestrator's model is as capable as atlas's, so a single-call
+    // action (run a status command, read a file, quick web lookup/search,
+    // open a local file, pause/skip media, volume) should not spawn a whole
+    // sub-agent job. Simple web tasks are included too — open a page, read
+    // it, click a link, fill one form: the interaction tools return the
+    // updated snapshot in the same result, so each is one round. Multi-page
     // flows and scripted extraction stay with atlas; code editing stays
     // with vulkan.
     'Bash', 'Read', 'WebSearch', 'WebFetch', 'open_app',
     'audio_volume', 'mic_volume', 'media_control',
+    'browser_navigate', 'browser_snapshot', 'browser_current_url', 'browser_tabs',
+    'browser_click', 'browser_type', 'browser_evaluate',
     // The orchestrator's vision tools — kept out of the SUBAGENT_OWNED filter
     // so the orchestrator always keeps them.
     'desktop_screenshot', 'webcam_capture', 'read_image',
@@ -1334,63 +1310,6 @@ interface BackgroundJob {
     streamAt?: number;
 }
 const backgroundJobs = new Map<string, BackgroundJob>();
-
-// ─── Standing instructions → sub-agents ─────────────────────────────────────
-// The orchestrator is the only thing that hears the user's standing
-// instructions, but the specialists (atlas/vulkan/sentry) run as blank
-// contexts that see only their own system prompt + the task string. The durable
-// memory (MEMORY.md, distilled by the host's writeback) holds the user's
-// standing instructions, so append it to every hands-on specialist's task —
-// the instruction survives without the orchestrator re-stating it.
-let standingMemoryContext = '';
-
-function standingContextBlock(): string {
-    return standingMemoryContext || '';
-}
-
-// ─── Active agent-task → sub-agents ─────────────────────────────────────────
-// The host turns each user command into an internal "agent task" carrying a
-// shared history. The runner receives the active task's id + history per turn
-// (AgentInput.taskId / .taskContext) and (a) appends the history to every
-// hands-on specialist's task so the chain is no longer "marco polo" — each
-// specialist sees what the ones before it already did — and (b) uses the id to
-// auto-scribe each background job's outcome back into the task's history.
-let activeTaskId = '';
-let activeTaskContext = '';
-// Live mirror of the task history accumulated THIS turn (runner auto-scribes +
-// orchestrator/iris notes via the `agent_task` tool). Injected into each
-// specialist's task so a follow-up specialist sees what happened mid-chain
-// without a host round-trip. The host `agent_tasks.history` is the canonical
-// record; this buffer is what the runner injects, and it stays in sync because
-// every append that reaches the host also mirrors here.
-let activeTaskHistoryLocal = '';
-
-function taskContextBlock(): string {
-    if (!activeTaskContext) return activeTaskHistoryLocal || '';
-    return activeTaskHistoryLocal ? `${activeTaskContext}\n${activeTaskHistoryLocal}` : activeTaskContext;
-}
-
-/** Append one outcome line to the active task's shared history (auto-scribe).
- *  Fire-and-forget; a blank activeTaskId or a failed callback is a no-op. */
-function scribbleTask(agent: string, outcome: string, result: string): void {
-    if (!activeTaskId) return;
-    const tail = String(result || '').replace(/\s+/g, ' ').trim().slice(0, 160);
-    const line = `${agent} ${outcome}${tail ? `: ${tail}` : ''}`;
-    activeTaskHistoryLocal += `- ${line}\n`;
-    void writeCallbackAsync('append_agent_task_history', {
-        taskId: activeTaskId,
-        text: line,
-    }, 5000).catch(() => {});
-}
-
-/** Mirror a line the orchestrator/iris appended via the `agent_task` tool into
- *  the local history buffer so the next specialist in the chain sees it too. */
-export function noteLocalTaskHistory(line: string): void {
-    if (!activeTaskId) return;
-    activeTaskHistoryLocal += `- ${String(line || '').trim()}\n`;
-}
-
-
 // Emit a live verbose-status line summarizing the background jobs currently
 // running, including a `jobs` count the dashboard surfaces as its running-jobs
 // counter. Called on every job's tool calls (so the bar reflects real, frequent
@@ -1481,12 +1400,6 @@ function rehydrateOrphanedJobs(): void {
                 status: 'aborted',
                 urgent: false,
             });
-            // Mark read immediately: an interrupted job has no result to digest,
-            // and pushing it unread fires a second orchestrator turn ("your job
-            // was interrupted") that overlaps the user's own re-send and makes
-            // Warden double-respond to one ask (2026-09-17). It stays in
-            // inbox.all() for the retry-ledger dedup, but never triggers a turn.
-            inbox.markRead(j.jobId);
         }
         log(`[jobs-roster] rehydrated ${jobs.length} orphaned job(s) from a prior runner (interrupted, results lost)`);
     } catch { /* no roster or malformed — nothing to reconcile */ }
@@ -1846,22 +1759,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // Owner-scope the whole job (model turns + tool execution) so its browser
     // calls resolve to THIS job's tab — parallel jobs each drive their own
     // page instead of racing the process-global activePage.
-    // Standing context: append the durable memory + the user's recent
-    // instructions to the task the specialist actually runs, so a "don't X /
-    // do Y this way" the user just gave survives into hands-on work without
-    // the orchestrator re-stating it in every brief. The raw `task` stays
-    // canonical for dedup/status/verdict — only the executed copy is expanded.
-    const standing = standingContextBlock();
-    let taskWithContext = standing ? `${task}\n\n[Standing context from the user — honor any instruction here that applies to this task:]\n${standing}` : task;
-    // Shared task history: the chain's accumulated log (what prior specialists
-    // already did in THIS task). Appended after the standing context so a
-    // follow-up specialist sees what came before it and builds on it instead of
-    // starting from scratch — the anti-"marco polo" bus.
-    const taskHistory = taskContextBlock();
-    if (taskHistory) {
-        taskWithContext += `\n\n[Task history — work already completed in this task, in order. Build on it; never redo what it records as done:]\n${taskHistory}`;
-    }
-    const job = ownerALS.run({ owner: jobId }, () => runSubAgent(delegate, model, def.systemPrompt, tools, taskWithContext, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
+    const job = ownerALS.run({ owner: jobId }, () => runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
         jobRecord.toolCallCount++;
         jobRecord.lastAction = `${toolName}(${argsSummary})`;
         jobRecord.lastActionAt = Date.now();
@@ -1899,7 +1797,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             // orchestrator ignores CHAIN.
             const verdict = await runCompletionVerdict({ task, fullResult, activityLog: jobRecord.activityLog, toolContext: context });
             inbox.push({ jobId, agent: delegate, task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult, activityLog: jobRecord.activityLog, verdict: verdict.verdict, verdictReason: verdict.reason });
-            scribbleTask(delegate, jobRecord.abortFlag.aborted ? 'aborted' : (verdict.verdict || 'done'), fullResult);
             // Advisory only: the verdict stamps the inbox item (surfaced in the
             // digest for the orchestrator/user to read) and logs. It does NOT
             // auto-execute — no auto report_task_failure, no auto follow-up
@@ -1911,7 +1808,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         .catch(err => {
             if (jobRecord.status === 'running') jobRecord.status = 'errored';
             inbox.push({ jobId, agent: delegate, task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
-            scribbleTask(delegate, 'errored', `Error: ${err?.message ?? err}`);
             drainFollowups();
         })
         .finally(() => {
@@ -2127,12 +2023,11 @@ const COMPLETION_VERDICT_FORMAT = {
 };
 const COMPLETION_VERDICT_PROMPT = `You are the Warden completion verifier. You judge whether a finished background job actually delivered what the user asked for.
 
-CAPABILITIES: Read the user's request, the job's task, its final result text, a compact list of the tool calls it made, AND ground-truth blocks: a list of which files the job wrote and whether each actually exists on disk, and (for browser jobs) a live snapshot of the page the job left in front of the user. Decide confirmed, failed, or unverifiable. When the request has a next step the result did not start, name it as a follow-up.
+CAPABILITIES: Read the user's request, the job's task, its final result text, a compact list of the tool calls it made, AND a ground-truth list of which files the job wrote and whether each one actually exists on disk. Decide confirmed, failed, or unverifiable. When the request has a next step the result did not start, name it as a follow-up.
 
 GUIDELINES:
-- CONFIRMED: the deliverable the user asked for is present and matches the request — the right file written (and it EXISTS on disk per the ground-truth list), the right answer given, the right action named with a concrete outcome that the browser snapshot (when present) actually shows.
-- FAILED: the deliverable is genuinely wrong or missing. This includes a result that claims a FILE write but the ground-truth list shows the file is NOT on disk (or is empty), a result that claims FILE edit work but the activity shows zero Edit/Write/Bash calls, a result that contradicts the request, and — critically — a browser result whose text claims an end state ("removed the markdown", "submitted", "logged in", "the field is filled") that the live browser snapshot contradicts (the snapshot still shows markdown, the form unfilled, the page not on the target). The snapshot is authoritative: the narration is just the agent's claim, the snapshot is what the user will actually see.
-- DESKTOP-DRIVING jobs (the deliverable is a GUI action, not a file — type/click/press keys into an app, launch an app, change a setting): these write no file, so "no file-writing calls" is NOT a failure and NOT evidence of lying. Judge by the driving calls themselves: if the activity shows a successful desktop_type / desktop_click / desktop_press_key / open_app call whose argument carries the requested content (e.g. the desktop_type text matches what the user asked to be typed) and the result names that concrete outcome, mark CONFIRMED. If you cannot see the screen to know where the text went, mark UNVERIFIABLE — never FAILED merely because no file was written.
+- CONFIRMED: the deliverable the user asked for is present and matches the request — the right file written (and it EXISTS on disk per the ground-truth list), the right answer given, the right action named with a concrete outcome.
+- FAILED: the deliverable is genuinely wrong or missing. This includes a result that claims a write but the ground-truth list shows the file is NOT on disk (or is empty), a result that claims edit work but the activity shows zero Edit/Write/Bash calls, or a result that contradicts the request.
 - UNVERIFIABLE: whether it worked depends on screen or system state the text cannot show (a page rendered, an app launched), OR the deliverable file EXISTS on disk with real content but you cannot judge from text alone whether its content fully matches the request. Trust the on-disk file; do NOT mark failed merely because the result prose does not explicitly say "I wrote X" — the ground-truth list is authoritative for whether a file was written.
 - Use followup only when the user's request named a next step (e.g. "then redesign it") that this result did not start. Write the task as plain intent: the goal and the facts.
 
@@ -2162,30 +2057,6 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
         ? `\nWritten files verified on disk (authoritative — a file listed EXISTS was really written):\n${writtenFilesSummary(writtenFiles)}\n`
         : '\nNo file-writing tool calls recorded in the activity log.\n';
 
-    // Ground truth for browser jobs: a live snapshot of the page the job left
-    // in front of the user. A job that narrates "done — removed the markdown /
-    // submitted the form / logged in" is lying whenever the page it actually
-    // left behind still shows the undone state; this lets the verifier judge the
-    // NARRATION against the real DOM instead of taking the prose at its word.
-    // Mirrors verifyWrittenFiles: files → stat on disk, browser state → live
-    // aria snapshot. Never throws — a browser-less job just skips it.
-    // Only fire when a browser tool actually returned a page snapshot (its
-    // result carries a "URL:" header), which proves the job drove a live page;
-    // this avoids getPage() launching Chrome / opening a tab for a browser call
-    // that errored before ever claiming a page.
-    let browserBlock = '';
-    if (activityLog.some(e => e.tool.startsWith('browser_') && /URL:/.test(e.result || ''))) {
-        try {
-            const page = await getPage();
-            const snap = await snapshot(page);
-            if (snap) {
-                browserBlock = `\nLive browser page snapshot (authoritative — this is the page the job LEFT in front of the user, judge the result text against it):\n${snap.slice(0, 8000)}\n`;
-            }
-        } catch (err: any) {
-            log(`[completion-verdict] browser snapshot capture failed — ${err?.message ?? err}`);
-        }
-    }
-
     // Compact activity digest: tool names + one-line args only, never payloads.
     const activity = activityLog.slice(-40).map(e => `${e.tool}(${e.args})`).join('\n') || '(no tool calls recorded)';
     const userMsg =
@@ -2194,8 +2065,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
         `Final result:\n${fullResult.slice(0, 3000)}\n\n` +
         `Tool calls (most recent last, names + one-line args only):\n${activity}\n` +
         filesBlock +
-        browserBlock +
-        `\nOutput the JSON verdict. Judge against the ground-truth blocks: the on-disk file list is authoritative for whether a file was written; the live browser snapshot is authoritative for what the page actually shows. Do not mark failed only because the result text does not spell out a write that the file list proves happened — and do not mark confirmed when the browser snapshot contradicts the result text (e.g. the text says formatting was removed but the snapshot still shows it).`;
+        `\nOutput the JSON verdict. Judge against the on-disk file list: if a deliverable file EXISTS with real content, do not mark failed only because the result text does not spell that out.`;
 
     const apiProxyUrl = process.env.API_PROXY_URL || '';
     const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
@@ -3323,8 +3193,6 @@ interface ContainerInput {
     verbose?: boolean;
     showThinking?: boolean | string;
     memoryContext?: string;
-    taskId?: string;
-    taskContext?: string;
     activeIdea?: string;
 }
 async function runNativeOllama(input: ContainerInput) {
@@ -3437,18 +3305,18 @@ async function runNativeOllama(input: ContainerInput) {
         'report_task_failure',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request',
-        // No hands-on workhorses here (2026-09-17): the orchestrator only
-        // orchestrates. Browser tools are gone from its set entirely — every
-        // web/browser action (open a page, read a signed-in page, click, type,
-        // submit, post) delegates to atlas. Bash stays in the shared set but is
-        // always blocked from the model by mergeSkillTools() (shell → atlas).
+        // Orchestrator-direct workhorses (2026-09-12 atlas→orch migration):
+        // Bash's schema has weak keyword overlap with the asks that need it
+        // ("run systemctl status", "check the log"), and browser_navigate /
+        // browser_evaluate don't rank on "play X" / "open Y" — always-on so a
+        // one-shot check, a simple web task, or a media ask never falls back
+        // to delegation on a ranking miss. The rest of the shared set
+        // (WebSearch, WebFetch, media, click/type/tabs) stays keyword-gated.
+        'Bash', 'browser_navigate', 'browser_evaluate',
         // Projects/work-tasks CRUD — orchestrator-direct (no subagent owns
         // the merged `project` tool). Always-on so a "add a task" ask can
         // never be ranked out or shadowed by the scheduled-task `task` tool.
         'project',
-        // Agent-task queue — orchestrator-direct (no subagent owns it). Always-on
-        // so the orchestrator can read/append/complete/stop its own task record.
-        'agent_task',
         // Vision captures are orchestrator-only (sub-agents can't see images —
         // _pendingImages is consumed only by runNativeOllama). desktop_screenshot,
         // webcam_capture, and read_image are ALL keyword-gated via the dynamic
@@ -3514,18 +3382,11 @@ async function runNativeOllama(input: ContainerInput) {
     function mergeSkillTools(): any[] {
         // The orchestrator only orchestrates — it delegates hands-on work to
         // sub-agents. Block every tool that lets it act directly on the host or
-        // browser: mcp__* (browser/MCP/desktop → Atlas), Bash (shell → Atlas),
-        // and the browser_* interaction tools (signed-in Chrome → Atlas). This
-        // is the final gate before tools are sent to the model, so it covers
-        // both the activeToolDefs base and skill-layer extras regardless of how
-        // the tools entered.
-        const BLOCKED_ORCHESTRATOR_TOOLS = new Set([
-            'Bash',
-            'browser_navigate', 'browser_snapshot', 'browser_current_url',
-            'browser_tabs', 'browser_click', 'browser_type', 'browser_evaluate',
-            'browser_press_key', 'browser_select_option', 'browser_hover',
-            'browser_screenshot', 'browser_download',
-        ]);
+        // browser: mcp__* (browser/MCP/desktop → Atlas), Bash (shell → Atlas).
+        // This is the final gate before tools are sent to the model, so it
+        // covers both the activeToolDefs base and skill-layer extras regardless
+        // of how the tools entered.
+        const BLOCKED_ORCHESTRATOR_TOOLS = new Set(['Bash']);
         // marm__ is the one MCP server the orchestrator calls directly: memory
         // recall + logging is assistant state (same class as get_chat_history),
         // not hands-on host work. Every other mcp__ server stays blocked.
@@ -3583,11 +3444,6 @@ async function runNativeOllama(input: ContainerInput) {
     // Conversation state (`let` so a context clear can reset it to a fresh
     // system prompt — see the _clearContextRequested handling in the main loop).
     let messages: any[] = [];
-    // Seed the standing-context feed: durable memory (MEMORY.md) is stable for
-    // the process lifetime and rides into every hands-on specialist's task.
-    standingMemoryContext = input.memoryContext || '';
-    activeTaskId = input.taskId || '';
-    activeTaskContext = input.taskContext || '';
     // Load the durable project journal (JOURNAL.md) so lessons learned persist across turns.
 let journalSection = '';
 try {
@@ -3610,7 +3466,7 @@ try {
 // driving force changes HOW the orchestrator thinks, not WHO it delegates to.
 const DEFAULT_PREAMBLE = `# ROLE
 
-You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain: Riker to their Picard. The captain gives orders; you run the ship. Your objective is to understand exactly what the captain wants and relay it — turn each order into clean briefs for the crew below, watch their work while it runs, and report back only what matters (voice input rambles — extract the intent, hold the goal). You keep a small one-shot toolset (Read, WebFetch, WebSearch, open_app, project, …) for single calls — read a file, look something up, open a local file. You have NO browser tools and NO shell: anything hands-on, any web/browser work, and anything multi-step goes to the crew below. When a specialist can do it, delegate; the captain should never hear "I can't".
+You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain: Riker to their Picard. The captain gives orders; you run the ship. Your objective is to understand exactly what the captain wants and relay it — turn each order into clean briefs for the crew below, watch their work while it runs, and report back only what matters (voice input rambles — extract the intent, hold the goal). You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".
 
 ANTICIPATE — a good first officer sees the need before the captain voices it. Think one step ahead of every order: if this booking will obviously need a reminder, if this fix will obviously need a check that it worked, if the captain's next question is plainly going to be "so did it happen?" — have the crew already moving on it, or the answer already in hand, before the captain asks.
 
@@ -3630,7 +3486,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`marm_smart_recall\` (semantic search over every fact the memory distiller has ever logged).\n\nWRITE, NOT JUST READ — the moment the user states a STANDING instruction, preference, or how they want work done, call \`marm_log_entry\` to persist it IMMEDIATELY. These are the lines the user is forced to repeat when memory drops them — losing one is the worst memory failure, and logging it yourself (rather than waiting for the distiller) is the only guarantee it survives a restart. Log the standing instruction even while you also act on it.\n`
+    ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`marm_smart_recall\` (semantic search over every fact the memory distiller has ever logged). If a durable fact is missing from MARM and you just learned it, log it with \`marm_log_entry\` so it is recallable next time.\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -3642,38 +3498,26 @@ const marmRecallSection = marmEnabled
 // this gone the orchestrator no longer emits or acts on supervisor flags. The deferred full
 // removal (flagJobForOrchestrator, runSupervisorWatchdog, ensureWatchdogTicker, the
 // WATCHDOG_* constants) happened 2026-09-17 — see git history for both.
-const ROUTING_CORE = `# WORKFLOW — split the ask into items, then process them ONE AT A TIME
+const ROUTING_CORE = `# CORE MANDATES (hard rules — follow exactly)
 
-This is the only procedure for getting things done. Follow it in order, every turn. It exists to kill one failure mode: bundling N things into one delegate call and waiting for one giant result.
+1. Before ANY delegate call, run \`list_running_agents\` and read the ids. Never dispatch a task that already has a running job — the runner refuses duplicates ("already running"); say so and wait. To change instructions, stop_agent first, then re-delegate.
+2. Never report a job's outcome before its result lands in your inbox — not "done", "opened", "playing", or "fixed". Until the result is in front of you, you know nothing.
+3. When a result lands, read it against the original ask. "done" means it didn't crash, not that it's right. Each result carries a completion verdict (CONFIRMED / FAILED / UNVERIFIABLE); a FAILED verdict, or a result proving the deliverable wrong or missing, is PROVEN-FAILED: call report_task_failure with the task and reason, then re-delegate ONCE naming the GAP (what was wanted vs what came back) — never the fix. If the runner refuses the re-delegation, that's final: tell the user plainly what failed and stop.
+4. Every ask in the message gets handled. When a result is one step of a larger request and the supervisor hasn't already started the next step, delegate it yourself now — don't wait for the user. Stop only when the whole request is done or you're genuinely blocked; never call it complete while jobs are still running (the digest names them).
+5. Report completion once, in plain speech, carrying the actual answer — the number, the name, the contents, the yes/no. The user sees only your reply; anything you leave out is lost.
+6. A clear instruction is permission. Act, then report. Don't ask "shall I proceed?" or narrate a plan. Ask one short question only when the request is genuinely ambiguous — and genuine ambiguity means the INTENT has two plausible readings. A missing fact (path, id, name, value) is never ambiguity: discover it with your crew (see DELEGATING — never ask the captain for a fact your crew can find).
+7. A large deliverable ships in chained phases, not one giant brief. Phase 1 builds the skeleton/content; when its result lands, delegate the next phase (styling/polish/assets/final verify) naming exactly what remains. A CONFIRMED phase is DONE — never re-delegate it; the next phase BUILDS ON that work ("polish the pages that now exist at <dir>"), never "remake it from scratch." A specific defect → name THAT one gap and re-delegate the single fix, not the whole phase. Chunk multi-file polish into per-file delegations, each confirmed before the next; confirm what files actually exist before chunking, never chunk around a list you assumed. Small one-shot jobs stay one-shot.
 
-1. PARSE — split the ask into work items before touching any tool.
-   • A plural deliverable ("post to these 5 subreddits", "three files", "N pages") → one item per subreddit/file/page. This is a BATCH.
-   • One deliverable in phases ("build it, then style it, then verify") → one item per phase. A large single deliverable (a many-file site) splits the same way: skeleton/content first, then per-file polish, each file confirmed before the next.
-   • One small task → one item.
-   • Plain conversation (advice, a fact, a greeting) → zero items: answer directly, no tools.
-   Say the split in one short line in your first reply ("Plan: r/Entrepreneur → r/smallbusiness → r/startups → …, one at a time") so it survives compaction.
+# GOAL STACK — hold the whole request, not the step in front of you
 
-2. ONE ITEM AT A TIME. One delegate call = one item = one brief (see DELEGATING). Never put two items in one task string. Sharing a site, account, or browser does NOT make items dependent — five posts to five subreddits are five items even though they land on one Reddit account. Bundle only when one item's content is the other's input. Serialize anything whose result feeds the next.
-
-3. CHECK THE BOARD FIRST. Before ANY delegate call, run \`list_running_agents\` and read the ids. If a running job is already doing this item — even worded differently — do NOT dispatch again: the runner refuses duplicates and the running job owns it; wait for its result. To change what a running job is doing, \`stop_agent\` first, then re-delegate. The ONLY parallel dispatch is two unrelated asks the captain made in the same message. Batch items and chain phases are ALWAYS one at a time.
-
-4. A JOB ID IS NOT A RESULT. A delegate call returns a job id; the full result arrives in your inbox later, as its own turn. Until it lands you know nothing — never report "done"/"posted"/"opened"/"playing" on the strength of a job id. If nothing else is pending, end your turn; the result wakes you.
-
-5. CONFIRM, THEN ADVANCE. When a result lands, read it against the item. "Done" means it didn't crash, not that it's right — check the verdict (CONFIRMED / FAILED / UNVERIFIABLE) and the text. Then exactly one of:
-   • CONFIRMED (or the result plainly shows the deliverable): the item is DONE — never re-delegate it. Go to the next item (step 2) or next phase (naming exactly what remains, building ON the work that now exists — never "remake it"). When no items remain, report once in plain speech carrying the actual answer (the numbers, names, contents, yes/no); anything you leave out is lost.
-   • FAILED (verdict FAILED, or the result proves the deliverable wrong/missing): call \`report_task_failure\` (task + reason), then re-delegate ONCE naming the GAP (what was wanted vs what came back) — never the fix. An atlas result that landed wrong goes to vulkan on the retry, not atlas again — and only after the result is in front of you, never by stopping a still-running job. If the runner refuses the re-delegation, that's final: tell the user plainly what failed and stop.
-   • UNVERIFIABLE, where success only shows as screen/system state (a page opened, a video playing, a file visibly there): trust it as reported — never re-delegate the same work to double-check a success.
-
-6. BLOCKED — name the item and what blocks it, then stop; don't loop or re-dispatch.
-
-7. RESPOND — a clear instruction is permission: act, then report; don't ask "shall I proceed?". Ask one short question only when the INTENT has two plausible readings. A missing fact (path, id, name, value) is never ambiguity — your crew can find it (see DELEGATING); never ask the captain for a fact your crew can find.
+When an ask has more than one step ("build X, then style it", "do A, then B, then check C", a phased build), the sequence is YOURS to hold — no specialist sees it. Restate the chain in one short line in your first reply ("Plan: A → B → C") so it lives in the conversation and survives compaction. When a step's result lands, that is a signal to ADVANCE the stack, never the end of the work: confirm the step against the goal, then immediately delegate the next step. Before reporting anything as complete, check the stack — if any step is unfinished, the request is unfinished: say what's done and what's still running instead of going quiet. The stack empties only when the captain's whole ask is done, or a step is genuinely blocked — then name the step and what blocks it. The captain never re-issues a step you already hold; losing the chain mid-request is the failure mode this rule exists to kill.
 
 # THE ROSTER
 
 Each specialist is a separate model with its own tools and context — it can't see this conversation and you can't see its tools. Call its delegate tool with a \`{task}\` string; it returns a short result. atlas, vulkan, and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn — call and move on, never block.
 
 - **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
-- **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas. Context size is also a routing signal: work that needs to hold a lot of CODE at once (a large codebase, many source files, a huge log) goes to vulkan even when it is not strictly coding — atlas may be on a much smaller window. A prose document (markdown, notes, a post, an article, a greeting) is NOT code and NOT a context-size signal — that is atlas.
+- **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas. Context size is also a routing signal: work that needs to hold a lot at once (many files, a long document, a big log) goes to vulkan even when it is not strictly coding — atlas may be on a much smaller window.
 - **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris chains list→id→act itself within a dispatch, so a brief can name the outcome without the id and iris resolves it. Its brief is one imperative sentence prefixed TASK: — write it by BRIEFING IRIS below; iris carries no rules of its own.
 - **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
 - **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
@@ -3681,21 +3525,23 @@ Each specialist is a separate model with its own tools and context — it can't 
 
 # ROUTING
 
-Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. If a tool in YOUR OWN toolset can do it (project, api_request, convert_file, Read, WebFetch, WebSearch, open_app, media_control, audio_volume, clear_context…), use it directly — never delegate something you can do yourself in one call; delegation is for work that needs a specialist's tools or many iterations. Read and WebFetch/WebSearch make a ONE-SHOT lookup yours directly — read a config, list a directory, look something up — do it and answer. You have NO browser tools and NO shell: every web/browser action — open a page in the signed-in Chrome, read a signed-in page, click, type, fill a form, post, submit, comment, reply, send a message — delegates to atlas, which owns the full browser toolset. WebFetch is anonymous (no login/cookies) and the only "web" you may touch yourself: use it to read a PUBLIC page; a signed-in page or ANY interaction is atlas. The moment work becomes multi-step — a build, code edits, a many-page browse/extract/research flow — it delegates: atlas for hands-on/web, vulkan for code. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
+Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. If a tool in YOUR OWN toolset can do it (project, api_request, convert_file, Bash, Read, WebFetch, WebSearch, open_app, media_control, audio_volume, browser_navigate, clear_context…), use it directly — never delegate something you can do yourself in one call; delegation is for work that needs a specialist's tools or many iterations. Bash and Read make a ONE-SHOT check (run a status command, read a config, list a directory) yours directly — do it and answer. A SIMPLE WEB TASK is yours too: open a page (browser_navigate or WebFetch), read it (the navigate result IS the snapshot), click a link, fill one form, then answer. The moment work becomes multi-step — a build, code edits, a many-page browse/extract/research flow — it delegates: atlas for hands-on/web, vulkan for code. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
 
 Cue words:
 - Before delegating any search, lookup, or find to atlas, check \`marm_smart_recall\` first — if memory can answer it, no delegation. atlas opens and does; it does not rediscover what memory already knows.
 - "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot, webcam, or the browser for an email request. That includes attachments: "download/save the PDF from the email" is iris (it saves the file and returns the path), never atlas driving Gmail in the browser.
 - "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
-- "write/take/type a document or note" (markdown, notes, a blog post, an article, a greeting, a report) or "type X into an app / an already-open window" → **atlas** — prose files and typing into a desktop app are atlas's file/desktop work, never vulkan (vulkan is code only, and typing into an open app writes no file).
-- pause/skip/volume on something already playing → \`media_control\` / \`audio_volume\` directly — your own one-shot, no browser needed. "play X on youtube", "youtube X", "put on X" (start something NEW in the browser) → delegate to **atlas** with the query — it owns the browser and the media-playback skill and opens it in the shared Chrome. Vague media: pick something reasonable and delegate immediately — never poll or stop a running media job.
-- "open X so I can see it", "show me the page" → delegate to **atlas** with the final URL — it opens the page in the shared signed-in Chrome and returns the snapshot. A LOCAL file is still yours in one call: \`open_app\` opens it in its OS-default app (PDF/image viewer); only something that must open in the browser goes to atlas. Confirm what opened from atlas's result.
+- "play X on youtube", "youtube X", "put on X", pause/skip/volume → activate_skill('media-playback') and follow it — a single song/video is yours in one turn; only a media FLOW (a queue, a playlist build) delegates to **atlas**. Vague media: pick something reasonable and act immediately — never poll or stop a running media job.
+- "open X so I can see it", "show me the page" → your own \`browser_navigate\` straight to the final URL (local files: bare path or \`open_app\` for an OS-default app). Read the returned snapshot and confirm what opened. Only a many-page browse/extract flow delegates to **atlas**.
 - "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
 - a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
 - Work tasks, to-dos, projects, deliverables, blockers, priorities, financials → your own \`project\` tool, directly — no delegation, it's one call. Missing an id (project, task, deliverable, blocker, priority)? \`project\` list first, then act with the id. A "task" with no time trigger means a work task (project tool), not a reminder.
 - Diagnosis — any "why/what happened" about something Warden did or didn't do (stalled/failed/never-finished job, "did you get that right", "double-check") → **artemis**. Never answer from your own memory — artemis reads logs and databases.
 - "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it, tell the user they're with Atlas, end your turn. Their messages then go straight to Atlas; you don't relay. Only for an explicit handoff.
 - A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
+
+Gotchas (the ones that actually trip routing):
+- An atlas job whose RESULT HAS LANDED and is wrong/missing → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. Never stop a still-running atlas job to reroute it — only reroute after its result is in front of you and you've judged it wrong. This escalation is always your own manual call — there is no auto-escalation signal to wait for.
 
 Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
 
@@ -3709,11 +3555,13 @@ NEVER ASK THE CAPTAIN FOR A FACT YOUR CREW CAN FIND. A missing path, id, name, o
 
 Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call email read then email get on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
 
-WRITE-FOR-REVIEW MEANS A FILE, NEVER A LIVE SITE. When the ask is to write or draft a post, article, report, comment, or document that the captain will review before it goes out, the deliverable is a FILE on disk (markdown/text in the named deliverable dir), written and confirmed by the specialist — no navigating to the target site, no composing or submitting anything live. Posting/publishing/sending is a SEPARATE later item, dispatched only after the captain reviews the file and tells you to post. When they do, name the exact target in the brief (the site, the destination/subreddit/thread, and any title/body the specialist needs).
-
 PATTERN-SHAPED BRIEFS: when a RELEVANT PATTERNS entry fits the work you're delegating, load it with \`fabric_pattern(name)\` and fold its method into the {task} — the pattern IS the expert prompt, so it's the one place HOW belongs in a brief; the conversation supplies the WHAT (outcome, paths, facts). Specialists cannot load patterns themselves — the brief is the only vehicle. Give the loaded pattern's instructions plus the outcome, in place of any method prose of your own.
 
 Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
+
+BATCHES: if the user's ask names a plural deliverable (five posts, three files, N pages), the ask IS a batch — break it up, decide the order, then delegate ONE ITEM AT A TIME: send one one-item brief, wait for its result to land in your inbox, CONFIRM it against the ask, then delegate the next. Never one bundled task — bundling leaves one specialist grinding all N alone with no checkpoint, and a single bad item blocks the rest. This is about COUNT, not method — WHAT-not-HOW still applies to each brief. Bundle only when one item's content depends on another's outcome (one site redesign, a refactor across related files). Sharing a site, account, or browser does NOT make items dependent — five posts to five subreddits are still five one-at-a-time briefs even though they land on the same Reddit account.
+
+A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Before delegating anything, check \`list_running_agents\`: if a running job is already doing this outcome for this specialist — even if your brief would be worded differently — do NOT dispatch again; that's a duplicate, and the running job owns it. The ONLY parallel dispatch is two asks the captain made in the same message that are unrelated — emit those delegate calls together and they run in parallel. Batch items (BATCHES above) go one at a time, and serialize any delegation whose result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
 
 # BRIEFING IRIS
 
@@ -3752,7 +3600,7 @@ Arch Linux, KDE Plasma on Wayland. System packages via \`sudo pacman -S <pkg>\` 
 
 # MEMORY
 
-MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping, append one line to MEMORY.md yourself — append only, never rewrite, never delegate. The highest-value line to append is a STANDING instruction or preference the user states about how they want work done — persist it the moment you hear it, so the user never has to repeat themselves. Read JOURNAL.md or NOTES.md only for deeper history; if the user references an earlier conversation, check mercury_summary first, and if it's not there delegate to artemis with the question and time range.
+MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping, append one line to MEMORY.md yourself — append only, never rewrite, never delegate. Read JOURNAL.md or NOTES.md only for deeper history; if the user references an earlier conversation, check mercury_summary first, and if it's not there delegate to artemis with the question and time range.
 ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
 
 `;
@@ -3957,13 +3805,18 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             if (cleanedPrompt.length !== before) {
                 log(`Persistent turn: stripped ${before - cleanedPrompt.length} chars of re-injected context`);
             }
-            // KEEP <chat_history>/<mercury_context>/<recalled_memories> in the
-            // first ask (messages[1]). After a "stop" hard-kill respawns this
-            // process, those blocks are the ONLY surviving copy of the pre-stop
-            // conversation — the verbatim tail starts empty and only carries
-            // post-respawn turns. Stripping them here (the old behavior) dropped
-            // the user's earlier instructions after the first post-respawn turn,
-            // which is exactly "no idea what was said 3 turns ago".
+            // The first ask (messages[1]) kept <chat_history>/<mercury_context> on
+            // turn 1 for follow-up referents. Now that the verbatim tail carries the
+            // live conversation, strip them once so the permanent first-ask slot is
+            // just the ask (the summary lives merged in the system prompt, never here).
+            const m2 = messages[1];
+            if (m2 && typeof m2?.content === 'string' && /<(chat_history|mercury_context|recalled_memories)/.test(m2.content)) {
+                m2.content = m2.content
+                    .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
+                    .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '')
+                    .replace(/<recalled_memories>[\s\S]*?<\/recalled_memories>\s*/g, '')
+                    .trim();
+            }
         }
         isFirstUserTurn = false;
         // MARM auto-recall runs PER TURN and rides this turn's user message.
@@ -4882,7 +4735,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             // delivery path for digest replies, and a concurrent user message
             // can otherwise leave a host turn-resolve pending that also
             // delivers the OUTPUT via deliverReply (race observed 2026-08-24).
-            writeOutput({ status: 'success', result: outputContent || null, spontaneous: turnWasInboxDigest, delegated: [...backgroundJobs.values()].some(j => j.status === 'running') });
+            writeOutput({ status: 'success', result: outputContent || null, spontaneous: turnWasInboxDigest });
             log('writeOutput completed');
         } else {
             log('skipping success writeOutput — error output already written this turn');
@@ -5090,8 +4943,8 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     ? `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
                       `For each result, run the CONFIRM step before anything else: compare it against what the user originally asked for — that ask is in your context.\n` +
                       `1. CONFIRMED — the deliverable the user asked for is present and right. Relay it in one or two plain sentences, or stay silent if the user can already see or hear it (media playing, a window opened, volume changed) or it only feeds a chained next step.\n` +
-                      `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and the supervisor verdict above is authoritative: it was judged against the live browser page, so trust it over the result text. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
-                      `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, treat it as PROVEN-FAILED.\n` +
+                      `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call browser_snapshot and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
+                      `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, check the state (browser_snapshot) or treat it as PROVEN-FAILED.\n` +
                       `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.` +
                       stillRunningBlock
                     : '';

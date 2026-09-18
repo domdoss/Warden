@@ -475,102 +475,6 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
 .progress-list .kind.error { color: var(--danger, #e5484d); }
 .progress-list .label { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
 
-/* ============================================================= Agent-task queue */
-/* Chat view becomes a two-column row: .chat (left) + .task-queue (right). */
-#view-chat.active { flex-direction: row; align-items: stretch; }
-#view-chat.active .chat { flex: 1 1 auto; min-width: 0; }
-
-/* Topbar "task mode" chip — lit whenever any agent task is queued/running. */
-.task-mode-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 10px; border-radius: 12px;
-  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
-  letter-spacing: .04em;
-  color: var(--accent); background: var(--accent-soft);
-  border: 1px solid var(--accent-soft);
-  white-space: nowrap;
-}
-.task-mode-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-  background: var(--accent); box-shadow: 0 0 6px var(--accent);
-  animation: ovPulse 1.6s ease-in-out infinite;
-}
-.task-mode-count { color: var(--accent); }
-
-/* Right-hand queue panel. */
-.task-queue {
-  width: 300px; flex-shrink: 0;
-  border-left: 1px solid var(--border);
-  background: var(--bg-sunken);
-  display: flex; flex-direction: column;
-  min-height: 0; min-width: 0;
-  font-family: var(--font-mono);
-}
-.task-queue-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px; border-bottom: 1px solid var(--border);
-}
-.task-queue-head .live-dot {
-  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-  background: var(--text-faint); transition: background .2s;
-}
-.task-queue.busy .live-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-.task-queue-title {
-  font-weight: 600; font-size: 10px; letter-spacing: .04em;
-  text-transform: uppercase; color: var(--text-dim);
-}
-.task-queue.closed { display: none; }
-.task-queue-head .btn { margin-left: auto; }
-.task-queue-body {
-  flex: 1; min-height: 0; overflow-y: auto;
-  padding: 8px 10px 12px; display: flex; flex-direction: column; gap: 6px;
-}
-.tq-label {
-  font-size: 10px; font-weight: 700; letter-spacing: .05em;
-  text-transform: uppercase; color: var(--text-faint);
-  margin-top: 4px;
-}
-.tq-count { color: var(--text-dim); }
-.tq-empty { color: var(--text-faint); font-size: 11px; font-style: italic; padding: 2px 2px 6px; }
-
-.task-stack { display: flex; flex-direction: column; gap: 5px; }
-.task-item {
-  display: flex; align-items: flex-start; gap: 6px;
-  padding: 7px 8px; border-radius: 7px;
-  background: var(--surface); border: 1px solid var(--border);
-  cursor: grab; user-select: none;
-  font-size: 11px; line-height: 1.4; color: var(--text-dim);
-  min-width: 0;
-}
-.task-item .grip { color: var(--text-faint); flex-shrink: 0; font-size: 10px; }
-.task-item .t-body { min-width: 0; flex: 1; }
-.task-item .t-summary { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.task-item .t-status {
-  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
-  margin-top: 2px;
-}
-.task-item .t-status.running { color: var(--accent); }
-.task-item .t-status.queued { color: var(--text-faint); }
-.task-item.dragging { opacity: .45; border-style: dashed; }
-.task-item.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-
-.task-backlog { display: flex; flex-direction: column; gap: 5px; }
-.task-item.done, .task-item.stopped { cursor: default; background: var(--bg-elev); }
-.task-item.stopped .t-status { color: var(--danger, #e5484d); }
-.task-item.done .t-status { color: #5fa04e; }
-.task-item .t-recall {
-  margin-left: auto; flex-shrink: 0;
-  font-size: 10px; font-weight: 700; color: var(--accent);
-  background: transparent; border: 1px solid var(--accent-soft); border-radius: 5px;
-  padding: 1px 6px; cursor: pointer;
-}
-.task-item .t-recall:hover { background: var(--accent-soft); }
-.task-item .t-del {
-  margin-left: 4px; flex-shrink: 0; color: var(--text-faint);
-  background: transparent; border: none; cursor: pointer; font-size: 10px; padding: 0 2px;
-}
-.task-item .t-del:hover { color: var(--danger, #e5484d); }
-
 /* Composer */
 .composer {
   border-top: 1px solid var(--border);
@@ -1513,9 +1417,6 @@ body.help-page {
   .drawer { width: 100%; }
   .topbar-stats { display: none; }
   .msg { max-width: 96%; }
-  .task-mode-chip { display: none; }
-  .task-queue { display: none; }
-  #view-chat.active { flex-direction: column; }
 }
 /* ===== Mobile-friendly layout (≤720px): rail becomes a bottom bar ===== */
 @media (max-width: 720px) {

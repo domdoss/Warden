@@ -59,8 +59,6 @@ export interface AgentInput {
   history: NewMessage[];      // recent messages for context
   timeoutMs: number;
   memoryContext?: string;
-  taskId?: string;       // active agent-task id (shared-history run record)
-  taskContext?: string;  // active agent-task command + history block, injected into every subagent
   showThinking?: boolean | string;
   verbose?: boolean;
 }
