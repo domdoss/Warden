@@ -170,25 +170,6 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
     CREATE INDEX IF NOT EXISTS idx_agent_tasks_position ON agent_tasks(position);
 
-    -- The STEPS of a multistep task: one row per delegated job, which is what
-    -- makes a task multistep in the first place. This is the grain the queue
-    -- displays — a step, not an action. Tool calls, browser clicks and file
-    -- writes stay out: they belong to the job's own activity log, and putting
-    -- them here is what turns a queue into a firehose.
-    CREATE TABLE IF NOT EXISTS agent_task_steps (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id TEXT NOT NULL,
-      job_id TEXT NOT NULL,
-      agent TEXT NOT NULL,
-      label TEXT DEFAULT '',
-      status TEXT DEFAULT 'running',
-      started_at TEXT NOT NULL,
-      finished_at TEXT,
-      result TEXT DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_agent_task_steps_task ON agent_task_steps(task_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_task_steps_job ON agent_task_steps(task_id, job_id);
-
     CREATE TABLE IF NOT EXISTS project_priorities (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -1449,63 +1430,36 @@ export function createAgentTask(command: string): AgentTask {
   return getAgentTask(id)!;
 }
 
-/** Mark the task as live without changing any field — step activity keeps it
- *  clear of the sweep's staleness window. */
-function touchAgentTask(taskId: string): void {
-  db.prepare('UPDATE agent_tasks SET updated_at = ? WHERE id = ?')
-    .run(new Date().toISOString(), taskId);
+/**
+ * Enqueue a user command as an agent task at INGESTION time, so queued commands
+ * are visible in the dashboard queue before their turn starts (the "stacked
+ * queue"). Coalesces into the existing queued task when one is already waiting,
+ * matching processOwnerMessages' single-turn batch of pending messages.
+ */
+export function queueAgentTaskCommand(command: string): AgentTask {
+  const queued = db.prepare(
+    "SELECT id FROM agent_tasks WHERE status = 'queued' ORDER BY position ASC, created_at ASC LIMIT 1",
+  ).get() as { id: string } | undefined;
+  if (queued) {
+    const t = getAgentTask(queued.id)!;
+    const merged = [t.command, command].filter(Boolean).join('\n');
+    return updateAgentTask(queued.id, { command: merged })!;
+  }
+  return createAgentTask(command);
 }
 
-export interface AgentTaskStep {
-  id: number;
-  task_id: string;
-  job_id: string;
-  agent: string;
-  label: string;
-  status: string;
-  started_at: string;
-  finished_at: string | null;
-  result: string;
-}
-
-export function getAgentTaskSteps(taskId: string): AgentTaskStep[] {
-  return db.prepare(
-    'SELECT * FROM agent_task_steps WHERE task_id = ? ORDER BY id ASC',
-  ).all(taskId) as AgentTaskStep[];
-}
-
-/** Lazy open: a turn becomes a TASK only when it goes multistep, i.e. when it
- *  delegates. A plain chat turn never calls this and so never appears in the
- *  queue. Reuses the task already open for this turn (a turn that delegates
- *  three times is one task with three steps, not three tasks). */
-export function openAgentTaskForCommand(command: string): AgentTask {
-  const open = getActiveAgentTasks();
-  if (open.length) return open[0];
+/**
+ * Claim the oldest queued task for this turn (queued → running), or create one
+ * on the spot as a fallback for messages ingested before task tracking was on.
+ */
+export function claimNextAgentTask(command: string): AgentTask | undefined {
+  if (!command) return undefined;
+  const queued = db.prepare(
+    "SELECT id FROM agent_tasks WHERE status = 'queued' ORDER BY position ASC, created_at ASC LIMIT 1",
+  ).get() as { id: string } | undefined;
+  if (queued) return updateAgentTask(queued.id, { status: 'running' });
   const t = createAgentTask(command);
-  return updateAgentTask(t.id, { status: 'running' }) || t;
-}
-
-/** One delegated job = one step. Idempotent per (task, job). */
-export function addAgentTaskStep(taskId: string, jobId: string, agent: string, label: string): AgentTaskStep | undefined {
-  if (!getAgentTask(taskId)) return undefined;
-  db.prepare(
-    `INSERT INTO agent_task_steps (task_id, job_id, agent, label, status, started_at)
-     VALUES (?, ?, ?, ?, 'running', ?)
-     ON CONFLICT(task_id, job_id) DO UPDATE SET label = excluded.label`,
-  ).run(taskId, jobId, agent, label.slice(0, 400), new Date().toISOString());
-  touchAgentTask(taskId);
-  return db.prepare('SELECT * FROM agent_task_steps WHERE task_id = ? AND job_id = ?')
-    .get(taskId, jobId) as AgentTaskStep | undefined;
-}
-
-export function finishAgentTaskStep(taskId: string, jobId: string, status: string, result: string): AgentTaskStep | undefined {
-  db.prepare(
-    `UPDATE agent_task_steps SET status = ?, result = ?, finished_at = ?
-      WHERE task_id = ? AND job_id = ?`,
-  ).run(status, String(result || '').slice(0, 2000), new Date().toISOString(), taskId, jobId);
-  touchAgentTask(taskId);
-  return db.prepare('SELECT * FROM agent_task_steps WHERE task_id = ? AND job_id = ?')
-    .get(taskId, jobId) as AgentTaskStep | undefined;
+  return updateAgentTask(t.id, { status: 'running' });
 }
 
 export function updateAgentTask(taskId: string, updates: Partial<AgentTask>): AgentTask | undefined {
@@ -1563,54 +1517,6 @@ const AGENT_TASK_STALE_MS = 5_000;
  *  interrupt, a kill, a crash) — so it gets closed here instead of sitting in
  *  the dashboard as "running" until someone clears it by hand.
  *  Returns how many it closed. */
-/**
- * Close one task, letting its STEPS decide the status. Every closing path goes
- * through here so a task cannot be labelled by how it was closed instead of by
- * what it achieved: a two-step run whose steps both came back confirmed showed
- * up in the dashboard as "stopped" purely because a later stop-everything path
- * closed it, which reads as failure for work that succeeded.
- *
- * `fallback` is the status to use when the steps do NOT say success — 'stopped'
- * for a cancel or an error path, 'done' for an ordinary turn end.
- * A task with no steps keeps the fallback: nothing was delegated, so there is no
- * achievement to judge.
- */
-export function closeAgentTaskByOutcome(
-  taskId: string,
-  fallback: 'done' | 'stopped',
-  reason: string,
-): AgentTask | undefined {
-  const steps = getAgentTaskSteps(taskId);
-  let doneCount = 0, unverifiableCount = 0, failedCount = 0, openCount = 0;
-  for (const st of steps) {
-    if (!st.finished_at) openCount++;
-    else if (/abort|error|fail/i.test(st.status)) failedCount++;
-    else if (/unverifiab/i.test(st.status)) unverifiableCount++;
-    else doneCount++;
-  }
-  // Succeeded = there were steps, every one finished, and none of them failed.
-  // An "unverifiable" verdict still counts: the supervisor judging its own
-  // uncertainty is not the work failing.
-  const succeeded = steps.length > 0 && openCount === 0 && failedCount === 0;
-  const status = succeeded ? 'done' : fallback;
-  const mix = [
-    doneCount ? `${doneCount} done` : null,
-    unverifiableCount ? `${unverifiableCount} unverifiable` : null,
-    failedCount ? `${failedCount} failed` : null,
-    openCount ? `${openCount} still open` : null,
-  ].filter(Boolean).join(', ');
-  appendAgentTaskHistory(taskId, steps.length
-    ? `${reason} — ${steps.length} step(s): ${mix} → ${status}`
-    : `${reason} → ${status}`);
-  const closed = updateAgentTask(taskId, {
-    status,
-    position: -1,
-    finished_at: new Date().toISOString(),
-  });
-  if (closed) pruneAgentTaskBacklog(getAgentTaskBacklogSize());
-  return closed;
-}
-
 export function sweepStaleAgentTasks(busy: boolean): number {
   if (busy) return 0;
   const cutoff = new Date(Date.now() - AGENT_TASK_STALE_MS).toISOString();
@@ -1618,8 +1524,10 @@ export function sweepStaleAgentTasks(busy: boolean): number {
     "SELECT id FROM agent_tasks WHERE status IN ('queued','running') AND updated_at < ?",
   ).all(cutoff) as Array<{ id: string }>;
   for (const s of stale) {
-    closeAgentTaskByOutcome(s.id, 'stopped', 'no turn or job left running — closed by the queue sweep');
+    appendAgentTaskHistory(s.id, 'no turn or job left running — closed as stopped by the queue sweep');
+    updateAgentTask(s.id, { status: 'stopped', position: -1, finished_at: new Date().toISOString() });
   }
+  if (stale.length) pruneAgentTaskBacklog(getAgentTaskBacklogSize());
   return stale.length;
 }
 
@@ -1660,7 +1568,6 @@ export function reorderAgentTasks(orderedIds: string[]): void {
 
 /** Permanently drop a task record (backlog tidy-up from the dashboard). */
 export function deleteAgentTask(taskId: string): boolean {
-  db.prepare('DELETE FROM agent_task_steps WHERE task_id = ?').run(taskId);
   const r = db.prepare('DELETE FROM agent_tasks WHERE id = ?').run(taskId);
   return r.changes > 0;
 }
@@ -1673,7 +1580,6 @@ export function pruneAgentTaskBacklog(keep: number): void {
   const doomed = finished.slice(keep).map((r) => r.id);
   if (doomed.length === 0) return;
   const placeholders = doomed.map(() => '?').join(',');
-  db.prepare(`DELETE FROM agent_task_steps WHERE task_id IN (${placeholders})`).run(...doomed);
   db.prepare(`DELETE FROM agent_tasks WHERE id IN (${placeholders})`).run(...doomed);
 }
 

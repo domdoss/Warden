@@ -63,11 +63,8 @@ import {
   getAgentTaskBacklog,
   getAgentTaskBacklogSize,
   appendAgentTaskHistory,
-  openAgentTaskForCommand,
-  addAgentTaskStep,
-  finishAgentTaskStep,
+  claimNextAgentTask,
   finishAgentTask,
-  closeAgentTaskByOutcome,
   reconcileOrphanedAgentTasks,
   sweepStaleAgentTasks,
   getUserApiKeys,
@@ -727,22 +724,16 @@ export function buildAgentCallbacks(): CallbackMap {
             continue;
           }
           try {
-            // Serve the warm INBOX cache (refreshed every ~5 min by
-            // startInboxCacheWarmer) ONLY for a plain "recent emails" read.
-            // A search must hit the provider (Gmail q=) — the cache drops the
-            // search term and hands iris ~20 recent emails to scan by hand, so
-            // a "find emails about X" comes back with the handful iris happens
-            // to spot. A date-range query is the same: the cache holds only ~20
-            // recent emails, so a "last 30 days" read silently misses anything
-            // older. Both bypass the cache and fetch live — reads are
-            // preview-only (metadata/snippets), which is the fast path, not the
-            // sequential full-body GETs the cache was built to avoid.
-            const hasQuery =
-              (typeof search === 'string' && search.length > 0) ||
-              !Number.isNaN(sinceMs) ||
-              !Number.isNaN(beforeMs);
+            // Prefer the warm INBOX cache (refreshed every ~5 min by
+            // startInboxCacheWarmer). The agent usually wants "recent mail
+            // since X" — the cached recent batch covers that and avoids a live
+            // fetch of up to `limit` messages one-by-one from the provider
+            // (Gmail does sequential per-message GETs → tens of seconds for
+            // limit 500). Serve the cache without a length check: the agent's
+            // limit is an upper bound, not a minimum, and the date filter
+            // narrows the cached set.
             let emails: any[];
-            const cached = hasQuery ? undefined : getCachedInboxEmails(account.id, folder);
+            const cached = getCachedInboxEmails(account.id, folder);
             if (cached) {
               emails = cached.emails;
             } else {
@@ -1179,39 +1170,6 @@ export function buildAgentCallbacks(): CallbackMap {
             backlog: getAgentTaskBacklog(getAgentTaskBacklogSize()),
           },
         };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    // Called by the runner at its FIRST delegation of a turn: that dispatch is
-    // what makes the turn multistep, and therefore a task. Reuses the task
-    // already open, so three dispatches in one turn are three steps on one task.
-    open_agent_task: async (args: any) => {
-      try {
-        // The host's own record of what the user asked wins: the runner can only
-        // offer input.prompt, which includes preamble the task must not be named
-        // after. Its arg is the fallback.
-        const command = currentTurnUserCommand
-          || (typeof args?.command === 'string' && args.command.trim() ? args.command.trim() : 'multistep task');
-        const t = openAgentTaskForCommand(command);
-        return { ok: true, data: { taskId: t.id, command: t.command, history: t.history } };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    // One delegated job = one step. Actions inside a job are NOT steps.
-    add_agent_task_step: async (args: any) => {
-      try {
-        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
-        const jobId = typeof args?.jobId === 'string' ? args.jobId : '';
-        if (!taskId || !jobId) return { ok: false, error: 'missing taskId or jobId' };
-        const step = addAgentTaskStep(taskId, jobId, String(args?.agent ?? ''), String(args?.label ?? ''));
-        return step ? { ok: true, data: step } : { ok: false, error: 'task not found' };
-      } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
-    },
-    finish_agent_task_step: async (args: any) => {
-      try {
-        const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
-        const jobId = typeof args?.jobId === 'string' ? args.jobId : '';
-        if (!taskId || !jobId) return { ok: false, error: 'missing taskId or jobId' };
-        const step = finishAgentTaskStep(taskId, jobId, String(args?.status ?? 'done'), String(args?.result ?? ''));
-        return step ? { ok: true, data: step } : { ok: false, error: 'step not found' };
       } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
     },
     read_agent_task: async (args: any) => {
@@ -2128,15 +2086,10 @@ async function processOwnerMessages(): Promise<void> {
     .map((m) => m.content || '')
     .join('\n')
     .trim();
-  // Remember it for open_agent_task: a task must be NAMED after what the user
-  // asked, and the runner only has input.prompt — which carries the mercury
-  // summary and other preamble, so a task opened from it came out titled
-  // "<mercury_summary> Facts: …".
-  currentTurnUserCommand = userCommand;
-  // No task is opened here. A turn only becomes a task once it delegates —
-  // the runner calls open_agent_task at its first dispatch and gets the id and
-  // history back then. A plain chat turn therefore never touches the queue.
-  const taskContext: string | undefined = undefined;
+  // Claim the queued task created at ingestion (queued → running). Falls back
+  // to creating one for messages ingested before task tracking was on.
+  const activeTask = userCommand ? claimNextAgentTask(userCommand) : undefined;
+  const taskContext = activeTask ? `${activeTask.command}\n\n[Task history:]\n${activeTask.history}` : undefined;
 
   const input: AgentInput = {
     prompt,
@@ -2153,7 +2106,7 @@ async function processOwnerMessages(): Promise<void> {
     // killed real work. Cleared on normal completion (agent-spawn turnTimeout clear).
     timeoutMs: 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
     memoryContext,
-    taskId: undefined,
+    taskId: activeTask?.id,
     taskContext,
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
@@ -2192,7 +2145,7 @@ async function processOwnerMessages(): Promise<void> {
     agentProcessing = false;
     setRouterState('agent:processing', 'false');
     logger.error({ err }, 'runAgent threw');
-    closeTurnTasks('stopped');
+    if (activeTask) finishAgentTask(activeTask.id, 'stopped');
     // Keep the cursor advanced so the failed turn is not retried indefinitely
     // and the user doesn't get a re-reply to the same message every loop tick.
     return;
@@ -2200,7 +2153,7 @@ async function processOwnerMessages(): Promise<void> {
   agentProcessing = false;
   setRouterState('agent:processing', 'false');
   if (output.userStopped) {
-    closeTurnTasks('stopped');
+    if (activeTask) finishAgentTask(activeTask.id, 'stopped');
     // Mark the window BEFORE this turn's first message so the next real message
     // re-includes the stopped turn's text (see the extension above). `since`
     // still holds the pre-turn cursor value at this point.
@@ -2237,7 +2190,7 @@ async function processOwnerMessages(): Promise<void> {
   const text = rawText;
   if (spontaneousDigest) {
     logger.info('spontaneous (digest) OUTPUT suppressed — send_message path owns digest delivery');
-    if (!delegated) closeTurnTasks('done');
+    if (activeTask && !delegated) finishAgentTask(activeTask.id, 'done');
     return;
   }
   if (!text) {
@@ -2246,15 +2199,15 @@ async function processOwnerMessages(): Promise<void> {
         { error: output.error, exitCode: output.exitCode },
         'Agent returned no text + an error',
       );
-      closeTurnTasks('stopped');
-    } else if (!delegated) {
-      closeTurnTasks('done');
+      if (activeTask) finishAgentTask(activeTask.id, 'stopped');
+    } else if (activeTask && !delegated) {
+      finishAgentTask(activeTask.id, 'done');
     }
     return;
   }
 
   await deliverReply(text);
-  if (!delegated) closeTurnTasks('done');
+  if (activeTask && !delegated) finishAgentTask(activeTask.id, 'done');
 
   // Mercury compaction now runs on the 2s poll loop (maybeScheduleMercury in
   // startMessageLoop) on a time/downtime schedule — not after every turn.
@@ -3280,10 +3233,6 @@ function seedPerAgentModelSettings(): void {
   // as the default so the checkbox reflects reality. Toolcall/Atlas stay unset →
   // the runner defaults to 300 (their historic sub-agent TTL).
   seed('local:orch_keep_alive', '-1');
-  // Sentry gets its own row so the residency of a 27B scanner is visible and
-  // settable, instead of silently inheriting Atlas's. 300s = unload a few
-  // minutes after a scan; set -1 here if it should ever stay resident.
-  seed('local:sentry_keep_alive', '300');
   // New per-agent model keys inherit the legacy shared value.
   seed('iris:model', toolcall);
   seed('artemis:model', atlas);
@@ -3331,7 +3280,6 @@ export function syncAgentCtxEnv(): void {
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
-  process.env.SENTRY_KEEP_ALIVE = getRouterState('local:sentry_keep_alive') || '';
   process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
 }
 
@@ -3410,28 +3358,6 @@ async function warmResidentOllamaModels(): Promise<void> {
       logger.warn({ model, err }, 'Model warmup failed (non-fatal)');
     }
   }
-}
-
-/** Close whatever task this turn opened. The runner opens one lazily on its
- *  first delegation, so the host holds no id of its own — a turn that never
- *  delegated has no task and this is a no-op. Callers skip it while `delegated`
- *  is true: those tasks stay open until their jobs finish, and the poll-loop
- *  sweep closes them then. */
-/** What the user asked on the turn in flight — the name a task takes if this
- *  turn opens one. Set at turn start, read by the open_agent_task callback. */
-let currentTurnUserCommand = '';
-
-function closeTurnTasks(status: 'done' | 'stopped'): number {
-  const open = getActiveAgentTasks();
-  // The steps decide: a run whose delegations all came back clean is done even
-  // when the turn itself ended badly, and `status` is only the fallback.
-  for (const t of open) {
-    closeAgentTaskByOutcome(t.id, status, status === 'stopped'
-      ? 'turn ended without completing'
-      : 'turn finished');
-  }
-  if (open.length) logger.info({ closed: open.length, status }, 'Closed this turn\'s agent task');
-  return open.length;
 }
 
 async function main(): Promise<void> {

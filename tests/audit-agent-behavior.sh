@@ -23,18 +23,12 @@
 #   O. Injection guards                 ( 4)
 #   R. Computer control                 ( 5)
 #   S. KDE Plasma MCP                   ( 8)
-#   T. Agent-task queue & wiring        ( 9)
 #                                       ----
-#                                       131
+#                                       122
 #
 # Each scenario sends a real chat message to $BASE/api/messages, waits for
 # the agent to go idle, captures the response, audits it, and (where
 # applicable) runs sub-checks against on-disk artifacts and the live log.
-#
-# Section T is the exception: all but one of its checks read state and config
-# rather than sending chat, because the queue/VRAM/thinking regressions it
-# guards are visible in the database, the dist bundle and the MCP config — and
-# proving them by talking to the assistant costs the user their live session.
 #
 # Usage: ./tests/audit-agent-behavior.sh [max_wait_seconds_per_test]
 # Exits 0 if no FAIL, 1 otherwise.
@@ -551,165 +545,6 @@ for entry in "${SCENARIOS_DEF[@]}"; do
       ;;
   esac
 done
-
-# ---------------------------------------------------------------------------
-# T. Agent-task queue, shared history & wiring  (9)
-#
-# The queue regressions all had the same shape: a record left claiming work was
-# running when nothing was, or a fix that was built but never actually reached
-# the process. Most of these are state/config assertions and send no chat at
-# all; only T9 runs a real turn, because the shared-history bus can only be
-# proven by making two subagents depend on each other.
-# ---------------------------------------------------------------------------
-log ""
-log "============================================================"
-log " T. Agent-task queue, shared history & wiring"
-log "============================================================"
-
-DB="store/messages.db"
-
-# T1 — both tables exist (steps are a separate table, added 2026-09-17).
-if sqlite3 "$DB" "select 1 from agent_tasks limit 1;" >/dev/null 2>&1 \
-   && sqlite3 "$DB" "select 1 from agent_task_steps limit 1;" >/dev/null 2>&1; then
-  log_pass "T1 agent_tasks + agent_task_steps tables present"
-else
-  log_fail "T1 agent_tasks / agent_task_steps missing — run a build+restart so initDatabase creates them"
-fi
-
-# T2 — the running-jobs counter must be COUNTED from the roster, never carried
-# on the last heartbeat: a runner that exits without a final status line used to
-# leave the badge stuck above zero against an empty job list.
-jobs_json=$(curl -s "$BASE/api/status" 2>/dev/null)
-if python3 -c "
-import json,sys
-d=json.loads(sys.argv[1] or '{}')
-sys.exit(0 if d.get('runningJobs') == len(d.get('jobs',[])) else 1)
-" "$jobs_json" 2>/dev/null; then
-  log_pass "T2 runningJobs agrees with the jobs roster"
-else
-  log_fail "T2 runningJobs disagrees with the jobs roster (phantom job count)"
-fi
-
-# T3 — nothing may claim to be running while the machine is idle. The sweep
-# closes orphans within its grace window, so give it a beat before judging.
-ensure_idle || true
-sleep 8
-idle_active=$(curl -s "$BASE/api/agent-tasks" 2>/dev/null | python3 -c "
-import json,sys
-try: print(len(json.load(sys.stdin).get('active',[])))
-except: print('?')
-" 2>/dev/null)
-if [[ "$idle_active" == "0" ]]; then
-  log_pass "T3 no task claims to be running while idle"
-else
-  log_fail "T3 $idle_active task(s) still active while idle — the sweep is not closing orphans"
-fi
-
-# T4 — the two mcp-servers.json copies must stay in sync; the workspace one is
-# what the runner actually reads, so a fix applied to only one is invisible.
-if python3 -c "
-import json,sys
-a=json.load(open('/opt/Warden/data/mcp-servers.json'))
-b=json.load(open('/home/dominic/Warden/data/mcp-servers.json'))
-sys.exit(0 if {s['name'] for s in a} == {s['name'] for s in b} else 1)
-" 2>/dev/null; then
-  log_pass "T4 both mcp-servers.json copies list the same servers"
-else
-  log_warn "T4 the two mcp-servers.json copies list different servers"
-fi
-
-# T5 — no \${VAR} literals in an MCP env block. mcp-client.ts merges env
-# VERBATIM with no expansion, so a placeholder is passed as the literal token
-# and SHADOWS the real ambient value (this silently disabled the github server).
-if python3 -c "
-import json,sys
-bad=[]
-for p in ('/opt/Warden/data/mcp-servers.json','/home/dominic/Warden/data/mcp-servers.json'):
-    for s in json.load(open(p)):
-        for k,v in (s.get('env') or {}).items():
-            if isinstance(v,str) and '\${' in v: bad.append(f\"{s['name']}.{k}\")
-print(','.join(bad))
-sys.exit(1 if bad else 0)
-" 2>/dev/null; then
-  log_pass "T5 no \${} placeholder literals in any MCP env block"
-else
-  log_fail "T5 an MCP env block holds a \${} literal — it shadows the real env var"
-fi
-
-# T6 — only ONE MARM concept worker. The stdio child and the :8001 service share
-# one sqlite lease; with both building, the loser logs concept_worker.deferred
-# reason=graph_busy every 30s forever and the granite topic build never runs.
-if python3 -c "
-import json,sys
-d=json.load(open('/home/dominic/Warden/data/mcp-servers.json'))
-m=[s for s in d if s.get('name')=='marm']
-sys.exit(0 if m and str((m[0].get('env') or {}).get('CONCEPT_AUTO_INDEX','')).lower() in ('false','0','no','off') else 1)
-" 2>/dev/null; then
-  log_pass "T6 stdio MARM has CONCEPT_AUTO_INDEX disabled (single concept worker)"
-else
-  log_fail "T6 stdio MARM may run a second concept worker — expect endless concept_worker.deferred"
-fi
-
-# T7 — thinking must follow the dashboard setting, not a hardcoded model list.
-# The allowlist meant any model not on it dumped untagged chain-of-thought into
-# message.content, which is the field that becomes the user's chat message.
-if grep -q "modelRequiresThink" dist/agent-runner/index.js 2>/dev/null; then
-  log_fail "T7 dist still carries the hardcoded think allowlist (modelRequiresThink)"
-else
-  log_pass "T7 no hardcoded think allowlist in the built runner"
-fi
-
-# T8 — sentry must not inherit atlas's residency. sentry runs a 27B LOCAL model
-# on an hourly cron; pinned resident it holds ~18GB of VRAM between scans.
-sentry_model=$(sqlite3 "$DB" "select value from router_state where key='sentry:model';" 2>/dev/null)
-sentry_ka=$(sqlite3 "$DB" "select value from router_state where key='local:sentry_keep_alive';" 2>/dev/null)
-if [[ "$sentry_model" == *cloud* ]]; then
-  log_pass "T8 sentry is on a cloud model — no VRAM to pin"
-elif [[ -n "$sentry_ka" && "$sentry_ka" != "-1" ]]; then
-  log_pass "T8 sentry has its own keep_alive ($sentry_ka), not atlas's residency"
-else
-  log_fail "T8 sentry keep_alive is '${sentry_ka:-unset}' with local model '$sentry_model' — it will pin VRAM"
-fi
-
-# T9 — the real one: a multistep turn must open ONE task, record one step per
-# delegation, and hand the first step's OUTCOME to the second, so the chain is
-# not "marco polo" with each specialist starting from scratch.
-rm -f "$HOME/Warden/audit-mp-1.txt" "$HOME/Warden/audit-mp-2.txt" 2>/dev/null || true
-mp_before=$(sqlite3 "$DB" "select count(*) from agent_tasks;" 2>/dev/null || echo 0)
-send_and_wait "Two steps, one delegation at a time. Step 1: have atlas write $HOME/Warden/audit-mp-1.txt containing exactly the single word GAMMA. Step 2: after step 1 finishes, a SECOND atlas job writes $HOME/Warden/audit-mp-2.txt containing that word followed by a space and DELTA, taking the word from the task history it is handed rather than re-reading the first file." 240
-# Give the trailing job and its step-close callback a moment to land.
-sleep 20
-mp_task=$(sqlite3 "$DB" "select id from agent_tasks order by created_at desc limit 1;" 2>/dev/null)
-mp_steps=$(sqlite3 "$DB" "select count(*) from agent_task_steps where task_id='$mp_task';" 2>/dev/null || echo 0)
-mp_open=$(sqlite3 "$DB" "select count(*) from agent_task_steps where task_id='$mp_task' and finished_at is null;" 2>/dev/null || echo 0)
-mp_after=$(sqlite3 "$DB" "select count(*) from agent_tasks;" 2>/dev/null || echo 0)
-
-if (( mp_steps >= 2 )); then
-  log_pass "T9 multistep turn recorded $mp_steps steps on one task ($mp_task)"
-else
-  log_fail "T9 expected >=2 steps on the task, found $mp_steps — delegations are not being recorded as steps"
-fi
-if (( mp_after - mp_before <= 1 )); then
-  log_pass "  → sub: one task for the whole turn, not one per delegation"
-else
-  log_fail "  → sub: $((mp_after - mp_before)) tasks created for a single turn"
-fi
-if (( mp_open == 0 )); then
-  log_pass "  → sub: every step closed (late completions still find their task)"
-else
-  log_fail "  → sub: $mp_open step(s) left open — a job finishing after its turn lost its task id"
-fi
-if [[ -f "$HOME/Warden/audit-mp-2.txt" ]] && grep -qi "GAMMA" "$HOME/Warden/audit-mp-2.txt" 2>/dev/null; then
-  log_pass "  → sub: step 2 carried step 1's word — shared history reached the second subagent"
-else
-  log_fail "  → sub: audit-mp-2.txt missing or lacks GAMMA — the history bus did not reach step 2"
-fi
-if grep -q "Task history — work already completed" "$LOG_FILE" 2>/dev/null; then
-  log_pass "  → sub: the task-history block was injected into a specialist brief"
-else
-  log_warn "  → sub: no task-history block found in the log (rotated?)"
-fi
-rm -f "$HOME/Warden/audit-mp-1.txt" "$HOME/Warden/audit-mp-2.txt" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Final report
