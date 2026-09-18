@@ -2803,17 +2803,6 @@
     // Agent-task queue: collapse toggle + delegated recall/delete.
     const tqToggle = $('btnTaskQueueToggle');
     if (tqToggle) tqToggle.addEventListener('click', () => { const q = $('taskQueue'); if (q) q.classList.toggle('closed'); });
-    // Manual memory scan: fire the on-request classifier (force=true — dumps
-    // VRAM and loads the classifier regardless of the idle gate). The next
-    // activity poll lights the dot once the run is in flight.
-    const memScan = $('btnMemScan');
-    if (memScan) memScan.addEventListener('click', async () => {
-      memScan.disabled = true;
-      memScan.textContent = 'Scanning…';
-      try { await postJson('/api/memory/classify', {}); } catch (err) { console.warn('memory scan failed', err); }
-      renderMemoryBrain(); // refresh the running dot; button re-arms on the next successful poll
-      setTimeout(() => { memScan.disabled = false; memScan.textContent = 'Scan'; }, 1500);
-    });
     const tqBacklog = $('taskBacklog');
     if (tqBacklog) tqBacklog.addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-id]'); if (!btn) return;
