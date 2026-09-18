@@ -541,23 +541,17 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
 
 .tq-item {
   position: relative; overflow: hidden;
-  display: flex; flex-direction: column; gap: 3px;
-  padding: 6px 8px 5px 10px;
-  border-radius: var(--r-md);
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 5px 7px 4px 9px;
+  border-radius: 6px;
   background: var(--surface);
-  border: 1px solid transparent;
-  font-family: var(--font);
-  font-size: 11.5px; line-height: 1.45; color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--text-faint);
+  font-size: 11px; line-height: 1.45; color: var(--text-dim);
   min-width: 0; user-select: none;
-  transition: background .18s, box-shadow .18s, transform .18s;
+  transition: border-color .18s, background .18s, box-shadow .18s, transform .18s;
 }
-/* The status rail is a rounded inset bar rather than a full-height border —
-   a hard 2px edge on a 6px radius is what made these read as boxes. */
-.tq-item::before {
-  content: ''; position: absolute; left: 3px; top: 6px; bottom: 6px; width: 2px;
-  border-radius: 2px; background: var(--text-faint);
-}
-.tq-item:hover { background: var(--surface-2); }
+.tq-item:hover { background: var(--bg-elev); }
 
 /* Row 1 — grip (active only) + the command text. */
 .tq-head { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
@@ -572,8 +566,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
    card as tall as the longest. The full command is in the card's title, and
    hovering expands to three lines for the long ones. */
 .tq-summary {
-  flex: 1; min-width: 0; color: var(--text); font-weight: 500;
-  letter-spacing: -0.01em;
+  flex: 1; min-width: 0; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   word-break: break-word;
 }
@@ -612,9 +605,8 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
 .tq-btn.tq-recall:hover { color: var(--accent); border-color: var(--accent); }
 .tq-btn.tq-del:hover { color: var(--danger, #e5484d); border-color: var(--danger, #e5484d); }
 
-/* Per-status colour: the rail and the pill read as one signal. */
-.tq-item.running::before { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-.tq-item.running { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--accent-soft); }
+/* Per-status colour: the left rail and the pill read as one signal. */
+.tq-item.running { border-left-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
 .tq-item.running .tq-pill { background: var(--accent-soft); color: var(--accent); }
 .tq-item.running .tq-pill .dot { animation: ovPulse 1.4s ease-in-out infinite; }
 /* Indeterminate sweep along the top edge — the card reads as live without a
@@ -625,113 +617,13 @@ code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
   animation: tqSweep 1.9s linear infinite;
 }
 @keyframes tqSweep { from { transform: translateX(-100%); } to { transform: translateX(350%); } }
-.tq-item.queued::before { background: var(--warn); }
-.tq-item.queued .tq-pill { background: var(--warn-soft); color: var(--warn); }
-.tq-item.done::before { background: var(--ok); }
-.tq-item.done { background: var(--bg-elev); }
-.tq-item.done .tq-pill { background: var(--ok-soft); color: var(--ok); }
-.tq-item.stopped::before { background: var(--danger); }
-.tq-item.stopped { background: var(--bg-elev); }
-.tq-item.stopped .tq-pill { background: var(--danger-soft); color: var(--danger); }
-.tq-item.done .tq-summary, .tq-item.stopped .tq-summary { color: var(--text-dim); font-weight: 400; }
-
-/* Steps done / total, for a multistep task. No percentage is available — this
-   is a discrete count, so the bar is segmented rather than continuous. */
-.tq-prog { display: flex; gap: 2px; margin-top: 1px; }
-.tq-prog i {
-  flex: 1; height: 2px; border-radius: 1px; background: var(--surface-3);
-  transition: background .25s;
-}
-.tq-prog i.on { background: var(--ok); }
-/* The in-flight segment pulses between two SOLID colours, never via opacity:
-   fading toward transparent made it read as an unfilled segment at the bottom
-   of the cycle — the worst possible misread for "this is the step running now". */
-.tq-prog i.cur { background: var(--accent); animation: tqCur 1.4s ease-in-out infinite; }
-@keyframes tqCur {
-  0%, 100% { background: var(--accent); box-shadow: 0 0 4px var(--accent); }
-  50%      { background: var(--accent-dim); box-shadow: none; }
-}
-.tq-prog i.bad { background: var(--danger); }
-
-/* Steps — the delegated jobs. One row each, numbered, agent then what it was
-   asked to do. Nothing finer: a tool call is not a step. A hairline connector
-   runs down the left so the rows read as a sequence rather than a list. */
-.tq-steps-head {
-  font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
-  color: var(--text-faint); margin-top: 3px;
-}
-.tq-steps {
-  list-style: none; margin: 2px 0 0; padding: 0 0 0 4px;
-  display: flex; flex-direction: column; gap: 2px;
-  border-left: 1px solid var(--border);
-}
-.tq-step {
-  display: flex; align-items: baseline; gap: 5px; min-width: 0;
-  font-size: 10.5px; line-height: 1.4; color: var(--text-dim);
-  padding-left: 3px;
-}
-.tq-step-n {
-  flex-shrink: 0; width: 11px; text-align: right;
-  font-family: var(--font-mono); font-size: 9px; color: var(--text-faint);
-}
-.tq-step-agent {
-  flex-shrink: 0; font-family: var(--font-mono); font-size: 9px;
-  font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
-  color: var(--text-faint);
-}
-.tq-step-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tq-item:hover .tq-step-label { white-space: normal; }
-.tq-step.running .tq-step-agent { color: var(--accent); }
-.tq-step.running .tq-step-n::after { content: '·'; color: var(--accent); }
-.tq-step.ok .tq-step-n { color: var(--ok, #5fa04e); }
-.tq-step.unsure .tq-step-n { color: var(--warn, #d9822b); }
-.tq-step.unsure .tq-step-agent { color: var(--warn, #d9822b); }
-.tq-step.failed .tq-step-agent, .tq-step.failed .tq-step-n { color: var(--danger, #e5484d); }
-
-/* ---------- Memory brain ----------
-   The queue answers "what is Warden doing"; this answers "what is it keeping".
-   Facts filed into the memory tree and recalls made against it, newest first,
-   so the panel shows the memory actually moving instead of a static count. */
-.tq-sep { height: 1px; background: var(--border); margin: 10px 0 2px; flex-shrink: 0; }
-/* inline-block is load-bearing: a bare inline span ignores width/height, which
-   made this dot invisible in both themes. */
-.mem-dot {
-  display: inline-block; vertical-align: middle;
-  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-  background: var(--text-faint); margin-left: 5px;
-}
-.mem-dot.live { background: var(--violet); box-shadow: 0 0 6px var(--violet); animation: ovPulse 1.8s ease-in-out infinite; }
-.mem-brain { display: flex; flex-direction: column; gap: 3px; }
-/* Memory rows are deliberately NOT cards. Giving them the same fill and radius
-   as the task cards turned the whole sidebar into one stack of identical pills;
-   as flat lines they read as a log under the queue, which is what they are. */
-.mem-row {
-  display: flex; align-items: baseline; gap: 6px; min-width: 0;
-  padding: 2px 4px 2px 2px; border-radius: var(--r-sm);
-  background: transparent; font-size: 10.5px; line-height: 1.4;
-  color: var(--text-dim);
-}
-.mem-row:hover { background: var(--surface); }
-.mem-kind {
-  flex-shrink: 0; width: 10px; text-align: center;
-  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
-}
-.mem-row.write .mem-kind { color: var(--violet); }
-.mem-row.recall .mem-kind { color: var(--info); }
-.mem-body { min-width: 0; flex: 1; }
-.mem-path {
-  display: block; font-family: var(--font-mono); font-size: 9px;
-  letter-spacing: .02em; color: var(--text-faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.mem-row.write .mem-path { color: var(--violet); opacity: .85; }
-.mem-row.recall .mem-path { color: var(--info); opacity: .85; }
-.mem-text {
-  display: block; color: var(--text-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.mem-row:hover .mem-text { white-space: normal; }
-.mem-ago { flex-shrink: 0; font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); }
+.tq-item.queued { border-left-color: var(--warn, #d9822b); }
+.tq-item.queued .tq-pill { background: var(--warn-soft, var(--surface-3)); color: var(--warn, #d9822b); }
+.tq-item.done { border-left-color: var(--ok, #5fa04e); background: var(--bg-sunken); }
+.tq-item.done .tq-pill { background: var(--ok-soft, var(--surface-3)); color: var(--ok, #5fa04e); }
+.tq-item.stopped { border-left-color: var(--danger, #e5484d); background: var(--bg-sunken); }
+.tq-item.stopped .tq-pill { background: var(--surface-3); color: var(--danger, #e5484d); }
+.tq-item.done .tq-summary, .tq-item.stopped .tq-summary { color: var(--text-dim); }
 
 .tq-item.dragging { opacity: .45; border-style: dashed; transform: scale(.99); }
 .tq-item.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }

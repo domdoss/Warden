@@ -1364,64 +1364,6 @@ let activeTaskContext = '';
 // record; this buffer is what the runner injects, and it stays in sync because
 // every append that reaches the host also mirrors here.
 let activeTaskHistoryLocal = '';
-// The turn's user command, used to name a task if this turn opens one.
-let currentUserCommand = '';
-
-/** Open the turn's agent task on the FIRST delegation. A dispatch is what makes
- *  a turn multistep, and only a multistep turn is a task — a plain question and
- *  answer never opens one, so the dashboard queue stops filling with chat.
- *  Idempotent: later dispatches in the same turn reuse the id and add steps. */
-async function ensureActiveTask(): Promise<string> {
-    if (activeTaskId) return activeTaskId;
-    const resp: any = await writeCallbackAsync('open_agent_task', { command: currentUserCommand }, 10000)
-        .catch(() => null);
-    const id = resp?.ok ? String(resp.data?.taskId || '') : '';
-    if (id) {
-        activeTaskId = id;
-        const cmd = String(resp.data?.command || currentUserCommand || '');
-        const hist = String(resp.data?.history || '');
-        activeTaskContext = `${cmd}\n\n[Task history:]\n${hist}`;
-        log(`[task] opened ${id} on first delegation`);
-    }
-    return activeTaskId;
-}
-
-// Which task each dispatched job belongs to. A background job OUTLIVES the turn
-// that dispatched it, and activeTaskId is per-turn state that the next turn
-// resets — so a job completing after its turn ended would find '' and silently
-// drop both its step closure and its history line. The id is therefore captured
-// at dispatch and read back from here on completion.
-const jobTaskIds = new Map<string, string>();
-
-/** Record a dispatched job as a STEP. A step is a delegation, never an action:
- *  the tool calls inside a job belong to that job's activity log, and listing
- *  them here is what turned the queue into a firehose. Fire-and-forget — a
- *  queue row must never delay or fail a dispatch. */
-function noteTaskStep(jobId: string, agent: string, label: string): void {
-    void ensureActiveTask().then((id) => {
-        if (!id) return;
-        jobTaskIds.set(jobId, id);
-        void writeCallbackAsync('add_agent_task_step', {
-            taskId: id, jobId, agent,
-            label: String(label || '').replace(/\s+/g, ' ').trim().slice(0, 400),
-        }, 5000).catch(() => {});
-    });
-}
-
-/** The task a job was dispatched under, whatever turn is current now. */
-function taskIdForJob(jobId: string): string {
-    return jobTaskIds.get(jobId) || activeTaskId || '';
-}
-
-function closeTaskStep(jobId: string, status: string, result: string): void {
-    const taskId = taskIdForJob(jobId);
-    if (!taskId) return;
-    jobTaskIds.delete(jobId);
-    void writeCallbackAsync('finish_agent_task_step', {
-        taskId, jobId, status,
-        result: String(result || '').replace(/\s+/g, ' ').trim().slice(0, 500),
-    }, 5000).catch(() => {});
-}
 
 function taskContextBlock(): string {
     if (!activeTaskContext) return activeTaskHistoryLocal || '';
@@ -1882,9 +1824,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     }
     const activeCount = backgroundJobs.size;
     writeStatus({ phase: delegate, label: `${def.label} ${jobShortId}: ${task}${activeCount > 0 ? ` (${activeCount} running)` : ''}`, jobs: activeCount + 1, jobsList: currentJobsList(), ts: Date.now() });
-    // This dispatch is a step of the turn's task (and opens that task if it is
-    // the first one).
-    noteTaskStep(jobId, delegate, task);
     const abortFlag: { aborted: boolean; nudges: string[] } = { aborted: false, nudges: [] };
     const jobRecord: BackgroundJob = {
         promise: null as any, startedAt: Date.now(), agent: delegate, task, shortId: jobShortId,
@@ -1961,7 +1900,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             const verdict = await runCompletionVerdict({ task, fullResult, activityLog: jobRecord.activityLog, toolContext: context });
             inbox.push({ jobId, agent: delegate, task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult, activityLog: jobRecord.activityLog, verdict: verdict.verdict, verdictReason: verdict.reason });
             scribbleTask(delegate, jobRecord.abortFlag.aborted ? 'aborted' : (verdict.verdict || 'done'), fullResult);
-            closeTaskStep(jobId, jobRecord.abortFlag.aborted ? 'aborted' : (verdict.verdict || 'done'), fullResult);
             // Advisory only: the verdict stamps the inbox item (surfaced in the
             // digest for the orchestrator/user to read) and logs. It does NOT
             // auto-execute — no auto report_task_failure, no auto follow-up
@@ -1974,7 +1912,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             if (jobRecord.status === 'running') jobRecord.status = 'errored';
             inbox.push({ jobId, agent: delegate, task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
             scribbleTask(delegate, 'errored', `Error: ${err?.message ?? err}`);
-            closeTaskStep(jobId, 'errored', `Error: ${err?.message ?? err}`);
             drainFollowups();
         })
         .finally(() => {
@@ -2167,15 +2104,7 @@ function extractJsonObject(text: string): any | null {
 // once per job completion, before inbox.push, on the supervisor model (falls
 // back to the orchestrator model — logged). Timeout/error → unverifiable,
 // never blocks reporting.
-// 12s measured as too tight: warden.log shows the supervisor model
-// (toolcall-ft) is frequently not resident here (evicted by VRAM pressure
-// from concurrent local jobs, e.g. sentry's 27B) and a cold reload of even
-// this small model plus inference can exceed 12s, aborting the fetch and
-// throwing the whole verdict away as "unverifiable" (7 of 78 verdict calls
-// in one log window died this way — a wasted 12s each, for nothing, on top
-// of the normal case's llama-server load latency). 20s gives that reload
-// room to finish instead of being aborted mid-load.
-const VERDICT_FETCH_TIMEOUT_MS = 20_000;
+const VERDICT_FETCH_TIMEOUT_MS = 12_000;
 const COMPLETION_VERDICT_FORMAT = {
     type: 'object',
     properties: {
@@ -2522,14 +2451,6 @@ function keepAliveEnv(name: string, dflt: number): number {
 function subAgentKeepAlive(agent: string): number {
     if (['iris', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
-    }
-    // Sentry has its own knob (local:sentry_keep_alive). It used to fall through
-    // to ATLAS_KEEP_ALIVE, which is -1 here — so an hourly security scan on a
-    // 27B local model pinned ~18 GB of VRAM resident between runs, for a job
-    // that works for a minute an hour. Atlas being resident is a deliberate
-    // setting; sentry borrowing it was not.
-    if (agent === 'sentry') {
-        return keepAliveEnv('SENTRY_KEEP_ALIVE', 300);
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
 }
@@ -3672,10 +3593,6 @@ async function runNativeOllama(input: ContainerInput) {
     standingMemoryContext = input.memoryContext || '';
     activeTaskId = input.taskId || '';
     activeTaskContext = input.taskContext || '';
-    activeTaskHistoryLocal = '';
-    // What the user actually asked this turn — the command a task is named after
-    // if this turn goes multistep and opens one.
-    currentUserCommand = String(input.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 500);
     // Load the durable project journal (JOURNAL.md) so lessons learned persist across turns.
 let journalSection = '';
 try {

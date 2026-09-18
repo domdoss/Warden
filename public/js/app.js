@@ -41,7 +41,6 @@
     pollTimer: null,
     verboseTimer: null,
     statusTimer: null,
-    memTimer: null,
     activityTimer: null,
     assistantName: 'WARDEN',
     localAssistantName: 'Warden',
@@ -448,49 +447,15 @@
   function taskItemHtml(t, isActive) {
     const label = String(t.summary || t.command || '').trim() || '(unnamed task)';
     const status = String(t.status || 'queued');
-    // Active cards show how long the task has been open. Finished ones show how
-    // long it RAN, not how long ago it closed: a task that just finished
-    // rendered as a bare "0s", which reads as "this took no time / did nothing"
-    // for work that actually succeeded.
-    const ranMs = Date.parse(t.finished_at || '') - Date.parse(t.created_at || '');
+    // Active cards show how long the task has been open; finished ones show how
+    // long ago they closed — the same column, so the rows stay aligned.
     const stamp = isActive
       ? (tqAgo(t.created_at) ? 'up ' + tqAgo(t.created_at) : '')
-      : (Number.isFinite(ranMs) && ranMs > 0
-          ? 'ran ' + tqAgo(new Date(Date.now() - ranMs).toISOString())
-          : '');
+      : (tqAgo(t.finished_at) ? tqAgo(t.finished_at) + ' ago' : '');
     const actions = isActive
       ? `<button class="tq-btn tq-stop" data-id="${esc(t.id)}" title="Cancel this task" aria-label="Cancel task">✕</button>`
       : `<button class="tq-btn tq-recall" data-id="${esc(t.id)}" title="Run this command again" aria-label="Re-run task">↺</button>` +
         `<button class="tq-btn tq-del" data-id="${esc(t.id)}" title="Delete from backlog" aria-label="Delete task">🗑</button>`;
-    // The STEPS are the point of the panel: one row per delegated job, which is
-    // what makes a task multistep. Actions inside a job never appear here.
-    const steps = Array.isArray(t.steps) ? t.steps : [];
-    const stepRows = steps.map((s, i) => {
-      const st = String(s.status || 'running');
-      // "unverifiable" is the supervisor saying it could not judge the result —
-      // not a failure, but not a confirmed success either, so it gets its own
-      // neutral mark rather than borrowing the green tick.
-      const cls = /abort|error|fail/i.test(st) ? 'failed'
-        : (/unverifiab/i.test(st) ? 'unsure' : (s.finished_at ? 'ok' : 'running'));
-      return `<li class="tq-step ${cls}">` +
-        `<span class="tq-step-n">${i + 1}</span>` +
-        `<span class="tq-step-agent">${esc(String(s.agent || ''))}</span>` +
-        `<span class="tq-step-label">${esc(String(s.label || ''))}</span>` +
-        `</li>`;
-    }).join('');
-    const doneCount = steps.filter((s) => s.finished_at).length;
-    // Segmented bar: a task has a step COUNT, never a percentage, so showing a
-    // continuous bar would be inventing progress the record does not have.
-    const prog = steps.length
-      ? `<div class="tq-prog">` + steps.map((s) => {
-          const st = String(s.status || '');
-          const c = /abort|error|fail/i.test(st) ? 'bad' : (s.finished_at ? 'on' : 'cur');
-          return `<i class="${c}"></i>`;
-        }).join('') + `</div>`
-      : '';
-    const stepsBlock = steps.length
-      ? `${prog}<div class="tq-steps-head">${doneCount}/${steps.length} steps</div><ol class="tq-steps">${stepRows}</ol>`
-      : '';
     return `<div class="tq-item ${esc(status)}"${isActive ? ' draggable="true"' : ''} data-id="${esc(t.id)}" title="${esc(String(t.command || label))}">` +
       `<div class="tq-head">` +
         (isActive ? `<span class="grip" title="Drag to reorder the queue">⠿</span>` : '') +
@@ -501,7 +466,6 @@
         `<span class="tq-time">${esc(stamp)}</span>` +
         `<span class="tq-actions">${actions}</span>` +
       `</div>` +
-      stepsBlock +
     `</div>`;
   }
   function attachTaskDrag(stackEl) {
@@ -554,9 +518,8 @@
     // time bucket too — otherwise "up 4m" would sit frozen until a status
     // changed. Per-10s granularity keeps the re-render rate at the poll rate.
     const bucket = Math.floor(Date.now() / 10000);
-    const stepSig = (t) => (Array.isArray(t.steps) ? t.steps.map((s) => s.job_id + ':' + s.status).join(',') : '');
-    const sig = active.map((t) => t.id + ':' + t.status + ':' + stepSig(t)).join('|') + '#' +
-      backlog.map((t) => t.id + ':' + stepSig(t)).join('|') + '@' + (active.length ? bucket : 0);
+    const sig = active.map((t) => t.id + ':' + t.status).join('|') + '#' +
+      backlog.map((t) => t.id).join('|') + '@' + (active.length ? bucket : 0);
     if (taskDragInProgress || sig === STATE.taskSig) return;
     STATE.taskSig = sig;
 
@@ -575,78 +538,10 @@
     }
   }
 
-  // ── Memory brain ──
-  // Two sources, merged newest-first: the live activity ring (writes + recalls
-  // as they happen, process-local so it empties on restart) and the durable
-  // filed-facts list, which is what the panel falls back to so a fresh boot
-  // still shows what Warden knows rather than an empty box.
-  async function renderMemoryBrain() {
-    const box = $('memBrain');
-    if (!box) return;
-    let events = [], running = false, facts = [];
-    try {
-      const a = await api('/api/memory-tree/activity');
-      events = Array.isArray(a.events) ? a.events : [];
-      running = !!a.running;
-    } catch (e) { /* fail quiet — the panel is informational */ }
-    try {
-      const t = await api('/api/memory-tree');
-      facts = Array.isArray(t.facts) ? t.facts : [];
-    } catch (e) { /* ditto */ }
-
-    const dot = $('memDot');
-    if (dot) dot.classList.toggle('live', running);
-    const count = $('memFactCount');
-    if (count) count.textContent = facts.length;
-
-    const rows = [];
-    for (const ev of events.slice(-14).reverse()) {
-      const kind = ev.kind === 'recall' ? 'recall' : 'write';
-      rows.push({
-        kind,
-        path: kind === 'recall' ? 'recall' : String(ev.path || ''),
-        text: String(kind === 'recall' ? (ev.query || '') : (ev.fact || '')),
-        ago: ev.ts ? tqAgo(new Date(ev.ts).toISOString()) : '',
-      });
-    }
-    // Nothing live yet — show the most recently filed facts instead.
-    if (!rows.length) {
-      // The filed-facts API returns {path, fact, ts} — NOT the {p, f} shape the
-      // classifier uses internally, which is why every fallback row rendered
-      // blank while the count said 402.
-      for (const f of facts.slice(-14).reverse()) {
-        rows.push({
-          kind: 'write',
-          path: String(f.path || f.p || ''),
-          text: String(f.fact || f.f || ''),
-          ago: f.ts ? tqAgo(typeof f.ts === 'number' ? new Date(f.ts).toISOString() : String(f.ts)) : '',
-        });
-      }
-    }
-    if (!rows.length) {
-      box.innerHTML = '<div class="tq-empty">Nothing filed yet.</div>';
-      return;
-    }
-    box.innerHTML = rows.map((r) =>
-      `<div class="mem-row ${esc(r.kind)}">` +
-        `<span class="mem-kind">${r.kind === 'recall' ? '⌁' : '+'}</span>` +
-        `<span class="mem-body">` +
-          (r.path ? `<span class="mem-path">${esc(r.path)}</span>` : '') +
-          `<span class="mem-text">${esc(r.text)}</span>` +
-        `</span>` +
-        (r.ago ? `<span class="mem-ago">${esc(r.ago)}</span>` : '') +
-      `</div>`).join('');
-  }
-
   function startStatusPolling() {
     if (STATE.statusTimer) clearInterval(STATE.statusTimer);
     pollStatus();
     STATE.statusTimer = setInterval(pollStatus, 5000);
-    // The memory panel is two extra requests, so it runs on its own slower
-    // timer rather than riding the 5s status poll.
-    renderMemoryBrain();
-    if (STATE.memTimer) clearInterval(STATE.memTimer);
-    STATE.memTimer = setInterval(renderMemoryBrain, 15000);
   }
 
   // ============================================================= Chat
