@@ -13,6 +13,11 @@ set -euo pipefail
 
 MERGED="${1:-$(dirname "$0")/toolcall-lora-merged}"
 NAME="${2:-toolcall-ft}"
+# Modelfile donor: the stock model whose TEMPLATE + PARAMETER block the packed
+# model reuses, so Ollama parses its tool calls the same way. It must MATCH the
+# base the adapter was trained on — granite4.2:3b for the iris toolcall model,
+# and atlasorch.sh passes granite4.2:8b for the merged seat.
+BASE_TEMPLATE_MODEL="${BASE_TEMPLATE_MODEL:-${3:-granite4.2:3b}}"
 LLAMA_CPP="${LLAMA_CPP:-$HOME/src/llama.cpp}"
 WORK="$(dirname "$0")"
 # convert_hf_to_gguf.py imports torch/transformers/numpy/gguf — use the venv
@@ -37,13 +42,13 @@ fi
 echo "==> converting HF → GGUF (f16)"
 "$PY" "$LLAMA_CPP/convert_hf_to_gguf.py" "$MERGED" --outtype f16 --outfile "$F16"
 
-echo "==> quantizing → Q4_K_M (matches stock granite4.2:3b)"
+echo "==> quantizing → Q4_K_M (matches stock $BASE_TEMPLATE_MODEL)"
 "$LLAMA_CPP/llama-quantize" "$F16" "$Q4" Q4_K_M
 
-echo "==> building Modelfile from stock granite4.2:3b (reusing TEMPLATE + PARAMETERs)"
+echo "==> building Modelfile from stock $BASE_TEMPLATE_MODEL (reusing TEMPLATE + PARAMETERs)"
 # Take the stock modelfile and swap only the FROM line to point at the new GGUF.
 # The TEMPLATE block is the Granite tool-call template Ollama already parses.
-ollama show granite4.2:3b --modelfile \
+ollama show "$BASE_TEMPLATE_MODEL" --modelfile \
   | sed -E "s|^FROM .*|FROM $Q4|" > "$MODFILE"
 
 echo "==> ollama create $NAME"

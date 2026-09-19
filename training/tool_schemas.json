@@ -1109,6 +1109,119 @@
     {
       "type": "function",
       "function": {
+        "name": "api_request",
+        "description": "Call any external API with automatic key injection. The system injects stored API keys automatically — never hardcode keys. Use list_api_keys first to discover available services.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key_type": {
+              "type": "string",
+              "description": "API key name from list_api_keys (e.g. \"openai\", \"github\", \"slack\")"
+            },
+            "method": {
+              "type": "string",
+              "description": "HTTP method: GET, POST, PUT, PATCH, DELETE (default GET)"
+            },
+            "path": {
+              "type": "string",
+              "description": "API endpoint path (e.g. \"/v1/chat/completions\" or full URL)"
+            },
+            "body": {
+              "type": "string",
+              "description": "JSON request body as string"
+            },
+            "description": {
+              "type": "string",
+              "description": "What this request does (for logging)"
+            }
+          },
+          "required": [
+            "key_type",
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_api_keys",
+        "description": "List the user's configured API keys. Returns names and base URLs. Use to discover what services are available.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "attach_file",
+        "description": "Send a file to the chat as a downloadable attachment.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative path to file"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "file",
+                "image"
+              ],
+              "description": "file for download, image for inline"
+            },
+            "message": {
+              "type": "string",
+              "description": "Optional message with file"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "clear_context",
+        "description": "Clear conversation history and start fresh. Keeps the system prompt. Use when context is confused, polluted, or you need a clean slate.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Why context is being cleared"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fabric_pattern",
+        "description": "Load an expert prompt pattern from the Fabric prompt library by name (e.g. \"summarize\", \"analyze_claims\", \"extract_wisdom\"). Returns the full system prompt for that pattern — follow its instructions to perform the task at expert level. Use when a listed RELEVANT PATTERN fits the current task.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Pattern name, e.g. \"summarize\" or \"analyze_claims\" (snake_case directory name)"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "vulkan",
         "description": "Delegate to Vulkan for code and build/test work. Vulkan ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:\"blocking\".",
         "parameters": {
@@ -1140,6 +1253,52 @@
             "task": {
               "type": "string",
               "description": "A structured brief and nothing else — no preamble, no explanation, and no time (the runner prepends the current local time). One line: \"TASK: <one imperative sentence naming the outcome>\". Every id, address, filename and value the sentence needs goes INLINE in that sentence. Example:\nTASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "artemis",
+        "description": "Delegate to Artemis for a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important. Artemis ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:\"blocking\".",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order."
+            },
+            "urgent": {
+              "type": "boolean",
+              "description": "Inject the result into your context immediately when it finishes, even mid-task (default false)."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "sentry",
+        "description": "Delegate to Sentry for security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.. Sentry ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:\"blocking\".",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order."
+            },
+            "urgent": {
+              "type": "boolean",
+              "description": "Inject the result into your context immediately when it finishes, even mid-task (default false)."
             }
           },
           "required": [
@@ -1315,6 +1474,288 @@
           "required": [
             "query"
           ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "council",
+        "description": "Convene The Council — three Artemis instances (Skeptic, Pragmatist, Synthesist) deliberate in parallel on the same question from three different angles. Each round, all three answers are shared and each seat re-evaluates independently. The loop repeats until all three agree on a single answer (or max_rounds is hit). Use for high-stakes questions where you want a council consensus rather than a single answer. Slower than a single delegate call — expect 1-3 minutes.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "The question for The Council to deliberate on. Self-contained — no chat history available to the seats."
+            },
+            "max_rounds": {
+              "type": "number",
+              "description": "Maximum deliberation rounds. Default 4, capped at 15. Each round spawns 3 parallel Artemis calls; seats argue, disagree, present new points, and work toward one answer all three can endorse."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "council_status",
+        "description": "Peek at what The Council is doing right now. Returns the deliberation status (round in progress, elapsed time) and each seat's answer from the completed rounds, or the outcome if it already finished. Use when the user asks how the council is doing, what it is thinking, or whether it is done. Read-only — does not interrupt the deliberation.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "atlas_background",
+        "description": "Run work in the BACKGROUND as a copy of yourself, on your own model and tools, when it is too long for a chat turn (minutes of browsing, a multi-step build). The result arrives in your inbox and you keep talking meanwhile. For anything you can finish in this turn, just do it yourself with your tools instead.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, where to look, how to code, or tool names."
+            },
+            "urgent": {
+              "type": "boolean",
+              "description": "Inject the result into your context immediately when it finishes, even mid-task (default false)."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "activate_skill",
+        "description": "Load a skill's tools into your context for this turn. Call this before using any tool that is not in your current tool list. The skill index in your system prompt lists the available names.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Skill name from the skill index"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "deactivate_skill",
+        "description": "Drop a previously-activated skill's tools from your context.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Skill name to deactivate"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_skills",
+        "description": "Re-list the skill index (useful after install_mcp_server or create_skill, which add skills that appear on the next turn).",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "install_mcp_server",
+        "description": "Register a new MCP server (written to data/mcp-servers.json). Available as a skill on the next turn.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "description": "Optional env vars for the subprocess"
+            }
+          },
+          "required": [
+            "name",
+            "command",
+            "args"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "uninstall_mcp_server",
+        "description": "Remove an MCP server from data/mcp-servers.json. Takes effect next turn.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_skill",
+        "description": "Create a new user-defined skill by writing data/skills/<name>/SKILL.md. Use this to package a multi-step workflow the user just completed with you so it can be repeated for similar future tasks. Available on the next turn. Prefer the structured fields (when_to_use, parameters, example_prompt, steps) over a freeform instructions string — they produce a SKILL.md the next session can actually follow.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Alphanumeric + dashes only, 1-64 chars. Pick a name that describes the workflow, e.g. \"deploy-nightly\" or \"triage-inbox\"."
+            },
+            "description": {
+              "type": "string",
+              "description": "One-line description of what the skill does."
+            },
+            "when_to_use": {
+              "type": "string",
+              "description": "When this skill should be activated. One or two sentences describing the trigger conditions / user intent that maps to this workflow."
+            },
+            "parameters": {
+              "type": "array",
+              "description": "Inputs the workflow expects from the user at repeat time. Each entry: { name, description, example }.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Parameter name (lowercase, words separated by dashes or underscores)."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "What this parameter means."
+                  },
+                  "example": {
+                    "type": "string",
+                    "description": "A concrete example value the user might supply."
+                  }
+                },
+                "required": [
+                  "name",
+                  "description"
+                ]
+              }
+            },
+            "steps": {
+              "type": "array",
+              "description": "Ordered list of concrete steps that make up the workflow. Each step is what you would do, in order, to take a fresh user request from start to finish.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "description": "What this step does in plain language."
+                  },
+                  "tool": {
+                    "type": "string",
+                    "description": "Tool or sub-agent you would call (e.g. \"Bash\", \"atlas\", \"read_file\"). Leave empty if no tool call."
+                  },
+                  "key_args": {
+                    "type": "string",
+                    "description": "Key arguments the tool call needs, with placeholders for parameters in {{param}} form (e.g. \"git checkout {{branch_name}}\")."
+                  }
+                },
+                "required": [
+                  "description"
+                ]
+              }
+            },
+            "example_prompt": {
+              "type": "string",
+              "description": "A concrete user prompt that would trigger this skill, written as if the user said it. Helps future-you recognize the workflow."
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Tool names this skill exposes (currently informational — leave empty for instruction-only skills)."
+            },
+            "instructions": {
+              "type": "string",
+              "description": "Optional freeform body of the SKILL.md. If you fill the structured fields above, this is rarely needed — use it only for notes that do not fit anywhere else."
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__marm__marm_log_entry",
+        "description": "\n    📝 Write a log entry to the active session.\n\n    Entries are stored with a date, topic, and summary. If `entry` begins with\n    \"Session: [name]\" or \"Topic: [name]\", the active session switches to that name\n    and all subsequent entries route there automatically. Entries are also stored\n    as semantic memories so marm_smart_recall can find them.\n\n    Entry format: YYYY-MM-DD-topic-summary (date prefix is optional; auto-tagged if omitted)\n\n    Parameters:\n    - entry: the text to log; plain text or prefixed with \"Session:\" / \"Topic:\" to switch sessions\n    - session_name: override the target session explicitly (optional; active session used if omitted)\n\n    Returns: status, message confirming the entry or session switch, entry_id, memory_id\n    ",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "entry": {
+              "type": "string",
+              "title": "Entry"
+            },
+            "session_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Session Name"
+            }
+          },
+          "required": [
+            "entry"
+          ],
+          "title": "marm_log_entryArguments"
         }
       }
     }
