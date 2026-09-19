@@ -72,7 +72,8 @@
   .council-grid { grid-template-columns: 1fr; }
   .agent-grid { grid-template-columns: 1fr; }
   .skill-grid { grid-template-columns: 1fr; }
-  .mcp-row { grid-template-columns: 1fr auto; }
+  /* .mcp-row is flex now (was flex with a stray grid rule that did nothing);
+     at narrow widths let the command/meta line shrink — it already ellipsizes. */
 
   /* Chat header wraps instead of overflowing. */
   .chat-meta-row { flex-wrap: wrap; row-gap: 6px; }
@@ -99,6 +100,9 @@
 @media (max-width: 820px) {
   .pim-mail-row { grid-template-columns: 1fr; }
   .pim-cal-grid { grid-template-columns: repeat(7, minmax(84px, 1fr)); }
+  /* Skills view: the two-column add-server / add-skill forms get cramped in
+     portrait — stack their fields. */
+  .mcp-add-form { grid-template-columns: 1fr; }
 
   /* Notes: stack the list above the editor. */
   #view-notes .notes-main { flex-direction: column; }

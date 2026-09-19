@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { registry } from '../tool-registry.js';
 import { writeCallback } from '../index.js';
-import { writeIpcFile, waitForResult, TASKS_DIR, resolveUserPath } from '../ipc-helpers.js';
+import { resolveUserPath } from '../ipc-helpers.js';
 
 // --- Chat tools ---
 registry.register({
@@ -76,27 +76,4 @@ registry.register({
     },
     toolset: 'chat',
     tier: 'both',
-});
-
-registry.register({
-    name: 'set_user_email',
-    description: "Set the user's email address for password resets and notifications.",
-    schema: {
-        type: 'object',
-        properties: { email: { type: 'string', description: 'Email address to set' } },
-        required: ['email'],
-    },
-    handler: async (args, _context) => {
-        const email = args.email?.trim();
-        if (!email) return 'Error: email is required';
-        writeIpcFile(TASKS_DIR, { type: 'set_user_email', email, timestamp: new Date().toISOString() });
-        const data = await waitForResult('set-email-');
-        if (data) {
-            if (data.error) return `Error: ${data.error}`;
-            return 'Email updated to ' + email;
-        }
-        return 'Email update timed out.';
-    },
-    toolset: 'chat',
-    tier: 'public',
 });

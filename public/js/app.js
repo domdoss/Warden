@@ -916,6 +916,11 @@
         <div class="hint">Which tool does each job. Warden ships a built-in provider for each capability; an installed MCP server can take one over. Choosing a server <b>replaces</b> the built-in rather than sitting beside it — one provider per job, so there is never a choice to get wrong.</div>
         <div id="defaultAppsRows"><div class="dim mono" style="font-size:11px">Loading…</div></div>
         <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveDefaultApps">Save</button><span class="status" id="defaultAppsStatus"></span></div>
+        <div class="section-divider">Pinned tools</div>
+        <div class="hint">Tools exempt from relevance ranking — always in the pool the agent sees, whatever the ask. Pin a tool whose description loses the user's words to generic ones. The list is the live tool pool; picking replaces typing.</div>
+        <div class="pin-chips" id="pinChips"></div>
+        <div class="pin-add-row"><select class="select" id="pinAddSelect"><option value="">Add a tool…</option></select></div>
+        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSavePinnedTools">Save pins</button><span class="status" id="pinnedToolsStatus"></span></div>
       </div>
 
       <div class="setting-card">
@@ -1190,6 +1195,42 @@
         return '<div class="setting-row"><label>' + esc(cap) + '</label>'
           + '<select class="select" data-defaultapp="' + escAttr(cap) + '">' + opts.join('') + '</select></div>';
       }).join('');
+    })();
+    // Pinned tools: chips for what's pinned (click × to unpin), a select over
+    // the live tool pool to add (never free text), own save button posting
+    // pinned_tools. Pins not in the pool (e.g. MCP tools pinned via the API)
+    // still render as chips so nothing is silently dropped.
+    (function () {
+      const box = $('pinChips'); if (!box) return;
+      const sel = $('pinAddSelect'); if (!sel) return;
+      let pins = Array.isArray(d.pinnedTools) ? d.pinnedTools.slice() : [];
+      const pool = Array.isArray(d.toolPool) ? d.toolPool : [];
+      const render = () => {
+        box.innerHTML = pins.length
+          ? pins.map(p => '<span class="pin-chip">' + esc(p) +
+              '<span class="del" data-pin-del="' + escAttr(p) + '" title="Unpin">×</span></span>').join('')
+          : '<span class="dim mono" style="font-size:11px">Nothing pinned — every tool competes on relevance each turn.</span>';
+        sel.innerHTML = '<option value="">Add a tool…</option>' +
+          pool.filter(t => !pins.includes(t)).map(t => '<option value="' + escAttr(t) + '">' + esc(t) + '</option>').join('');
+        sel.value = '';
+      };
+      render();
+      sel.onchange = () => { const v = sel.value; if (v && !pins.includes(v)) { pins.push(v); render(); } };
+      box.onclick = (e) => {
+        const del = e.target.closest('[data-pin-del]'); if (!del) return;
+        pins = pins.filter(p => p !== del.dataset.pinDel); render();
+      };
+      const btn = $('btnSavePinnedTools');
+      if (btn) btn.onclick = async () => {
+        const st = $('pinnedToolsStatus');
+        if (st) st.textContent = 'Saving…';
+        try {
+          await postJson('/api/settings', { pinned_tools: pins });
+          if (st) st.textContent = 'Saved — applies to the next agent dispatch.';
+        } catch (e) {
+          if (st) st.textContent = 'Failed: ' + (e && e.message ? e.message : e);
+        }
+      };
     })();
     // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
     $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
@@ -2104,10 +2145,9 @@
           '<div>' +
             '<div class="name">' + esc(s.name) + '</div>' +
             '<div class="meta" title="' + escAttr(meta) + '">' + meta + '</div>' +
+            desc +
           '</div>' +
-          '<span></span>' +
           '<span class="del" data-mcp-del="' + escAttr(s.name) + '" title="Remove server">×</span>' +
-          desc +
           '</div>';
       }).join('');
     } catch (e) {

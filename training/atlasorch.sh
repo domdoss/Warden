@@ -23,6 +23,7 @@
 #   GRAD_ACCUM   gradient accumulation steps            (default: 2)
 #   EPOCHS       passes over the data                   (trainer default if unset)
 #   REMERGE      1 = re-run the parts merge first       (default: 1)
+#   SMOKE        1 = 2 optimizer steps, then stop        (default: 0)
 #   SKIP_PACK    1 = stop after training                (default: 0)
 #   UNLOAD_OLLAMA 0 = keep resident Ollama models       (default: 1)
 #   LLAMA_CPP    path to a built llama.cpp checkout     (default: ~/src/llama.cpp)
@@ -37,6 +38,7 @@
 #
 # Usage:
 #   ./atlasorch.sh
+#   SMOKE=1 ./atlasorch.sh              # 2 steps only, to prove it fits in VRAM
 #   SKIP_PACK=1 ./atlasorch.sh          # train only
 #   MAX_LEN=11904 ./atlasorch.sh        # skip the measuring pass
 #   REMERGE=0 ./atlasorch.sh            # train the jsonl exactly as it stands
@@ -104,7 +106,10 @@ if [ -n "${MAX_LEN:-}" ]; then
   phase "MAX_LEN=$MAX_LEN (given — skipping the measuring pass)"
 else
   phase "measuring sequence lengths on the $BASE_MODEL tokenizer"
-  seqline="$("$PY" check_seqlen.py "$DATA" "$BASE_MODEL" 2>/dev/null | tail -1)"
+  # Measured by the TRAINER itself (--measure-only), not by check_seqlen.py:
+  # check_seqlen imports the iris trainer's renderer, and these are two separate
+  # jobs now — the cap must come from the exact renderer that builds the batches.
+  seqline="$("$PY" atlasorch.py --measure-only --data "$DATA" --model "$BASE_MODEL" 2>/dev/null | tail -1)"
   echo "$seqline"
   measured="$(printf '%s' "$seqline" | sed -nE 's/.*max=([0-9]+).*/\1/p')"
   if [ -z "$measured" ]; then
@@ -146,12 +151,18 @@ TRAIN_ARGS=(
   --grad-accum "$GRAD_ACCUM"
 )
 [ -n "${EPOCHS:-}" ] && TRAIN_ARGS+=(--epochs "$EPOCHS")
+# SMOKE=1 runs two optimizer steps and stops — the cheap way to find out that a
+# step does not fit before spending hours discovering it at step 0.
+if [ "${SMOKE:-0}" = "1" ]; then
+  TRAIN_ARGS+=(--max-steps 2)
+  SKIP_PACK=1
+fi
 
 phase "training orchatlas LoRA across $NPROC GPU(s) (max-len $MAX_LEN, batch $BATCH × accum $GRAD_ACCUM)"
 if [ "$NPROC" -gt 1 ]; then
-  "$VENV/bin/torchrun" --nproc_per_node="$NPROC" train_iris_lora.py "${TRAIN_ARGS[@]}"
+  "$VENV/bin/torchrun" --nproc_per_node="$NPROC" atlasorch.py "${TRAIN_ARGS[@]}"
 else
-  "$PY" train_iris_lora.py "${TRAIN_ARGS[@]}"
+  "$PY" atlasorch.py "${TRAIN_ARGS[@]}"
 fi
 
 # ---- 5. pack to Ollama ---------------------------------------------------

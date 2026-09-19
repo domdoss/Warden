@@ -112,6 +112,13 @@ export async function ensureChrome(): Promise<void> {
     const chromeArgs = [
         `--remote-debugging-port=${CDP_PORT}`,
         `--user-data-dir=${profileDir}`,
+        // Chrome stores its cookie/credential encryption key in the system keyring
+        // (kwallet here). This service starts Chrome before the graphical session has
+        // unlocked kwallet, so Chrome cannot decrypt its own store and falls back to
+        // asking Google to "verify it's you" — every reboot, in a blue window.
+        // `basic` uses Chrome's own file-backed store instead, removing the keyring
+        // dependency entirely. Site logins persist; only the keyring handoff changes.
+        '--password-store=basic',
         '--no-first-run',
         '--no-default-browser-check',
         // Suppress the recurring "Verify it's you" Google-account sync re-auth

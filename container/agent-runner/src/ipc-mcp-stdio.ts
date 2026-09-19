@@ -10,7 +10,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
-import { resolveInsideWorkspace, WorkspaceBoundaryError } from './workspace-boundary.js';
+import { resolveInsideWorkspace } from './workspace-boundary.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -87,14 +87,9 @@ async function writeCallbackAsync(tool: string, args: unknown, timeoutMs = 30000
   });
 }
 
-/** Resolve a workspace-relative path, returning a boundary error message on failure. */
-function safeResolve(inputPath: string): { ok: true; path: string } | { ok: false; error: string } {
-  try {
-    return { ok: true, path: resolveInsideWorkspace(inputPath) };
-  } catch (e) {
-    if (e instanceof WorkspaceBoundaryError) return { ok: false, error: e.message };
-    throw e;
-  }
+/** Resolve a path (~ expansion + workspace-relative joining). Never fails. */
+function safeResolve(inputPath: string): { ok: true; path: string } {
+  return { ok: true, path: resolveInsideWorkspace(inputPath) };
 }
 
 /** Map tool names to user-friendly labels */
@@ -186,7 +181,6 @@ server.tool(
           }
         }
         const resolved = safeResolve(candidate);
-        if (resolved.ok === false) continue;
         if (!fs.existsSync(resolved.path)) continue;
         const wsRoot = process.env.WORKSPACE_ROOT
           ? path.resolve(process.env.WORKSPACE_ROOT)
@@ -1258,11 +1252,7 @@ For images, use type "image" and they'll be displayed inline. For other files, u
       }
     }
 
-    // Resolve through the workspace boundary
     const resolved = safeResolve(filePath);
-    if (resolved.ok === false) {
-      return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }] };
-    }
     if (!fs.existsSync(resolved.path)) {
       return { content: [{ type: 'text' as const, text: `Error: file not found at ${filePath}. Make sure it exists in the workspace.` }] };
     }
