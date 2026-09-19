@@ -18,6 +18,7 @@ import path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 /** Configuration for a single external MCP server. Mirrors src/mcp-registry.ts. */
 export type McpServerConfig =
@@ -34,6 +35,17 @@ export type McpServerConfig =
       name: string;
       url: string;
       transport: 'sse';
+      enabled: boolean;
+      description?: string;
+    }
+  | {
+      name: string;
+      url: string;
+      // The newer MCP transport (single POST/GET endpoint, session id header,
+      // SSE-or-JSON response) — distinct from the older two-endpoint 'sse'
+      // above. A server that speaks this directly (e.g. a browser extension's
+      // local MCP endpoint) needs no stdio bridge process at all.
+      transport: 'http';
       enabled: boolean;
       description?: string;
     };
@@ -70,14 +82,14 @@ export function loadMcpServers(configPath: string = DEFAULT_CONFIG_PATH): McpSer
 export class ExternalMcpClient {
   readonly config: McpServerConfig;
   private client: Client | null = null;
-  private transport: StdioClientTransport | SSEClientTransport | null = null;
+  private transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport | null = null;
   private connected = false;
 
   constructor(config: McpServerConfig) {
     this.config = config;
   }
 
-  /** Connect to the server (spawn subprocess for stdio, HTTP connect for sse). */
+  /** Connect to the server (spawn subprocess for stdio, HTTP connect for sse/http). */
   async connect(): Promise<void> {
     if (this.connected) return;
 
@@ -86,6 +98,10 @@ export class ExternalMcpClient {
 
     if (this.config.transport === 'sse') {
       const transport = new SSEClientTransport(new URL(this.config.url));
+      this.transport = transport;
+      await client.connect(transport);
+    } else if (this.config.transport === 'http') {
+      const transport = new StreamableHTTPClientTransport(new URL(this.config.url));
       this.transport = transport;
       await client.connect(transport);
     } else {
@@ -174,7 +190,7 @@ export class ExternalMcpClient {
 export async function loadExternalMcpClients(
   configPath: string = DEFAULT_CONFIG_PATH,
 ): Promise<ExternalMcpClient[]> {
-  const configs = loadMcpServers(configPath).filter((c) => c.enabled && (c.transport === 'stdio' || c.transport === 'sse'));
+  const configs = loadMcpServers(configPath).filter((c) => c.enabled && (c.transport === 'stdio' || c.transport === 'sse' || c.transport === 'http'));
   // Connect to every server in parallel. Serial connect was the dominant
   // cold-start delay (npx/uvx spawn + handshake per server, plus broken
   // servers eating their full timeout one after another). Parallel cuts the

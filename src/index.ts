@@ -2072,9 +2072,6 @@ async function processOwnerMessages(): Promise<void> {
     showThinking: getRouterState(`thinking:${OWNER_JID}`)
       || getRouterState('local:thinking')
       || 'true',
-    // Agent mode: 'few' (default) = direct mode, the seat does the work with
-    // its own hands; 'many' = orchestrator mode, it routes work to the fleet.
-    agentMode: (getRouterState('local:agent_mode') === 'many' ? 'many' : 'few'),
     verbose: true,
   };
 
@@ -3176,9 +3173,12 @@ function seedPerAgentModelSettings(): void {
   // agents: Iris, Sentry). ctx is NOT seeded — settings only.
   seed('local:subagent_model', toolcall);
   // Orchestrator has historically been resident (keep_alive -1); materialize that
-  // as the default so the checkbox reflects reality. Toolcall/Atlas stay unset →
-  // the runner defaults to 300 (their historic sub-agent TTL).
+  // as the default so the checkbox reflects reality. Atlas IS the seat now, so
+  // it gets the same resident default (it used to silently mirror orchestrator's
+  // value instead of having its own — fixed 2026-09-19). Toolcall stays unset →
+  // the runner defaults to 300 (its historic sub-agent TTL).
   seed('local:orch_keep_alive', '-1');
+  seed('local:atlas_keep_alive', '-1');
   seed('local:sentry_keep_alive', '300');
   // New per-agent model keys inherit the legacy shared value.
   seed('iris:model', toolcall);
@@ -3194,9 +3194,6 @@ function seedPerAgentModelSettings(): void {
   // Supervisor completion verdict: on by default. Large local models
   // routinely spend 10-30 min on one task. The user can toggle it off in settings.
   seed('supervisor:enabled', 'true');
-  // Agent mode: 'few' (direct execution) is the merged seat's design default;
-  // 'many' (orchestrator) is a dashboard toggle, never a silent flip.
-  seed('local:agent_mode', 'few');
 }
 
 /**
@@ -3230,7 +3227,7 @@ export function syncAgentCtxEnv(): void {
   process.env.VISION_MODEL = getRouterState('vision:model') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
-  process.env.ATLAS_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
+  process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
   process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
   process.env.SENTRY_KEEP_ALIVE = getRouterState('local:sentry_keep_alive') || '';
 }
@@ -3260,6 +3257,13 @@ async function warmResidentOllamaModels(): Promise<void> {
 
   const candidates = [
     getRouterState('orchestrator:model'),
+    // Atlas IS the chat seat — it needs warming too, or the first real message
+    // pays a cold load while Orchestrator's model (which never replies unless
+    // Atlas is blank) sits resident instead. Gated on its own keep-alive like
+    // toolcall below, not unconditional like Orchestrator's.
+    getRouterState('local:atlas_keep_alive') === '-1'
+      ? getRouterState('atlas:model')
+      : '',
     getRouterState('local:toolcall_keep_alive') === '-1'
       ? getRouterState('local:subagent_model')
       : '',
@@ -3284,6 +3288,10 @@ async function warmResidentOllamaModels(): Promise<void> {
         }
         if (m === (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim()) {
           const n = parseInt(getRouterState('local:orchestrator_ctx') || '', 10);
+          return n > 0 ? n : undefined;
+        }
+        if (m === (getRouterState('atlas:model') || '').replace(/^local:/, '').trim()) {
+          const n = parseInt(getRouterState('local:atlas_ctx') || getRouterState('local:orchestrator_ctx') || '', 10);
           return n > 0 ? n : undefined;
         }
         return undefined;

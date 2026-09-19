@@ -4,10 +4,16 @@ import { fileURLToPath } from 'url';
 
 export interface McpServerConfig {
   name: string;
-  command: string;
-  args: string[];
+  // stdio only: the subprocess to spawn.
+  command?: string;
+  args?: string[];
   env?: Record<string, string>;
-  transport: 'stdio';
+  // sse/http only: the remote endpoint. 'http' is the newer MCP Streamable
+  // HTTP transport (one endpoint, no bridge subprocess needed) — used for a
+  // server that already speaks MCP natively over HTTP, e.g. a browser
+  // extension's local endpoint. 'sse' is the older two-endpoint transport.
+  url?: string;
+  transport: 'stdio' | 'sse' | 'http';
   enabled: boolean;
   /** Optional human-readable description shown to the agent in the skill index.
    * When omitted, a generic "MCP server <name> (<command> <args>)" line is used. */

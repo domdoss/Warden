@@ -389,7 +389,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<Skill
       skills.push({
         name: client.config.name,
         description: client.config.description ??
-          (client.config.transport === 'sse'
+          (client.config.transport === 'sse' || client.config.transport === 'http'
             ? `MCP server ${client.config.name} (${client.config.url})`
             : `MCP server ${client.config.name} (${client.config.command} ${client.config.args.join(' ')})`),
         source: 'mcp',
