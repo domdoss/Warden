@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { AgentInput, AgentOutput } from './types.js';
 import { logger } from './logger.js';
+import { getRouterState } from './db.js';
 
 // IPC input directory — matches the agent runner's IPC_DIR/input path
 const IPC_INPUT_DIR = path.join(
@@ -133,16 +134,28 @@ export function runSubAgentBackground(input: AgentRunInput): void {
     logger.warn({ err, agent: agentName }, `bg-agent[${agentName}]: spawn error`);
   });
 
+  // ctx comes from SETTINGS, in the payload, per spawn. It used to travel only
+  // as an inherited environment variable, and this payload — the one every
+  // background atlas job is spawned with — carried no ctx at all, so the child
+  // fell through to "no override" and Ollama picked its own window: atlas ran
+  // at 32k while `local:atlas_ctx` said 65536, and the mismatch relaunched the
+  // same model at a second context size (2026-09-18). The value the user saved
+  // is read here and handed over explicitly.
+  const agentCtx = (getRouterState(`local:${agentName}_ctx`) || '').trim();
+  const maxOutputTokens = (getRouterState('local:max_output_tokens') || '').trim();
   const payload = JSON.stringify({
     agent: agentName,
     prompt: input.prompt,
     model: input.model,
+    agentCtx,
+    maxOutputTokens,
     workspaceRoot: input.workspaceRoot,
     chatJid: input.chatJid || 'owner@local',
     groupFolder: input.groupFolder || 'owner',
     isMain: input.isMain ?? true,
     timeoutMs: input.timeoutMs,
   });
+  logger.info({ agent: agentName, model: input.model, ctx: agentCtx || '(settings blank)' }, `bg-agent[${agentName}]: settings for this spawn`);
   logger.info({ agent: agentName, payloadLen: payload.length }, `bg-agent[${agentName}]: spawning`);
   try { child.stdin.write(payload); } catch (err) { logger.warn({ err }, `bg-agent[${agentName}]: stdin write failed`); }
 }
@@ -891,7 +904,9 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             type: 'message',
             text: input.prompt,
             showThinking: input.showThinking,
+            agentMode: input.agentMode,
             verbose: input.verbose,
+            maxOutputTokens: input.maxOutputTokens || '',
             orchestratorModel: input.orchestratorModel,
             model: input.model,
             vulkanModel: input.vulkanModel,
@@ -909,6 +924,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             orchestratorCtx: process.env.ORCHESTRATOR_NUM_CTX || '',
             subagentCtx: process.env.SUBAGENT_NUM_CTX || '',
             atlasCtx: process.env.ATLAS_NUM_CTX || '',
+            visionModel: process.env.VISION_MODEL || '',
             toolsCtx: process.env.TOOLS_NUM_CTX || '',
             mercuryCtx: process.env.MERCURY_NUM_CTX || '',
             irisCtx: process.env.IRIS_NUM_CTX || '',
@@ -950,6 +966,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
 
     const payload = JSON.stringify({
       prompt: input.prompt,
+      maxOutputTokens: input.maxOutputTokens || '',
       orchestratorModel: input.orchestratorModel,
       model: input.model,
       vulkanModel: input.vulkanModel,
@@ -969,6 +986,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       timeoutMs: input.timeoutMs,
       memoryContext: input.memoryContext,
       showThinking: input.showThinking,
+      agentMode: input.agentMode,
       verbose: input.verbose,
     });
     logger.info({ payloadLen: payload.length, historyLen: input.history?.length ?? 0 }, 'agent-spawn: writing payload to child stdin');

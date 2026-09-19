@@ -3,7 +3,7 @@
 # For a fresh PC that pulled the repo: the adapter (toolcall-lora/) is in
 # git, the merged model is NOT (6.4 GB, ignored). This rebuilds it:
 #
-#   base (ibm-granite/granite-4.1-3b) + toolcall-lora/ → toolcall-lora-merged/
+#   base (ibm-granite/granite-4.2-3b) + toolcall-lora/ → toolcall-lora-merged/
 #
 # then pack as usual:
 #   export LLAMA_CPP=~/src/llama.cpp
@@ -14,7 +14,7 @@ set -euo pipefail
 WORK="$(cd "$(dirname "$0")" && pwd)"
 ADAPTER="${1:-$WORK/toolcall-lora}"
 OUT="${2:-$WORK/toolcall-lora-merged}"
-BASE="${3:-ibm-granite/granite-4.1-3b}"
+BASE="${3:-ibm-granite/granite-4.2-3b}"
 
 if [ ! -f "$ADAPTER/adapter_model.safetensors" ]; then
   echo "ERROR: adapter not found at $ADAPTER" >&2

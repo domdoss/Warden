@@ -5,7 +5,7 @@
 # PyTorch is installed separately with the bundled CUDA wheel (no system CUDA
 # needed) — see the README. The versions below are minimums.
 torch>=2.12
-# Pin transformers to 4.x: granite-4.1 was tested on 4.53.3, and transformers 5.x
+# Pin transformers to 4.x: granite-4.2 was tested on 4.53.3, and transformers 5.x
 # breaks apply_chat_template (returns a dict by default) and TrainingArguments
 # (warmup_ratio removed) — both would silently wreck this SFT.
 transformers>=4.53,<5

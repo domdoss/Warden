@@ -21,7 +21,7 @@
 //   fine-tune no longer covers sentry, so its cases were removed.)
 //
 //   node dryfire.mjs                      # default model toolcall-ft
-//   MODEL=granite4.1:3b node dryfire.mjs   # baseline stock model for compare
+//   MODEL=granite4.2:3b node dryfire.mjs   # baseline stock model for compare
 //   OLLAMA=http://host:11434 node dryfire.mjs
 //
 // Exits non-zero if any case fails.

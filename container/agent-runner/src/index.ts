@@ -567,6 +567,13 @@ function applySettingsSync(data: any) {
     if (data.drivingForce !== undefined) {
         DRIVING_FORCE_ID = data.drivingForce || '';
     }
+    // Agent mode (dashboard "Agent mode" select): 'few' = the merged seat
+    // does the work itself with its own hands (default); 'many' = orchestrator
+    // mode — same seat and tools, but the prompt routes work to the fleet
+    // instead of doing it itself.
+    if (data.agentMode !== undefined) {
+        AGENT_MODE = data.agentMode === 'many' ? 'many' : 'few';
+    }
     // A new context-clear marker from the host (set when the driving force
     // changes, or any explicit clear) arms the in-loop reset. Only fire on a
     // real change, not the first sight of a value.
@@ -578,13 +585,6 @@ function applySettingsSync(data: any) {
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
-    if (data.toolRouting !== undefined) {
-        TOOL_ROUTING = {};
-        const src = (data.toolRouting && typeof data.toolRouting === 'object') ? data.toolRouting : {};
-        for (const [k, v] of Object.entries(src)) {
-            if (v === 'local' || v === 'cloud') TOOL_ROUTING[k] = v as 'local' | 'cloud';
-        }
-    }
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
@@ -1042,23 +1042,6 @@ const SUBAGENT_OWNED = new Set<string>(SUBAGENTS.flatMap(s => getSubAgentToolNam
 // specialist's to delegate to. Static: atlas's toolsets never change.
 const ATLAS_OWNED = new Set<string>(getSubAgentToolNames(SUBAGENTS.find(s => s.delegate === 'atlas')!));
 const SUBAGENT_BY_DELEGATE = new Map<string, SubAgentDef>(SUBAGENTS.map(s => [s.delegate, s]));
-// Vulkan's tool set — the cloud (coding) agent. Used by the tool-routing
-// override to move tools between the local agent and the cloud agent.
-const VULKAN_OWNED = new Set<string>(getSubAgentToolNames(SUBAGENTS.find(s => s.delegate === 'vulkan')!));
-
-// Tool-routing override (settings "Tool routing — local vs cloud"): a per-tool
-// map that moves a tool between the local agent (atlas) and the cloud agent
-// (vulkan). `side` is the agent we are assembling
-// tools for: a tool routed to this side is added, one routed away is dropped.
-// Only real registry tools move; empty map = current ownership, unchanged.
-function applyToolRouting(base: Set<string>, side: 'local' | 'cloud'): Set<string> {
-    const out = new Set(base);
-    for (const [n, r] of Object.entries(TOOL_ROUTING)) {
-        if (!allToolNames.includes(n)) continue;
-        if (r === side) out.add(n); else out.delete(n);
-    }
-    return out;
-}
 
 const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'convert_file', 'api_request', 'list_api_keys',
@@ -1383,6 +1366,11 @@ setVisionModelResolver(() => (process.env.VISION_MODEL || VULKAN_MODEL || ORCHES
 let DRIVING_FORCE_ID = '';
 let CONTEXT_CLEAR_AT = '';
 let lastContextClearAt = '';
+// Agent mode (dashboard "Agent mode"): 'few' = direct mode — this seat does
+// the work with its own hands and only escalates to vulkan/iris; 'many' =
+// orchestrator mode — the same seat routes work to the fleet instead of
+// doing it itself. Synced per turn via applySettingsSync().
+let AGENT_MODE: 'few' | 'many' = 'few';
 // Council per-seat model overrides — from dashboard Council Seats dropdowns.
 // Empty string means "fall back to ATLAS_MODEL" (the default council behavior).
 let COUNCIL_MODEL_SKEPTIC = '';
@@ -1400,10 +1388,6 @@ let SUPERVISOR_MODEL = '';
 // tick was removed 2026-09-17) does not run. There is no cadence setting any
 // more: nothing ticks, so an interval had nothing to pace.
 let SUPERVISOR_ENABLED = true;
-// Tool-routing override map: tool name → 'local' | 'cloud'. Persisted in the
-// dashboard settings and re-synced each turn via applySettingsSync(). Empty =
-// current ownership (tools stay where their toolset puts them).
-let TOOL_ROUTING: Record<string, 'local' | 'cloud'> = {};
 // Live state of the most recent Council deliberation. The background council
 // loop is the only writer; the council_status tool handler only reads, so the
 // orchestrator can peek at an in-flight deliberation without touching it.
@@ -1880,17 +1864,6 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     const jobShortId = Math.random().toString(36).slice(2, 6);
     const jobId = `${delegate}-${jobShortId}`;
     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
-    // Tool-routing override: move tools between atlas (local) and vulkan (cloud).
-    // Applies to the two execution agents only — a tool routed to this side is
-    // added (from the registry), one routed to the other side is dropped.
-    if (delegate === 'atlas' || delegate === 'vulkan') {
-        const side = delegate === 'vulkan' ? 'cloud' : 'local';
-        const baseNames = new Set(tools.map((t: any) => t.function?.name).filter((n: any) => typeof n === 'string'));
-        const routed = applyToolRouting(baseNames, side);
-        const kept = tools.filter((t: any) => routed.has(t.function?.name));
-        const addedNames = [...routed].filter((n) => !baseNames.has(n));
-        tools = addedNames.length ? [...kept, ...registry.getDefinitions(addedNames)] : kept;
-    }
     // Sentry stays isolated like its SUBAGENT_TOOL_DEFS build (no BOTH_TOOL_DEFS
     // merge above): a security scanner takes no skill/MCP tools either.
     // Iris stays isolated too (2026-09-09): trained on its exact 41 tools only.
@@ -3570,7 +3543,7 @@ interface ContainerInput {
     userKeyId?: string;
     verbose?: boolean;
     showThinking?: boolean | string;
-    toolRouting?: Record<string, string>;
+    agentMode?: 'few' | 'many';
     memoryContext?: string;
     activeIdea?: string;
 }
@@ -3971,10 +3944,13 @@ const marmRecallSection = marmEnabled
         //   - scheduling "belongs to the parent scheduler" — there is no parent.
         // Rewritten on the merged copy only; the background atlas job keeps the
         // sub-agent wording it was written for.
+        const identity = AGENT_MODE === 'many'
+            ? 'You are Warden, the orchestrator. The user tells you what they need; you route the work to the fleet, track it, and answer in plain chat. Act on the first turn.'
+            : 'You are Warden. You execute. The user tells you what they need; the method is yours. Act on the first turn. You are the only voice in this chat — speak to them directly.';
         const atlasPrompt = (SUBAGENT_BY_DELEGATE.get('atlas')?.systemPrompt || '')
             .replace(
                 'You are Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn.',
-                'You are Warden. You execute. The user tells you what they need; the method is yours. Act on the first turn. You are the only voice in this chat — speak to them directly.')
+                identity)
             .replace(
                 '- Scheduling belongs to the parent scheduler. For a task that says remind or schedule: gather the values and return them.',
                 '- Reminders, alarms and scheduled tasks are iris\'s: hand the whole ask to `iris` and relay what it says.')
@@ -4001,16 +3977,25 @@ A file offered by a mail page is a download: save it and report the path.`)
                 log(`Warning: failed to load driving force "${DRIVING_FORCE_ID}" (${err?.message || err})`);
             }
         }
+        // Mode block: 'few' (dashboard "Agent mode") keeps the direct-execution
+        // escalation rules; 'many' flips the seat into orchestrator mode —
+        // same tools, but the prompt routes work to the fleet instead of
+        // doing it itself. One block or the other, never both: a
+        // contradiction between them is worse than either rule alone.
+        const modeBlock = AGENT_MODE === 'many'
+            ? '\n\n# ORCHESTRATION\n\nYou are the orchestrator: you talk to the user and route the work to the fleet. Delegate by intent — vulkan for code and builds, iris for email/calendar/reminders, atlas_background for local machine, browser and desktop work. Do only quick one-call things yourself (Bash, Read, project, chat history). Say what is running, end your turn, and report the result in a sentence or two when it lands. Never do an agent\'s work yourself when an agent exists for it.\n\n'
+              + crewBlock() + '\n'
+            : '\n\n# ESCALATION\n\nDo the work yourself with your tools — that is the job. Hand off only when the work is genuinely one of these seats\':\n\n'
+              + crewBlock()
+              + '\n\nEmail, calendar, reminders and scheduled tasks are ALWAYS iris\'s — never do those yourself.\n'
+              + 'Work too long for a chat turn (minutes of browsing, a multi-step build) → `atlas_background`, then keep talking.\n'
+              + 'Otherwise do it directly. One call per intent; the tool result is your verification.\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is
                 // added, renamed or re-scoped, which is the whole reason
                 // crewBlock exists.
-                + '\n\n# ESCALATION\n\nDo the work yourself with your tools — that is the job. Hand off only when the work is genuinely one of these seats\':\n\n'
-                + crewBlock()
-                + '\n\nEmail, calendar, reminders and scheduled tasks are ALWAYS iris\'s — never do those yourself.\n'
-                + 'Work too long for a chat turn (minutes of browsing, a multi-step build) → `atlas_background`, then keep talking.\n'
-                + 'Otherwise do it directly. One call per intent; the tool result is your verification.\n'
+                + modeBlock
                 // These three rode on the routing-core branch and would be lost
                 // here: the journal carries the user's standing instructions and
                 // learned facts, and the skill index is the only thing that
@@ -4033,8 +4018,15 @@ A file offered by a mail page is a download: save it and report the path.`)
         writeOutput({ status: 'error', result: null, error: 'No orchestrator model configured in dashboard settings (set orchestrator:model). Refusing to fall back to a hardcoded default.' });
         return;
     }
-    ORCHESTRATOR_MODEL = model;
     ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
+    AGENT_MODE = input.agentMode === 'many' ? 'many' : 'few';
+    // FEW mode drops the orchestrator and runs the chat DIRECT on atlas: the
+    // atlas model (dashboard "Atlas" row) is the chat seat. MANY mode keeps
+    // the orchestrator model as the chat seat and atlas's model is only the
+    // fleet agent's. The dashboard's "— inherit Warden —" default passes the
+    // same value for both, so the modes only split when Atlas is explicitly set.
+    if (AGENT_MODE === 'few' && ATLAS_MODEL) model = ATLAS_MODEL;
+    ORCHESTRATOR_MODEL = model;
     VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
     SUPERVISOR_MODEL = (input.supervisorModel || '').replace(/^local:/, '');
     SUPERVISOR_ENABLED = input.supervisorEnabled !== false;

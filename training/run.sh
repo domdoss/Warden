@@ -2,7 +2,7 @@
 # Full toolcall fine-tune run, end to end:
 #   venv + deps  →  train (both RTX 5000s via torchrun)  →  pack to Ollama ("toolcall-ft")
 #
-# One LoRA on Granite 4.1:3b covering the single toolcall agent, iris (byte was
+# One LoRA on Granite 4.2:3b covering the single toolcall agent, iris (byte was
 # merged in 2026-09-05; dexter before that). iris = email + digests +
 # scheduling/calendar + work management, all single-shot (one tool call per
 # request). Idempotent: re-running skips the venv, the dependency install, and

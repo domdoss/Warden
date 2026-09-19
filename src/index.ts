@@ -17,7 +17,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive } from './agent-spawn.js';
+import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive, getLiveJobs } from './agent-spawn.js';
 import { maybeClassifyMemoryTree } from './memory-tree.js';
 import {
   createTask,
@@ -2043,8 +2043,14 @@ async function processOwnerMessages(): Promise<void> {
     // killed real work. Cleared on normal completion (agent-spawn turnTimeout clear).
     timeoutMs: 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
     memoryContext,
+    // Output cap straight from settings (blank = the runner's default).
+    maxOutputTokens: (getRouterState('local:max_output_tokens') || '').trim(),
     orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
-    model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
+    // Atlas is the orchestrator seat, so a background atlas job is a background
+    // copy of it — but the dashboard "Atlas" row can pick a DIFFERENT model
+    // for background work (atlas:model). Blank = inherit the Warden model,
+    // so nothing drifts unless the user explicitly splits them.
+    model: (getRouterState('atlas:model') || getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
     vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
     // Supervisor (completion-verdict) model — blank inherits the orchestrator model in
     // the runner. No ctx row: cloud/small models use their native window.
@@ -2068,6 +2074,9 @@ async function processOwnerMessages(): Promise<void> {
     showThinking: getRouterState(`thinking:${OWNER_JID}`)
       || getRouterState('local:thinking')
       || 'true',
+    // Agent mode: 'few' (default) = direct mode, the seat does the work with
+    // its own hands; 'many' = orchestrator mode, it routes work to the fleet.
+    agentMode: (getRouterState('local:agent_mode') === 'many' ? 'many' : 'few'),
     verbose: true,
   };
 
@@ -2613,6 +2622,16 @@ export function runSentryScan(mode: 'peek' | 'deep'): { ok: boolean; error?: str
   return { ok: true };
 }
 
+/** True while any agent run is in flight — an orchestrator turn, a spontaneous
+ *  digest report-back, or a background job (atlas/vulkan/…). Sentry is
+ *  deferred while this is true: its scan loads a whole second big model
+ *  (sentry:model, ~17 GB) which evicts the resident orchestrator/atlas model
+ *  from VRAM mid-work — `keep_alive=-1` only stops idle-timeout unloads, not
+ *  VRAM eviction. So Sentry waits until the machine is actually idle. */
+function wardenBusy(): boolean {
+  return isForegroundTurnActive() || getLiveJobs().length > 0;
+}
+
 /** Scheduled-scan monitor, riding the same poll loop as checkDigestsDue().
  *  Fires runSentryScan(mode) when the live cron (from the scheduled_tasks row,
  *  so the user can edit it in the Sched UI) is due. Pause/resume via the row
@@ -2651,6 +2670,13 @@ function checkSentryDue(): void {
           // Overdue slot missed while Warden was down — advance the schedule
           // and wait for the next slot instead of catch-up firing on boot.
           logger.info({ mode: t.mode }, 'checkSentryDue: overdue slot missed while Warden was down — skipping catch-up scan, next scan at the next cron slot');
+          continue;
+        }
+        if (wardenBusy()) {
+          // Agent run in flight — skip this slot and wait for the next one.
+          // lastrun was already advanced, so it won't refire until the next
+          // cron slot.
+          logger.info({ mode: t.mode }, 'checkSentryDue: deferring scan — agent run in flight');
           continue;
         }
         logger.info({ mode: t.mode, cron }, 'checkSentryDue: firing scheduled security scan');
@@ -3137,7 +3163,7 @@ function seedPerAgentModelSettings(): void {
   const toolcall = getRouterState('local:subagent_model')
     || getRouterState('iris:model')
     || orch;
-  const atlas = getRouterState('atlas:model') || orch;
+  const atlas = orch; // atlas is the orchestrator seat
   const seed = (key: string, value: string) => {
     if (!getRouterState(key) && value) setRouterState(key, value);
   };
@@ -3154,7 +3180,6 @@ function seedPerAgentModelSettings(): void {
   seed('artemis:model', atlas);
   // Existing keys that previously fell back to orchestrator at runtime — seed
   // them too so that runtime fallback can be removed without breaking agents.
-  seed('atlas:model', orch);
   seed('vulkan:model', orch);
   seed('mercury:model', orch);
   // Supervisor (completion-verdict) model inherits the orchestrator on first boot —
@@ -3164,6 +3189,9 @@ function seedPerAgentModelSettings(): void {
   // Supervisor completion verdict: on by default. Large local models
   // routinely spend 10-30 min on one task. The user can toggle it off in settings.
   seed('supervisor:enabled', 'true');
+  // Agent mode: 'few' (direct execution) is the merged seat's design default;
+  // 'many' (orchestrator) is a dashboard toggle, never a silent flip.
+  seed('local:agent_mode', 'few');
 }
 
 /**
@@ -3176,7 +3204,8 @@ function seedPerAgentModelSettings(): void {
 export function syncAgentCtxEnv(): void {
   process.env.ORCHESTRATOR_NUM_CTX = getRouterState('local:orchestrator_ctx') || '';
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
-  process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
+  process.env.ATLAS_NUM_CTX =
+    getRouterState('local:atlas_ctx') || getRouterState('local:orchestrator_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
   // Iris has its own ctx row in Settings (local:iris_ctx). Until a per-agent
   // value is saved it inherits the shared toolcall ctx (local:subagent_ctx)
@@ -3193,9 +3222,10 @@ export function syncAgentCtxEnv(): void {
     getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.SENTRY_NUM_CTX =
     getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx') || '';
+  process.env.VISION_MODEL = getRouterState('vision:model') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
   process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
-  process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
+  process.env.ATLAS_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
   process.env.SENTRY_KEEP_ALIVE = getRouterState('local:sentry_keep_alive') || '';
 }
@@ -3225,7 +3255,6 @@ async function warmResidentOllamaModels(): Promise<void> {
 
   const candidates = [
     getRouterState('orchestrator:model'),
-    getRouterState('atlas:model'),
     getRouterState('local:toolcall_keep_alive') === '-1'
       ? getRouterState('local:subagent_model')
       : '',
@@ -3250,10 +3279,6 @@ async function warmResidentOllamaModels(): Promise<void> {
         }
         if (m === (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim()) {
           const n = parseInt(getRouterState('local:orchestrator_ctx') || '', 10);
-          return n > 0 ? n : undefined;
-        }
-        if (m === (getRouterState('atlas:model') || '').replace(/^local:/, '').trim()) {
-          const n = parseInt(getRouterState('local:atlas_ctx') || '', 10);
           return n > 0 ? n : undefined;
         }
         return undefined;

@@ -38,6 +38,8 @@ export const OWNER_JID = 'owner@local';
 
 export interface AgentInput {
   prompt: string;
+  /** Max tokens one model reply may generate (settings: local:max_output_tokens). Blank = the runner's default. */
+  maxOutputTokens?: string;
   orchestratorModel?: string; // Warden (orchestrator) model
   model?: string;             // Atlas model
   vulkanModel?: string;    // Vulkan (coding) model
@@ -60,6 +62,8 @@ export interface AgentInput {
   timeoutMs: number;
   memoryContext?: string;
   showThinking?: boolean | string;
+  /** Agent mode: 'few' (default) = direct execution by the local seat; 'many' = orchestrator mode (routes to the fleet). */
+  agentMode?: 'few' | 'many';
   verbose?: boolean;
 }
 
