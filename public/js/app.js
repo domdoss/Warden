@@ -912,6 +912,13 @@
       </div>
 
       <div class="setting-card">
+        <h3>Default apps</h3>
+        <div class="hint">Which tool does each job. Warden ships a built-in provider for each capability; an installed MCP server can take one over. Choosing a server <b>replaces</b> the built-in rather than sitting beside it — one provider per job, so there is never a choice to get wrong.</div>
+        <div id="defaultAppsRows"><div class="dim mono" style="font-size:11px">Loading…</div></div>
+        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveDefaultApps">Save</button><span class="status" id="defaultAppsStatus"></span></div>
+      </div>
+
+      <div class="setting-card">
         <h3>Model Configuration</h3>
         <div class="hint"><b>Warden</b> is the one seat you talk to: it replies <em>and</em> does the work itself — browser, desktop, files, shell, web. Long jobs run as a background copy of it, on these same settings. Supervisor runs the checks on background jobs (small/cloud model recommended). Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management, and email always routes there. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
         <div class="setting-row"><label>Warden</label>
@@ -1163,6 +1170,27 @@
     setSelect('sOculusModel', (d.oculusModel || '').replace(/^local:/, ''));
     setSelect('sMercury', d.mercuryMode || 'full');
     setSelect('sThinking', d.thinking || 'true');
+    // Default apps: one row per capability, options = built-in + every
+    // installed MCP server. The server list comes from /api/mcp-servers so a
+    // newly installed server shows up without a dashboard change.
+    (async function () {
+      const rows = $('defaultAppsRows'); if (!rows) return;
+      const caps = Array.isArray(d.defaultAppCapabilities) ? d.defaultAppCapabilities : [];
+      const chosen = d.defaultApps || {};
+      let servers = [];
+      try { servers = ((await api('/api/mcp-servers')).servers || []).filter(x => x.enabled !== false); } catch (e) { servers = []; }
+      if (!caps.length) { rows.innerHTML = '<div class="dim mono" style="font-size:11px">No capabilities registered.</div>'; return; }
+      rows.innerHTML = caps.map(cap => {
+        const cur = String(chosen[cap] || 'builtin');
+        const opts = ['<option value="builtin"' + (cur === 'builtin' ? ' selected' : '') + '>Built-in (Warden)</option>']
+          .concat(servers.map(sv => {
+            const v = 'mcp:' + sv.name;
+            return '<option value="' + escAttr(v) + '"' + (cur === v ? ' selected' : '') + '>' + esc(sv.name) + ' (MCP)</option>';
+          }));
+        return '<div class="setting-row"><label>' + esc(cap) + '</label>'
+          + '<select class="select" data-defaultapp="' + escAttr(cap) + '">' + opts.join('') + '</select></div>';
+      }).join('');
+    })();
     // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
     $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
     $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
@@ -1241,6 +1269,19 @@
 
     // Hook save buttons
     $('btnSaveGeneral').addEventListener('click', saveGeneral);
+    const btnDA = $('btnSaveDefaultApps');
+    if (btnDA) btnDA.addEventListener('click', async () => {
+      const st = $('defaultAppsStatus');
+      const payload = {};
+      qsa('[data-defaultapp]').forEach(el => { payload[el.dataset.defaultapp] = el.value; });
+      if (st) st.textContent = 'Saving…';
+      try {
+        await postJson('/api/settings', { default_apps: payload });
+        if (st) st.textContent = 'Saved — applies to the next agent dispatch.';
+      } catch (e) {
+        if (st) st.textContent = 'Failed: ' + (e && e.message ? e.message : e);
+      }
+    });
     $('btnSaveModels').addEventListener('click', saveModels);
     $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);

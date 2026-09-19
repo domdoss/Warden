@@ -21,6 +21,7 @@ import { createHash } from 'crypto';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
+import { CAPABILITY_BUILTINS } from './toolsets.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
@@ -131,11 +132,55 @@ function skillToolDefs(): Tool[] {
     return mergeActiveSkillTools(skillState.skills, skillState.active);
 }
 
+// Default apps: capability -> 'builtin' | 'mcp:<server>'. Re-synced each turn
+// from settings, so a change takes effect on the next dispatch.
+let DEFAULT_APPS: Record<string, string> = {};
+
+/** The MCP server chosen to provide `capability`, or '' when the built-in has it. */
+function providerFor(capability: string): string {
+    const v = String(DEFAULT_APPS[capability] || '').trim();
+    return v.startsWith('mcp:') ? v.slice(4).trim() : '';
+}
+
+/** Apply the default-app choices to one seat's tool list.
+ *  For a capability handed to an MCP server: drop that capability's BUILT-IN
+ *  tools and let the server's tools stand in. Substitution, not addition —
+ *  two tools that both plausibly do the job is how a small model ends up
+ *  hand-driving instead of calling the tool that owns the task. */
+function applyDefaultApps(builtins: any[], mcpDefs: any[]): any[] {
+    const drop = new Set<string>();
+    for (const [cap, names] of Object.entries(CAPABILITY_BUILTINS)) {
+        const server = providerFor(cap);
+        if (!server) continue;
+        const prefix = `mcp__${server}__`;
+        // Only stand the built-in down when the replacement is actually
+        // connected: a server that failed to start must not leave the seat with
+        // no way to do the job at all.
+        if (!mcpDefs.some(t => String(t?.function?.name || '').startsWith(prefix))) {
+            log(`[default-apps] ${cap} -> ${server}, but that server has no tools loaded — keeping the built-in`);
+            continue;
+        }
+        for (const n of names) drop.add(n);
+        log(`[default-apps] ${cap} -> mcp:${server} (built-in ${cap} tools withheld)`);
+    }
+    if (drop.size === 0) return builtins;
+    return builtins.filter(t => !drop.has(String(t?.function?.name || '')));
+}
+
 /** MCP tool defs for a sub-agent's allow-listed servers (mcp__<server>__*).
  *  Servers that aren't connected contribute nothing, so defs can name servers
  *  that don't exist yet (e.g. iris pre-wired for kmail). */
 function mcpToolDefsForServers(servers?: string[]): any[] {
     if (!servers || servers.length === 0 || !skillState) return [];
+    // '*' = every server currently connected. The SUBAGENTS literal is built
+    // before any MCP server has been contacted, so a seat that should get
+    // "whatever the user has installed" cannot name them statically — and a
+    // static list silently omits every server added afterwards.
+    if (servers.includes('*')) {
+        return skillState.skills
+            .filter(sk => sk.source === 'mcp')
+            .flatMap(sk => sk.tools);
+    }
     const prefixes = servers.map(s => `mcp__${s}__`);
     const out: any[] = [];
     for (const skill of skillState.skills) {
@@ -585,6 +630,11 @@ function applySettingsSync(data: any) {
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
+    if (data.defaultApps !== undefined) {
+        DEFAULT_APPS = {};
+        const src = (data.defaultApps && typeof data.defaultApps === 'object') ? data.defaultApps : {};
+        for (const [k, v] of Object.entries(src)) if (typeof v === 'string' && v) DEFAULT_APPS[k] = v;
+    }
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
@@ -800,6 +850,9 @@ const SUBAGENTS: SubAgentDef[] = [
         systemPrompt: `# ROLE
 You are Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn. When the task suggests an approach that fits your tools poorly, deliver the outcome your own way.
 
+# TOOLS
+Each tool's description is its instructions — read it and pick by intent. A capability you do not see listed is one call away: \`list_skills\`, then \`activate_skill\`.
+
 # THE MACHINE
 Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with their real accounts.
 - The browser is their signed-in Chrome, shared with the whole system. Work in the tab that is already open when the task is about what is on screen. Chrome is already running; use it.
@@ -807,25 +860,6 @@ Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with
 - The user's own files, uploads and deliverables: \`~/Warden\`.
 - Bash is a persistent shared shell — \`cd\` holds across calls, so work from the right directory. Absolute paths anywhere on the filesystem are available.
 - Scheduling belongs to the parent scheduler. For a task that says remind or schedule: gather the values and return them.
-
-# FILES
-- Read the files the task names.
-- Copy an uploaded file before editing it.
-- Edit with targeted old_string/new_string; on a miss, re-read that section and retry.
-
-# THE WEB
-Each tool carries its own instructions — read the description and pick by intent.
-- To KNOW something: fetch it and put the answer in your reply.
-- To SHOW a page, or act in one: drive the real browser.
-- "Did not visibly change" means the action had no effect. Switch method on the next call.
-- Structured items off a results page: one \`browser_evaluate\` returning the rows.
-- Saving a file: \`browser_download\`, which returns the path that proves it.
-
-# YOUTUBE
-- \`youtube({action:'play', query:'<their words>'})\` finds it, plays it in the YouTube tab already open, and confirms from the \`<video>\` element.
-- One call does the whole job. It reuses the tab and replaces whatever was playing.
-- The result is your verification. The user hears the music, so a successful play ends your turn silently.
-- Speak when it will not start, and say what failed.
 
 # EMAIL
 Mail content belongs to the email specialist. A task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist.
@@ -840,6 +874,7 @@ Match the check to the work.
 - Code referencing a route, a field or an export defined elsewhere: Grep that contract once.
 
 ${agentKernel('every deliverable the task asked for actually exists — the file written, the edit applied, the command clean, the expected state visible on screen. Generated files: write them, then \`attach_file\` so the user gets them.')}`,
+        mcpServers: ['*'], // every MCP server the user has installed
         toolsets: ['atlas-core'],
     },
     {
@@ -873,6 +908,7 @@ Your tools are source edits, builds and tests. Showing a result on screen is War
 - A behavioral change is verified by running the build and the relevant test, or a focused reproduction, and reading the output.
 
 ${agentKernel('every deliverable exists on disk — the file written, the edit applied, the build clean, and the tests or a focused reproduction actually run and passing. Report the files you changed and the commands you ran.')}`,
+        mcpServers: ['*'], // every MCP server the user has installed
         toolsets: ['vulkan-core'],
     },
     {
@@ -957,6 +993,9 @@ You are Artemis, the critical reviewer inside Warden. You receive a transcript o
 # TOOLS — inspection
 Read, Grep, Glob, get_chat_history, and Bash for read-only inspection. Use them to check claims against the real files, messages, databases and logs the conversation refers to. Auditing is the whole job; the system stays as you found it.
 
+# LOG MINING
+Asked to mine the logs for failures, or to turn them into training data: Read \`data/skills/log-mining/SKILL.md\` first and follow it. It is the one job where you write, and you write exactly two things: your findings, and the training data under \`training/\`. Nothing else on the system changes.
+
 # WHERE THE EVIDENCE LIVES
 - Database: /opt/Warden/store/messages.db, opened read-only — \`sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."\`. It holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more. Run .tables first, then .schema <table>. This file is the live one; the .db files under data/ are empty stubs.
 - Logs: /opt/Warden/logs/warden.log (stdout) and /opt/Warden/logs/warden.error.log (stderr). Tail and grep them for what the system did and when.
@@ -1027,6 +1066,54 @@ function getSubAgentToolNames(subagent: SubAgentDef): string[] {
 /** The orchestrator's `# THE CREW` block, generated from SUBAGENTS. Prose
  *  rosters go stale the moment a seat is added, renamed or re-scoped; this
  *  cannot. Council is appended by hand because it is not a SubAgentDef. */
+// ─── The seat's system prompt ───────────────────────────────────────────────
+// THE single source of truth for who this seat is. The orchatlas SFT rows were
+// trained against this exact text (training/orchatlas-parts/_sys.txt), so the
+// two must not drift: a fine-tune conditions on the prompt it saw, and
+// production was sending a differently-worded 9.6K prompt against 4.5K rows.
+// Keep this literal and the training copy byte-identical; the generator should
+// extract it from HERE rather than keeping its own copy.
+//
+// `# THE CREW` is deliberately absent: crewBlock() generates the roster from
+// SUBAGENTS, so a hand-written one would both duplicate it and go stale the
+// moment a seat is added or re-scoped.
+const ORCH_SYSTEM = `# WHO YOU ARE
+
+You are Warden, first officer to the captain and the hands that carry the work out. You speak with the captain in chat, you act on their machine and the internet yourself, and you hand what you do not own to the crew.
+
+# THE MACHINE
+
+Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with their real accounts.
+
+- The browser is their signed-in Chrome. Work in the YouTube tab that is already open when the task is about what is on screen.
+- Warden's source is /opt/Warden (src/, container/agent-runner/; dist/ is build output). The user's own files, deliverables and uploads are in ~/Warden.
+- sudo is interactive: the USER types the password. Run an install once, say a prompt is waiting, and end your turn.
+
+# HOW YOU WORK
+
+1. ACT ON THE FIRST TURN. A task stating the outcome is all you need — pick the tool and call it.
+2. READ ONCE, WHOLE. One full read of each file the task names; to find one forgotten string, grep for it once.
+3. THE TOOL RESULT IS THE TRUTH. Report the outcome from the result itself. A successful write, edit or command is proof; a page you changed gets one end-state check; anything the captain can already see or hear is confirmed by the tool's own result.
+4. FINISH THE CHAIN. A multi-step ask is yours end to end: state the chain once ("Plan: A → B → C"), take each step with your own tools or a brief, move to the next when the last lands.
+5. WHEN A PAGE OR COMMAND FAILS, try three genuinely different approaches before calling it blocked; an empty search result is an answer, not a reason to search again.
+6. SPEAK PLAIN AND SHORT. One to three sentences, the answer carried in the words themselves. Plain spoken English; this is read aloud.
+
+# RUNNING JOBS
+
+- Read \`list_running_agents\` before a delegate call. A running job that already owns this outcome keeps it — say so and wait.
+- \`stop_agent\` stops a stuck job; \`nudge_agent\` steers it without killing it.
+- \`read_job_result\` reads a finished job's full output; \`report_task_failure\` records a proven failure before re-delegating once with the gap named.
+
+# SKILLS AND MCP
+
+- \`list_skills\` lists what is installed; \`activate_skill\` loads one skill's tools for this turn.
+- \`install_mcp_server\` registers a server in data/mcp-servers.json — name, command, args. Its tools arrive as a skill on the NEXT turn: say that and stop, never call them in the same turn. \`uninstall_mcp_server\` removes one.
+- \`create_skill\` packages a workflow you just finished so it can be repeated.
+
+# REPORTING BACK
+
+Report each landed result in one or two plain sentences carrying the outcome itself. Work the captain can already see or hear: report only when it fails to start.`;
+
 function crewBlock(): string {
     const lines = SUBAGENTS
         // Atlas is this seat, not a crew member it can hand work to.
@@ -1887,10 +1974,18 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         const existing = new Set(tools.map((t: any) => t.function?.name));
         tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
     }
-    // Atlas: RAG-style dynamic tool selection — rank the full pool against the
-    // task and keep only the always-needed desktop/web/opening/file tools plus
-    // task-relevant extras (see selectAtlasTools). Vulkan keeps its full list.
-    if (delegate === 'atlas') {
+    // RAG-style dynamic tool selection for every seat EXCEPT iris: rank the
+    // full pool against the task and keep the always-needed core plus the
+    // task-relevant extras (see selectAtlasTools). A capability that does not
+    // survive the ranking is still one `list_skills` + `activate_skill` away,
+    // so nothing is lost — it just stops being paid for on every turn. This
+    // matters most now that atlas and vulkan carry every installed MCP server.
+    //
+    // Iris is EXEMPT and keeps its whole list: it runs the small fine-tuned
+    // toolcall model, which was trained on exactly that fixed set — ranking it
+    // would hand the model a different tool list on every turn, off the
+    // distribution it learned.
+    if (delegate !== 'iris') {
         tools = selectAtlasTools(tools, task);
     }
     const activeCount = backgroundJobs.size;
@@ -3797,8 +3892,10 @@ async function runNativeOllama(input: ContainerInput) {
     // concurrent background atlas job could collide, and that one is spawned
     // deliberately via atlas_background.
     const blockedPrefix = (_n: string) => false;
-    // marm__ is the MCP server this seat calls directly for memory. Atlas-owned
-    // MCP tools are its own hands now; every other mcp__ server stays blocked.
+    // MCP belongs to the WORKING agents, not this seat: atlas and vulkan carry
+    // `mcpServers: ['*']` and get every installed server. marm stays reachable
+    // here because memory recall is assistant state, the same class as
+    // get_chat_history — every other mcp__ server routes through a delegate.
     const orchToolBlocked = (n: string): boolean => {
         // Checked BEFORE the atlas-owned bypass: these are atlas's tools, and
         // the point is to withhold them from this seat specifically.
@@ -3973,23 +4070,10 @@ const marmRecallSection = marmEnabled
         const identity = AGENT_MODE === 'many'
             ? 'You are Warden, the orchestrator. The user tells you what they need; you route the work to the fleet, track it, and answer in plain chat. Act on the first turn.'
             : 'You are Warden. You execute. The user tells you what they need; the method is yours. Act on the first turn. You are the only voice in this chat — speak to them directly.';
-        const atlasPrompt = (SUBAGENT_BY_DELEGATE.get('atlas')?.systemPrompt || '')
-            .replace(
-                'You are Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn.',
-                identity)
-            .replace(
-                '- Scheduling belongs to the parent scheduler. For a task that says remind or schedule: gather the values and return them.',
-                '- Reminders, alarms and scheduled tasks are iris\'s: hand the whole ask to `iris` and relay what it says.')
-            .replace(
-                `# EMAIL
-Mail content belongs to the email specialist. A task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist.
-A file offered by a mail page is a download: save it and report the path.`,
-                `# EMAIL
-Mail content is iris's. Anything that reads, searches, sends or replies to mail → call \`iris\` with the user's ask and relay the answer. Never read mail yourself, and never answer with a routing note instead of the result.
-A file offered by a mail page is a download: save it and report the path.`)
-            .replace(
-                'Write the final report: exactly what you changed.',
-                'Tell the user what you did, in a sentence or two of plain chat — no headers, no report format.');
+        // The seat speaks as the captain's first officer. ORCH_SYSTEM is the
+        // text the orchatlas fine-tune was trained on, used verbatim so the
+        // model is conditioned at inference on the prompt it saw in training.
+        const atlasPrompt = ORCH_SYSTEM;
         // The driving force (dashboard "Driving force") is the user's persona
         // knob. It used to ride on the old routing preamble, so it must be
         // applied here or the setting silently does nothing: persona leads,
@@ -5805,6 +5889,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // on exactly the iris-core 41 tools — mcp__ extras are off-distribution.
             const mcpExtra = toolName === 'iris' ? [] : mcpToolDefsForServers(def.mcpServers);
             if (mcpExtra.length > 0) {
+                // Default apps: a capability handed to an MCP server stands the
+                // built-in tools down, so only one provider can do each job.
+                tools = applyDefaultApps(tools, mcpExtra);
                 const existing = new Set(tools.map((t: any) => t.function?.name));
                 tools = [...tools, ...mcpExtra.filter((t: any) => !existing.has(t.function?.name))];
                 log(`[${toolName}] Merged ${mcpExtra.length} MCP tool(s) from servers: ${def.mcpServers!.join(', ')}`);

@@ -35,6 +35,7 @@ import {
   storeMessage,
   setRouterState,
   getRouterState,
+  readDefaultApps,
   createProject,
   getProjectsByGroup,
   getProject,
@@ -2071,6 +2072,7 @@ async function processOwnerMessages(): Promise<void> {
     councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
     councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
     councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,
+    defaultApps: readDefaultApps(),
     showThinking: getRouterState(`thinking:${OWNER_JID}`)
       || getRouterState('local:thinking')
       || 'true',

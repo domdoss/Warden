@@ -3010,3 +3010,20 @@ export function getUserByEmail(_email: string): any {
   // Single-user Warden: no dashboard_users table. Returns undefined.
   return undefined;
 }
+
+// ─── Default apps ───────────────────────────────────────────────────────────
+// A capability is a job some tool does (browsing, fetching, shell). Warden has
+// a built-in provider for each; an installed MCP server can take the job over.
+// Stored one row per capability (`default_app:<capability>`) so adding a
+// capability needs no schema change. Absent/'' means the built-in provides it.
+export const DEFAULT_APP_CAPABILITIES = ['browser', 'web', 'files', 'shell', 'capture'] as const;
+
+export function readDefaultApps(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const cap of DEFAULT_APP_CAPABILITIES) {
+    const v = (getRouterState(`default_app:${cap}`) || '').trim();
+    out[cap] = v || 'builtin';
+  }
+  return out;
+}
+

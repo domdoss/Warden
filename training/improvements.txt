@@ -1,0 +1,76 @@
+# Improvements — written 2026-09-19, for a local model to action
+
+Simple, mechanical changes. Each says WHERE, WHAT and WHY. None need judgement.
+
+## 1. Tool schema is stale vs production  (blocks the retrain gain)
+
+`training/tool_schemas.json` / the `tools` array in `orchatlas-sft.jsonl` carry **57**
+tools. Production sends **46** registry tools, plus MCP for atlas and vulkan.
+
+The system prompt half of this skew is FIXED (production now sends ORCH_SYSTEM, the
+first-officer text). The tool half is not. Training 20h against the wrong tool list
+throws away most of the gain.
+
+DO: regenerate the tool schema from the live runner, then regenerate the rows.
+CHECK: a row's `tools` length should match what the runner logs as its pool.
+
+## 2. Keep the prompt from drifting again
+
+`container/agent-runner/src/index.ts` now holds `ORCH_SYSTEM` — the single source of
+truth, byte-identical to `training/orchatlas-parts/_sys.txt` minus `# THE CREW`
+(crewBlock() generates that roster from SUBAGENTS; a written copy goes stale).
+
+DO: make the orchatlas generator EXTRACT `ORCH_SYSTEM` from the runner source, the
+way `gen_toolcall_sft.mjs` already extracts `IRIS_SYSTEM`. Delete the static copy.
+WHY: a static copy is what caused the 4571 vs 9634 char mismatch. Nothing warned.
+
+## 3. Fabricated URLs in the dataset  (makes one behaviour WORSE)
+
+Rows invent deep URLs AND the page content behind them:
+  sikkens.ca/recoat, richmond.ca/bylaws/hens, metrovancouver.org/hens-guide,
+  behr.com/exterior/recoat
+with confident numbers derived from pages that do not exist.
+
+This trains URL fabrication as a pattern. Observed live 2026-09-18: the model invented
+`https://www.lofimusic.com` and described it as a real lo-fi site.
+
+DO: either ground each row in a real fetched page, or cut the rows.
+
+## 4. Iris prompt skew  (deferred by the user — do not action yet)
+
+Live iris prompt = 1322 chars; the rows trained on 1215. The diff is two real fixes
+(the timestamp rule scoped to scheduling; an OUTPUT block making an email list report
+sender + subject). `gen_toolcall_sft.mjs` extracts IRIS_SYSTEM verbatim, so a
+regenerate realigns it with no retrain needed.
+
+## 5. Dashboard / settings leftovers
+
+- `src/agent-spawn.ts` still ships `agentMode` and `atlasKeepAlive`; nothing in the
+  runner reads `atlasKeepAlive` since the Atlas seat row was removed.
+- `data/skills/self-check/SKILL.md` lists `oculus` and `council` as delegates, omits
+  `sentry`, and points at `/home/dominic/warden/...` (lowercase w) which will not
+  resolve on a case-sensitive FS.
+
+## 6. Controls that only look like they exist
+
+- `WorkspaceBoundaryError` (`container/agent-runner/src/workspace-boundary.ts`) is
+  defined and NEVER THROWN. `safeResolve` cannot fail, so the "outside workspace
+  boundary — skip" branch in `verifyWrittenFiles` is dead and `write_file` can write
+  anywhere. Decide: enforce it, or delete the class and the comments that claim it.
+- `set_user_email` (`tools/chat-tools.ts`) writes an IPC file no host handler reads.
+
+## 7. Seat hygiene
+
+- `terminal` grants `desktop_click`/`desktop_type` while `desktop-vision` left
+  `atlas-core` — the seat can click and type into windows it cannot see.
+- `vulkan-core` includes `capture`, contradicting the comment directly above it about
+  the screenshot-loop spiral. This was a deliberate user instruction; left as-is.
+- `browser_click` takes a `ref` that only `browser_snapshot` produces, and snapshot is
+  withheld from the chat seat — so on that seat, interaction has to go through
+  `browser_evaluate`.
+
+## 8. Vision fallback never fires on its own
+
+`MODELS_WITHOUT_VISION` (runner) starts EMPTY and only fills when a backend *rejects*
+an image. Until then an image can be attached to a blind model with no error. The
+explainer now resolves to vulkan's model, so the path works once the set is populated.

@@ -48,21 +48,24 @@ Warden is a personal AI assistant that lives on your desktop. It runs local mode
 
 ## Architecture
 
-### The Orchestrator
+### The Seat
 
-A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: it can run on an **e4b** (`gemma4:latest`) locally on Ollama — but a **31B cloud model is recommended**. It doesn't write your reports and it never touches the web — no search, no fetch, no browser. (A one-shot local check is its own: a status command, a file read, volume and playback controls. Everything else is a specialist's, and the list it's given is generated from the tools it actually holds, so the prompt can't promise what the code doesn't grant.) It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A small model supervising a frontier model, and it doesn't fuck up.
+A single LLM — **Warden**, the captain's first officer — runs the show, and it is the only thing you talk to. It both answers and does the work: the browser, the desktop, the shell, files and the web are its own hands, not a specialist's. It hands off only what genuinely belongs to another seat — email and scheduling to Iris, heavy code to Vulkan, audits to Artemis — and work too long for a chat turn to a background copy of itself.
+
+This used to be two seats: a deliberately small router that never touched the internet, delegating every hands-on step to Atlas. That split cost a round trip and a brief on every action, and the router could only describe work it could not see. Atlas and the orchestrator are now one seat, running one model, with one prompt.
 
 ```
-You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (large, cloud) → result → Orchestrator → You
-                                   → Vulkan (coding, background)
-                                   → Iris (email, calendar, projects)
-                                   → Mercury (memory)
-                                   → Sentry (security scans)
-                                   → Artemis (audit)
-                                   → The Council (deliberation)
+You → Warden ─ does it itself: browser, desktop, shell, files, web ─→ You
+              └─ hands off what it does not own:
+                   → Iris   (email, calendar, reminders, alarms)
+                   → Vulkan (code and builds, background)
+                   → Artemis(audit, background)
+                   → Sentry (security scans, background)
+                   → Council(deliberation)
+                   → atlas_background (a copy of itself, for long work)
 ```
 
-> 💡 **The orchestrator never touches the internet directly.** It doesn't browse, search, or fetch URLs. It delegates. That separation lets the orchestrator stay small while the internet-connected agents run on the biggest models available.
+> 💡 **Tools are not carried in context all the time.** Every seat but Iris gets a per-turn ranked set — the always-needed core plus what the task actually calls for — out of a pool that now includes every installed MCP server. A capability that doesn't surface is one `list_skills` + `activate_skill` away, so nothing is lost; it just stops being paid for on turns that never touch it. Iris is exempt: it runs the small fine-tuned toolcall model, trained on exactly one fixed tool list, so a list that changed per turn would put it off-distribution.
 
 #### A small model is enough — that's the whole point
 
@@ -565,7 +568,13 @@ Model Context Protocol servers give agents real capabilities without touching co
 | **Time** | Timezone-aware scheduling |
 | **Plasma** | KDE Plasma D-Bus (notifications, clipboard, windows) |
 
-MCP servers are configured in `data/mcp-servers.json` and can be toggled from the dashboard.
+MCP servers are configured in `data/mcp-servers.json` and can be toggled from the dashboard. **Atlas and Vulkan get every installed server**; the chat seat keeps `marm` (memory recall is assistant state) and routes the rest through a delegate.
+
+### Default apps
+
+Warden ships a built-in provider for each capability — browser, web, files, shell, capture. An installed MCP server can take one over from **Settings → Default apps**: pick `chrome-mcp` for `browser` and from the next dispatch the agents browse with that server.
+
+Choosing a server **replaces** the built-in rather than sitting beside it. One provider per job is the point: two tools that can both plausibly do something is how a small model ends up hand-driving a page instead of calling the tool that owns the task. If the chosen server has no tools loaded, the built-in stays and the runner logs why — a server that failed to start can't leave a seat unable to work.
 
 ---
 

@@ -78,6 +78,8 @@ import {
   updateTask,
   updateUserTask,
   getRouterState,
+  readDefaultApps,
+  DEFAULT_APP_CAPABILITIES,
   setRouterState,
   createEmailAccount,
   getEmailAccounts,
@@ -1515,6 +1517,10 @@ function handleSettings(res: http.ServerResponse): void {
     // dashboard "Keep alive" checkboxes on the Orchestrator/Atlas/Toolcall rows.
     orchestratorKeepAlive: getRouterState('local:orch_keep_alive') || '',
     toolcallKeepAlive: getRouterState('local:toolcall_keep_alive') || '',
+    // Default apps: capability -> 'builtin' | 'mcp:<server>'. One row per
+    // capability so a new capability needs no schema change.
+    defaultApps: readDefaultApps(),
+    defaultAppCapabilities: DEFAULT_APP_CAPABILITIES,
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
@@ -1736,6 +1742,15 @@ async function handleSettingsSave(
   syncAgentCtxEnv();
   // Thinking default — stored globally and mirrored to owner JID so the
   // orchestrator picks it up on the next turn without requiring a restart.
+  if (body.default_apps !== undefined) {
+    const src = (body.default_apps && typeof body.default_apps === 'object') ? body.default_apps as Record<string, unknown> : {};
+    for (const cap of DEFAULT_APP_CAPABILITIES) {
+      const v = String(src[cap] ?? '').trim();
+      // 'builtin' (or empty) clears the row — the built-in provider is the
+      // absence of an override, so there is nothing to store for it.
+      setRouterState(`default_app:${cap}`, v && v !== 'builtin' ? v : '');
+    }
+  }
   if (body.thinking !== undefined) {
     const t = String(body.thinking);
     const normalized = t === 'max' ? 'max' : t === 'false' || t === '0' ? '0' : 'true';
@@ -1764,6 +1779,7 @@ async function handleSettingsSave(
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
     body.maxOutputTokens !== undefined ||
     body.thinking !== undefined ||
+    body.default_apps !== undefined ||
     body.agent_mode !== undefined ||
     body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
     body.satelliteUrl !== undefined ||
