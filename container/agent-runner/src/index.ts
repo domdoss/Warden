@@ -17,6 +17,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
@@ -147,6 +148,27 @@ function mcpToolDefsForServers(servers?: string[]): any[] {
     return out;
 }
 
+/** A BARE MCP tool name → its real `mcp__<server>__<tool>` name, when exactly
+ *  one connected server owns it. Prompts name MCP tools in prose and drift from
+ *  the wire names (the old routing prompt said `marm_smart_recall`; the tool is
+ *  `mcp__marm__marm_smart_recall`), and when the prefixed def is not in the
+ *  turn's visible list the model copies the prompt's spelling — 2026-09-18
+ *  11:23, five straight "Unknown tool marm_smart_recall" and no memory recall
+ *  at all. The intent is unambiguous when one server owns the name, so resolve
+ *  it instead of failing; ambiguous (two servers, same tool name) still fails. */
+function resolveBareMcpName(name: string): string | null {
+    if (!skillState || name.startsWith('mcp__')) return null;
+    const matches: string[] = [];
+    for (const skill of skillState.skills) {
+        if (skill.source !== 'mcp') continue;
+        for (const t of skill.tools) {
+            const n = t.function?.name || '';
+            if (n.endsWith(`__${name}`)) matches.push(n);
+        }
+    }
+    return matches.length === 1 ? matches[0] : null;
+}
+
 /** Find the owning MCP client + remote tool name for an mcp__server__tool call. */
 function resolveMcpTool(name: string): { client: ExternalMcpClient; tool: string } | null {
     if (!skillState || !name.startsWith('mcp__')) return null;
@@ -229,7 +251,7 @@ const STATUS_MARKER = '---WARDEN_STATUS---';
 // check", "I'll verify") but emitting no tool_call. Capped at INTENT_MAX_NUDGES
 // per turn. Triggered only when response is short, has no fenced code, and the
 // regex matches an announcement phrase.
-const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|delegate)\b/i;
+const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|trigger|pause|resume|skip|seek|mute|unmute|rewind|delegate)\b/i;
 const INTENT_MAX_NUDGES = 2;
 
 // Sub-agent version of the same announced-intent defect, on the runSubAgent
@@ -290,7 +312,9 @@ const NARRATION_MAX_NUDGES = 3;
 // reply with no matching tool_call this turn and it is NOT a past-tense
 // citation of a prior result ("Atlas reported…", "Atlas's report") — instead of
 // chasing phrasings (arms race per feedback-fix-general-cause-not-symptom).
-const DELEGATE_NAMES = ['atlas', 'iris', 'vulkan', 'artemis'];
+// Atlas is not here: this seat IS atlas, so 'atlas' is not a delegate tool
+// and naming it in a nudge would send the model after a tool that does not exist.
+const DELEGATE_NAMES = ['iris', 'vulkan', 'artemis'];
 // Words that, when they appear within ~40 chars before OR after a delegate
 // name, mark the mention as a citation of an already-completed result rather
 // than a promise to dispatch now. Before: "according to Atlas", "from Atlas".
@@ -554,13 +578,25 @@ function applySettingsSync(data: any) {
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
+    if (data.toolRouting !== undefined) {
+        TOOL_ROUTING = {};
+        const src = (data.toolRouting && typeof data.toolRouting === 'object') ? data.toolRouting : {};
+        for (const [k, v] of Object.entries(src)) {
+            if (v === 'local' || v === 'cloud') TOOL_ROUTING[k] = v as 'local' | 'cloud';
+        }
+    }
     if (data.councilSkepticModel !== undefined) COUNCIL_MODEL_SKEPTIC = (data.councilSkepticModel || '').replace(/^local:/, '');
     if (data.councilPragmatistModel !== undefined) COUNCIL_MODEL_PRAGMATIST = (data.councilPragmatistModel || '').replace(/^local:/, '');
     if (data.councilSynthesistModel !== undefined) COUNCIL_MODEL_SYNTHESIST = (data.councilSynthesistModel || '').replace(/^local:/, '');
     if (data.subagentModel !== undefined) process.env.SUBAGENT_MODEL = data.subagentModel || '';
+    if (data.maxOutputTokens !== undefined) {
+        const n = parseInt(String(data.maxOutputTokens || ''), 10);
+        MAX_OUTPUT_SETTING = Number.isFinite(n) && n > 0 ? n : 0;
+    }
     if (data.orchestratorCtx !== undefined) process.env.ORCHESTRATOR_NUM_CTX = data.orchestratorCtx ? String(data.orchestratorCtx) : '';
     if (data.subagentCtx !== undefined) process.env.SUBAGENT_NUM_CTX = data.subagentCtx ? String(data.subagentCtx) : '';
     if (data.atlasCtx !== undefined) process.env.ATLAS_NUM_CTX = data.atlasCtx ? String(data.atlasCtx) : '';
+    if (data.visionModel !== undefined) process.env.VISION_MODEL = data.visionModel ? String(data.visionModel) : '';
     if (data.toolsCtx !== undefined) process.env.TOOLS_NUM_CTX = data.toolsCtx ? String(data.toolsCtx) : '';
     if (data.mercuryCtx !== undefined) process.env.MERCURY_NUM_CTX = data.mercuryCtx ? String(data.mercuryCtx) : '';
     // Per-agent num_ctx overrides — blank means the model's native window.
@@ -688,6 +724,15 @@ interface SubAgentDef {
     label: string;
     maxIterations: number;
     summary: string;
+    /** The one line the ORCHESTRATOR reads when deciding who owns an ask. The
+     *  `# THE CREW` roster (crewBlock) is generated from these, so a new
+     *  seat (or a changed remit) needs no prompt edit and the prompt can never
+     *  describe a roster the code doesn't have. */
+    routing?: string;
+    /** True when the delegate returns a job id and the result lands in the
+     *  inbox later; false when it answers in line. Also generated into the
+     *  crew block. */
+    background?: boolean;
     systemPrompt: string;
     toolsets: string[];
     /** MCP servers whose tools this sub-agent receives (e.g. iris → kmail).
@@ -702,100 +747,139 @@ interface SubAgentDef {
     temperature?: number;
 }
 
+/** The rules atlas and vulkan share. Written once so the two seats cannot
+ *  drift apart: when "read once" or "three approaches before impossible" is
+ *  worth changing, it changes for both. `doneLine` is the only per-seat part —
+ *  what "the deliverable exists" means differs between a file on disk and a
+ *  page in front of the user. */
+function agentKernel(doneLine: string): string {
+    return `# READING
+- Read each file the task names once, in full.
+- Keep what you read; work from it.
+- Grep once for a single string you need again.
+
+# ACTING
+- Produce the deliverable in the turn you know what it is.
+- Report in the past tense: what exists now, what you ran.
+- Take one useful step per turn.
+
+# WHEN A CALL FAILS
+- Read the error; change the approach; try again.
+- Three genuinely different approaches, each with a real error, before calling something impossible.
+- A search that returns nothing is an answer. Look for the target by name first — the file, the page, the route.
+- Three empty searches means the premise is wrong. Widen once (\`~/Warden\` holds the user's own files and deliverables; \`/opt/Warden\` is the application's source), then say where you looked and ask where it is.
+- If the task says an earlier fix failed: confirm that change is present, trace the data flow end to end, fix the real cause, and say what the earlier attempt got wrong.
+
+# SUDO
+- The user types the password.
+- Run \`sudo pacman -S <pkg>\` once, say a password prompt is waiting, and wait.
+- One attempt. If it fails, report what is missing and continue with the rest.
+
+# MEMORY
+- Check \`mcp__marm__marm_smart_recall\` before hunting for a fact, a prior decision, or how something was done.
+- Log a durable fact you established — a confirmed path, a root cause, a decision — with \`mcp__marm__marm_log_entry\`.
+- Once per fact.
+
+# FINISHING
+You decide when the work ends. Choose one:
+- DONE — ${doneLine} Write the final report: exactly what you changed. Claim a change when its tool call succeeded this task.
+- BLOCKED — a missing capability, a denied permission, or three distinct approaches that each failed with a concrete error. Say plainly what blocks you.
+- KEEP GOING — anything else. Take the next useful step.`;
+}
+
 const SUBAGENTS: SubAgentDef[] = [
     // Byte was merged into iris (2026-09-05): one toolcall agent / one
     // fine-tuned model. Iris's entry below carries the work-management role.
     {
         delegate: 'atlas',
         label: 'Atlas',
+        background: true,
+        routing: "execution — shell, browser, desktop, files, and anything that touches the internet. Hands-on work, however small.",
         maxIterations: 200,
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
-        systemPrompt: `You are Atlas, the execution agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the execution expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit your tools or a better approach exists, deliver the outcome your own way.
+        systemPrompt: `# ROLE
+You are Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn. When the task suggests an approach that fits your tools poorly, deliver the outcome your own way.
 
-WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit \`src/\` or \`container/agent-runner/src/\`, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy — \`dist/\` is built output, never edit it by hand.
+# THE MACHINE
+Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with their real accounts.
+- The browser is their signed-in Chrome, shared with the whole system. Work in the tab that is already open when the task is about what is on screen. Chrome is already running; use it.
+- Warden's source: \`/opt/Warden\` (capital W) — \`src/\` (host), \`container/agent-runner/\` (agent), \`store/\`, \`data/\`, \`public/\`, \`eyes_ears/\`. \`dist/\` is built output. Edit source, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy.
+- The user's own files, uploads and deliverables: \`~/Warden\`.
+- Bash is a persistent shared shell — \`cd\` holds across calls, so work from the right directory. Absolute paths anywhere on the filesystem are available.
+- Scheduling belongs to the parent scheduler. For a task that says remind or schedule: gather the values and return them.
 
-FILES — User-uploaded files live in the workspace root; copy before editing. Read only the files your task names — don't explore unrelated files. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read only that missed section and retry (never fall back to python/sed rewrites). You have full filesystem access — use absolute paths outside the workspace (\`~/Documents\`, \`/etc\`, \`/var/log\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right place instead of repeating full paths.
+# FILES
+- Read the files the task names.
+- Copy an uploaded file before editing it.
+- Edit with targeted old_string/new_string; on a miss, re-read that section and retry.
 
-READ WHOLE, READ ONCE — read each file the task names in ONE full Read, no limit/offset paging in small line batches — tiny blocks hide the file's structure and waste the window. Only range-read a file that genuinely overflows your context. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
+# THE WEB
+Each tool carries its own instructions — read the description and pick by intent.
+- To KNOW something: fetch it and put the answer in your reply.
+- To SHOW a page, or act in one: drive the real browser.
+- "Did not visibly change" means the action had no effect. Switch method on the next call.
+- Structured items off a results page: one \`browser_evaluate\` returning the rows.
+- Saving a file: \`browser_download\`, which returns the path that proves it.
 
-WEB — Two tools, two jobs. No site-specific rituals — apply the same rule to every site:
-• \`WebFetch\` — READS a page server-side and returns clean Markdown (headings/links/lists/code/tables preserved; nav+footer+ads stripped) WITHOUT launching the browser. It is the DEFAULT for any "find X", "look up", "what does this page say", or "pull up the link for" task. If the ask can be answered from the DOM alone, use \`WebFetch\` and put the answer in your reply — do NOT open the browser.
-• \`browser_*\` — drives the user's REAL signed-in Chrome (CDP 9222) to DISPLAY a page in front of them or to INTERACT (click, type/submit a form, log in, control media). Call \`browser_navigate\` directly as the first action; it returns a snapshot with refs like [ref=e12] for click/type. \`browser_click\`/\`browser_press_key\`/\`browser_select_option\`/\`browser_hover\` return the updated snapshot themselves when the page changes (refs go stale) — call \`browser_snapshot\` only to re-read the page without acting. Never use Bash to find/launch Chrome or install Chromium — that spawns a blank-profile Chrome and breaks sign-ins.
-Route by intent:
-- User just wants to KNOW something → \`WebFetch\`, answer in your reply, no browser.
-- User wants to SEE a page, watch/play media, or DO something (form, login, click) → find the real URL with \`WebFetch\`/\`WebSearch\`, then \`browser_navigate\` straight to that final URL so it opens in front of them. Reuse the shared browser — don't pile up new tabs.
-- User wants to SEE a LOCAL file you just wrote or that already exists (an HTML page, a PDF, an image) → \`browser_navigate\` with the file's ABSOLUTE path as \`url\`. Bare paths open as file:// in the shared Warden Chrome and you get the snapshot back — check the snapshot shows the right page before you report done. Use \`open_app\` (xdg-open) only when the file belongs in its OS-default app (a PDF reader, an image viewer), not the browser. A local server IS the right call when the page genuinely needs one — it's the node/express/dev server you just built, or the page fails from file:// (fetch, CORS, service workers). Then: serve the directory that ACTUALLY contains the file, \`browser_navigate\` to the exact URL, and read the snapshot — a 404 or a different site means the server root is wrong; fix the root path, don't navigate again hoping it changed.
-- User is ALREADY on a page in the shared browser → work THERE. \`browser_current_url\` + \`browser_snapshot\` to see where they are, then act in that page (navigate onward, click, control media) instead of opening a new one.
-- \`WebFetch\` comes back empty/blocked → the page is probably JS-rendered; fall back to \`browser_navigate\` + \`browser_snapshot\` to read it.
-- Filters and data extraction on results/marketplace pages → prefer ONE \`browser_evaluate\` that returns the structured items (title, price, link) or a URL with query parameters, over clicking through filter UIs. A "did not visibly change" result is the page telling you the action had no effect — switch method on the very next call; repeating the same click or Escape never helps.
-For media playback on any site, drive the page's \`<video>\`/\`<audio>\` element with \`browser_evaluate\` (\`document.querySelector('video').play()\` / \`.pause()\`), not the site's UI buttons.
+# YOUTUBE
+- \`youtube({action:'play', query:'<their words>'})\` finds it, plays it in the YouTube tab already open, and confirms from the \`<video>\` element.
+- One call does the whole job. It reuses the tab and replaces whatever was playing.
+- The result is your verification. The user hears the music, so a successful play ends your turn silently.
+- Speak when it will not start, and say what failed.
 
-DOWNLOADS — \`browser_download\` saves any file a page offers (a PDF link, an export button, an email attachment card) and returns the saved path; give it the URL or the ref and the destination. It uses Chrome's own download, so signed-in pages work. This is the only way to fetch a file — never fish file bytes out of the DOM with \`browser_evaluate\`, and never report a file as saved unless browser_download (or Bash) returned its path.
+# EMAIL
+Mail content belongs to the email specialist. A task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist.
+A file offered by a mail page is a download: save it and report the path.
 
-EMAIL — reading or searching the user's mail is the orchestrator's email specialist's work (iris): a task that wants mail content ends right away with "This is email work — it routes to the email specialist". Downloading a FILE a mail page offers, though, is a download: if you are already on the page, browser_download the attachment and report the path.
+# VERIFYING
+Match the check to the work.
+- A successful Edit, Write, Bash or browser call is the proof.
+- A page state you changed: confirm the end state once.
+- Something the user watches or hears: the tool's confirmation is the proof, and they can see it — no screenshot, no report.
+- A lookup: the content you extracted is the verification.
+- Code referencing a route, a field or an export defined elsewhere: Grep that contract once.
 
-NATIVE APPS — Two routes, pick by whether you need to drive it. (1) Fire-and-forget SHOW: the user just wants to see or launch something (open a PDF, open a folder, launch Stremio) → \`open_app\` with \`app: "xdg-open"\` (or the app binary) and the absolute path; it opens on the host display and returns immediately. (2) DRIVE: you need to click/type/screenshot controls inside a desktop app (a settings window, a media player you must steer) → launch it with Bash (\`flatpak run …\` or the app command), wait for it to open, then \`desktop_screenshot\` to see the screen, \`desktop_click\` at the control's pixel coordinates, and \`desktop_type\` to type or send keys. Take a fresh \`desktop_screenshot\` after each action. Use xdg-open for showing, the CDP browser for pages you'll keep driving, and Bash+desktop tools for apps you must steer — never the wrong one.
-
-AUDIO & MEDIA — Use the dedicated tools, not Bash amixer/playerctl commands. \`audio_volume\` (action get/set/toggle_mute, level 0-100) for the SPEAKER loudness; \`mic_volume\` for the MIC sensitivity; \`media_control\` (play/pause/play_pause/next/previous/stop) for a running media player (browser YouTube, Spotify, mpv). "Turn it up/down", "mute", "make it louder", "volume to 50" → audio_volume; "mute the mic", "mic too quiet/loud" → mic_volume; "pause/skip/next song" → media_control.
-
-VERIFYING — Match the check to the task. A successful Edit/Write/Bash/browser call IS done — don't re-Read the file to double-check it. For an ACTION that changes page state (submit a form, click a flow), confirm the end state with ONE screenshot — "navigated to X" is not completion. For media playback, do NOT screenshot: set state with \`video.play()\`/\`video.pause()\` via browser_evaluate and a successful return IS completion (a loading video gives a misleading frame). For a READ-ONLY lookup, the extracted content is the verification — no screenshot. When code you write references something defined elsewhere (a fetch→route, a field), Grep that file once to confirm the contract exists; don't spin up browsers or servers just to check.
-
-SUDO — interactive: the USER types the password, never you. For a system package, run \`sudo pacman -S <pkg>\` ONCE, tell the user a password prompt is waiting, and wait — never pipe/echo a password, never retry a failed or timed-out sudo (faillock locks them out). One attempt; if it fails, report what's missing and continue the rest without it.
-
-SCHEDULING — never build your own (at, cron, systemd timers, sleep loops). If the task says "remind" or "schedule", do only the data-gathering and return the values; scheduling goes through the parent scheduler.
-
-MCP — install via \`install_mcp_server\`, one per call; check \`data/mcp-servers.json\` first and skip servers already present. Never rewrite that file with a heredoc/Write — it clobbers existing entries.
-
-DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issue didn't work, don't re-apply it. Verify the earlier change is actually present (Read/Grep), trace the real data flow end-to-end (written→read→rendered), and fix the actual cause. State what was wrong with the previous attempt.
-
-FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
-- **DONE**: every deliverable the user asked for actually exists (file written, edit applied, command clean, expected state shown). Stop calling tools and write the final report — list exactly the files you changed, nothing more, and never claim a change unless its tool call succeeded this task. Generated files: write then \`attach_file\` so the user gets them.
-- **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result or write a vague "limitations" line.
-- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
-
-PERSISTENCE — never call a task "impossible", "not supported", or "limited by the browser/tool" until you've tried at least three distinct approaches that all failed with concrete errors. "I can't control media playback" / "complex JavaScript" / "dynamic rendering" are excuses, not conclusions — pages are just DOM trees: snapshot them, find the element, interact. If one approach fails, try another (search-results URL, type+Enter, browser_eval click, keyboard shortcut). If you truly can't finish after three attempts, report what each returned and what the next would be.
-
-PREMISE CHECK — PERSISTENCE governs approaches that FAIL WITH ERRORS; this governs searches that SUCCEED WITH NOTHING. A search that keeps coming back empty is an answer, not a reason to try a new search term. When the task names a target you haven't yet seen (a page, file, feature, route), find the TARGET ITSELF first — Glob/find by its name, or one ls of the directory it should live in — before you study anything around it. If three different searches for the same target all come back empty, the premise is broken: widen ONCE to the other tree it could live in — user data and deliverables are in the workspace (\`~/Warden\`, e.g. \`data/work/\`), while \`/opt/Warden\` is the application's own source, which almost never holds a user's artifact — and if it still doesn't appear, end BLOCKED: name the target, say exactly where you looked, and ask for its location. Searching is only progress while each call narrows toward the target; hunting an application's source for a user artifact that was never there is the classic spiral.
-
-MEMORY — before hunting for a fact, prior decision, or how something was done, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it. Log a durable fact you just established (a confirmed path, a decision, a fix) with \`mcp__marm__marm_log_entry\` so it's recallable next time. Memory is checked once per fact, not a substitute for the task's own tools.`,
+${agentKernel('every deliverable the task asked for actually exists — the file written, the edit applied, the command clean, the expected state visible on screen. Generated files: write them, then \`attach_file\` so the user gets them.')}`,
         toolsets: ['atlas-core'],
     },
     {
         delegate: 'vulkan',
         label: 'Vulkan',
+        background: true,
+        routing: "coding, scripting, building, heavy bash. Context size routes here too: work that must hold a lot at once (many files, a long document, a big log) is vulkan's even when it isn't strictly code.",
         maxIterations: 200,
         summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
-        systemPrompt: `You are Vulkan, the coding agent. You receive a task and execute it with your tools. Act immediately — don't explain, plan, or ask questions. You are the engineering expert: the task tells you WHAT the user needs, the HOW is yours — if the task prescribes steps that don't fit the code or a better approach exists, deliver the outcome your own way.
+        systemPrompt: `# ROLE
+You are Vulkan. You write and change code. The task states what the user needs; the engineering is yours. Act on the first turn.
 
-WARDEN ITSELF — Warden's own source lives at \`/opt/Warden\` (repo root — capital W; the filesystem is case-sensitive and \`/opt/warden\` does not exist): \`src/\` (host), \`container/agent-runner/\` (agent), \`dist/\` (built), \`store/\`, \`data/\`, \`public/\` (dashboard), \`eyes_ears/\` (voice + webcam detector). Tasks about Warden itself look there, not in \`~/Downloads\`. Edit only \`src/\` or \`container/agent-runner/src/\` — \`dist/\` is built output, never edit it by hand. After a source change, run \`npm run build\` then \`systemctl --user restart warden\` to deploy.
+Your tools are source edits, builds and tests. Showing a result on screen is Warden's — report what you changed and let it be shown.
 
-FILES — Read only the files your task names — don't explore unrelated files. You have full filesystem access — use absolute paths outside the workspace (\`~/Projects/\`, \`~/Documents/\`). Bash is a persistent shared shell: \`cd\` persists across calls in this task, so work in the right directory instead of repeating full paths.
+# THE CODEBASE
+- Warden's source: \`/opt/Warden\` (capital W) — \`src/\` (host), \`container/agent-runner/src/\` (agent). \`dist/\` is built output.
+- After a source change: \`npm run build\`, then \`systemctl --user restart warden\`. A change ships when the build is clean.
+- The user's own projects and deliverables: \`~/Warden\`.
+- Bash is a persistent shared shell; \`cd\` holds across calls.
+- Your context window is large. Use it.
 
-READ WHOLE, READ ONCE — your context window is massive: use it. Read each file the task names in ONE full Read with NO limit/offset — never window through a file in small line batches (limit/offset paging and sed range dumps are horribly inefficient and hide the file's structure). Then edit from what you have. Do not re-Read a file you have already read this task to find the next edit target — re-reading files you already saw is a loop, not progress, and the fastest way to stall a task. After your first pass through the named files you have enough context: stop gathering and start writing. To locate a single string you forgot, Grep for it once — do not re-Read page ranges to hunt for it.
+# CODE
+- Read or Grep first: follow the real data flow, written → read → rendered, end to end. The cause usually sits away from the symptom.
+- Edit with targeted old_string/new_string. On a miss, re-read that section and retry.
+- Match the surrounding style: naming, indentation, comment density.
+- Fix the defect class, not the single input that triggered it.
+- After changing a route, a signature or a config shape: Grep the old form and update every caller.
 
-MAKE THE CALL — work happens through tool calls, not narration. The turn that creates the deliverable (Write, Edit, Bash heredoc) is the turn that counts; describing what you are about to write is a no-op — when you know what the file needs, write it in that same turn. State results in the past tense (files written, commands run); state intentions by acting on them.
+# VERIFYING
+- A successful Edit or Write is applied.
+- A behavioral change is verified by running the build and the relevant test, or a focused reproduction, and reading the output.
 
-CODE — Read or Grep before you change anything: understand the real data flow (written → read → rendered) end to end before editing. Edit with targeted old_string/new_string, never rewrite whole files; if an Edit misses, re-read the section and retry (never fall back to python/sed rewrites). Match the surrounding style — naming, indentation, comment density. Run the build and the tests to confirm a change; a successful Edit is not a working change. When your code references something defined elsewhere (a fetch→route, a field, an export), Grep that file once to confirm the contract exists before relying on it.
-
-VERIFYING — Match the check to the task. A successful Edit/Write/Bash call IS applied — don't re-Read the file to double-check it. For a behavioral change, run the build and the relevant test (or a focused reproduction) and read its actual output; "it should work" is not verification. When you change a contract (a route, a function signature, a config shape), Grep for the old form and update every caller — don't leave the build broken.
-
-SUDO — interactive: the USER types the password, never you. For a system package, run \`sudo pacman -S <pkg>\` ONCE, tell the user a password prompt is waiting, and wait — never pipe/echo a password, never retry a failed or timed-out sudo (faillock locks them out). One attempt; if it fails, report what's missing and continue the rest without it.
-
-DON'T REPEAT A FIX THAT FAILED — if the task says an earlier fix for this issue didn't work, don't re-apply it. Verify the earlier change is actually present (Read/Grep), trace the real data flow, and fix the actual cause. State what was wrong with the previous attempt.
-
-FINISHING — you declare done, not a timer or tool cap (you have up to 100 rounds; don't quit early). End in one of three ways:
-- **DONE**: every deliverable the task asked for actually exists on disk — the file is written, the edit is applied, the build is clean, and the tests pass (or you ran a focused repro showing it works). Stop calling tools and write the final report — list exactly the files you changed and the commands you ran, nothing more, and never claim a change unless its tool call succeeded this task.
-- **BLOCKED**: you genuinely can't proceed — missing capability, permission denied, or three distinct approaches all failed with concrete errors. State plainly what's blocking you; don't invent a result.
-- **KEEP GOING**: take the single most useful next step. A failed tool call is feedback, not a verdict — read the error, adjust, retry; never repeat a successful call.
-
-PERSISTENCE — never call a task "impossible" or "not supported" until you've tried at least three distinct approaches that all failed with concrete errors. If one approach fails, try another (different file, different API, a workaround). If you truly can't finish after three attempts, report what each returned and what the next would be.
-
-MEMORY — before re-deriving a fact, prior decision, or how something was built, call \`mcp__marm__marm_smart_recall\` with the topic: long-term memory may already hold it (past fixes, project history, decisions). Log a durable fact you just established (a root cause, a confirmed contract, a decision) with \`mcp__marm__marm_log_entry\` so it's recallable next time.`,
+${agentKernel('every deliverable exists on disk — the file written, the edit applied, the build clean, and the tests or a focused reproduction actually run and passing. Report the files you changed and the commands you ran.')}`,
         toolsets: ['vulkan-core'],
     },
     {
         delegate: 'iris',
         label: 'Iris',
+        background: false,
+        routing: "email, calendar, reminders, scheduled tasks, digests. Anything whose content lives in the user's mail or calendar — including saving an attachment — is iris's, never a browser. Brief it by BRIEFING IRIS below; it carries no rules of its own.",
         // Up to 3 tool calls per dispatch (was 1, 2026-09-15): iris is a
         // fine-tuned 3b that held list→id→act flows only across separate
         // orchestrator dispatches — the orchestrator had to re-delegate each
@@ -818,7 +902,7 @@ MEMORY — before re-deriving a fact, prior decision, or how something was built
         // SFT dataset, not prompted: a 3b fine-tune follows its weights, and
         // every prompted rule is context the fine-tune already carries. Telling
         // iris HOW to behave is now the ORCHESTRATOR's job — the counterpart
-        // brief-writing rules live in ROUTING_CORE's `# BRIEFING IRIS` section,
+        // brief-writing rules live in the iris delegate description,
         // so a bad iris run is a briefing defect, fixed there (or in the
         // dataset), never by regrowing this prompt. The INPUT block is the one
         // exception that must stay prompted: the dispatch is a LABELLED brief
@@ -841,7 +925,7 @@ TOOLS — one tool per noun; 'action' selects the operation.
 - email: read (since/before for a date range), get (email_id), download (email_id + filename), send (to, subject, body), refresh, cached
 
 INPUT
-- Line 1 is the current local time — compute every absolute timestamp from it.
+- Line 1 is the current local time — use it when a schedule time is relative.
 - TASK: one imperative sentence naming the outcome, carrying every id, address, and value it needs inline.
 
 schedule_value
@@ -850,7 +934,10 @@ schedule_value
 - interval: milliseconds string — 300000
 - recurring: 5-field cron — 0 9 * * 1-5
 
-Answer with one plain-text line.`,
+OUTPUT
+- Answer from the values the tool returned.
+- Email list: one line each — sender and subject.
+- Everything else: one plain-text line.`,
         toolsets: ['iris-core'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
         // structured tool use (so Iris reliably calls the email/task/calendar/alarm
@@ -860,26 +947,32 @@ Answer with one plain-text line.`,
     {
         delegate: 'artemis',
         label: 'Artemis',
+        background: true,
+        routing: "audit, second opinion, and diagnosis of why something Warden did went wrong — a stalled, failed or never-reported job. It reads the logs and databases instead of guessing.",
         maxIterations: 200,
         summary: "a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important",
-        systemPrompt: `You are Artemis, a critical reviewer inside Warden. You are handed a transcript of a conversation between the user and the AI assistant (Warden). Your job is to audit it: read what the user actually asked and what the assistant said and did, and find mistakes, errors, and oversights. Your tools are for INSPECTION ONLY — Read (open a file), Grep (search file contents), Glob (find files), get_chat_history, and Bash for read-only inspection of system state. Use them to verify claims by inspecting the files, messages, databases, and logs referenced in the conversation. You audit — you never modify, send, or browse the web.
+        systemPrompt: `# ROLE
+You are Artemis, the critical reviewer inside Warden. You receive a transcript of the user and the assistant. Audit it: what the user asked, what the assistant said and did, and where it went wrong.
 
-BASH — READ-ONLY INSPECTION ONLY:
-- SQLite: the live Warden database is /opt/Warden/store/messages.db (WAL mode — open it read-only: \`sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."\`). It holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts, and more — use .tables and .schema <table> to explore; never assume a table exists, check .tables first. The .db files under data/ are empty stubs; store/messages.db is the real one.
-- Logs: the Warden service appends stdout to /opt/Warden/logs/warden.log and stderr to /opt/Warden/logs/warden.error.log — tail/grep these to see what the system actually did and when.
-- Allowed: SELECT queries, .tables/.schema, tail, grep, cat, ls, date. NEVER: INSERT/UPDATE/DELETE/DROP or any write pragma, file writes or shell redirection, sending anything, installing anything, or long-running/interactive commands.
+# TOOLS — inspection
+Read, Grep, Glob, get_chat_history, and Bash for read-only inspection. Use them to check claims against the real files, messages, databases and logs the conversation refers to. Auditing is the whole job; the system stays as you found it.
 
-Look for:
+# WHERE THE EVIDENCE LIVES
+- Database: /opt/Warden/store/messages.db, opened read-only — \`sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."\`. It holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more. Run .tables first, then .schema <table>. This file is the live one; the .db files under data/ are empty stubs.
+- Logs: /opt/Warden/logs/warden.log (stdout) and /opt/Warden/logs/warden.error.log (stderr). Tail and grep them for what the system did and when.
+- Your Bash vocabulary: SELECT queries, .tables, .schema, tail, grep, cat, ls, date.
+
+# WHAT TO FIND
 - Factual or logical errors in the assistant's replies.
-- Places the assistant misread the user, or answered a different question than the one asked.
-- Oversights: things the user needs that were missed, unstated assumptions, edge cases, risks, or clearly better approaches that weren't considered.
-- Claims the assistant made that aren't actually supported by what happened in the conversation.
+- Places it misread the user, or answered a different question.
+- Oversights: what the user needed and did not get, unstated assumptions, edge cases, risks, better approaches available at the time.
+- Claims the conversation does not support.
 
-Output, in this order:
-- Start with one line: \`What was asked: <the user's actual request, in your own words>\`.
-- Then a concise audit. If you find issues, list them most-important-first. For each: name the specific message or claim, give one line on why it's wrong or risky, and a concrete correction.
-- If the exchange is sound, say so in one or two sentences and note anything worth double-checking.
-Be direct and specific — reference the exact point you're critiquing. Do not flatter, do not restate the whole conversation, do not pad. Your notes are saved automatically, so write them as a standalone record.`,
+# FORMAT
+- Line 1: \`What was asked: <the user's request, in your own words>\`
+- Then the audit, most important first. Each item names the specific message or claim, one line on why it is wrong or risky, and the concrete correction.
+- A sound exchange gets one or two sentences saying so, plus anything worth double-checking.
+Reference the exact point you are critiquing. Your notes are saved automatically — write them as a standalone record.`,
         toolsets: [],
     },
     {
@@ -888,21 +981,38 @@ Be direct and specific — reference the exact point you're critiquing. Do not f
         // like iris-digest rows) and delegatable on demand ("scan the pc").
         delegate: 'sentry',
         label: 'Sentry',
+        background: true,
+        routing: "security scans of this PC: listening ports, connections, services, autostart, crontabs. It also scans on its own schedule and speaks up by itself.",
         maxIterations: 30,
         summary: "security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.",
         systemPrompt: `You are Sentry, Warden's desktop security agent. You run inside the user's account with user-level permissions — that is always enough; sudo, installs, and file writes are outside your job.
 
 You are scanning the machine Warden itself lives on. Warden and its parts are known-good: the Warden orchestrator (node) with its dashboard on port 3200, the agent-runner (node), the Chrome window Warden drives (CDP port 9222), the voice app (port 8767), the MARM memory server (port 8001), and Ollama (port 11434). A process, service, or port on that list is normal for this machine.
 
-Tools: Bash for running commands, sentry_report for submitting your findings once at the end. The sentry_report schema describes everything it accepts.
+# TOOLS
+- Bash for running commands.
+- sentry_report, once, at the end. Its schema describes everything it accepts.
 
-Your task names a mode: PEEK (fast) or DEEP (full).
+# SCOPE
+Your task names a mode.
+- PEEK: network and running services.
+- DEEP: adds the persistence and startup paths — autostart entries, user crontab, enabled user units, shell rc files, and a process audit.
 
-Common places, common things — PEEK covers network and running services; DEEP adds the persistence and startup paths: autostart entries, user crontab, enabled user units, shell rc files, and a process audit.
+# METHOD
+You are the analyst. Judge what you see against a normal Linux desktop.
 
-You are the analyst: judge what you see against what a normal Linux desktop looks like. When something is unfamiliar — a non-standard port, an unknown process, an outbound connection you can't place — INVESTIGATE before judging, you have Bash and iterations for exactly that: resolve the owning process or service (ps -p PID, systemctl status UNIT, ls -l /proc/PID/exe), the binary's package owner (pacman -Qo PATH), and what the port serves (a vendor's software commonly uses its own registered ports — TeamViewer 5938/5939, Steam 27036, KDE Connect 1716). Root-owned sockets show as "unknown" in ss output at user level — resolve them through the service list instead of assuming. Only flag what you cannot explain after checking: say what you checked and what it turned out to be. Anything you resolved is not a finding, even if it looked odd at first. Flag anything genuinely wrong as "what — why". Empty suspicious means the machine is clean. Submit one sentry_report, then state the verdict — CLEAN or FINDINGS — as your final answer.
+When something is unfamiliar — a non-standard port, an unknown process, an outbound connection you cannot place — investigate it. Bash and your iterations exist for this:
+- Owner of a process or service: \`ps -p PID\`, \`systemctl status UNIT\`, \`ls -l /proc/PID/exe\`
+- Package that owns a binary: \`pacman -Qo PATH\`
+- What a port serves: vendor software uses its own registered ports (TeamViewer 5938/5939, Steam 27036, KDE Connect 1716)
+- Root-owned sockets read as "unknown" at user level: resolve them through the service list.
 
-FORMAT — one or two sentences. The host posts findings to the user itself for scheduled scans; when the orchestrator delegated you, your verdict text is the report it relays, so name each finding on its own line in that case.`,
+Report what stays unexplained after you check, saying what you checked and what it turned out to be. Something you resolved is understood, whatever it looked like at first. Write each genuine finding as "what — why". An empty suspicious list means the machine is clean.
+
+Submit one sentry_report, then give the verdict — CLEAN or FINDINGS — as your final answer.
+
+# FORMAT
+One or two sentences. For a scheduled scan the host posts findings itself. For an orchestrator delegation your verdict text is the report it relays, so give each finding its own line there.`,
         toolsets: ['sentry-core'],
         temperature: 0,
     },
@@ -914,27 +1024,63 @@ function getSubAgentToolNames(subagent: SubAgentDef): string[] {
     return resolveMultipleToolsets(subagent.toolsets);
 }
 
+/** The orchestrator's `# THE CREW` block, generated from SUBAGENTS. Prose
+ *  rosters go stale the moment a seat is added, renamed or re-scoped; this
+ *  cannot. Council is appended by hand because it is not a SubAgentDef. */
+function crewBlock(): string {
+    const lines = SUBAGENTS
+        // Atlas is this seat, not a crew member it can hand work to.
+        .filter(s => s.routing && s.delegate !== 'atlas')
+        .map(s => `- **${s.delegate}** — ${s.routing}${s.background ? ' Runs in the background: you get a job id, the result lands in your inbox.' : ' Answers in line.'}`);
+    lines.push('- **council** — three seats deliberate in parallel on a costly, hard-to-reverse decision until they agree (see COUNCIL).');
+    return lines.join('\n');
+}
+
 const SUBAGENT_OWNED = new Set<string>(SUBAGENTS.flatMap(s => getSubAgentToolNames(s)));
+// Atlas's full tool set (browser, web, files, shell, youtube, …). Atlas IS the
+// orchestrator seat, so these are the orchestrator's own hands — not a
+// specialist's to delegate to. Static: atlas's toolsets never change.
+const ATLAS_OWNED = new Set<string>(getSubAgentToolNames(SUBAGENTS.find(s => s.delegate === 'atlas')!));
 const SUBAGENT_BY_DELEGATE = new Map<string, SubAgentDef>(SUBAGENTS.map(s => [s.delegate, s]));
+// Vulkan's tool set — the cloud (coding) agent. Used by the tool-routing
+// override to move tools between the local agent and the cloud agent.
+const VULKAN_OWNED = new Set<string>(getSubAgentToolNames(SUBAGENTS.find(s => s.delegate === 'vulkan')!));
+
+// Tool-routing override (settings "Tool routing — local vs cloud"): a per-tool
+// map that moves a tool between the local agent (atlas) and the cloud agent
+// (vulkan). `side` is the agent we are assembling
+// tools for: a tool routed to this side is added, one routed away is dropped.
+// Only real registry tools move; empty map = current ownership, unchanged.
+function applyToolRouting(base: Set<string>, side: 'local' | 'cloud'): Set<string> {
+    const out = new Set(base);
+    for (const [n, r] of Object.entries(TOOL_ROUTING)) {
+        if (!allToolNames.includes(n)) continue;
+        if (r === side) out.add(n); else out.delete(n);
+    }
+    return out;
+}
 
 const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     'convert_file', 'api_request', 'list_api_keys',
     // Atlas's lesser ONE-SHOT tools, shared with the orchestrator (2026-09-12):
     // the orchestrator's model is as capable as atlas's, so a single-call
-    // action (run a status command, read a file, quick web lookup/search,
-    // open a local file, pause/skip media, volume) should not spawn a whole
-    // sub-agent job. Simple web tasks are included too — open a page, read
-    // it, click a link, fill one form: the interaction tools return the
-    // updated snapshot in the same result, so each is one round. Multi-page
-    // flows and scripted extraction stay with atlas; code editing stays
-    // with vulkan.
-    'Bash', 'Read', 'WebSearch', 'WebFetch', 'open_app',
+    // action (run a status command, read a file, open a local file,
+    // pause/skip media, volume) should not spawn a whole sub-agent job.
+    // 2026-09-18: the WEB half of that sharing is GONE — WebSearch/WebFetch
+    // and the whole browser toolset are atlas's alone again. The orchestrator
+    // is a routing seat on a mid-size local model now, and web work is where
+    // it loses the plot: it drove a tab atlas already owned (two actors, one
+    // page, 2026-09-18 10:41), and every browser/web schema it carries is
+    // prompt weight on turns that never touch the web. One-shot local action
+    // stays; anything that touches the internet delegates.
+    'Bash', 'Read', 'open_app',
     'audio_volume', 'mic_volume', 'media_control',
-    'browser_navigate', 'browser_snapshot', 'browser_current_url', 'browser_tabs',
-    'browser_click', 'browser_type', 'browser_evaluate',
-    // The orchestrator's vision tools — kept out of the SUBAGENT_OWNED filter
-    // so the orchestrator always keeps them.
-    'desktop_screenshot', 'webcam_capture', 'read_image',
+    // Vision capture is NOT here any more (2026-09-18). This seat runs a
+    // visionless local model, so a capture it cannot read was never an answer:
+    // it captured, then guessed. Capture belongs to vulkan (the cloud seat that
+    // can actually see) via the `capture` toolset, and an image question from
+    // here goes through the vision explainer, which now resolves to vulkan's
+    // model instead of falling back to this seat's blind one.
 ]);
 
 // Artemis: read-only auditor tools (Bash included for read-only inspection:
@@ -1221,11 +1367,14 @@ let ARTEMIS_MODEL = '';
 // dashboard-selected value, no fallback, empty errors inside runSubAgent.
 let SENTRY_MODEL = '';
 // The vision explainer — the model that answers image questions for visionless
-// seats (askVisionModel / the query_image tool). Resolution order: an explicit
-// VISION_MODEL override, else the atlas seat, else the orchestrator — seats the
-// operator keeps vision-capable. Resolved lazily per call, so dashboard model
-// changes apply immediately.
-setVisionModelResolver(() => (process.env.VISION_MODEL || ATLAS_MODEL || ORCHESTRATOR_MODEL || '').trim());
+// seats (askVisionModel / the query_image tool). It used to fall back to the
+// atlas/orchestrator seat, which on this box is granite4.1:8b: a visionless
+// model being asked to read an image. That fallback is why capture "worked"
+// and the answer was always guesswork. Vulkan is the cloud seat, so it is the
+// one that can actually see; the orchestrator seat is the last resort only
+// because something is better than refusing outright. Resolved lazily per
+// call, so dashboard model changes apply immediately.
+setVisionModelResolver(() => (process.env.VISION_MODEL || VULKAN_MODEL || ORCHESTRATOR_MODEL || '').trim());
 // Driving force — the orchestrator's selected preamble preset id
 // (data/driving-forces/<id>.md). Empty = built-in default preamble.
 // CONTEXT_CLEAR_AT is a timestamp from the host; when it changes, the
@@ -1251,6 +1400,10 @@ let SUPERVISOR_MODEL = '';
 // tick was removed 2026-09-17) does not run. There is no cadence setting any
 // more: nothing ticks, so an interval had nothing to pace.
 let SUPERVISOR_ENABLED = true;
+// Tool-routing override map: tool name → 'local' | 'cloud'. Persisted in the
+// dashboard settings and re-synced each turn via applySettingsSync(). Empty =
+// current ownership (tools stay where their toolset puts them).
+let TOOL_ROUTING: Record<string, 'local' | 'cloud'> = {};
 // Live state of the most recent Council deliberation. The background council
 // loop is the only writer; the council_status tool handler only reads, so the
 // orchestrator can peek at an in-flight deliberation without touching it.
@@ -1405,16 +1558,6 @@ function rehydrateOrphanedJobs(): void {
     } catch { /* no roster or malformed — nothing to reconcile */ }
 }
 
-// ─── Direct Atlas passthrough ───────────────────────────────────────────
-// When the user asks to talk to Atlas directly, the orchestrator calls the
-// `atlas_direct` tool. That sets `atlasDirect.active` and the orchestrator's
-// turn ends. From then on, the idle loop routes the user's messages straight
-// to Atlas (a plain chat turn — Atlas asks questions, refines the task) until
-// the user exits ("back to Warden") or says go ("go"/"start"), at which point
-// Atlas is kicked off as a normal background job with the refined task and
-// the user is dropped back to normal orchestrator chat.
-let atlasDirect: { active: boolean; messages: { role: string; content: string }[] } | null = null;
-
 // ─── Confirmed-failure retry ledger ─────────────────────────────────────
 // The hard cap behind the CONFIRM step in the inbox digest: a task that
 // already ran gets exactly ONE model-initiated automatic retry — a third
@@ -1478,6 +1621,16 @@ function retryGate(task: string): string | null {
     const goal = goalSig(task);
     const creditUsed = goalRetryExhausted(task);
     const failedBefore = inbox.all().some(i => i.verdict === 'failed' && sameGoal(goal, goalSig(String(i.task || ''))));
+    // A digest turn is report-back only: a goal whose result already landed as
+    // CONFIRMED or UNVERIFIABLE must never be re-dispatched — that was the
+    // "play a song → re-delegate → new job → new digest → re-delegate" loop
+    // (2026-09-18). Re-delegating an already-good result is never a legitimate
+    // chain next-step (chains move to a materially different goal).
+    const alreadyDone = inbox.all().some(i => (i.verdict === 'confirmed' || i.verdict === 'unverifiable') && sameGoal(goal, goalSig(String(i.task || ''))));
+    if (alreadyDone && !failedBefore && !creditUsed) {
+        log(`[retry-ledger] blocked re-delegation of an already-completed goal: ${taskSig(task)}`);
+        return `STOP — this task already ran and its result is in your inbox above. Do not dispatch it again. Report that result to the user, or stay silent if it is media already playing.`;
+    }
     if (!failedBefore && !creditUsed) return null; // first dispatch of this goal
     if (creditUsed) {
         log(`[retry-ledger] blocked re-delegation of reworded retry: ${taskSig(task)}`);
@@ -1573,7 +1726,14 @@ let drainedDigestJobIds: string[] = [];
 const ATLAS_ALWAYS_INCLUDED_TOOLS = new Set<string>([
     'Bash', 'open_app',
     'desktop_click', 'desktop_type', 'desktop_screenshot',
-    'browser_navigate', 'browser_snapshot', 'browser_download',
+    'browser_navigate', 'browser_download',
+    // `youtube` must ride along with the browser tools, never be ranked against
+    // them: browser_navigate/browser_snapshot are always present, so when the
+    // keyword ranker dropped `youtube` (it does not fire on "change the song" —
+    // no "youtube" in the words) the only media tool the model could see was
+    // the browser, and it hand-drove the player instead of changing the track.
+    // 2026-09-18: "change the song" → browser_snapshot, then a dead turn.
+    'youtube',
     // MARM recall+log always ride along for atlas: without these in the
     // always-set, the RAG tool ranking drops them for most tasks and atlas
     // re-derives facts memory already holds (2026-09-15).
@@ -1634,7 +1794,7 @@ function describeSpawn(label: string, sp: SpawnOutcome, urgent: boolean): string
     const u = urgent ? ' (urgent — its result will interrupt you when ready)' : '';
     switch (sp.outcome) {
         case 'started':
-            return `${label} ${sp.jobId.split('-').pop()} started${u} — the result will arrive in your inbox. (job id: ${sp.jobId})`;
+            return `${label} ${sp.jobId.split('-').pop()} started${u} — running. Result arrives in your inbox. Reply: running, result on the way. End your turn.`;
         case 'duplicate':
             return `${label} is already running this exact task as ${sp.jobId} — its result will arrive in your inbox. Do not dispatch it again.`;
         case 'queued-cap':
@@ -1720,6 +1880,17 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     const jobShortId = Math.random().toString(36).slice(2, 6);
     const jobId = `${delegate}-${jobShortId}`;
     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
+    // Tool-routing override: move tools between atlas (local) and vulkan (cloud).
+    // Applies to the two execution agents only — a tool routed to this side is
+    // added (from the registry), one routed to the other side is dropped.
+    if (delegate === 'atlas' || delegate === 'vulkan') {
+        const side = delegate === 'vulkan' ? 'cloud' : 'local';
+        const baseNames = new Set(tools.map((t: any) => t.function?.name).filter((n: any) => typeof n === 'string'));
+        const routed = applyToolRouting(baseNames, side);
+        const kept = tools.filter((t: any) => routed.has(t.function?.name));
+        const addedNames = [...routed].filter((n) => !baseNames.has(n));
+        tools = addedNames.length ? [...kept, ...registry.getDefinitions(addedNames)] : kept;
+    }
     // Sentry stays isolated like its SUBAGENT_TOOL_DEFS build (no BOTH_TOOL_DEFS
     // merge above): a security scanner takes no skill/MCP tools either.
     // Iris stays isolated too (2026-09-09): trained on its exact 41 tools only.
@@ -1795,7 +1966,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
             // stamps the InboxItem, records a confirmed failure, and may dispatch
             // a structural follow-up so multi-part requests chain even if the
             // orchestrator ignores CHAIN.
-            const verdict = await runCompletionVerdict({ task, fullResult, activityLog: jobRecord.activityLog, toolContext: context });
+            const verdict = await runCompletionVerdict({ task, fullResult, activityLog: jobRecord.activityLog, toolContext: context, jobId });
             inbox.push({ jobId, agent: delegate, task, urgent, status: jobRecord.abortFlag.aborted ? 'aborted' : 'done', fullResult, activityLog: jobRecord.activityLog, verdict: verdict.verdict, verdictReason: verdict.reason });
             // Advisory only: the verdict stamps the inbox item (surfaced in the
             // digest for the orchestrator/user to read) and logs. It does NOT
@@ -1922,8 +2093,21 @@ function filePathFromArgs(args: string): string | null {
 // false-fail → re-delegate → one-atlas-gate murder cycle. Feeding the model
 // "file X exists, NNN bytes" lets it judge ground truth; the deterministic
 // override below is the backstop for when it still false-fails.
-interface WrittenFile { rel: string; exists: boolean; size: number; mtime: string | null }
-function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string; result?: string }[]): WrittenFile[] {
+interface WrittenFile { rel: string; exists: boolean; size: number; mtime: string | null; prevJobId?: string; unchanged?: boolean }
+
+// Cross-run change detection (2026-09-18, the "ask for a change and it loops
+// the same wrong thing verbatim" defect): a correction run that rewrites the
+// deliverable BYTE-IDENTICAL to the previous run made NO change, but "file
+// exists with content" reads as success all the way down — the verdict model,
+// the false-fail backstop, and the orchestrator's report-back all see a real
+// file. Keep a session-lifetime sha256 per resolved written path so the
+// verdict turn can state UNCHANGED as a hard fact, and so the backstop stops
+// rescuing a correction that didn't happen. Genuinely idempotent re-runs
+// (same file re-produced on purpose) still pass: UNCHANGED is a fact for the
+// judge, not an automatic fail.
+const writtenFileHistory = new Map<string, { hash: string; jobId: string }>();
+const WRITTEN_HASH_CAP_BYTES = 4 * 1024 * 1024;
+function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string; result?: string }[], jobId: string): WrittenFile[] {
     const seen = new Map<string, WrittenFile>();
     for (const e of activityLog) {
         if (!WRITE_PATH_TOOLS.has(e.tool)) continue;
@@ -1938,7 +2122,23 @@ function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string
             const st = fs.statSync(resolved);
             if (st.isFile()) { exists = true; size = st.size; mtime = new Date(st.mtimeMs).toISOString().replace('T', ' ').slice(0, 19); }
         } catch { /* not on disk */ }
-        seen.set(resolved, { rel: raw, exists, size, mtime });
+        let prevJobId: string | undefined, unchanged: boolean | undefined;
+        if (exists && size > 0 && size <= WRITTEN_HASH_CAP_BYTES) {
+            try {
+                const hash = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+                const prev = writtenFileHistory.get(resolved);
+                if (prev) {
+                    prevJobId = prev.jobId;
+                    unchanged = prev.hash === hash;
+                }
+                writtenFileHistory.set(resolved, { hash, jobId });
+            } catch { /* unreadable — leave delta unknown */ }
+        } else if (exists) {
+            // Oversized file: record the job so future comparisons still work if
+            // it shrinks, but say nothing this run.
+            writtenFileHistory.set(resolved, { hash: '', jobId });
+        }
+        seen.set(resolved, { rel: raw, exists, size, mtime, prevJobId, unchanged });
     }
     return [...seen.values()];
 }
@@ -1954,7 +2154,12 @@ function writtenFilesSummary(files: WrittenFile[]): string {
     const present = files.filter(f => f.exists && f.size > 0);
     const absent = files.filter(f => !f.exists || f.size === 0);
     const lines: string[] = [];
-    if (present.length) lines.push(...present.map(f => `- ${f.rel}: EXISTS on disk, ${f.size} bytes (modified ${f.mtime})`));
+    if (present.length) lines.push(...present.map(f => {
+        let line = `- ${f.rel}: EXISTS on disk, ${f.size} bytes (modified ${f.mtime})`;
+        if (f.unchanged === true) line += ` — UNCHANGED from job ${f.prevJobId} (byte-identical: this run made NO change to it)`;
+        else if (f.unchanged === false) line += ` — changed since job ${f.prevJobId}`;
+        return line;
+    }));
     if (absent.length) lines.push(...absent.map(f => `- ${f.rel}: NOT on disk (or empty)`));
     return lines.join('\n');
 }
@@ -2031,7 +2236,7 @@ CAPABILITIES: Read the user's request, the job's task, its final result text, a 
 
 GUIDELINES:
 - CONFIRMED: the deliverable the user asked for is present and matches the request — the right file written (and it EXISTS on disk per the ground-truth list), the right answer given, the right action named with a concrete outcome.
-- FAILED: the deliverable is genuinely wrong or missing. This includes a result that claims a write but the ground-truth list shows the file is NOT on disk (or is empty), a result that claims edit work but the activity shows zero Edit/Write/Bash calls, or a result that contradicts the request.
+- FAILED: the deliverable is genuinely wrong or missing. For a task whose deliverable is a file or an edit: a result that claims a write but the ground-truth list shows the file is NOT on disk (or is empty), a result that claims edit work but the activity shows zero Edit/Write/Bash calls, or a result that contradicts the request. A task whose deliverable is an on-screen or system action (play a video, open a page, launch an app, send a message) has no file to check — judge a result that reports the action done as UNVERIFIABLE, never FAILED for having no write calls.
 - UNVERIFIABLE: whether it worked depends on screen or system state the text cannot show (a page rendered, an app launched), OR the deliverable file EXISTS on disk with real content but you cannot judge from text alone whether its content fully matches the request. Trust the on-disk file; do NOT mark failed merely because the result prose does not explicitly say "I wrote X" — the ground-truth list is authoritative for whether a file was written.
 - Use followup only when the user's request named a next step (e.g. "then redesign it") that this result did not start. Write the task as plain intent: the goal and the facts.
 
@@ -2045,18 +2250,57 @@ interface CompletionVerdict {
     followup?: { agent?: string; task?: string }[];
 }
 
-async function runCompletionVerdict(opts: { task: string; fullResult: string; activityLog: { t: number; tool: string; args: string; result?: string }[]; toolContext: any }): Promise<CompletionVerdict> {
-    const { task, fullResult, activityLog } = opts;
+/** If `wanted` is already loaded in Ollama, use it. If it is NOT loaded but the
+ *  orchestrator's model IS, return that instead — loading `wanted` would evict
+ *  the resident one. Returns null when the check fails or tells us nothing, so
+ *  the caller just keeps its configured model. */
+async function pickResidentVerdictModel(wanted: string): Promise<string | null> {
+    const orch = (ORCHESTRATOR_MODEL || '').trim();
+    if (!orch || orch === wanted) return null;
+    if (/cloud/i.test(wanted) || /cloud/i.test(orch)) return null; // cloud models hold no VRAM
+    try {
+        const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+        const res = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(2000) });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { models?: Array<{ name?: string; model?: string }> };
+        const loaded = (data.models || []).map(m => (m.name || m.model || '').trim()).filter(Boolean);
+        if (loaded.length === 0) return null;
+        const has = (n: string) => loaded.some(l => l === n || l.replace(/:latest$/, '') === n.replace(/:latest$/, ''));
+        if (has(wanted)) return null;      // already there — no eviction to avoid
+        return has(orch) ? orch : null;    // swap only when the orchestrator's model is the resident one
+    } catch {
+        return null;
+    }
+}
+
+async function runCompletionVerdict(opts: { task: string; fullResult: string; activityLog: { t: number; tool: string; args: string; result?: string }[]; toolContext: any; jobId: string }): Promise<CompletionVerdict> {
+    const { task, fullResult, activityLog, jobId } = opts;
     // The dashboard's supervisor On/Off now gates THIS — the completion verdict
     // is the only surviving supervisor (the periodic watchdog tick was removed
     // 2026-09-17), so "supervisor Off" has to mean "no second-reader pass" or
     // the setting controls nothing at all.
     if (!SUPERVISOR_ENABLED) { log('[completion-verdict] supervisor Off — skipping verdict'); return { verdict: 'unverifiable', reason: 'supervisor disabled in settings' }; }
-    const model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
+    let model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
     if (!model) { log('[completion-verdict] no supervisor/orchestrator model — skipping'); return { verdict: 'unverifiable', reason: 'no model configured' }; }
+    // Don't evict a resident model to judge a job. The verdict is a two-second
+    // read, but when its model is not the one in VRAM, asking for it makes
+    // Ollama unload whatever is resident — and on this box that is a 17 GB
+    // orchestrator/atlas model whose reload costs ~85 s, paid by the NEXT user
+    // turn. Measured 2026-09-18: play a song → atlas runs → verdict pulls the
+    // 3 GB toolcall model in → the 30 B is evicted → the following turn sits
+    // through a full cold load, over and over ("it just loaded and unloaded
+    // VRAM on playing a song"). So when the configured verdict model is not
+    // already resident and the orchestrator's model IS, judge on the resident
+    // one: same verdict, no eviction, no reload. Settings are untouched — this
+    // only decides which of the user's own models answers right now.
+    const residentModel = await pickResidentVerdictModel(model);
+    if (residentModel && residentModel !== model) {
+        log(`[completion-verdict] ${model} is not resident — judging on the resident ${residentModel} instead of evicting it`);
+        model = residentModel;
+    }
 
     // Ground truth: which files did the job write, and do they exist on disk?
-    const writtenFiles = verifyWrittenFiles(activityLog);
+    const writtenFiles = verifyWrittenFiles(activityLog, jobId);
     const filesBlock = writtenFiles.length
         ? `\nWritten files verified on disk (authoritative — a file listed EXISTS was really written):\n${writtenFilesSummary(writtenFiles)}\n`
         : '\nNo file-writing tool calls recorded in the activity log.\n';
@@ -2069,7 +2313,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
         `Final result:\n${fullResult.slice(0, 3000)}\n\n` +
         `Tool calls (most recent last, names + one-line args only):\n${activity}\n` +
         filesBlock +
-        `\nOutput the JSON verdict. Judge against the on-disk file list: if a deliverable file EXISTS with real content, do not mark failed only because the result text does not spell that out.`;
+        `\nOutput the JSON verdict. Judge against the on-disk file list: if a deliverable file EXISTS with real content, do not mark failed only because the result text does not spell that out. But a file marked UNCHANGED is byte-identical to the previous run's version — if the task asked for a change to that file, the change was NOT made, and that is a failure no matter what the result text claims.`;
 
     const apiProxyUrl = process.env.API_PROXY_URL || '';
     const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
@@ -2083,8 +2327,13 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
             { role: 'user', content: userMsg },
         ],
         stream: false,
-        keep_alive: VERDICT_KEEP_ALIVE_S,
-        options: { temperature: 0, num_predict: 512, ...qwenSampling(model) },
+        keep_alive: keepAliveFor(model, VERDICT_KEEP_ALIVE_S),
+        // num_ctx from settings, like every other call. Sending none let Ollama
+        // choose its own window (32768), which forked a SECOND runner of the
+        // same weights beside the 8192 one the rest of the system uses — 3.9 GB
+        // instead of 2.5 GB, spilling onto CPU, with VRAM moving every time a
+        // job finished. getNumCtx pins the toolcall model to its dashboard ctx.
+        options: { temperature: 0, num_predict: 512, num_ctx: getNumCtx(model, ''), ...qwenSampling(model), ...graniteSampling(model) },
     };
     if (isLocal) body.format = COMPLETION_VERDICT_FORMAT;
 
@@ -2130,13 +2379,29 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     // instead of churning. A real content failure (reason names the defect) is
     // respected and stays `failed`.
     if (verdict.verdict === 'failed') {
-        const realFile = writtenFiles.find(f => f.exists && f.size >= 100);
+        // A file UNCHANGED from a previous run cannot rescue the verdict: the
+        // backstop exists for textual false-fails where the FILE is real work,
+        // but byte-identical output from a correction run is proof the
+        // correction did NOT happen — downgrading that to `unverifiable` would
+        // send the "claimed update, nothing changed" loop straight to the
+        // orchestrator as a success.
+        const realFile = writtenFiles.find(f => f.exists && f.size >= 100 && f.unchanged !== true);
         const reason = String(verdict.reason || '');
         if (realFile && !REAL_FAIL_KEYWORDS.test(reason)) {
             const present = writtenFiles.filter(f => f.exists && f.size > 0).map(f => `${f.rel} (${f.size}B)`).join(', ');
             log(`[completion-verdict] (model=${model}) OVERRODE failed→unverifiable: deliverable file(s) present on disk [${present}] but reason was textual, not a content defect — "${reason.slice(0, 120)}"`);
             return { verdict: 'unverifiable', reason: `Deliverable file(s) present on disk [${present}]; verifier flagged the result text, not the file content — trusting the on-disk result.`, followup: verdict.followup };
         }
+    }
+
+    // The verbatim-loop guard runs in BOTH directions: when the judge marks the
+    // job confirmed but a deliverable is UNCHANGED from a previous run, the
+    // correction did not happen — append the hard fact to the reason so it
+    // reaches the orchestrator's digest verbatim and can't be parroted away.
+    if (verdict.verdict === 'confirmed' && writtenFiles.some(f => f.unchanged === true)) {
+        const same = writtenFiles.filter(f => f.unchanged === true).map(f => f.rel).join(', ');
+        verdict.reason = `${String(verdict.reason || '')} [ground truth: ${same} is byte-identical to the previous run — no change was made to it]`.trim();
+        log(`[completion-verdict] confirmed, but UNCHANGED deliverable(s) [${same}] — annotated the reason with the no-change fact`);
     }
 
     log(`[completion-verdict] (model=${model}) verdict=${verdict.verdict}, followup=${verdict.followup?.length ?? 0} — ${String(verdict.reason || '').slice(0, 160)}`);
@@ -2159,6 +2424,35 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
 const ALWAYS_THINK_MODEL_RE = /^(kimi|glm)/i;
 function modelRequiresThink(model: string): boolean {
     return ALWAYS_THINK_MODEL_RE.test(model || '');
+}
+
+// Max tokens one reply may generate — the dashboard's "Max output" row
+// (local:max_output_tokens), delivered in the spawn/turn payload. This is NOT
+// ctx: it caps a single response, and its job is to stop a model that has lost
+// the thread from generating until something times out. The old literals were
+// 65536 on both the orchestrator and sub-agent turns — a "cap" equal to the
+// whole window, so no cap at all — and 8192 on the two one-shot passes.
+//
+// Defaults when the row is blank: a sub-agent may legitimately emit a whole
+// file, so it gets room; the orchestrator speaks in sentences and a one-shot
+// pass answers a single question, so they get far less. A reply that needs
+// more than this has gone wrong, not long.
+const DEFAULT_MAX_OUTPUT = { subagent: 16384, orchestrator: 4096, oneshot: 4096 };
+let MAX_OUTPUT_SETTING = 0; // 0 = unset, use the defaults above
+
+function maxOutput(kind: keyof typeof DEFAULT_MAX_OUTPUT): number {
+    return MAX_OUTPUT_SETTING > 0 ? MAX_OUTPUT_SETTING : DEFAULT_MAX_OUTPUT[kind];
+}
+
+// Granite runs at temperature 0, everywhere, no exceptions. IBM's tool-calling
+// guidance is temperature 0 for reliable structured output, and every seat that
+// has ever drifted on Granite — hallucinated tool arguments, invented paths,
+// restated content it was told to copy — drifted with a non-zero temperature
+// underneath it. Spread AFTER the caller's options so this wins whatever the
+// seat, the retry path or a model-specific sampler asked for. num_ctx is never
+// touched here — that knob is the user's.
+function graniteSampling(model: string): Record<string, number> {
+    return /granite/i.test(String(model || '')) ? { temperature: 0 } : {};
 }
 
 // Qwen-documented sampling (Qwen3.5 model card): any qwen model gets these;
@@ -2256,6 +2550,13 @@ function getNumCtx(model: string, ctxOverride?: string | number): number | undef
 // Per-agent ctx override lookup, keyed by the agentName passed to runSubAgent.
 // Blank → the model's native window. Council seats inherit the Atlas ctx
 // (preserves prior behavior; council is dashboard-managed, not in the popover).
+// Ctx delivered IN THE SPAWN PAYLOAD, straight from the settings row for this
+// agent. This is the authoritative source: the environment relay below is the
+// legacy path, and for a background spawn it silently delivered nothing, so
+// atlas ran at whatever window Ollama chose (32k) while its setting said
+// 65536. Payload first, always.
+const PAYLOAD_AGENT_CTX = new Map<string, string>();
+
 const AGENT_CTX_OVERRIDE: Record<string, () => string> = {
     iris: () => process.env.IRIS_NUM_CTX || '',
     artemis: () => process.env.ARTEMIS_NUM_CTX || '',
@@ -2314,6 +2615,25 @@ function keepAliveEnv(name: string, dflt: number): number {
 // iris, mercury, and the one-shot iris-digest spawn — share one
 // keep-alive knob (TOOLCALL_KEEP_ALIVE); atlas/vulkan/council/artemis use the
 // atlas knob (ATLAS_KEEP_ALIVE). Historic default for all sub-agents: 300.
+/** Ollama applies the keep_alive of EVERY request to the loaded model, so a
+ *  short-TTL call against a model another seat pinned resident (-1) silently
+ *  demotes it. The completion verdict (60s) and a sentry scan (300s) both fall
+ *  back to whatever is already resident — which on this box is the
+ *  orchestrator's own model — so after each finished job the "pinned" model was
+ *  quietly given a 60-second expiry and unloaded, forcing a full reload on the
+ *  next message (VRAM dropping between turns, 2026-09-18). Never shorten a
+ *  pinned model's residency: if any seat pins this model, the call keeps -1. */
+function keepAliveFor(model: string, desired: number): number {
+    const want = (model || '').replace(/^local:/, '').trim();
+    if (!want || desired === -1) return desired;
+    const pinned = (name: string, v: number) =>
+        v === -1 && (name || '').replace(/^local:/, '').trim() === want;
+    if (pinned(ORCHESTRATOR_MODEL, keepAliveEnv('ORCHESTRATOR_KEEP_ALIVE', -1))) return -1;
+    if (pinned(ATLAS_MODEL, keepAliveEnv('ATLAS_KEEP_ALIVE', 300))) return -1;
+    if (pinned(process.env.SUBAGENT_MODEL || '', keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300))) return -1;
+    return desired;
+}
+
 function subAgentKeepAlive(agent: string): number {
     if (['iris', 'mercury', 'iris-digest'].includes(agent)) {
         return keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300);
@@ -2611,6 +2931,17 @@ function trimMessagesToBudget(msgs: any[], budgetChars: number): any[] {
  *  for long-term memory here). This is what keeps the orchestrator from
  *  ballooning: it never carries raw tool chatter across turns, only a lean
  *  tail of the conversation itself. */
+// The most recent assistant reply is the one the NEXT turn is most likely to
+// need word for word: when the orchestrator writes a greeting, a post or the
+// narration for a demo, the delegation that delivers it usually happens on the
+// following turn. At the flat 1K cap that text came back as
+// "…[…truncated…]", so the orchestrator briefed atlas with "type the Warden
+// introduction" and atlas — which cannot see chat — spent eleven iterations
+// grepping the filesystem for a document that had only ever existed in a reply
+// (2026-09-18 12:12). A prompt rule cannot fix that: the words are genuinely
+// gone. So the newest assistant reply keeps a bigger allowance; everything
+// older stays at the lean cap.
+const LAST_REPLY_MAX_CHARS = 4000;
 function collapseToChatHistory(msgs: any[], keepMessages = 6, maxPerMsg = 1000): any[] {
     if (msgs.length <= 1) return msgs;
     const system = msgs[0];
@@ -2629,9 +2960,12 @@ function collapseToChatHistory(msgs: any[], keepMessages = 6, maxPerMsg = 1000):
         }
         return false;
     });
-    const kept = filtered.slice(-keepMessages).map((m: any) => {
+    const window = filtered.slice(-keepMessages);
+    const lastAssistant = [...window].reverse().find((m: any) => m.role === 'assistant');
+    const kept = window.map((m: any) => {
         const c = typeof m.content === 'string' ? m.content : '';
-        if (c.length > maxPerMsg) return { ...m, content: c.slice(0, maxPerMsg) + '\n[…truncated…]' };
+        const cap = m === lastAssistant ? Math.max(maxPerMsg, LAST_REPLY_MAX_CHARS) : maxPerMsg;
+        if (c.length > cap) return { ...m, content: c.slice(0, cap) + '\n[…truncated…]' };
         return m;
     });
     log(`[context] collapsed to chat history: ${kept.length + 1} of ${msgs.length} messages (~${(estimateMessagesChars([system, ...kept]) / 1000).toFixed(0)}K chars, ≤${maxPerMsg} per turn)`);
@@ -2661,7 +2995,9 @@ async function runSubAgent(
         return { content: `Error: the ${agentName} sub-agent has no model configured (set it in the Agents panel). The task did not run.`, modifiedFiles: [] };
     }
     // Per-agent num_ctx override for this agent (blank → native window).
-    const ctxOverride = AGENT_CTX_OVERRIDE[agentName]?.() || '';
+    const ctxOverride = PAYLOAD_AGENT_CTX.get(agentName) || AGENT_CTX_OVERRIDE[agentName]?.() || '';
+    const resolvedCtx = getNumCtx(model, ctxOverride);
+    log(`[${agentName}] model=${model} num_ctx=${resolvedCtx ?? 'NONE (backend picks the window)'} (setting: ${ctxOverride || 'missing'})`);
     const modifiedFiles = new Set<string>();
     // Safety bounds — important for "unlimited" agents (maxIterations<=0) that also
     // hold powerful tools (e.g. Atlas with Bash): cap wall-clock time and keep an
@@ -2832,7 +3168,17 @@ async function runSubAgent(
         // stream as action, however slow; their absence marks narration.
         let narrationFired = false;
         let streamToolCallSeen = false;
+        // Verbosity heartbeat state. Prompt eval emits no tokens, so onChunk
+        // below does not run during it: a ~12k-token prompt at ~490 tok/s is ~25s
+        // of total silence, and the Oversight row sits at "0 calls / idle" which
+        // reads as a hang. `waitTicker` ticks elapsed seconds until the first
+        // chunk arrives.
+        const stream = { firstChunk: false, ticker: null as any };
         const onChunk = (chunk: any) => {
+            if (!stream.firstChunk) {
+                stream.firstChunk = true;
+                if (stream.ticker) { clearInterval(stream.ticker); stream.ticker = null; }
+            }
             // stop_agent hard-kill: the abort flag is only checked at iteration
             // boundaries, so a job cancelled mid-generation kept streaming —
             // vulkan-cxei kept drafting in think-pass for minutes AFTER its
@@ -2898,13 +3244,32 @@ async function runSubAgent(
         try {
             const provider = getProvider();
             resetSilence();
-            const subThink = ((agentName === 'atlas' || agentName === 'vulkan') && i === 0) || modelRequiresThink(model);
+            const waitStartedAt = Date.now();
+            stream.ticker = setInterval(() => {
+                if (stream.firstChunk) return;
+                const secs = Math.round((Date.now() - waitStartedAt) / 1000);
+                writeStatus({
+                    phase: agentName,
+                    label: `${agentName}: iteration ${i + 1} — waiting on the model (${secs}s; prompt eval, no tokens yet)`,
+                    ts: Date.now(),
+                    jobsList: currentJobsList(),
+                });
+            }, 2000);
+            // Granite reasons on its own, so the forced first-iteration think
+            // pass is pure cost: the whole turn goes into the think channel and
+            // comes back with no content and no tool call, which the loop below
+            // scores as a dead turn and ends the job ("produced no output and
+            // ran no tools" twice in a row, 2026-09-18 14:09 and 14:11). The
+            // flag was written for models that needed a planning nudge; granite
+            // plans inside its normal turn and acts in the same one.
+            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && !/granite/i.test(model);
+            const subThink = forcedFirstThink || modelRequiresThink(model);
             const chatResult = await provider.chatStream({
                 model,
                 messages,
                 tools,
-                options: { num_predict: 65536, temperature, num_ctx: getNumCtx(model, ctxOverride), ...qwenSampling(model, subThink) },
-                keep_alive: subAgentKeepAlive(agentName),
+                options: { num_predict: maxOutput('subagent'), temperature, num_ctx: resolvedCtx, ...qwenSampling(model, subThink), ...graniteSampling(model) },
+                keep_alive: keepAliveFor(model, subAgentKeepAlive(agentName)),
                 // First iteration lets atlas/vulkan think/plan before acting — a
                 // planning step up front stops it diving into a read-edit-read-edit
                 // re-reading loop (it decides what it needs once, then reads each
@@ -2916,6 +3281,7 @@ async function runSubAgent(
                 signal: silenceController.signal,
             }, onChunk);
             clearTimeout(silenceTimer);
+            if (stream.ticker) { clearInterval(stream.ticker); stream.ticker = null; }
 
             const data = { message: chatResult.message, usage: chatResult.usage } as any;
 
@@ -3102,7 +3468,8 @@ async function runSubAgent(
                 return { content, modifiedFiles: [...modifiedFiles] };
             }
         } catch (err: any) {
-            clearTimeout(silenceTimer);  // release the silence watchdog on any throw
+            clearTimeout(silenceTimer);
+            if (stream.ticker) { clearInterval(stream.ticker); stream.ticker = null; }  // release the silence watchdog on any throw
             const errMsg = err?.message || String(err);
             // stop_agent fired mid-generation (onChunk hard-killed the stream
             // above). Exit as a cancellation with the same message shape the
@@ -3203,6 +3570,7 @@ interface ContainerInput {
     userKeyId?: string;
     verbose?: boolean;
     showThinking?: boolean | string;
+    toolRouting?: Record<string, string>;
     memoryContext?: string;
     activeIdea?: string;
 }
@@ -3234,8 +3602,13 @@ async function runNativeOllama(input: ContainerInput) {
     const verbose = input.verbose !== false;
     // Thinking mode: 'max' keeps thinking on every iteration; 'true' only on the
     // first planning turn; anything else lets the model decide per request.
-    const thinkingMode = String(input.showThinking || '');
-    const showThinking = thinkingMode === 'true' || thinkingMode === 'max';
+    // Thinking is a SETTING (dashboard row thinking:<jid>), so read every form
+    // the row can hold. It stores "1"; the old test accepted only "true" and
+    // "max", so a switched-on setting read as off and thinking never ran —
+    // whatever the user had chosen.
+    const thinkingMode = String(input.showThinking ?? '').trim().toLowerCase();
+    const thinkingAlways = thinkingMode === 'max';
+    const showThinking = thinkingAlways || ['1', 'true', 'on', 'yes'].includes(thinkingMode);
     log(`Using ${API_PROXY_URL ? 'proxy' : 'Ollama'}: ${API_PROXY_URL || OLLAMA_URL}`);
     log(`Idle timeout: ${IDLE_TIMEOUT_MS / 1000 / 60} minutes`);
     // Orchestrator sees: every tool not owned by a sub-agent (plus shared tools), and one delegate stub per sub-agent.
@@ -3243,7 +3616,7 @@ async function runNativeOllama(input: ContainerInput) {
         type: 'function',
         function: {
             name: 'atlas_background',
-            description: 'Legacy alias of atlas (which now runs async by default). Starts a background Atlas job whose result arrives in your inbox. Prefer calling atlas directly.',
+            description: 'Run work in the BACKGROUND as a copy of yourself, on your own model and tools, when it is too long for a chat turn (minutes of browsing, a multi-step build). The result arrives in your inbox and you keep talking meanwhile. For anything you can finish in this turn, just do it yourself with your tools instead.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -3281,25 +3654,20 @@ async function runNativeOllama(input: ContainerInput) {
             },
         },
     };
-    const ATLAS_DIRECT_TOOL_DEF = {
-        type: 'function',
-        function: {
-            name: 'atlas_direct',
-            description: 'Hand the user straight to Atlas for a direct conversation. Use when the user explicitly asks to talk to Atlas directly, work with Atlas one-on-one, or refine a task with Atlas before it runs. After you call this, end your turn with one short line telling the user they are now talking to Atlas directly. From then on their messages go straight to Atlas (it can ask questions to get the task right) until they say "go" (Atlas starts the work in the background) or "back to Warden" (exit). You do NOT see or relay that conversation — Atlas runs it.',
-            parameters: { type: 'object', properties: {}, required: [] },
-        },
-    };
     const fullToolDefs = stripTier([
-        ...registry.getDefinitions(
-            registry.getAllToolNames().filter(n =>
-                !SUBAGENT_OWNED.has(n) || ORCHESTRATOR_SHARED_TOOLS.has(n)
-            )
-        ),
-        ...SUBAGENTS.map(delegateToolDef),
+        ...registry.getDefinitions([
+            // Atlas is this seat, so atlas-owned tools come through as its own.
+            ...registry.getAllToolNames().filter(n =>
+                !SUBAGENT_OWNED.has(n) || ORCHESTRATOR_SHARED_TOOLS.has(n) || ATLAS_OWNED.has(n)),
+        ]),
+        // No atlas delegate stub and no atlas_direct: this seat IS atlas, so
+        // there is nothing to hand local work to and no one to be handed to.
+        // vulkan / iris / artemis / sentry stubs remain — the real escalations.
+        ...SUBAGENTS.filter(s => s.delegate !== 'atlas').map(delegateToolDef),
         COUNCIL_TOOL_DEF,
         COUNCIL_STATUS_TOOL_DEF,
+        // Kept: a background copy of itself, for work too long for a chat turn.
         ATLAS_BACKGROUND_TOOL_DEF,
-        ATLAS_DIRECT_TOOL_DEF,
         READ_JOB_RESULT_TOOL_DEF,
         REPORT_TASK_FAILURE_TOOL_DEF,
     ]);
@@ -3316,14 +3684,20 @@ async function runNativeOllama(input: ContainerInput) {
         'report_task_failure',
         'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
         'api_request',
+        // MARM recall+log, same reason they are in ATLAS_ALWAYS_INCLUDED_TOOLS
+        // (2026-09-15): the prompt tells this seat to check long-term
+        // memory before any lookup, but the RAG ranking dropped the pair on
+        // most turns — and with the def missing the model called the prompt's
+        // bare `marm_smart_recall` and got "Unknown tool" five times in a row
+        // (2026-09-18 11:23). A tool the prompt MANDATES is always-on.
+        'mcp__marm__marm_smart_recall', 'mcp__marm__marm_log_entry',
         // Orchestrator-direct workhorses (2026-09-12 atlas→orch migration):
         // Bash's schema has weak keyword overlap with the asks that need it
-        // ("run systemctl status", "check the log"), and browser_navigate /
-        // browser_evaluate don't rank on "play X" / "open Y" — always-on so a
-        // one-shot check, a simple web task, or a media ask never falls back
-        // to delegation on a ranking miss. The rest of the shared set
-        // (WebSearch, WebFetch, media, click/type/tabs) stays keyword-gated.
-        'Bash', 'browser_navigate', 'browser_evaluate',
+        // ("run systemctl status", "check the log") — always-on so a one-shot
+        // check never falls back to delegation on a ranking miss. The browser
+        // pair that used to sit here went out with the web tools (2026-09-18);
+        // media stays keyword-gated.
+        'Bash',
         // Projects/work-tasks CRUD — orchestrator-direct (no subagent owns
         // the merged `project` tool). Always-on so a "add a task" ask can
         // never be ranked out or shadowed by the scheduled-task `task` tool.
@@ -3343,13 +3717,16 @@ async function runNativeOllama(input: ContainerInput) {
         // name+description overlap), NOT always-on, so they only surface when the
         // user's words match — saving ~330 tokens/turn on ordinary turns. Each
         // has strong cue-word overlap so it ranks when needed:
-        //   atlas_direct    — "talk to atlas" / "handoff" (ROUTING cue-words)
         //   atlas_background — "atlas" / "background" / long-running handoff
         //   council_status  — "council" / "how's the council"
         //   list_api_keys   — "api key" / "keys"
         // Vision captures (desktop_screenshot/webcam_capture/read_image) likewise
         // surface on screen/screenshot/see/webcam/photo/camera/room keywords.
     ]);
+    // This seat holds atlas's core tools always (browser, web, file edit/read,
+    // desktop) — the same always-set atlas itself gets — so a "play this",
+    // "open that", "edit this file" ask never loses its tool to the ranking.
+    for (const t of ATLAS_ALWAYS_INCLUDED_TOOLS) ALWAYS_INCLUDED_TOOLS.add(t);
     const DYNAMIC_TOOL_TOP_K = 5;
     let activeToolDefs = fullToolDefs;
     function refreshActiveToolDefs() {
@@ -3389,21 +3766,54 @@ async function runNativeOllama(input: ContainerInput) {
             activeToolDefs = fullToolDefs;
         }
     }
+    // ─── The orchestrator's hands: ONE definition, used twice ───────────
+    // This gate decides what the orchestrator may touch directly, and the
+    // `# YOUR OWN HANDS` line in its prompt is GENERATED from the same
+    // predicate. That is deliberate: every prompt-vs-tool-list bug this file
+    // has collected (browser tools it was told it didn't have and used anyway;
+    // a shell the prompt promised and the gate stripped for six days; an MCP
+    // tool named one way in prose and another on the wire) comes from a human
+    // maintaining a capability claim in prose next to the code that grants it.
+    // Generated from the gate, the claim cannot drift — it is the gate.
+    //
+    // What the orchestrator may touch DIRECTLY is a one-shot local action
+    // (Bash, Read, open_app, media, volume) — see ORCHESTRATOR_SHARED_TOOLS.
+    // Everything else is a specialist's.
+    //
+    // Bash was blocked here from 2026-07-27 ("shell → Atlas"), and the
+    // 2026-09-12 one-shot migration handed the orchestrator Bash without
+    // removing it — so for six days the prompt promised a shell the gate
+    // silently stripped, and the sibling comment in executeXmlTool already said
+    // "Bash is NO LONGER blocked". The 2026-09-12 decision is the newer one and
+    // the right one: a status check is one tool call, and spawning a background
+    // specialist to run `systemctl is-active` is heavier and slower. Bash came
+    // out of the blocked set 2026-09-18.
+    //
+    // WebSearch/WebFetch went IN on 2026-09-18 (the web removal): dropping them
+    // from ORCHESTRATOR_SHARED_TOOLS keeps them out of the ranked base, but an
+    // active skill can still carry them in through the skill layer, and a tool
+    // the model can see is a tool it will call.
+    const BLOCKED_ORCHESTRATOR_TOOLS = new Set<string>();
+    // The browser/desktop prefix block existed because the orchestrator and a
+    // running atlas were two actors on one page (2026-09-18 10:41: it drove a
+    // tab atlas owned and the turn died with no reply). This seat IS atlas now,
+    // so its browser/desktop tools are its own and pass through; only a
+    // concurrent background atlas job could collide, and that one is spawned
+    // deliberately via atlas_background.
+    const blockedPrefix = (_n: string) => false;
+    // marm__ is the MCP server this seat calls directly for memory. Atlas-owned
+    // MCP tools are its own hands now; every other mcp__ server stays blocked.
+    const orchToolBlocked = (n: string): boolean => {
+        if (ATLAS_OWNED.has(n)) return false;
+        return (n.startsWith('mcp__') && !n.startsWith('mcp__marm__')) || blockedPrefix(n) || BLOCKED_ORCHESTRATOR_TOOLS.has(n);
+    };
+
     /** Merge skill-layer tools (always-on core + active skill tools) into the active tool list. Dedupes by name. */
     function mergeSkillTools(): any[] {
-        // The orchestrator only orchestrates — it delegates hands-on work to
-        // sub-agents. Block every tool that lets it act directly on the host or
-        // browser: mcp__* (browser/MCP/desktop → Atlas), Bash (shell → Atlas).
-        // This is the final gate before tools are sent to the model, so it
-        // covers both the activeToolDefs base and skill-layer extras regardless
-        // of how the tools entered.
-        const BLOCKED_ORCHESTRATOR_TOOLS = new Set(['Bash']);
-        // marm__ is the one MCP server the orchestrator calls directly: memory
-        // recall + logging is assistant state (same class as get_chat_history),
-        // not hands-on host work. Every other mcp__ server stays blocked.
+        //
         const blocked = (t: any) => {
             const n = t?.function?.name;
-            return typeof n === 'string' && ((n.startsWith('mcp__') && !n.startsWith('mcp__marm__')) || BLOCKED_ORCHESTRATOR_TOOLS.has(n));
+            return typeof n === 'string' && orchToolBlocked(n);
         };
         const base = (activeToolDefs as any[]).filter((t) => !blocked(t));
         const skillTools = (skillToolDefs() as any[]).filter((t) => !blocked(t));
@@ -3475,14 +3885,6 @@ try {
 // forces/<id>.md) replaces it via buildSystemPrompt(). The routing core below
 // (roster, routing, mechanics) is fixed and always appended, so swapping the
 // driving force changes HOW the orchestrator thinks, not WHO it delegates to.
-const DEFAULT_PREAMBLE = `# ROLE
-
-You are ${input.assistantName || 'Warden'} — first officer to the user, and the user is the captain: Riker to their Picard. The captain gives orders; you run the ship. Your objective is to understand exactly what the captain wants and relay it — turn each order into clean briefs for the crew below, watch their work while it runs, and report back only what matters (voice input rambles — extract the intent, hold the goal). You have no shell, no browser, no filesystem — the crew under you executes; you never touch tools yourself beyond delegating and reading results. When a specialist can do it, delegate; the captain should never hear "I can't".
-
-ANTICIPATE — a good first officer sees the need before the captain voices it. Think one step ahead of every order: if this booking will obviously need a reminder, if this fix will obviously need a check that it worked, if the captain's next question is plainly going to be "so did it happen?" — have the crew already moving on it, or the answer already in hand, before the captain asks.
-
-BE PROACTIVE — when you see something you can act on, act. A finished job the captain hasn't heard about, a failed result you can re-route to the right specialist, a small task plainly in line with what the captain wants: dispatch the crew on it yourself, then tell the captain what you did in one short line. Proactivity is delegating real work, never narrating plans — a first officer gives orders to the crew, not intentions to the air.`;
-
 // MARM recall layer — active only when the marm MCP server is enabled in
 // data/mcp-servers.json, so the prompt never references tools that don't
 // exist. Re-read per turn, so flipping the config applies on the next turn
@@ -3497,7 +3899,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`marm_smart_recall\` (semantic search over every fact the memory distiller has ever logged). If a durable fact is missing from MARM and you just learned it, log it with \`marm_log_entry\` so it is recallable next time.\n`
+    ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`mcp__marm__marm_smart_recall\` (that exact name — semantic search over every fact the memory distiller has ever logged). If a durable fact is missing from MARM and you just learned it, log it with \`mcp__marm__marm_log_entry\` so it is recallable next time.\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -3509,112 +3911,6 @@ const marmRecallSection = marmEnabled
 // this gone the orchestrator no longer emits or acts on supervisor flags. The deferred full
 // removal (flagJobForOrchestrator, runSupervisorWatchdog, ensureWatchdogTicker, the
 // WATCHDOG_* constants) happened 2026-09-17 — see git history for both.
-const ROUTING_CORE = `# CORE MANDATES (hard rules — follow exactly)
-
-1. Before ANY delegate call, run \`list_running_agents\` and read the ids. Never dispatch a task that already has a running job — the runner refuses duplicates ("already running"); say so and wait. To change instructions, stop_agent first, then re-delegate.
-2. Never report a job's outcome before its result lands in your inbox — not "done", "opened", "playing", or "fixed". Until the result is in front of you, you know nothing.
-3. When a result lands, read it against the original ask. "done" means it didn't crash, not that it's right. Each result carries a completion verdict (CONFIRMED / FAILED / UNVERIFIABLE); a FAILED verdict, or a result proving the deliverable wrong or missing, is PROVEN-FAILED: call report_task_failure with the task and reason, then re-delegate ONCE naming the GAP (what was wanted vs what came back) — never the fix. If the runner refuses the re-delegation, that's final: tell the user plainly what failed and stop.
-4. Every ask in the message gets handled. When a result is one step of a larger request and the supervisor hasn't already started the next step, delegate it yourself now — don't wait for the user. Stop only when the whole request is done or you're genuinely blocked; never call it complete while jobs are still running (the digest names them).
-5. Report completion once, in plain speech, carrying the actual answer — the number, the name, the contents, the yes/no. The user sees only your reply; anything you leave out is lost.
-6. A clear instruction is permission. Act, then report. Don't ask "shall I proceed?" or narrate a plan. Ask one short question only when the request is genuinely ambiguous — and genuine ambiguity means the INTENT has two plausible readings. A missing fact (path, id, name, value) is never ambiguity: discover it with your crew (see DELEGATING — never ask the captain for a fact your crew can find).
-7. A large deliverable ships in chained phases, not one giant brief. Phase 1 builds the skeleton/content; when its result lands, delegate the next phase (styling/polish/assets/final verify) naming exactly what remains. A CONFIRMED phase is DONE — never re-delegate it; the next phase BUILDS ON that work ("polish the pages that now exist at <dir>"), never "remake it from scratch." A specific defect → name THAT one gap and re-delegate the single fix, not the whole phase. Chunk multi-file polish into per-file delegations, each confirmed before the next; confirm what files actually exist before chunking, never chunk around a list you assumed. Small one-shot jobs stay one-shot.
-
-# GOAL STACK — hold the whole request, not the step in front of you
-
-When an ask has more than one step ("build X, then style it", "do A, then B, then check C", a phased build), the sequence is YOURS to hold — no specialist sees it. Restate the chain in one short line in your first reply ("Plan: A → B → C") so it lives in the conversation and survives compaction. When a step's result lands, that is a signal to ADVANCE the stack, never the end of the work: confirm the step against the goal, then immediately delegate the next step. Before reporting anything as complete, check the stack — if any step is unfinished, the request is unfinished: say what's done and what's still running instead of going quiet. The stack empties only when the captain's whole ask is done, or a step is genuinely blocked — then name the step and what blocks it. The captain never re-issues a step you already hold; losing the chain mid-request is the failure mode this rule exists to kill.
-
-# THE ROSTER
-
-Each specialist is a separate model with its own tools and context — it can't see this conversation and you can't see its tools. Call its delegate tool with a \`{task}\` string; it returns a short result. atlas, vulkan, and artemis run in the background: you get a job id and the full result arrives in your inbox as a new turn — call and move on, never block.
-
-- **atlas** — execution: shell, browser, desktop, web search/fetch, files. Anything hands-on touching the internet or running a command.
-- **vulkan** — coding, scripting, building, heavy bash. Runs in the background like atlas. Context size is also a routing signal: work that needs to hold a lot at once (many files, a long document, a big log) goes to vulkan even when it is not strictly coding — atlas may be on a much smaller window.
-- **iris** — email, digests, scheduling, reminders, calendar. If what the user wants lives in an email — even "find/extract/save/pull out" — it's iris, including downloading an attachment from an email. Reminders ("remind me", "every morning", "on Mondays"), scheduled/recurring tasks, and calendar events are iris. Compiling a digest and POSTing to /api/summaries is iris's job. Iris chains list→id→act itself within a dispatch, so a brief can name the outcome without the id and iris resolves it. Its brief is one imperative sentence prefixed TASK: — write it by BRIEFING IRIS below; iris carries no rules of its own.
-- **artemis** — audit / second opinion, and diagnosis of why something Warden did went wrong (a stalled/failed/never-reported job). Runs in the background like atlas.
-- **council** — three seats deliberate in parallel on a costly decision until they agree (see COUNCIL).
-- **sentry** — software-security scans of the PC: network connections, listening ports, running services, autostart, crontabs. It scans on its own schedule (hourly peek + daily deep) and posts to chat when something's wrong — you only see it when the user asks for a scan on demand. Runs in the background like atlas.
-
-# ROUTING
-
-Answer directly, no tools, for plain conversation — advice, definitions, translation, summaries, greetings, banter, quick facts, simple math. Mentioning a topic in passing isn't a request to act; delegate only when the user wants something done or looked up. If a tool in YOUR OWN toolset can do it (project, api_request, convert_file, Bash, Read, WebFetch, WebSearch, open_app, media_control, audio_volume, browser_navigate, clear_context…), use it directly — never delegate something you can do yourself in one call; delegation is for work that needs a specialist's tools or many iterations. Bash and Read make a ONE-SHOT check (run a status command, read a config, list a directory) yours directly — do it and answer. A SIMPLE WEB TASK is yours too: open a page (browser_navigate or WebFetch), read it (the navigate result IS the snapshot), click a link, fill one form, then answer. The moment work becomes multi-step — a build, code edits, a many-page browse/extract/research flow — it delegates: atlas for hands-on/web, vulkan for code. When in doubt, delegate to atlas — except coding/building/heavy scripting, which go to vulkan.
-
-Cue words:
-- Before delegating any search, lookup, or find to atlas, check \`marm_smart_recall\` first — if memory can answer it, no delegation. atlas opens and does; it does not rediscover what memory already knows.
-- "read/check my emails", "any new emails", "what's in my inbox", "show me my emails" → **iris**. Email lives in iris's tools — never screenshot, webcam, or the browser for an email request. That includes attachments: "download/save the PDF from the email" is iris (it saves the file and returns the path), never atlas driving Gmail in the browser.
-- "write/fix/refactor/build/test X" (code, scripts, builds) → **vulkan** with the file/feature and the goal as plain English intent, never a shell command or step list.
-- "play X on youtube", "youtube X", "put on X", pause/skip/volume → activate_skill('media-playback') and follow it — a single song/video is yours in one turn; only a media FLOW (a queue, a playlist build) delegates to **atlas**. Vague media: pick something reasonable and act immediately — never poll or stop a running media job.
-- "open X so I can see it", "show me the page" → your own \`browser_navigate\` straight to the final URL (local files: bare path or \`open_app\` for an OS-default app). Read the returned snapshot and confirm what opened. Only a many-page browse/extract flow delegates to **atlas**.
-- "scan the pc", "run a security scan", "what's listening", "is my machine safe", "security check" → **sentry** with the mode that fits (quick peek unless the user asks for everything) and the goal as plain English.
-- a costly decision hard to reverse — architecture, "should we X or Y" → **council**.
-- Work tasks, to-dos, projects, deliverables, blockers, priorities, financials → your own \`project\` tool, directly — no delegation, it's one call. Missing an id (project, task, deliverable, blocker, priority)? \`project\` list first, then act with the id. A "task" with no time trigger means a work task (project tool), not a reminder.
-- Diagnosis — any "why/what happened" about something Warden did or didn't do (stalled/failed/never-finished job, "did you get that right", "double-check") → **artemis**. Never answer from your own memory — artemis reads logs and databases.
-- "let me talk to Atlas", "put me through to Atlas" → \`atlas_direct\`: call it, tell the user they're with Atlas, end your turn. Their messages then go straight to Atlas; you don't relay. Only for an explicit handoff.
-- A specialist's name in the message is routing. "Iris: check mail", "ask atlas to…", "have artemis look at…" go to that specialist; near-misspellings (artems, vulcan) count. A name-and-colon prefix means the rest is the message is the task verbatim.
-
-Gotchas (the ones that actually trip routing):
-- An atlas job whose RESULT HAS LANDED and is wrong/missing → re-delegate the SAME task to **vulkan** (atlas's big brother), not atlas again. Never stop a still-running atlas job to reroute it — only reroute after its result is in front of you and you've judged it wrong. This escalation is always your own manual call — there is no auto-escalation signal to wait for.
-
-Delegates are tools you call with \`{task}\` — not skills; never \`activate_skill\` a delegate name. If the user asks what you can do, run \`activate_skill('self-check')\`.
-
-# DELEGATING — INTENT, NOT INSTRUCTIONS
-
-The \`{task}\` string is all the specialist sees — no chat history. Give the facts it can't guess (paths, URLs, names, dates, values, the exact outcome wanted) in one or two clean sentences, then stop. State the WHAT, never the HOW — one exception: a loaded fabric pattern (PATTERN-SHAPED BRIEFS, below). HOW means more than shell: no shell commands, no step lists, no tool names, no "first do X then check Y", AND no prose method either ("restyle the layout and typography, reuse the images" is HOW written in English — the specialist chooses the means). Name the outcome and the path/directory (WHERE); let it discover the file structure. Never enumerate files or pages you haven't confirmed exist — listing pages sends it hunting for files that may not be there, and for a fresh BUILD it also prescribes the site's structure, which is the specialist's call. A build brief names the outcome and deliverable dir and stops; it does not list pages, prescribe a look, or name image sources.
-
-NEVER DROP A FACT THE CAPTAIN ALREADY GAVE. If the target is a specific artifact named in this conversation — a file, page, repo, URL, or a previous job's deliverable — repeat its exact path/name in the brief. "Open the memory map page so we can check it renders" with no path sends the specialist spelunking the whole codebase for what is really one file.
-
-NEVER ASK THE CAPTAIN FOR A FACT YOUR CREW CAN FIND. A missing path, id, name, or value is not a question — it's a discovery step you own. If the exact location isn't in your context, delegate the find first ("locate the memory-map page — it's a user deliverable, so check ~/Warden/data/work first"), take the location from the result, then delegate the real task with it. The captain names intent; you supply the facts and instruct the crew. A question back to the captain is reserved for genuinely ambiguous INTENT — two different plausible goals — never for a missing fact.
-
-Good brief: "In classroom/public/index.html the login form refreshes instead of submitting — find the cause, fix it, and confirm the fix." Bad: "fix the login page" (no facts). Bad: "call email read then email get on the newest, then…" (prescribing tools/order). A build: "Build a fresh multi-page website for a sushi restaurant into data/work/babensushi-clone and confirm it opens." (no page list, no look, no asset source — the specialist decides all three).
-
-PATTERN-SHAPED BRIEFS: when a RELEVANT PATTERNS entry fits the work you're delegating, load it with \`fabric_pattern(name)\` and fold its method into the {task} — the pattern IS the expert prompt, so it's the one place HOW belongs in a brief; the conversation supplies the WHAT (outcome, paths, facts). Specialists cannot load patterns themselves — the brief is the only vehicle. Give the loaded pattern's instructions plus the outcome, in place of any method prose of your own.
-
-Keep personal info local. Atlas and Vulkan may run on a cloud model — keep names, emails, phone numbers, identifying details out of tasks you send them; hold that context yourself. The on-device specialist (iris) needs real names and addresses, so include them there.
-
-BATCHES: if the user's ask names a plural deliverable (five posts, three files, N pages), the ask IS a batch — break it up, decide the order, then delegate ONE ITEM AT A TIME: send one one-item brief, wait for its result to land in your inbox, CONFIRM it against the ask, then delegate the next. Never one bundled task — bundling leaves one specialist grinding all N alone with no checkpoint, and a single bad item blocks the rest. This is about COUNT, not method — WHAT-not-HOW still applies to each brief. Bundle only when one item's content depends on another's outcome (one site redesign, a refactor across related files). Sharing a site, account, or browser does NOT make items dependent — five posts to five subreddits are still five one-at-a-time briefs even though they land on the same Reddit account.
-
-A result comes back wrong → re-delegate naming the GAP (what they wanted vs what you got), never the fix. Before delegating anything, check \`list_running_agents\`: if a running job is already doing this outcome for this specialist — even if your brief would be worded differently — do NOT dispatch again; that's a duplicate, and the running job owns it. The ONLY parallel dispatch is two asks the captain made in the same message that are unrelated — emit those delegate calls together and they run in parallel. Batch items (BATCHES above) go one at a time, and serialize any delegation whose result feeds the next. Watch with \`list_running_agents\`, \`agent_logs\`, \`read_job_result\`. If success can only be judged by screen/system state the text can't show (browser playing, window opened, file visibly there), trust it as reported — never re-delegate the same work to double-check a success.
-
-# BRIEFING IRIS
-
-Iris is a 3b tool-caller. It makes up to 3 tool calls per dispatch and returns one short line of ids. It holds no context between dispatches, knows nothing about this system, and does no research. Its own prompt is deliberately bare — the instruction weight is HERE: how iris performs is how you briefed it, so a bad iris run is your defect, not its.
-
-The \`{task}\` you send iris is one imperative sentence prefixed TASK: — nothing else (no preamble, no explanation, no time: the runner prepends the current local time itself). Every id, address, and value the sentence needs goes INLINE — iris copies it straight into the tool argument:
-
-TASK: Set a one-time reminder to call the dentist in twenty minutes.
-TASK: Cancel the standup reminder 7f31a2c8.
-TASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41.
-
-- Literal values only. Resolve every reference before you send: "her" becomes the address, "that event" becomes the title, "the one you just made" becomes the id from the last result. One TASK sentence — no conditionals ("if there's nothing, then…"), no alternatives, no follow-on clause.
-- One outcome per dispatch — with one exception: when the user names a reminder AND a calendar event for the same thing, both go in the SAME TASK sentence ("Create a calendar event … and set a one-time reminder …"); iris does the pair in one dispatch. Two unrelated asks are still two dispatches.
-- Never send a half brief. A time with no message ("set something for 6pm") or a message with no time ("remind me to call the dentist") comes back as a question instead of an action — supply both, or ask the user for the missing half first.
-- Ids: for update, delete, cancel, pause, or resume, name the id inline whenever a previous result already gave it to you. If you don't have it, name the outcome and let iris chain the lookup itself — "TASK: Cancel the scheduled task that posts the morning digest." — it lists, takes the id, and acts in the same dispatch. Ask for a bare list only when the user actually wants the list read back.
-- Alarm vs reminder: a wake-up or a ring at a clock time is an ALARM — "TASK: Set an alarm for 06:30 labelled 'gym'." — naming daily/weekdays/the weekday list in the sentence if it repeats. Something that should SAY or DO something later is a reminder task.
-- Reminders: name the kind in the sentence — one-time, recurring interval, or recurring cron — and give the message verbatim. "Set a one-time reminder to <message> in <delay>." / "Set a one-time reminder to <message> at <clock time>." / "Set a recurring interval reminder every <period> to <message>." / "Set a recurring reminder <cron schedule> to <message>."
-- A scheduled prompt fires back to YOU at its time, verbatim, as a message from Scheduler — so write it as an instruction to your future self with the facts already in it. Iris cannot look anything up on its behalf: if the prompt needs a price, a status, or a number, get that from atlas first and hand iris the finished sentence.
-- Email: \`to\` must be a real, complete address — never a first name alone, never a placeholder — named inline with the subject. For a reply, resolve the named sender to an address first. For an attachment, name the email id and the filename inline; iris saves the file and returns its path — hand that path to whoever does the next step.
-- Inbox: name the window in the sentence and ask for the split you want back — "TASK: Read the last 24 hours of email and report which items need a reply and which are just newsletters, receipts, confirmations or ads." Iris reports what it read; it doesn't decide what matters unless the brief asks.
-- Calendar: "TASK: Create a calendar event <when> called '<title>'." Give the start time; add an end time only if the user named one.
-- What comes back is ids and a bare result line — turn it into plain speech and never read an id aloud.
-
-
-# OUTPUT
-
-Voice-first plain speech. No markdown — no asterisks, bullets, backticks, bold, headers — they get read aloud and sound wrong. One to three sentences; yes/no first when asked yes/no. Relay the specialist's answer in full substance — convert raw output, paths, JSON to plain speech, but keep every fact the user asked for. Don't announce work before its result is in; "I've started it" while a job runs is a false claim — wait, then report what happened: the file written and where, the price found, the song now playing, the error.
-
-# COUNCIL
-
-For a costly decision where being wrong is expensive, call \`council\` with a self-contained question. It runs in the background: the host says it's deliberating and you end your turn with no interim message; when the seats converge (up to 15 rounds) the host delivers the verdict. Peek with \`council_status\`. Reserve it for real stakes, not routine questions.
-
-# ENVIRONMENT
-
-Arch Linux, KDE Plasma on Wayland. System packages via \`sudo pacman -S <pkg>\` (\`--needed\`, \`--noconfirm\`) — never apt, dnf, brew, or pip. sudo is interactive, so any system-package install goes to atlas: it runs pacman once and tells the user a password prompt is waiting. The dashboard has a Notes vault at \`~/Documents/Notes\` (plain \`.md\` with \`[[wiki-links]]\` and \`#tags\`); reading or editing notes is an atlas file task.
-
-# MEMORY
-
-MEMORY/TODO/HEARTBEAT are loaded below when present — use them without being told. When you learn something worth keeping, append one line to MEMORY.md yourself — append only, never rewrite, never delegate. Read JOURNAL.md or NOTES.md only for deeper history; if the user references an earlier conversation, check mercury_summary first, and if it's not there delegate to artemis with the question and time range.
-${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
-
-`;
     // Fabric pattern exposure (deferred pattern): list the top-ranked relevant
     // patterns by name + one-line description; the model loads one on demand
     // via the fabric_pattern tool. Section is omitted entirely if nothing ranks.
@@ -3658,17 +3954,69 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     // sections. A closure so a mid-run context clear can rebuild it with a
     // freshly-selected driving force without re-running the whole turn setup.
     const buildSystemPrompt = (): string => {
-        let preamble = '';
+        // Atlas IS the orchestrator. Its prompt (role, machine, files, web,
+        // youtube, verifying) is the whole identity: this seat does the work
+        // itself. The routing core and the delegate brief-writing rules are
+        // gone — the only routing left is the short escalation rule below.
+        // Atlas's prompt was written for a sub-agent being handed a task by the
+        // orchestrator, so three of its lines are actively wrong for the seat
+        // that talks to the user. Left in place they contradict the ESCALATION
+        // block below, and a contradiction is worse than either rule alone:
+        //   - "The task states what the user needs" — there is no task; the user
+        //     is speaking, and follow-ups are a conversation, not a new brief.
+        //   - the EMAIL section ends the turn with "this routes to the email
+        //     specialist" — as the chat seat that is a dead end: the user asked
+        //     and got a routing note instead of their mail. Email ALWAYS goes to
+        //     iris, and this seat is the one that must call it.
+        //   - scheduling "belongs to the parent scheduler" — there is no parent.
+        // Rewritten on the merged copy only; the background atlas job keeps the
+        // sub-agent wording it was written for.
+        const atlasPrompt = (SUBAGENT_BY_DELEGATE.get('atlas')?.systemPrompt || '')
+            .replace(
+                'You are Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn.',
+                'You are Warden. You execute. The user tells you what they need; the method is yours. Act on the first turn. You are the only voice in this chat — speak to them directly.')
+            .replace(
+                '- Scheduling belongs to the parent scheduler. For a task that says remind or schedule: gather the values and return them.',
+                '- Reminders, alarms and scheduled tasks are iris\'s: hand the whole ask to `iris` and relay what it says.')
+            .replace(
+                `# EMAIL
+Mail content belongs to the email specialist. A task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist.
+A file offered by a mail page is a download: save it and report the path.`,
+                `# EMAIL
+Mail content is iris's. Anything that reads, searches, sends or replies to mail → call \`iris\` with the user's ask and relay the answer. Never read mail yourself, and never answer with a routing note instead of the result.
+A file offered by a mail page is a download: save it and report the path.`)
+            .replace(
+                'Write the final report: exactly what you changed.',
+                'Tell the user what you did, in a sentence or two of plain chat — no headers, no report format.');
+        // The driving force (dashboard "Driving force") is the user's persona
+        // knob. It used to ride on the old routing preamble, so it must be
+        // applied here or the setting silently does nothing: persona leads,
+        // then the execution identity.
+        let force = '';
         if (DRIVING_FORCE_ID) {
             try {
-                const p = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'data', 'driving-forces', `${DRIVING_FORCE_ID}.md`);
-                if (fs.existsSync(p)) preamble = fs.readFileSync(p, 'utf-8').trim();
+                const fp = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'data', 'driving-forces', `${DRIVING_FORCE_ID}.md`);
+                if (fs.existsSync(fp)) force = fs.readFileSync(fp, 'utf-8').trim();
             } catch (err: any) {
-                log(`Warning: failed to load driving force "${DRIVING_FORCE_ID}" (${err?.message || err}) — using default preamble`);
+                log(`Warning: failed to load driving force "${DRIVING_FORCE_ID}" (${err?.message || err})`);
             }
         }
-        if (!preamble) preamble = DEFAULT_PREAMBLE;
-        return preamble + '\n\n' + ROUTING_CORE + journalSection + fabricSection + skillIndexSection + orchestratorNowLine + marmRecallSection;
+        return (force ? force + '\n\n' : '') + atlasPrompt
+                // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
+                // out here: a hand-written list goes stale the moment a seat is
+                // added, renamed or re-scoped, which is the whole reason
+                // crewBlock exists.
+                + '\n\n# ESCALATION\n\nDo the work yourself with your tools — that is the job. Hand off only when the work is genuinely one of these seats\':\n\n'
+                + crewBlock()
+                + '\n\nEmail, calendar, reminders and scheduled tasks are ALWAYS iris\'s — never do those yourself.\n'
+                + 'Work too long for a chat turn (minutes of browsing, a multi-step build) → `atlas_background`, then keep talking.\n'
+                + 'Otherwise do it directly. One call per intent; the tool result is your verification.\n'
+                // These three rode on the routing-core branch and would be lost
+                // here: the journal carries the user's standing instructions and
+                // learned facts, and the skill index is the only thing that
+                // tells this seat its 60+ skills exist and how to activate one.
+                + journalSection + fabricSection + skillIndexSection
+                + orchestratorNowLine + marmRecallSection;
     };
     // Per-agent model system — every agent has its own concrete model from
     // dashboard settings, re-synced each turn via applySettingsSync(). No
@@ -3702,6 +4050,13 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
     const toolContext = { chatJid: input.chatJid, groupFolder: input.groupFolder, isMain: input.isMain, userId: process.env.WARDEN_USER_ID || '' };
     messages.push({ role: 'system', content: buildSystemPrompt() });
+    // Log the seat identity the prompt actually resolved to. Which prompt is
+    // live has been guesswork twice now; one line makes it checkable.
+    {
+        const _sp = String(messages[0]?.content || '');
+        const _first = _sp.split('\n').find((l: string) => l.trim() && !l.startsWith('#')) || '(empty)';
+        log(`System prompt: ${_sp.length} chars — "${_first.slice(0, 90)}"`);
+    }
     let prompt = input.prompt;
     lastUserAsk = String(input.prompt || '').replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400);
 
@@ -3977,13 +4332,18 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     forcedNoToolRetries = 0;
                 }
                 const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
-                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: _orchCtx } };
+                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: _orchCtx, ...graniteSampling(model) } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
                 // reasoning when thinking is disabled (kimi) stay on every round.
                 // 'max' forces thinking on every iteration; 'false'/'off' disables it.
                 if (showThinking) {
-                    requestBody.think = (thinkingMode === 'max') || toolIteration === 1 || modelRequiresThink(model);
+                    // Same reason the sub-agent loop stopped forcing it (see
+                    // forcedFirstThink): granite plans inside its normal turn,
+                    // so spending iteration 1 in the think channel buys nothing
+                    // and risks a turn with no content. An explicit 'max' from
+                    // the user still wins — that knob is theirs.
+                    requestBody.think = thinkingAlways || toolIteration === 1 || modelRequiresThink(model);
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
@@ -4402,7 +4762,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // "I'll let you know" must not suppress the nudge (2026-08-21: a
                 // claimed YouTube delegation passed exactly that way, no job ran).
                 const claimedDelegation = !delegatedThisTurn
-                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:atlas|iris|vulkan|artemis|sentry)\b/i.test(historyContent);
+                    && /\bi(?:'ve| have) (?:asked|sent|delegated|passed|handed)\b[\s\S]{0,60}?\b(?:iris|vulkan|artemis|sentry)\b/i.test(historyContent);
                 // Narrated delegation: a delegate is named in the reply but was
                 // never called this turn, and the mention is NOT a past-tense
                 // citation ("Atlas reported…") or a possessive ("Atlas's
@@ -4455,14 +4815,14 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                         const announcement = (intentMatch ? intentMatch[0] : historyContent).slice(0, 120);
                         log(`Intent nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool_call: "${announcement}"`);
                         appendStatus({ phase: 'thinking', label: `Nudge ${intentNudgesUsed}/${INTENT_MAX_NUDGES}: model announced action without tool call — pushing back` });
-                        const delegateList = 'atlas/iris/vulkan/artemis/sentry';
+                        const delegateList = 'iris/vulkan/artemis/sentry';
                         let nudgeMsg: string;
                         if (narratedDelegation) {
                             nudgeMsg = `You wrote "${announcement}" and named ${narratedDelegation}, but you made no ${narratedDelegation} tool call — the delegation did not happen. Call the ${narratedDelegation} tool with a {task} now, or drop the narration and answer directly.`;
                         } else if (claimedDelegation) {
                             nudgeMsg = `You wrote "${announcement}" but made no delegate call — the delegation did not happen. Call the delegate tool (${delegateList}) with a {task} now.`;
                         } else {
-                            nudgeMsg = `You wrote "${announcement}" but emitted no tool call. Act now: delegate to the right sub-agent (${delegateList}) with a {task}, or use Read/get_chat_history for a quick lookup.`;
+                            nudgeMsg = `You wrote "${announcement}" but emitted no tool call. Act now: do it yourself with your own tools, or hand it to the specialist that owns it (${delegateList}) with a {task}.`;
                         }
                         messages.push({ role: 'user', content: nudgeMsg });
                         continue;
@@ -4491,9 +4851,9 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                             );
                             const trimmedRetry = trimMessagesToBudget(messages, retryBudget);
                             if (trimmedRetry !== messages) { messages.length = 0; messages.push(...trimmedRetry); }
-                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: 65536, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) } };
-                            if (toolIteration <= 1 || modelRequiresThink(model)) {
-                                retryBody.think = true;
+                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()), ...graniteSampling(model) } };
+                            if (showThinking) {
+                                retryBody.think = thinkingAlways || toolIteration <= 1 || modelRequiresThink(model);
                             } else {
                                 retryBody.think = false;
                             }
@@ -4624,7 +4984,7 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                     messages: forcedMessages,
                     stream: true,
                     keep_alive: orchestratorKeepAlive(),
-                    options: { num_predict: 8192, temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()) },
+                    options: { num_predict: maxOutput('oneshot'), temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()), ...graniteSampling(model) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
                 if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
@@ -4841,85 +5201,6 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
             // straight to Atlas until they exit or say go. Handled in the idle
             // loop (not the orchestrator turn) so the orchestrator is untouched.
             // Replies go via send_message because no host turn is pending here.
-            if (atlasDirect && atlasDirect.active) {
-                const atlasDirectSend = (text: string) => {
-                    try {
-                        writeCallback('send_message', {
-                            type: 'message',
-                            chatJid: toolContext.chatJid,
-                            text,
-                            groupFolder: toolContext.groupFolder,
-                            timestamp: new Date().toISOString(),
-                        });
-                    } catch (err: any) {
-                        log(`[atlas-direct] send_message failed: ${err?.message ?? err}`);
-                    }
-                };
-                while (atlasDirect && atlasDirect.active) {
-                    const ptCancel = { cancelled: false };
-                    const userMsg = await waitForIpcMessageWithTimeout(IDLE_TIMEOUT_MS, ptCancel);
-                    if (!userMsg) {
-                        log('[atlas-direct] idle timeout — exiting passthrough');
-                        atlasDirect = null;
-                        atlasDirectSend('Direct Atlas mode ended (idle timeout).');
-                        break;
-                    }
-                    const text = String(userMsg).trim();
-                    const exitMatch = /^(back to warden|exit|stop|nevermind|cancel|quit)\b/i.test(text)
-                        || /\b(back to warden|exit direct|leave atlas|back to normal)\b/i.test(text);
-                    const goMatch = /^(go|start|begin|do it|run it|that'?s? it|go ahead|kick it off|execute)\b/i.test(text);
-                    if (exitMatch) {
-                        atlasDirect = null;
-                        atlasDirectSend("Back to Warden — you're out of direct Atlas mode.");
-                        continue; // back to the idle loop's normal path
-                    }
-                    if (goMatch) {
-                        const transcript = atlasDirect.messages
-                            .map(m => `${m.role === 'user' ? 'User' : 'Atlas'}: ${m.content}`)
-                            .join('\n\n');
-                        const kickoffTask = `The user worked through this task with you one-on-one to get it right. Here is the full conversation:\n\n${transcript}\n\nNow execute the agreed task — the user has confirmed the details above. Proceed with your tools and report when done.`;
-                        const kickoff = spawnBackgroundJob('atlas', kickoffTask, toolContext, false);
-                        atlasDirect = null;
-                        atlasDirectSend(kickoff.outcome === 'started'
-                            ? `Atlas is starting on that now — I'll report back when it's done. (job ${kickoff.jobId.slice('atlas-'.length)})`
-                            : `That's queued behind ${kickoff.jobId}, which is still running — it'll start when that finishes and I'll report back then.`);
-                        continue; // back to the idle loop; Atlas runs in the background
-                    }
-                    // Chat turn: send the user's message to Atlas and speak its reply.
-                    atlasDirect.messages.push({ role: 'user', content: text });
-                    let reply = '';
-                    try {
-                        const atlasSys = SUBAGENT_BY_DELEGATE.get('atlas')!.systemPrompt;
-                        const ptMessages = [
-                            { role: 'system', content: atlasSys + '\n\nYou are in DIRECT MODE: talking to the user one-on-one, not via the orchestrator. Ask whatever questions you need to nail down exactly what they want — the goal, the specifics (paths, names, values), the constraints. Be concise and conversational, one or two short questions at a time. When the task is fully specified, tell the user to say "go" to start. Do NOT execute anything yet — this turn is only to get the task perfect.' },
-                            ...atlasDirect.messages,
-                        ];
-                        const resp = await fetch(CHAT_URL, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                model: ATLAS_MODEL,
-                                messages: ptMessages,
-                                stream: false,
-                                keep_alive: keepAliveEnv('ATLAS_KEEP_ALIVE', -1),
-                                options: { num_predict: 8192, temperature: 0.4, num_ctx: getNumCtx(ATLAS_MODEL, process.env.ATLAS_NUM_CTX || ''), ...qwenSampling(ATLAS_MODEL) },
-                            }),
-                        });
-                        if (resp.ok) {
-                            const data = await resp.json();
-                            reply = (((data.message?.content || '') + '').trim()) || "I didn't catch that — can you say more about what you need?";
-                        } else {
-                            reply = `(Atlas chat error: HTTP ${resp.status})`;
-                        }
-                    } catch (err: any) {
-                        reply = `(Atlas chat error: ${err?.message ?? err})`;
-                    }
-                    atlasDirect.messages.push({ role: 'assistant', content: reply });
-                    atlasDirectSend(reply);
-                    // loop: wait for the next passthrough message
-                }
-                continue; // passthrough ended — back to the idle loop's normal path
-            }
             // Drain the inbox first: finished background jobs start an internal
             // digest turn immediately, before any waiting.
             const unreadItems = inbox.unread();
@@ -4947,16 +5228,18 @@ ${input.memoryContext ? `\nLoaded memory:\n${input.memoryContext}\n` : ''}
                 // overall request complete until each lands.
                 const stillRunning = [...backgroundJobs.values()].filter(j => j.status === 'running');
                 const stillRunningBlock = stillRunning.length > 0
-                    ? `\n\nSTILL RUNNING (results have NOT landed — do not report their work as done, and do not call the overall request complete until each lands):\n` +
+                    ? `\n\nSTILL RUNNING — result not landed yet. Report: still working, then end your turn:\n` +
                       stillRunning.map(j => `- ${j.agent}-${j.shortId}: ${Math.round((Date.now() - j.startedAt) / 1000)}s elapsed, ${j.toolCallCount} call(s) — "${j.task.slice(0, 120)}"`).join('\n')
                     : '';
                 const resultsBlock = unreadItems.length > 0
-                    ? `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
+                    ? `REPORT-BACK TURN — jobs below are FINISHED. Report each result.\n\n` +
+                      `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
                       `For each result, run the CONFIRM step before anything else: compare it against what the user originally asked for — that ask is in your context.\n` +
-                      `1. CONFIRMED — the deliverable the user asked for is present and right. Relay it in one or two plain sentences, or stay silent if the user can already see or hear it (media playing, a window opened, volume changed) or it only feeds a chained next step.\n` +
+                      `1. CONFIRMED — deliverable present and right. Media or window the user can already see or hear: stay silent. Else relay in one or two sentences.\n` +
                       `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call browser_snapshot and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
                       `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, check the state (browser_snapshot) or treat it as PROVEN-FAILED.\n` +
-                      `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.` +
+                      `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.\n` +
+                      `FORMAT: the reply is chat to the captain, not a report. One or two plain sentences per result, carrying the outcome itself. No headers, no bullets, no restating the ask or the job id, no verdict words, no next-steps offers.` +
                       stillRunningBlock
                     : '';
                 nextInput = resultsBlock;
@@ -5014,7 +5297,7 @@ function handleSkillMetaTool(name: string, args: any, opts?: { orchestrator?: bo
         }
         const skill = skillState.skills.find((s) => s.name === target)!;
         if (opts?.orchestrator && skill.source === 'mcp') {
-            return `Error: the "${target}" tools run inside sub-agents, not the orchestrator. Delegate to atlas with a {task} describing what you need — atlas has these tools loaded.`;
+            return `Error: the "${target}" tools run inside a sub-agent, not here. Use your own tools for this, or hand it to the specialist that owns it (iris for email and scheduling, vulkan for code).`;
         }
         skillState.active.add(target);
         const header = `Activated skill "${target}" — ${skill.tools.length} tool(s) now visible: ${skill.tools.map((t) => t.function.name).join(', ') || '(none)'}`;
@@ -5065,7 +5348,10 @@ function handleBasicFileOp(name: string, args: any): string {
         try {
             fs.mkdirSync(path.dirname(resolved.path), { recursive: true });
             fs.writeFileSync(resolved.path, content, 'utf8');
-            return `Wrote ${content.length} bytes to ${rawPath}`;
+            // Report the RESOLVED path, not what was typed: echoing the raw
+            // path is how "saved to ~/Desktop" got reported for a file that
+            // was written somewhere else entirely.
+            return `Wrote ${content.length} bytes to ${resolved.path}`;
         } catch (err: any) {
             return `Error: ${err.message}`;
         }
@@ -5115,6 +5401,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     const startTime = Date.now();
     const sessionId = context.chatJid || '';
 
+    // Bare MCP name (prompt spelling) → the real prefixed tool. Native tools
+    // and delegates never match here, so this only rescues the MCP case.
+    if (!toolName.startsWith('mcp__') && registry.getDefinitions([toolName]).length === 0) {
+        const full = resolveBareMcpName(toolName);
+        if (full) {
+            log(`[tools] resolved bare MCP name "${toolName}" → ${full}`);
+            toolName = full;
+        }
+    }
+
     // The def-level filter hides mcp__ schemas from the orchestrator, but
     // the model can still call them blind (activate_skill lists tool names).
     // Enforce the block at execution time too, with a redirect that teaches
@@ -5123,7 +5419,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // ORCHESTRATOR_SHARED_TOOLS); only foreign MCP tools stay
     // orchestrator-verboten.
     if (opts?.orchestrator && toolName.startsWith('mcp__') && !toolName.startsWith('mcp__marm__')) {
-        return `Error: ${toolName} is not available to the orchestrator. Delegate that work instead: atlas for browser, web, files, and databases; vulkan for code; iris for email and scheduling. Call the delegate tool with a {task} argument.`;
+        return `Error: ${toolName} is not available here. Use your own tools for browser, web, files and shell; hand code to vulkan and email or scheduling to iris, with a {task} argument.`;
     }
 
     // Pre-tool hooks — can block execution
@@ -5390,7 +5686,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             const dup = findDuplicateRunningJob('atlas', task);
             if (dup) {
                 const elapsed = Math.round((Date.now() - dup.startedAt) / 1000);
-                result = `Atlas ${dup.shortId} is already running this exact task (started ${elapsed}s ago) — its result will arrive in your inbox. Do not dispatch it again. To change the instructions, call stop_agent("atlas-${dup.shortId}") first, then re-delegate.`;
+                result = `Atlas ${dup.shortId} is already running this task (started ${elapsed}s ago). Result arrives when it finishes. Reply: still working. End your turn. To change it, stop_agent("atlas-${dup.shortId}") first.`;
             } else if (findRunningJobTargetingSameFiles(task)) {
                 // Same-file follow-up: queue it behind the running writer job
                 // instead of racing it. Checked BEFORE the consuming retryGate —
@@ -5426,7 +5722,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             const dup = findDuplicateRunningJob('vulkan', task);
             if (dup) {
                 const elapsed = Math.round((Date.now() - dup.startedAt) / 1000);
-                result = `Vulkan ${dup.shortId} is already running this exact task (started ${elapsed}s ago) — its result will arrive in your inbox. Do not dispatch it again. To change the instructions, call stop_agent("vulkan-${dup.shortId}") first, then re-delegate.`;
+                result = `Vulkan ${dup.shortId} is already running this task (started ${elapsed}s ago). Result arrives when it finishes. Reply: still working. End your turn. To change it, stop_agent("vulkan-${dup.shortId}") first.`;
             } else if (findRunningJobTargetingSameFiles(task)) {
                 if (goalRetryExhausted(task)) {
                     log(`[dedup] target-overlap: refusing queue — goal's retry credit already spent (${taskSig(task)})`);
@@ -5457,17 +5753,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         } else {
             const sp = spawnBackgroundJob('sentry', task, context, urgent);
             result = describeSpawn('Sentry', sp, urgent);
-        }
-    } else if (toolName === 'atlas_direct') {
-        // Enter direct Atlas passthrough mode. The orchestrator speaks a short
-        // "you're now talking to Atlas directly" line and ends its turn. After
-        // that, the idle loop routes the user's messages straight to Atlas
-        // until the user exits or says go.
-        if (atlasDirect && atlasDirect.active) {
-            result = 'Already in direct Atlas mode. End your turn and let the user talk to Atlas.';
-        } else {
-            atlasDirect = { active: true, messages: [] };
-            result = `Direct Atlas mode is on. Tell the user, in one short sentence, that they're now talking to Atlas directly — they can describe what they need and Atlas will ask questions to get it right, then say "go" to start or "back to Warden" to exit. Then end your turn immediately and do nothing else.`;
         }
     } else if (toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
@@ -5988,6 +6273,20 @@ Call email(action="read") once if the task needs recent inbox activity, then out
         process.exit(0);
     }
 
+    // Settings arrive with the payload. Every dropdown holds a real value, so a
+    // MISSING ctx here is a plumbing failure, not the user picking "default" —
+    // say so out loud instead of quietly letting the backend choose a window.
+    if (containerInput.agent) {
+        const mo = parseInt(String((containerInput as any).maxOutputTokens || ''), 10);
+        if (Number.isFinite(mo) && mo > 0) MAX_OUTPUT_SETTING = mo;
+        const pc = String((containerInput as any).agentCtx || '').trim();
+        if (pc) {
+            PAYLOAD_AGENT_CTX.set(containerInput.agent, pc);
+            log(`[${containerInput.agent}] ctx from settings: ${pc}`);
+        } else {
+            log(`[${containerInput.agent}] WARNING: no ctx in the spawn payload — settings did not reach this agent`);
+        }
+    }
     log(`Using Ollama runner for model: ${containerInput.model || 'default'}`);
     try {
         // Reconcile any job orphaned by a prior hard-kill ("stop") before the
