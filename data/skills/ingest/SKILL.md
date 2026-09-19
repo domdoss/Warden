@@ -11,8 +11,9 @@ The user asks to put a file into long-term memory: "add this file to memory", "r
 
 1. Get the file's full content:
    - Small text file → read it yourself with `Read`.
-   - Large file, PDF, or anything needing conversion → delegate to **atlas**: "read the file at <path> and return its complete text content".
-   - The brief must carry the absolute file path; if the user named it vaguely, ask once for the exact path.
+   - PDF or other format → convert it yourself with `convert_file`, then `Read` the result.
+   - Very large document → hand to **vulkan** (large context window) or **atlas_background** (long-running): "read the file at <path> and return its complete text content".
+   - Always use the absolute file path; if the user named it vaguely, ask once for the exact path.
 2. Log the content into MARM with `mcp__marm__marm_log_entry`:
    - First call opens the topic: `Topic: ingest <file name>` as the entry — that call is JUST the topic line, nothing else.
    - Then one call per section with the entry format `<file name> — <section title>: <content>`. Keep each entry under ~8,000 characters; split long documents across several entries rather than truncating.

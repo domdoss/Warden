@@ -3,15 +3,14 @@ import { ToolsetDef, registry } from './tool-registry.js';
 export const TOOLSETS: Record<string, ToolsetDef> = {
     file:      { name: 'file',      tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'query_image'], tier: 'both' },
     web:       { name: 'web',       tools: ['WebSearch', 'WebFetch'], tier: 'public' },
-    // browser_screenshot and browser_snapshot are OUT (2026-09-18): the local
-    // seat runs a visionless model, and both were what it reached for by
-    // reflex — snapshot returned a page dump it then hand-drove from, instead
-    // of calling the tool that owns the job (youtube for the player). Page
-    // state is read with browser_evaluate, which returns the specific values
-    // asked for rather than the whole tree.
-    browser:   { name: 'browser',   tools: ['browser_navigate', 'browser_click', 'browser_type',
+    // browser_snapshot/browser_screenshot stay HERE so the background atlas job
+    // keeps them. They are withheld from the CHAT SEAT via
+    // BLOCKED_ORCHESTRATOR_TOOLS instead — deleting them from the toolset made
+    // them un-owned, and the seat's filter keeps every un-owned tool, so the
+    // seat kept them and background atlas lost them (the exact inverse).
+    browser:   { name: 'browser',   tools: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
                                              'browser_press_key', 'browser_select_option', 'browser_hover',
-                                             'browser_evaluate', 'browser_wait_for',
+                                             'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
                                              'browser_tabs', 'browser_back', 'browser_current_url'], tier: 'public' },
     terminal:  { name: 'terminal',  tools: ['Bash', 'open_app', 'desktop_click', 'desktop_type'], tier: 'public' },
     // Vision capture belongs to VULKAN, not the local seat: the local seat runs

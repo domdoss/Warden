@@ -92,7 +92,21 @@ async function residentOrConfiguredModel(wanted: string): Promise<string> {
 // can evict an instance the user keeps resident. Until a per-agent Mercury ctx
 // is saved it inherits the shared toolcall ctx so effective behavior is
 // unchanged; keep_alive still follows the toolcall setting.
-function resolveMemoryCtx(): number | undefined {
+//
+// The ctx belongs to the SEAT, so it may only be sent when this seat's own
+// model is the one being called. residentOrConfiguredModel() can answer on a
+// different model that happens to be loaded, and Ollama keys a runner by
+// (weights + context window) — sending Mercury's window with someone else's
+// weights spawns a SECOND runner of that model beside the resident one, the
+// exact VRAM churn the swap exists to prevent. On a swap, send no num_ctx and
+// let Ollama reuse the runner that is already up. No model is named here: the
+// seat's model and ctx are both dashboard settings.
+function resolveMemoryCtx(model?: string): number | undefined {
+  const configured = (getRouterState('mercury:model') || getRouterState('local:subagent_model') || '')
+    .replace(/^local:/, '').trim();
+  const called = (model || '').replace(/^local:/, '').trim();
+  const sameSeat = (a: string, b: string) => a.replace(/:latest$/, '') === b.replace(/:latest$/, '');
+  if (called && configured && !sameSeat(called, configured)) return undefined; // swapped off this seat
   const raw = (getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '').trim();
   if (!raw) return undefined;
   const n = Number(raw);
@@ -112,7 +126,7 @@ async function ollamaChat(system: string, user: string, model: string, maxTokens
     // Granite (the toolcall/Mercury model) needs temperature 0 for reliable,
     // deterministic structured output — same as the runner's sub-agent defs.
     const options: Record<string, unknown> = { temperature: 0 };
-    const numCtx = resolveMemoryCtx();
+    const numCtx = resolveMemoryCtx(model);
     if (numCtx) options.num_ctx = numCtx;
     // ALWAYS cap the generation. Without num_predict a small model that loses
     // the thread never stops: llama.cpp context-shifts (n_keep=4, discard half)
@@ -157,8 +171,8 @@ function estTokens(chars: number): number {
  *  one context window. When it doesn't fit, the model cannot succeed — it
  *  context-shifts and babbles until the timeout — so the caller skips it and
  *  uses its deterministic fallback instead of burning the GPU to fail. */
-function compactionFits(contentChars: number, targetChars: number): boolean {
-  const ctx = resolveMemoryCtx();
+function compactionFits(contentChars: number, targetChars: number, model?: string): boolean {
+  const ctx = resolveMemoryCtx(model);
   if (!ctx) return true; // no ctx row: Ollama's own default applies, leave the call alone
   const needed = estTokens(contentChars) + estTokens(targetChars) + 512; // +512 prompt/format overhead
   return needed < ctx;
@@ -326,11 +340,11 @@ function parseDistilled(raw: string): Distilled | null {
 async function compactMemoryFile(memoryPath: string, model: string): Promise<void> {
   const content = fs.readFileSync(memoryPath, 'utf-8');
   if (content.length <= MEMORY_COMPACT_THRESHOLD) return;
-  if (!compactionFits(content.length, MEMORY_COMPACT_TARGET)) {
+  if (!compactionFits(content.length, MEMORY_COMPACT_TARGET, model)) {
     // No safe fallback here (memory is curated durable facts — never trim it
     // blind), so leave the file alone and say why.
     logger.info(
-      { memoryPath, chars: content.length, model, ctx: resolveMemoryCtx() },
+      { memoryPath, chars: content.length, model, ctx: resolveMemoryCtx(model) },
       'MEMORY.md compaction skipped — file does not fit the memory model context',
     );
     return;
@@ -366,7 +380,7 @@ async function compactJournalFile(journalPath: string, model: string): Promise<v
   // Only ask the model when a full rewrite can actually fit its window. A
   // 20k-char journal against an 8k-ctx Mercury model cannot, and the attempt
   // is pure loss: two minutes of GPU, then this same deterministic trim.
-  const compacted = compactionFits(content.length, JOURNAL_COMPACT_TARGET)
+  const compacted = compactionFits(content.length, JOURNAL_COMPACT_TARGET, model)
     ? await ollamaChat(
         'You compact a session journal. Keep the most recent session entries VERBATIM with their ### date headers and one-line summaries. Condense everything older into a "## Earlier sessions" bullet list: one short line per session (date + gist). Preserve markdown. Output ONLY the new file content, starting with "# Journal".',
         `Compact this journal to under ${JOURNAL_COMPACT_TARGET} characters:\n\n${content}`,
