@@ -74,3 +74,28 @@ regenerate realigns it with no retrain needed.
 `MODELS_WITHOUT_VISION` (runner) starts EMPTY and only fills when a backend *rejects*
 an image. Until then an image can be attached to a blind model with no error. The
 explainer now resolves to vulkan's model, so the path works once the set is populated.
+
+## 9. Tool pinning / ranking — remaining work  (added 2026-09-19)
+
+The always-included floor was 21 tools (atlas) + 13 (seat) against a top-K of 18/5,
+so relevance decided almost nothing — that is why a turn showed `27 of 46`. Floors are
+now just `list_skills` + `activate_skill` (the discovery escape hatch), top-K is 8
+(seat) / 12 (atlas), and anything else that must survive ranking is PINNED via the
+`local:pinned_tools` router_state row. Default: `youtube`.
+
+STILL TO DO:
+- Dashboard UI for pins. The row and the API accept `pinned_tools` (comma-separated
+  or array) and the settings payload returns `pinnedTools`, but there is no control
+  yet. Same card as Default apps would be the natural home.
+- Dashboard UI reads `defaultAppCapabilities` + `/api/mcp-servers`; pins should list
+  the live tool pool the same way rather than being free text.
+- The ranker scores tool NAME + DESCRIPTION only. `youtube` ranks #1 for
+  "change the song" in isolation, yet lost in the real turn — the live pool contains
+  46 tools plus MCP, so something scored above it. Worth logging the top-K scores once
+  to see what actually wins, then fixing descriptions rather than adding pins.
+- Descriptions are the ranking signal. Tools whose description lacks the words users
+  actually say will keep losing. `youtube` gained "music/track/skip/change what is
+  playing"; the other hands-on tools have not been reviewed.
+- `read_file` / `list_file` / `bash` outrank specific tools on vague asks and send the
+  model filesystem-hunting (observed: "change the song" → read_file /opt/Warden/src/music).
+  Consider down-weighting generic tools when a specific one scores at all.

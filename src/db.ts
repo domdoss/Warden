@@ -3018,6 +3018,15 @@ export function getUserByEmail(_email: string): any {
 // capability needs no schema change. Absent/'' means the built-in provides it.
 export const DEFAULT_APP_CAPABILITIES = ['browser', 'web', 'files', 'shell', 'capture'] as const;
 
+// Tools exempt from relevance ranking. Stored as a comma-separated row so a
+// new pin is a settings change, not a code change. Default: youtube — its
+// description loses "change the song" to read_file/list_file/bash.
+export function readPinnedTools(): string[] {
+  const raw = getRouterState('local:pinned_tools');
+  if (raw === null || raw === undefined) return ['youtube'];
+  return String(raw).split(',').map((t) => t.trim()).filter(Boolean);
+}
+
 export function readDefaultApps(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const cap of DEFAULT_APP_CAPABILITIES) {

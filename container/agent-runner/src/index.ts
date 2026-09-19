@@ -136,6 +136,13 @@ function skillToolDefs(): Tool[] {
 // from settings, so a change takes effect on the next dispatch.
 let DEFAULT_APPS: Record<string, string> = {};
 
+// Tools exempt from relevance ranking, on top of the discovery escape hatch.
+// The ranker scores name + description, so a tool whose description does not
+// carry the words people actually use loses to tools that do — `youtube` lost
+// "change the song" to read_file/list_file/bash. Pinning is the override for
+// that, and it is a SETTING so a new one needs no code change.
+let PINNED_TOOLS: string[] = ['youtube'];
+
 /** The MCP server chosen to provide `capability`, or '' when the built-in has it. */
 function providerFor(capability: string): string {
     const v = String(DEFAULT_APPS[capability] || '').trim();
@@ -630,6 +637,11 @@ function applySettingsSync(data: any) {
     }
     if (data.supervisorModel !== undefined) SUPERVISOR_MODEL = (data.supervisorModel || '').replace(/^local:/, '');
     if (data.supervisorEnabled !== undefined) SUPERVISOR_ENABLED = data.supervisorEnabled !== false;
+    if (data.pinnedTools !== undefined) {
+        PINNED_TOOLS = Array.isArray(data.pinnedTools)
+            ? data.pinnedTools.filter((t: any) => typeof t === 'string' && t.trim()).map((t: string) => t.trim())
+            : [];
+    }
     if (data.defaultApps !== undefined) {
         DEFAULT_APPS = {};
         const src = (data.defaultApps && typeof data.defaultApps === 'object') ? data.defaultApps : {};
@@ -1808,37 +1820,27 @@ let drainedDigestJobIds: string[] = [];
 // task-relevant extras. Mirrors the orchestrator's rankTools path so a "read
 // this file" task drops the browser/media/MCP chrome, while a "play a song on
 // youtube" task pulls in browser_click/type + media_control.
+// The ONLY tools exempt from ranking: the discovery escape hatch. Ranking these
+// out is a trap with no way back — the model cannot ask for what it can no
+// longer see. Everything else competes on relevance, including Bash, Read and
+// the browser: a pinned default is a tool the ranker never got to judge, and a
+// floor of 21 against a top-K of 18 meant relevance decided almost nothing.
+// When the right tool does not surface, fix the ranking signal, not the floor.
 const ATLAS_ALWAYS_INCLUDED_TOOLS = new Set<string>([
-    'Bash', 'open_app',
-    'desktop_click', 'desktop_type', 'desktop_screenshot',
-    'browser_navigate', 'browser_download',
-    // `youtube` must ride along with the browser tools, never be ranked against
-    // them: browser_navigate/browser_snapshot are always present, so when the
-    // keyword ranker dropped `youtube` (it does not fire on "change the song" —
-    // no "youtube" in the words) the only media tool the model could see was
-    // the browser, and it hand-drove the player instead of changing the track.
-    // 2026-09-18: "change the song" → browser_snapshot, then a dead turn.
-    'youtube',
-    // MARM recall+log always ride along for atlas: without these in the
-    // always-set, the RAG tool ranking drops them for most tasks and atlas
-    // re-derives facts memory already holds (2026-09-15).
-    'mcp__marm__marm_smart_recall', 'mcp__marm__marm_log_entry',
-    'Read', 'Edit', 'Write', 'Glob', 'Grep',
-    'WebFetch', 'WebSearch',
-    'attach_file',
-    'activate_skill', 'deactivate_skill', 'list_skills',
+    'list_skills', 'activate_skill',
 ]);
-const ATLAS_DYNAMIC_TOP_K = 18;
+const ATLAS_DYNAMIC_TOP_K = 12;
 
 function selectAtlasTools(allTools: any[], task: string): any[] {
     try {
         const keywords = extractKeywords([{ role: 'user', content: task }]);
-        const coreDefs = allTools.filter((t: any) => ATLAS_ALWAYS_INCLUDED_TOOLS.has(t?.function?.name));
+        const pinned = (n: string) => ATLAS_ALWAYS_INCLUDED_TOOLS.has(n) || PINNED_TOOLS.includes(n);
+        const coreDefs = allTools.filter((t: any) => pinned(t?.function?.name));
         if (keywords.length === 0) {
             log(`[atlas] dynamic tools: ${coreDefs.length} of ${allTools.length} selected (generic task — core only)`);
             return coreDefs;
         }
-        const restDefs = allTools.filter((t: any) => !ATLAS_ALWAYS_INCLUDED_TOOLS.has(t?.function?.name));
+        const restDefs = allTools.filter((t: any) => !pinned(t?.function?.name));
         const rankedNames = new Set(rankTools(restDefs, keywords, ATLAS_DYNAMIC_TOP_K));
         if (rankedNames.size === 0) {
             log(`[atlas] dynamic tools: ${coreDefs.length} of ${allTools.length} selected (no ranked matches — core only)`);
@@ -3759,57 +3761,18 @@ async function runNativeOllama(input: ContainerInput) {
     // poorly specified — the keyword match still pulls in the right tools so the
     // orchestrator can act instead of stalling. Core routing tools (sub-agents,
     // Bash, Read, history, etc.) are always included; everything else is ranked.
-    const ALWAYS_INCLUDED_TOOLS = new Set<string>([
-        ...SUBAGENTS.map(s => s.delegate),
-        'council',
-        'read_job_result',
-        'report_task_failure',
-        'Read', 'get_chat_history', 'attach_file', 'clear_context', 'fabric_pattern',
-        'api_request',
-        // MARM recall+log, same reason they are in ATLAS_ALWAYS_INCLUDED_TOOLS
-        // (2026-09-15): the prompt tells this seat to check long-term
-        // memory before any lookup, but the RAG ranking dropped the pair on
-        // most turns — and with the def missing the model called the prompt's
-        // bare `marm_smart_recall` and got "Unknown tool" five times in a row
-        // (2026-09-18 11:23). A tool the prompt MANDATES is always-on.
-        'mcp__marm__marm_smart_recall', 'mcp__marm__marm_log_entry',
-        // Orchestrator-direct workhorses (2026-09-12 atlas→orch migration):
-        // Bash's schema has weak keyword overlap with the asks that need it
-        // ("run systemctl status", "check the log") — always-on so a one-shot
-        // check never falls back to delegation on a ranking miss. The browser
-        // pair that used to sit here went out with the web tools (2026-09-18);
-        // media stays keyword-gated.
-        'Bash',
-        // Projects/work-tasks CRUD — orchestrator-direct (no subagent owns
-        // the merged `project` tool). Always-on so a "add a task" ask can
-        // never be ranked out or shadowed by the scheduled-task `task` tool.
-        'project',
-        // Vision captures are orchestrator-only (sub-agents can't see images —
-        // _pendingImages is consumed only by runNativeOllama). desktop_screenshot,
-        // webcam_capture, and read_image are ALL keyword-gated via the dynamic
-        // top-K now. Always-exposing desktop_screenshot/webcam_capture let the
-        // small model grab them for unrelated requests — e.g. "show me my emails"
-        // matched the desktop_screenshot description ("use this to SEE a native
-        // desktop app") and the model took a screenshot instead of delegating to
-        // iris. They stay in ORCHESTRATOR_SHARED_TOOLS (so the SUBAGENT_OWNED
-        // filter doesn't strip them from the ranked pool) but are no longer
-        // always-on: they surface only when the user's words match (screen,
-        // screenshot, see, webcam, photo, camera, room).
-        // The following are keyword-gated via the dynamic top-K (rankTools scores
-        // name+description overlap), NOT always-on, so they only surface when the
-        // user's words match — saving ~330 tokens/turn on ordinary turns. Each
-        // has strong cue-word overlap so it ranks when needed:
-        //   atlas_background — "atlas" / "background" / long-running handoff
-        //   council_status  — "council" / "how's the council"
-        //   list_api_keys   — "api key" / "keys"
-        // Vision captures (desktop_screenshot/webcam_capture/read_image) likewise
-        // surface on screen/screenshot/see/webcam/photo/camera/room keywords.
-    ]);
+    // Same rule for the seat: only the discovery escape hatch is exempt. The seat
+// also gets the always-on "core" builtin skill layered in by mergeSkillTools(),
+// which carries the skill meta-tools and basic read/write, so the floor here can
+// be this thin without leaving it mute.
+const ALWAYS_INCLUDED_TOOLS = new Set<string>([
+    'list_skills', 'activate_skill',
+]);
     // This seat holds atlas's core tools always (browser, web, file edit/read,
     // desktop) — the same always-set atlas itself gets — so a "play this",
     // "open that", "edit this file" ask never loses its tool to the ranking.
     for (const t of ATLAS_ALWAYS_INCLUDED_TOOLS) ALWAYS_INCLUDED_TOOLS.add(t);
-    const DYNAMIC_TOOL_TOP_K = 5;
+    const DYNAMIC_TOOL_TOP_K = 8;
     let activeToolDefs = fullToolDefs;
     function refreshActiveToolDefs() {
         try {
@@ -3829,8 +3792,9 @@ async function runNativeOllama(input: ContainerInput) {
                 log(`Tools: minimal (conversational — no keywords; skill meta-tools only via core skill)`);
                 return;
             }
-            const coreDefs = fullToolDefs.filter((d: any) => ALWAYS_INCLUDED_TOOLS.has(d.function?.name));
-            const restDefs = fullToolDefs.filter((d: any) => !ALWAYS_INCLUDED_TOOLS.has(d.function?.name));
+            const seatPinned = (n: string) => ALWAYS_INCLUDED_TOOLS.has(n) || PINNED_TOOLS.includes(n);
+            const coreDefs = fullToolDefs.filter((d: any) => seatPinned(d.function?.name));
+            const restDefs = fullToolDefs.filter((d: any) => !seatPinned(d.function?.name));
             const rankedNames = new Set(rankTools(restDefs, keywords, DYNAMIC_TOOL_TOP_K));
             if (rankedNames.size === 0) {
                 // Keywords existed but matched no tool — effectively still

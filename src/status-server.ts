@@ -79,6 +79,7 @@ import {
   updateUserTask,
   getRouterState,
   readDefaultApps,
+  readPinnedTools,
   DEFAULT_APP_CAPABILITIES,
   setRouterState,
   createEmailAccount,
@@ -1520,6 +1521,7 @@ function handleSettings(res: http.ServerResponse): void {
     // Default apps: capability -> 'builtin' | 'mcp:<server>'. One row per
     // capability so a new capability needs no schema change.
     defaultApps: readDefaultApps(),
+    pinnedTools: readPinnedTools(),
     defaultAppCapabilities: DEFAULT_APP_CAPABILITIES,
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
@@ -1742,6 +1744,10 @@ async function handleSettingsSave(
   syncAgentCtxEnv();
   // Thinking default — stored globally and mirrored to owner JID so the
   // orchestrator picks it up on the next turn without requiring a restart.
+  if (body.pinned_tools !== undefined) {
+    const v = Array.isArray(body.pinned_tools) ? body.pinned_tools.join(',') : String(body.pinned_tools || '');
+    setRouterState('local:pinned_tools', v);
+  }
   if (body.default_apps !== undefined) {
     const src = (body.default_apps && typeof body.default_apps === 'object') ? body.default_apps as Record<string, unknown> : {};
     for (const cap of DEFAULT_APP_CAPABILITIES) {
@@ -1780,6 +1786,7 @@ async function handleSettingsSave(
     body.maxOutputTokens !== undefined ||
     body.thinking !== undefined ||
     body.default_apps !== undefined ||
+    body.pinned_tools !== undefined ||
     body.agent_mode !== undefined ||
     body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
     body.satelliteUrl !== undefined ||

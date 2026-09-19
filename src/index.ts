@@ -36,6 +36,7 @@ import {
   setRouterState,
   getRouterState,
   readDefaultApps,
+  readPinnedTools,
   createProject,
   getProjectsByGroup,
   getProject,
@@ -2073,6 +2074,7 @@ async function processOwnerMessages(): Promise<void> {
     councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
     councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,
     defaultApps: readDefaultApps(),
+    pinnedTools: readPinnedTools(),
     showThinking: getRouterState(`thinking:${OWNER_JID}`)
       || getRouterState('local:thinking')
       || 'true',

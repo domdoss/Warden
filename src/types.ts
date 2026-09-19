@@ -66,6 +66,8 @@ export interface AgentInput {
   agentMode?: 'few' | 'many';
   /** Default apps: capability -> 'builtin' | 'mcp:<server>'. An MCP server named here replaces that capability's built-in tools. */
   defaultApps?: Record<string, string>;
+  /** Tools exempt from relevance ranking. */
+  pinnedTools?: string[];
   verbose?: boolean;
 }
 
