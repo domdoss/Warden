@@ -918,7 +918,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             showThinking: input.showThinking,
             defaultApps: input.defaultApps,
             pinnedTools: input.pinnedTools,
-            agentMode: input.agentMode,
             verbose: input.verbose,
             maxOutputTokens: input.maxOutputTokens || '',
             orchestratorModel: input.orchestratorModel,
@@ -1002,7 +1001,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       showThinking: input.showThinking,
       defaultApps: input.defaultApps,
       pinnedTools: input.pinnedTools,
-      agentMode: input.agentMode,
       verbose: input.verbose,
     });
     logger.info({ payloadLen: payload.length, historyLen: input.history?.length ?? 0 }, 'agent-spawn: writing payload to child stdin');

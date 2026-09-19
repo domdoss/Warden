@@ -62,8 +62,6 @@ export interface AgentInput {
   timeoutMs: number;
   memoryContext?: string;
   showThinking?: boolean | string;
-  /** Agent mode: 'few' (default) = direct execution by the local seat; 'many' = orchestrator mode (routes to the fleet). */
-  agentMode?: 'few' | 'many';
   /** Default apps: capability -> 'builtin' | 'mcp:<server>'. An MCP server named here replaces that capability's built-in tools. */
   defaultApps?: Record<string, string>;
   /** Tools exempt from relevance ranking. */

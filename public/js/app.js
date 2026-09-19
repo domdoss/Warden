@@ -925,28 +925,31 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint"><b>Warden</b> is the one seat you talk to: it replies <em>and</em> does the work itself — browser, desktop, files, shell, web. Long jobs run as a background copy of it, on these same settings. Supervisor runs the checks on background jobs (small/cloud model recommended). Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management, and email always routes there. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
-        <div class="setting-row"><label>Warden</label>
+        <div class="hint"><b>Atlas</b> is the one seat you talk to: it replies <em>and</em> does the work itself — browser, desktop, files, shell, web. Long jobs run as a background copy of it, on these same settings. Orchestrator is Atlas's fallback model when Atlas is left blank. Supervisor runs the checks on background jobs (small/cloud model recommended). Artemis is the read-only audit seat. Vulkan codes. Orch is the manager: coordinates specialists for a big or multi-part task. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management, and email always routes there. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
+        <div class="setting-row"><label>Orchestrator</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
         </div>
-        <div class="setting-row"><label>Warden Ollama</label>
+        <div class="setting-row"><label>Orchestrator Ollama</label>
           <select class="select" id="sOrchestratorOllamaServer"></select>
           <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
-        <div class="setting-row"><label>Warden ctx</label>
+        <div class="setting-row"><label>Orchestrator ctx</label>
           <select class="select small" id="sOrchestratorCtx">${buildCtxOptions(d.orchestratorCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
-        <div class="setting-row"><label>Keep alive</label>
+        <div class="setting-row"><label>Orchestrator keep alive</label>
           <label class="check"><input type="checkbox" id="sOrchKeepAlive"> hold model in VRAM between turns (no reload)</label>
         </div>
         <div class="setting-row"><label>Atlas</label>
-          <select class="select" id="sAtlas"><option value="">— inherit Warden —</option>${orchHtml}</select>
-          <span class="dim mono" style="font-size:10px">the direct agent — in Few the chat runs on this; in Many it is the fleet's atlas; blank = inherit Warden</span>
+          <select class="select" id="sAtlas"><option value="">— inherit Orchestrator —</option>${orchHtml}</select>
+          <span class="dim mono" style="font-size:10px">Atlas IS the seat — set this and it's the model that replies to you. Blank = the Orchestrator row above replies instead.</span>
         </div>
         <div class="setting-row"><label>Atlas ctx</label>
           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
-          <span class="dim mono" style="font-size:10px">blank = inherit Warden ctx</span>
+          <span class="dim mono" style="font-size:10px">blank = inherit Orchestrator ctx</span>
+        </div>
+        <div class="setting-row"><label>Atlas keep alive</label>
+          <label class="check"><input type="checkbox" id="sAtlasKeepAlive"> hold model in VRAM between turns (no reload)</label>
         </div>
         <div class="setting-row"><label>Max output</label>
           <select class="select small" id="sMaxOutput">${buildOutputOptions(d.maxOutputTokens)}</select>
@@ -955,13 +958,6 @@
         <div class="setting-row"><label>Driving force</label>
           <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
           <span class="dim mono" style="font-size:10px">orchestrator persona; switching clears context</span>
-        </div>
-        <div class="setting-row"><label>Agent mode</label>
-          <select class="select" id="sAgentMode">
-            <option value="few">Few — direct (Warden does the work itself)</option>
-            <option value="many">Many — orchestrator (Warden routes to the fleet)</option>
-          </select>
-          <span class="dim mono" style="font-size:10px">how the seat works; applies on the next turn</span>
         </div>
         <div class="setting-row"><label>Artemis</label>
           <select class="select" id="sArtemis">${orchHtml}</select>
@@ -1166,7 +1162,6 @@
     setSelect('sToolcallModel', (d.ollamaChatModel || '').replace(/^local:/, ''));
     setSelect('sToolcallCtx', d.subagentCtx || '');
     setSelect('sDrivingForce', d.drivingForce || '');
-    setSelect('sAgentMode', d.agentMode || 'few');
     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
     setSelect('sSynthesist', (d.councilSynthesistModel || '').replace(/^local:/, ''));
@@ -1234,6 +1229,7 @@
     })();
     // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
     $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
+    $('sAtlasKeepAlive').checked = d.atlasKeepAlive === '-1';
     $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
     setSelect('sContextIdleClear', d.contextIdleClearMinutes || '0');
     setSelect('sMercuryInterval', d.mercuryIntervalMinutes || '30');
@@ -1406,7 +1402,6 @@
         vulkanModel: stripLocal($('sVulkan').value),
         ollamaChatModel: stripLocal($('sToolcallModel').value),
         drivingForce: $('sDrivingForce').value,
-        agent_mode: $('sAgentMode').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
         councilPragmatistModel: stripLocal($('sPragmatist').value),
         councilSynthesistModel: stripLocal($('sSynthesist').value),
@@ -1431,6 +1426,7 @@
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
         oculusOllamaServer: $('sOculusOllamaServer').value,
         orchestratorKeepAlive: $('sOrchKeepAlive').checked ? '-1' : '300',
+        atlasKeepAlive: $('sAtlasKeepAlive').checked ? '-1' : '300',
         toolcallKeepAlive: $('sToolcallKeepAlive').checked ? '-1' : '300',
       };
       await postJson('/api/settings', body);
@@ -2515,12 +2511,14 @@
     {
       title: 'The agents',
       body: `
-        <h2>One orchestrator, several sub-agents.</h2>
-        <p>The orchestrator is the model you're chatting with. When a request falls in a sub-agent's lane, the orchestrator delegates and the sub-agent reports back as a chat message.</p>
+        <h2>Atlas is the seat, several specialists on call.</h2>
+        <p>Atlas is the model you're chatting with — it does the work itself (browser, desktop, files, shell, web) and only hands off what isn't its lane. A specialist reports back as a chat message when it lands.</p>
         <ul>
-          <li><strong>Atlas</strong> — browser + research (URLs, screenshots, fetch HTML).</li>
+          <li><strong>Orch</strong> — the manager: for a big or multi-part task, decomposes it and coordinates the other specialists.</li>
+          <li><strong>Vulkan</strong> — coding, scripting, building, heavy bash.</li>
           <li><strong>Iris</strong> — email (read; send if enabled) + scheduling (reminders, calendar) + work management (tasks, projects, blockers, financials).</li>
           <li><strong>Artemis</strong> — read-only auditor / reviewer.</li>
+          <li><strong>Sentry</strong> — security scans of this PC.</li>
           <li><strong>The Council</strong> — three Artemis seats deliberate in parallel.</li>
         </ul>
         <p>Read the <a href="/help/agents.html" target="_blank">agents deep-dive →</a></p>`,

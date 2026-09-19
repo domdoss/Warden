@@ -604,6 +604,11 @@ function applySettingsSync(data: any) {
     if (data.model !== undefined) {
         ATLAS_MODEL = (data.model || '').replace(/^local:/, '');
     }
+    // NOTE: ORCHESTRATOR_MODEL is NOT derived from ATLAS_MODEL here. Orchestrator
+    // is its own seat with its own model (used by the `orch` sub-agent) — Atlas
+    // never overwrites it. The chat-seat's own generation model is resolved
+    // separately, at the point it's used (ATLAS_MODEL wins, ORCHESTRATOR_MODEL
+    // only as the fallback when Atlas is blank) without touching this global.
     if (data.vulkanModel !== undefined) {
         VULKAN_MODEL = (data.vulkanModel || '').replace(/^local:/, '');
     }
@@ -614,13 +619,6 @@ function applySettingsSync(data: any) {
     if (data.sentryModel !== undefined) SENTRY_MODEL = (data.sentryModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
         DRIVING_FORCE_ID = data.drivingForce || '';
-    }
-    // Agent mode (dashboard "Agent mode" select): 'few' = the merged seat
-    // does the work itself with its own hands (default); 'many' = orchestrator
-    // mode — same seat and tools, but the prompt routes work to the fleet
-    // instead of doing it itself.
-    if (data.agentMode !== undefined) {
-        AGENT_MODE = data.agentMode === 'many' ? 'many' : 'few';
     }
     // A new context-clear marker from the host (set when the driving force
     // changes, or any explicit clear) arms the in-loop reset. Only fire on a
@@ -845,6 +843,34 @@ You decide when the work ends. Choose one:
 - KEEP GOING — anything else. Take the next useful step.`;
 }
 
+// The manager specialist. Called when a task needs several OTHER specialists
+// coordinated and tracked — not a mode the seat switches into, a job it hands
+// off like any other. Its own toolset (artemis-core) carries no atlas/hands-on
+// spawn: the recursion guard is structural, not a prompt rule — it physically
+// cannot call back into the seat that called it. Declared before SUBAGENTS
+// because the orch entry below references it.
+const ORCH_MANAGER_SYSTEM = `# ROLE
+You are Orch: a delegation and verification manager. A task reaches you because it is too big or too varied for one specialist alone. Break it into pieces, hand each piece to the specialist that owns it, VERIFY what comes back, and hand up ONE consolidated result only once every piece checks out. The task states the outcome; the decomposition is yours. Act on the first turn.
+
+# THE CREW
+Call each of these directly — the result comes back inline, in the same turn, never to an inbox:
+- **vulkan** — coding, scripting, building, heavy bash.
+- **iris** — email, calendar, reminders, scheduled tasks, work-item tracking.
+- **artemis** — a read-only audit or sanity-check of the conversation or the codebase.
+- **sentry** — a security scan.
+
+You have no hands of your own — no browser, no desktop, no file edits, nothing beyond a quick read-only check (Bash/Read/Grep) to verify a specialist's claim. Hands-on work belongs to whichever seat called you; it is never yours to do or to hand off further.
+
+# THE LOOP
+Every piece goes through this, not just a fire-and-forget dispatch:
+1. Decompose the task into pieces, each one a single specialist's job. Name the pieces once before dispatching any of them.
+2. Delegate: call the owning specialist with a clear, self-contained brief — every fact it needs goes inline, since it cannot ask you a follow-up question.
+3. Verify: check the result against what the piece actually asked for — a claim of "done" is not proof; read what it changed (Bash/Read/Grep) when the claim is checkable that way.
+4. If it's wrong, incomplete, or the claim doesn't hold up: send it back to the SAME specialist with exactly what was wrong and what's still needed. Don't silently patch a specialist's work yourself and don't move on with a bad result baked in.
+5. Only once a piece verifies clean do you consider it done and move to the next. Chain pieces that depend on each other's output; independent pieces still go one call at a time. Never re-run a piece that already verified.
+
+${agentKernel("every piece of the task landed AND verified — each specialist's result checked against what it was asked, any bad result sent back and re-verified, and the whole assembled into one report.")}`;
+
 const SUBAGENTS: SubAgentDef[] = [
     // Byte was merged into iris (2026-09-05): one toolcall agent / one
     // fine-tuned model. Iris's entry below carries the work-management role.
@@ -1062,6 +1088,20 @@ Submit one sentry_report, then give the verdict — CLEAN or FINDINGS — as you
 One or two sentences. For a scheduled scan the host posts findings itself. For an orchestrator delegation your verdict text is the report it relays, so give each finding its own line there.`,
         toolsets: ['sentry-core'],
         temperature: 0,
+    },
+    {
+        delegate: 'orch',
+        label: 'Orch',
+        background: true,
+        routing: "big or multi-part work that needs several other specialists coordinated and tracked — decomposes the task, calls vulkan/iris/artemis/sentry as needed, and returns one consolidated result. Not for a single-specialist job — call that specialist directly.",
+        maxIterations: 60,
+        summary: 'decomposing a large or multi-part task and coordinating vulkan (code), iris (email/calendar/tasks), artemis (audit) and sentry (security) to carry it out',
+        systemPrompt: ORCH_MANAGER_SYSTEM,
+        mcpServers: [],
+        // Read-only verification only (same shape as artemis-core): orch has
+        // no hands of its own, so it gets no browser/desktop/edit tools —
+        // Bash/Read/Grep/Glob to check a specialist's claim, nothing more.
+        toolsets: ['artemis-core'],
     },
 ];
 
@@ -1384,6 +1424,15 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
         ),
     ])
 );
+// Orch's own delegate stubs: vulkan/iris/artemis/sentry, called blocking (no
+// atlas — the recursion guard). Appended after the map above rather than
+// folded into it, since these are synthesized delegate tools (like the
+// seat's own), not real registry tools resolved from a toolset.
+SUBAGENT_TOOL_DEFS.set('orch', [
+    ...SUBAGENT_TOOL_DEFS.get('orch')!,
+    ...SUBAGENTS.filter(s => ['vulkan', 'artemis', 'sentry'].includes(s.delegate)).map(orchDelegateToolDef),
+    ...SUBAGENTS.filter(s => s.delegate === 'iris').map(delegateToolDef),
+]);
 
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
@@ -1391,7 +1440,7 @@ function delegateToolDef(s: SubAgentDef) {
     // job id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
     // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry') {
+    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry' || s.delegate === 'orch') {
         return {
             type: 'function',
             function: {
@@ -1446,6 +1495,31 @@ function delegateToolDef(s: SubAgentDef) {
     };
 }
 
+// Blocking delegate stub — orch's own version of the tools above. Orch calls
+// vulkan/iris/artemis/sentry synchronously (result comes back inline, in the
+// same turn) rather than through the seat's background-job/inbox machinery,
+// since orch itself is already running as one background job and has no
+// inbox of its own to deliver into. iris is exempt: its dispatch (executeXmlTool
+// toolName === 'iris') already blocks unconditionally, so its ordinary
+// delegateToolDef stub is correct for orch too and this function is never
+// called for it.
+function orchDelegateToolDef(s: SubAgentDef) {
+    return {
+        type: 'function',
+        function: {
+            name: s.delegate,
+            description: `Call ${s.label} for ${s.summary}. Blocking — the result comes back as this call's result, in this same turn.`,
+            parameters: {
+                type: 'object',
+                properties: {
+                    task: { type: 'string', description: 'What this piece of the task needs done: the goal plus every fact the specialist cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Self-contained — the specialist cannot ask a follow-up question.' },
+                },
+                required: ['task'],
+            },
+        },
+    };
+}
+
 // The model the orchestrator is running on — set by runNativeOllama. A sub-agent may
 // share it (e.g. orchestrator=gemma4:latest, iris=granite); unloading a
 // shared model mid-turn crashes the orchestrator's next call (Ollama 500).
@@ -1482,11 +1556,6 @@ setVisionModelResolver(() => (process.env.VISION_MODEL || VULKAN_MODEL || ORCHES
 let DRIVING_FORCE_ID = '';
 let CONTEXT_CLEAR_AT = '';
 let lastContextClearAt = '';
-// Agent mode (dashboard "Agent mode"): 'few' = direct mode — this seat does
-// the work with its own hands and only escalates to vulkan/iris; 'many' =
-// orchestrator mode — the same seat routes work to the fleet instead of
-// doing it itself. Synced per turn via applySettingsSync().
-let AGENT_MODE: 'few' | 'many' = 'few';
 // Council per-seat model overrides — from dashboard Council Seats dropdowns.
 // Empty string means "fall back to ATLAS_MODEL" (the default council behavior).
 let COUNCIL_MODEL_SKEPTIC = '';
@@ -1980,7 +2049,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         log(`[dedup] target-overlap: queued ${delegate} follow-up behind ${overlap.agent}-${overlap.shortId} (same file(s)); will spawn when it finishes.`);
         return { jobId: `${overlap.agent}-${overlap.shortId}`, outcome: 'queued-file' };
     }
-    const model = delegate === 'vulkan' ? VULKAN_MODEL : (delegate === 'sentry' ? SENTRY_MODEL : ATLAS_MODEL);
+    const model = delegate === 'vulkan' ? VULKAN_MODEL : (delegate === 'sentry' ? SENTRY_MODEL : (delegate === 'orch' ? ORCHESTRATOR_MODEL : ATLAS_MODEL));
     const jobShortId = Math.random().toString(36).slice(2, 6);
     const jobId = `${delegate}-${jobShortId}`;
     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
@@ -3670,7 +3739,6 @@ interface ContainerInput {
     userKeyId?: string;
     verbose?: boolean;
     showThinking?: boolean | string;
-    agentMode?: 'few' | 'many';
     memoryContext?: string;
     activeIdea?: string;
 }
@@ -3921,6 +3989,17 @@ const ALWAYS_INCLUDED_TOOLS = new Set<string>([
     // so its meta tools + basic file ops are always visible to the LLM. MCP
     // tool schemas only appear after the LLM calls activate_skill(name).
     try {
+        // Close the PREVIOUS turn's MCP clients before spawning this turn's.
+        // This block re-runs every turn inside the same long-lived process
+        // (the IPC loop below calls back in without the process exiting), and
+        // disconnectMcpClients() used to fire only on idle-exit — so every
+        // turn opened a fresh connection on top of the last one, never
+        // closed. Harmless for a stateless stdio subprocess (spawn another),
+        // but a single-session remote server (e.g. a browser extension's MCP
+        // endpoint) rejects the new connection outright: "Already connected
+        // to a transport" (2026-09-19, browser-driving's first http-transport
+        // run). Close what's there first so every turn starts from zero.
+        await disconnectMcpClients();
         // Spawn MCP clients here so we retain references for tool dispatch.
         // Pass them into loadSkills via mcpClients so it doesn't spawn again.
         const { loadExternalMcpClients } = await import('./mcp-client.js');
@@ -4063,9 +4142,6 @@ const marmRecallSection = marmEnabled
         //   - scheduling "belongs to the parent scheduler" — there is no parent.
         // Rewritten on the merged copy only; the background atlas job keeps the
         // sub-agent wording it was written for.
-        const identity = AGENT_MODE === 'many'
-            ? 'You are Warden, the orchestrator. The user tells you what they need; you route the work to the fleet, track it, and answer in plain chat. Act on the first turn.'
-            : 'You are Warden. You execute. The user tells you what they need; the method is yours. Act on the first turn. You are the only voice in this chat — speak to them directly.';
         // The seat speaks as the captain's first officer. ORCH_SYSTEM is the
         // text the orchatlas fine-tune was trained on, used verbatim so the
         // model is conditioned at inference on the prompt it saw in training.
@@ -4083,18 +4159,14 @@ const marmRecallSection = marmEnabled
                 log(`Warning: failed to load driving force "${DRIVING_FORCE_ID}" (${err?.message || err})`);
             }
         }
-        // Mode block: 'few' (dashboard "Agent mode") keeps the direct-execution
-        // escalation rules; 'many' flips the seat into orchestrator mode —
-        // same tools, but the prompt routes work to the fleet instead of
-        // doing it itself. One block or the other, never both: a
-        // contradiction between them is worse than either rule alone.
-        const modeBlock = AGENT_MODE === 'many'
-            ? '\n\n# ORCHESTRATION\n\nYou are the orchestrator: you talk to the user and route the work to the fleet. Delegate by intent — vulkan for code and builds, iris for email/calendar/reminders, atlas_background for local machine, browser and desktop work. Do only quick one-call things yourself (Bash, Read, project, chat history). Say what is running, end your turn, and report the result in a sentence or two when it lands. Never do an agent\'s work yourself when an agent exists for it.\n\n'
-              + crewBlock() + '\n'
-            : '\n\n# ESCALATION\n\nDo the work yourself with your tools — that is the job. Hand off only when the work is genuinely one of these seats\':\n\n'
+        // This seat always does the work itself — atlas IS the seat, orch is
+        // a callable specialist for genuinely big/multi-part work, not a mode
+        // the seat switches into. No branch here anymore: one rule set.
+        const modeBlock = '\n\n# ESCALATION\n\nDo the work yourself with your tools — that is the job. Hand off only when the work is genuinely one of these seats\':\n\n'
               + crewBlock()
               + '\n\nEmail, calendar, reminders and scheduled tasks are ALWAYS iris\'s — never do those yourself.\n'
               + 'Work too long for a chat turn (minutes of browsing, a multi-step build) → `atlas_background`, then keep talking.\n'
+              + 'A task big enough to need several specialists coordinated and tracked (not just one delegate call) → `orch`, then keep talking.\n'
               + 'Otherwise do it directly. One call per intent; the tool result is your verification.\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
@@ -4128,14 +4200,15 @@ const marmRecallSection = marmEnabled
         return;
     }
     ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
-    AGENT_MODE = input.agentMode === 'many' ? 'many' : 'few';
-    // FEW mode drops the orchestrator and runs the chat DIRECT on atlas: the
-    // atlas model (dashboard "Atlas" row) is the chat seat. MANY mode keeps
-    // the orchestrator model as the chat seat and atlas's model is only the
-    // fleet agent's. The dashboard's "— inherit Warden —" default passes the
-    // same value for both, so the modes only split when Atlas is explicitly set.
-    if (AGENT_MODE === 'few' && ATLAS_MODEL) model = ATLAS_MODEL;
-    ORCHESTRATOR_MODEL = model;
+    // Orchestrator is its OWN seat with its own model (the `orch` sub-agent
+    // runs on this) — never derived from Atlas. Keep the global exactly what
+    // the dashboard's Orchestrator row says.
+    ORCHESTRATOR_MODEL = (input.orchestratorModel || '').replace(/^local:/, '') || model;
+    // The chat seat's own generation model: Atlas wins when set (Atlas IS the
+    // seat); Orchestrator's model is only the fallback for a blank Atlas row.
+    // This resolves into the local `model` var used for the seat's own calls —
+    // it never writes back into ORCHESTRATOR_MODEL.
+    if (ATLAS_MODEL) model = ATLAS_MODEL;
     VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
     SUPERVISOR_MODEL = (input.supervisorModel || '').replace(/^local:/, '');
     SUPERVISOR_ENABLED = input.supervisorEnabled !== false;
@@ -4201,11 +4274,14 @@ const marmRecallSection = marmEnabled
             isFirstUserTurn = true;
             log(`Context cleared — conversation reset, system prompt rebuilt with driving force "${DRIVING_FORCE_ID || 'default'}"`);
         }
-        // Re-sync the orchestrator model each turn from ORCHESTRATOR_MODEL, which
-        // applySettingsSync() keeps fresh on every IPC message. Without this the
-        // local `model` stays pinned to the first turn's value and dashboard model
-        // changes never reach the actual LLM call (the "settings didn't apply" bug).
-        model = ORCHESTRATOR_MODEL;
+        // Re-sync the SEAT's model each turn from ATLAS_MODEL/ORCHESTRATOR_MODEL,
+        // which applySettingsSync() keeps fresh on every IPC message. Without this
+        // the local `model` stays pinned to the first turn's value and dashboard
+        // model changes never reach the actual LLM call (the "settings didn't
+        // apply" bug). Atlas wins when set — it IS the seat; Orchestrator is only
+        // the fallback for a blank Atlas row, and is never itself overwritten
+        // here (it's a separate seat with its own model, used by `orch`).
+        model = ATLAS_MODEL || ORCHESTRATOR_MODEL;
         // Warm/refresh the native-ctx cache for this turn's model so getNumCtx can
         // cap the dashboard override at the model's real window (and serve it as
         // the default when no override is set). Cheap: cached per model after the
@@ -5547,7 +5623,23 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     // }
 
     // Sub-agent delegates: dispatch to runSubAgent with their tool defs
-    if (toolName === 'artemis') {
+    if (toolName === 'artemis' && !opts?.orchestrator) {
+        // Blocking path — orch only (see the vulkan blocking branch below).
+        // Same history-fetch + prompt shape as the async path, just awaited
+        // inline instead of wrapped in a BackgroundJob/inbox push.
+        const def = SUBAGENT_BY_DELEGATE.get('artemis')!;
+        const focus = ((args.task as string) || '').trim();
+        if (!focus) {
+            result = 'Error: task is required';
+        } else {
+            writeIpcFile(TASKS_DIR, { type: 'get_chat_history', chatJid: context.chatJid, limit: 20, timestamp: new Date().toISOString() });
+            const history = await waitForResult('chat-history-');
+            const transcript = history ? JSON.stringify(history, null, 2).slice(-12000) : '(conversation history unavailable)';
+            const auditTask = `Focus your audit on: ${focus}\n\nAudit the following conversation (most recent messages last). Each entry has a sender_name and an is_bot_message flag — is_bot_message=1 is the AI assistant, otherwise it's the user.\n\n${transcript}`;
+            const artemisResult = await runSubAgent('artemis', ARTEMIS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, auditTask, context, def.maxIterations);
+            result = artemisResult.content || 'Artemis completed the audit (no text output).';
+        }
+    } else if (toolName === 'artemis') {
         // Async artemis: start the audit as a background job (same pattern as
         // atlas), return immediately, result lands in the inbox.
         const def = SUBAGENT_BY_DELEGATE.get('artemis')!;
@@ -5811,6 +5903,21 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 result = describeSpawn('Atlas', sp, urgent);
             }
         }
+    } else if (toolName === 'vulkan' && !opts?.orchestrator) {
+        // Blocking path — only orch reaches this (it has this tool name but
+        // is never the seat: opts.orchestrator is unset for a sub-agent's own
+        // tool loop). Orch has no inbox of its own to deliver an async result
+        // into, so it calls vulkan the way iris has always been called: await
+        // the sub-agent run directly and hand back its content inline.
+        const def = SUBAGENT_BY_DELEGATE.get('vulkan')!;
+        const task = args.task as string;
+        if (!task) {
+            result = 'Error: task is required';
+        } else {
+            const saResult = await runSubAgent('vulkan', VULKAN_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('vulkan')!, task, context, def.maxIterations, undefined, undefined, def.temperature);
+            result = saResult.content;
+            if (saResult.modifiedFiles.length > 0) log(`[orch→vulkan] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
+        }
     } else if (toolName === 'vulkan') {
         // Async coding specialist: start the job, return immediately, result
         // lands in the inbox just like atlas.
@@ -5840,6 +5947,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 result = describeSpawn('Vulkan', sp, urgent);
             }
         }
+    } else if (toolName === 'sentry' && !opts?.orchestrator) {
+        // Blocking path — orch only (see the vulkan blocking branch above).
+        const def = SUBAGENT_BY_DELEGATE.get('sentry')!;
+        const task = args.task as string;
+        if (!task) {
+            result = 'Error: task is required';
+        } else {
+            const saResult = await runSubAgent('sentry', SENTRY_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('sentry')!, task, context, def.maxIterations, undefined, undefined, def.temperature);
+            result = saResult.content;
+        }
     } else if (toolName === 'sentry') {
         // Async sentry: an on-demand scan requested by the user ("scan the pc").
         // The scheduled scans run through the host-spawned child branch; this
@@ -5853,6 +5970,20 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         } else {
             const sp = spawnBackgroundJob('sentry', task, context, urgent);
             result = describeSpawn('Sentry', sp, urgent);
+        }
+    } else if (toolName === 'orch') {
+        // Async manager: start the job, return immediately, the consolidated
+        // result lands in the inbox just like vulkan/sentry. Internally orch
+        // calls vulkan/iris/artemis/sentry itself — those calls are blocking
+        // (see the !opts.orchestrator branches below), so its inbox result is
+        // already the finished, assembled answer.
+        const task = args.task as string;
+        const urgent = args.urgent === true;
+        if (!task) {
+            result = 'Error: task is required';
+        } else {
+            const sp = spawnBackgroundJob('orch', task, context, urgent);
+            result = describeSpawn('Orch', sp, urgent);
         }
     } else if (toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;

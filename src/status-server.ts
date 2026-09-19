@@ -1537,6 +1537,7 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min). Set by the
     // dashboard "Keep alive" checkboxes on the Orchestrator/Atlas/Toolcall rows.
     orchestratorKeepAlive: getRouterState('local:orch_keep_alive') || '',
+    atlasKeepAlive: getRouterState('local:atlas_keep_alive') || '',
     toolcallKeepAlive: getRouterState('local:toolcall_keep_alive') || '',
     // Default apps: capability -> 'builtin' | 'mcp:<server>'. One row per
     // capability so a new capability needs no schema change.
@@ -1549,9 +1550,6 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
-    // Agent mode: 'few' = direct (the local seat does the work itself),
-    // 'many' = orchestrator (routes work to the fleet).
-    agentMode: getRouterState('local:agent_mode') === 'many' ? 'many' : 'few',
     verbose: true,
     // Minutes of user-message idle before the orchestrator context auto-clears.
     // 0 = never. Default 0 (off) — see src/index.ts idle-context-clear block for
@@ -1729,6 +1727,9 @@ async function handleSettingsSave(
   if (body.orchestratorKeepAlive !== undefined) {
     setRouterState('local:orch_keep_alive', String(body.orchestratorKeepAlive || ''));
   }
+  if (body.atlasKeepAlive !== undefined) {
+    setRouterState('local:atlas_keep_alive', String(body.atlasKeepAlive || ''));
+  }
   if (body.toolcallKeepAlive !== undefined) {
     setRouterState('local:toolcall_keep_alive', String(body.toolcallKeepAlive || ''));
   }
@@ -1786,10 +1787,6 @@ async function handleSettingsSave(
     setRouterState('local:thinking', normalized);
     setRouterState(`thinking:${WEB_DASHBOARD_JID}`, normalized);
   }
-  if (body.agent_mode !== undefined) {
-    setRouterState('local:agent_mode', body.agent_mode === 'many' ? 'many' : 'few');
-  }
-
   // Track whether any router-state settings were saved
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
@@ -1810,7 +1807,6 @@ async function handleSettingsSave(
     body.thinking !== undefined ||
     body.default_apps !== undefined ||
     body.pinned_tools !== undefined ||
-    body.agent_mode !== undefined ||
     body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
     body.satelliteUrl !== undefined ||
     body.transcriptionUrl !== undefined || body.transcriptionApiUrl !== undefined ||
