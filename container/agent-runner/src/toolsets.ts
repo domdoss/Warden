@@ -97,3 +97,29 @@ export function resolveToolset(name: string): string[] {
 export function resolveMultipleToolsets(names: string[]): string[] {
     return registry.resolveMultipleToolsets(names);
 }
+
+// ─── Default apps ───────────────────────────────────────────────────────────
+// A CAPABILITY is a job some tool does — browsing, fetching a page, running a
+// shell command. Warden ships a built-in provider for each (the "good enough to
+// download a real browser" one). An installed MCP server can take that job over
+// via router_state `default_app:<capability>` = 'builtin' | 'mcp:<server>'.
+//
+// The point is substitution, not addition: when a capability is handed to an
+// MCP server the built-in tools are REMOVED, so exactly one provider can do
+// each job. Two tools that both plausibly browse is how a small model ends up
+// hand-driving a page instead of calling the tool that owns the task.
+//
+// Listed as explicit tool names rather than a toolset, because a toolset mixes
+// capabilities: `terminal` holds Bash AND the desktop tools, and handing the
+// shell to an MCP server must not take the desktop away with it.
+export const CAPABILITY_BUILTINS: Record<string, string[]> = {
+    browser: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
+              'browser_press_key', 'browser_select_option', 'browser_hover',
+              'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
+              'browser_tabs', 'browser_back', 'browser_current_url'],
+    web:     ['WebSearch', 'WebFetch'],
+    files:   ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+    shell:   ['Bash'],
+    capture: ['desktop_screenshot', 'webcam_capture', 'read_image'],
+};
+export const CAPABILITY_NAMES = Object.keys(CAPABILITY_BUILTINS);

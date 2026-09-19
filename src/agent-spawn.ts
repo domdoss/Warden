@@ -904,6 +904,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             type: 'message',
             text: input.prompt,
             showThinking: input.showThinking,
+            defaultApps: input.defaultApps,
             agentMode: input.agentMode,
             verbose: input.verbose,
             maxOutputTokens: input.maxOutputTokens || '',
@@ -986,6 +987,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       timeoutMs: input.timeoutMs,
       memoryContext: input.memoryContext,
       showThinking: input.showThinking,
+      defaultApps: input.defaultApps,
       agentMode: input.agentMode,
       verbose: input.verbose,
     });
