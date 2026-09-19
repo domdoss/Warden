@@ -1,7 +1,7 @@
 # Toolcall SFT pipeline (iris)
 
 LoRA fine-tuning data + training + verification for the toolcall model
-(Granite 4.1:3b base, served via Ollama as `toolcall-ft`).
+(Granite 4.2:3b base, served via Ollama as `toolcall-ft`).
 
 - **iris** — the single toolcall agent. Byte was merged into iris on
   2026-09-05 (one toolcall agent, one fine-tuned model); dexter had been
@@ -13,6 +13,10 @@ LoRA fine-tuning data + training + verification for the toolcall model
   from a get), and no succeeded call is repeated. The 2026-09-15 dataset
   expansion took iris to **993 rows** with broad email coverage (see
   `gen_toolcall_sft.mjs` "EMAIL BREADTH" section).
+- **merged (orch/atlas)** — 2026-09-18, the orchestrator and atlas seats
+  are merging into ONE local agent (Granite 4.1:8b) with cloud
+  auto-escalation (`escalate_to_cloud`) and vulkan/iris as delegates. Its
+  dataset lives here: see "The merged-seat dataset" below.
 - **sentry is NOT covered** (changed 2026-09-08): the background
   security-scanner run-mode briefly had SFT rows here, but the user
   switched sentry to share the orchestrator/atlas model (set manually in
@@ -36,6 +40,90 @@ severity" — every prior rep used the pre-noun "a high-severity blocker",
 so the trailing form was untrained), and the daily digest calling
 `read_emails` with EMPTY args (stably reproducible on the 24h/limit-100
 window; reinforced with a busy-morning daily rep).
+
+## The merged-seat dataset (orchatlas, 2026-09-18)
+
+`orchatlas-sft.jsonl` (**2090 rows**): fine-tune data for the merged
+orchestrator+atlas seat on **granite-4.2-8b** (`ibm-granite/granite-4.2-8b`),
+built yolo-style from the logs before the seat lands in `SUBAGENTS`. Same
+messages+`tools` format as the iris dataset; the tools array is the
+**40-tool merged schema** (`merged` key in `tool_schemas.json`, dumped from
+the live registry + hand-built delegate/escalate/supervision/marm defs — see
+`dump_tool_schemas.mjs`). The merged seat is visionless: no
+browser_screenshot/browser_snapshot/desktop_screenshot anywhere — page state
+is read with `browser_evaluate`, difficult-to-drive screens get delegated to
+vulkan (the one seat with capture), and `desktop_click` stays as the
+last-resort hand for a broken site.
+
+The rows are hand-written by a fleet of subagents (23 sections, 25 rows per
+part file) into `orchatlas-parts/`, then merged by `merge_orchatlas_parts.mjs`,
+which
+also normalizes benign shape drift (arguments-as-string → object, tool
+results missing their name → the pending call's name) and hard-fails on real
+defects (unknown tools, bad JSON, anchor missing, system-prompt drift,
+duplicate rows). `gen_orchatlas_sft.mjs` is the superseded first-pass
+generator, kept for reference only.
+
+Row coverage, grounded in `logs/warden.log` (the 2026-09-18 playback session)
+and the recorded failure classes — user asks deliberately mix human voices
+(direct / casual-typo / rambling; the variety is on the USER side only, replies
+stay terse):
+
+- **playback** — 299 direct `youtube` tool calls (the most-called tool in the
+  dataset: play/search/now_playing/pause/resume/next/seek/fullscreen, result
+  strings byte-match `tools/youtube.ts`), media_control, audio_volume,
+  mic_volume, the playerctl sudo-install flow (`tools/media.ts`); autoplay is
+  the norm — exactly one blocked→media_control chain row; "no autoplay" only
+  where the user explicitly asks for it;
+- **browser/desktop** — tabs (incl. closing duplicate YouTube players),
+  browser_evaluate specific-value reads (the page-reading tool: named values,
+  not page dumps), navigate, form typing by ref, desktop_click as last
+  resort, open_app + desktop_type (focus-based, blind-usable), the
+  Ghostwriter typing chains, and vulkan delegation for anything that needs
+  eyes;
+- **email/calendar** — every intent in many different human phrasings, all
+  routed to iris as labelled one-line `TASK:` briefs (the brief distills the
+  ramble; ask-backs when address/content/time is missing). Inbox checks relay
+  ONLY what iris returned — senders and subjects first, never invented
+  timestamps, never times-instead-of-names; quiet inboxes are stated plainly
+  (the 2026-09-18 fabrication fix, 200 rows);
+- **charts/spreadsheets/visuals** — matplotlib/gnuplot/convert_file chains
+  producing actual files (100 rows);
+- **tasks/calendar events** — the `project` tool and calendar asks (100 rows);
+- **web research** — WebSearch/WebFetch multi-hop lookups with honest misses
+  and source-relay-only answers (100 rows);
+- **draft fidelity** — vulkan-drafted emails verified with Read against the
+  actual ask, invented content stripped with Edit (apology nobody asked for,
+  links "as you requested", phone numbers, doubled-path reports), garbage
+  files → report_task_failure + one corrected re-brief (55 rows, s22+s23);
+- **decomposition** — multi-chain asks broken into steps with the plan stated
+  once, conditionals (check-then-act, incl. FALSE conditions), read→email
+  carrying the actual words, combined two-request messages;
+- **delegation** — vulkan WHAT-not-HOW briefs, escalate_to_cloud verbatim
+  full asks, wrong-seat corrections (do it yourself, don't delegate);
+- **supervision/report-back** — list/stop/nudge/agent_logs/read_job_result,
+  FAILED verdicts → report_task_failure + ONE re-brief naming the gap, the
+  real REPORT-BACK digest block → the TERSE one/two-sentence reply (the
+  2026-09-18 verbose-output fix, trained in);
+- **files/system/tasks/history/memory** — Read/Grep/Glob/Bash own-hands work,
+  the `project` tool, get_chat_history, and `mcp__marm__marm_smart_recall`
+  (the exact prefixed wire name — the unprefixed spelling caused 5 straight
+  "Unknown tool" failures on 2026-09-18).
+
+**MERGED_SYSTEM is authored (in `merge_orchatlas_parts.mjs`, enforced
+byte-identical across every row), not extracted** — the merged seat does not
+exist in the runner yet. When it lands, switch to verbatim extraction from
+the SUBAGENTS entry (the IRIS_SYSTEM pattern in `gen_toolcall_sft.mjs`) and
+replace the hand-built `escalate_to_cloud` def with the dumped registry
+shape, so training keeps matching inference.
+
+**Sequence length is the one hard constraint**: the 40-tool schema block
+puts every row at **min/mean/p95/max 7253/7495/7819/8566** tokens on the
+4.2-8b tokenizer (check: `./.venv/bin/python check_seqlen.py
+orchatlas-sft.jsonl ibm-granite/granite-4.2-8b`). The trainer's `--max-len
+6144` default left-truncates EVERY row of this dataset — train orchatlas
+with `--max-len 8704`. No dryfire suite yet (the seat is not live); when one
+is written, re-baseline stock granite-4.2-8b before trusting it.
 
 ## Pipeline
 
@@ -143,7 +231,7 @@ parenthetical timezone, explicit ids, em-dashes) so train ≈ infer.
 
 ## dryfire — verifying the fine-tune
 
-`node dryfire.mjs` (or `MODEL=granite4.1:3b node dryfire.mjs` for a stock
+`node dryfire.mjs` (or `MODEL=granite4.2:3b node dryfire.mjs` for a stock
 baseline) hits Ollama `/api/chat` directly with the extracted system prompt
 and the live tool schemas, then scores against the **real run contract**:
 
@@ -170,7 +258,7 @@ reason must be an Error object, not a string, or the failure prints as bare
 `undefined`).
 
 Exits non-zero on any failure; data-fix failures in the generator (never
-prompt-hack around them). Historical baselines: stock granite 4.1:3b scores
+prompt-hack around them). Historical baselines: stock granite 4.2:3b scores
 far below the fine-tune; the 2-epoch toolcall-ft (2026-09-02 data) was
 45/50 on the pre-merge suite — re-baseline after the merge, then keep it
 green before packing. The 2026-09-08 pre-retrain baseline on this 50-case
@@ -185,7 +273,7 @@ exists to fix.
 `run.sh` automates the whole thing: uv venv (Python 3.12), deps, VRAM
 cleanup, `torchrun` across both RTX 5000s, llama.cpp build (one-time), pack
 to Ollama `toolcall-ft` (GGUF f16 → Q4_K_M via `pack_dexter.sh`, reusing the
-stock `granite4.1:3b` template so tool-call rendering is identical).
+stock `granite4.2:3b` template so tool-call rendering is identical).
 
 ```
 ./run.sh              # full pipeline (train + pack)

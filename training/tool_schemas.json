@@ -251,5 +251,1072 @@
         }
       }
     }
+  ],
+  "merged": [
+    {
+      "type": "function",
+      "function": {
+        "name": "WebSearch",
+        "description": "Search the web and return ranked results. This FINDS a URL — it does not read the page. Read it with WebFetch; SHOW it to the user, or interact with it, via browser_navigate. Prefer one WebFetch on a known URL over a search when you already know where the answer lives.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search query"
+            },
+            "max_results": {
+              "type": "number",
+              "description": "Max results (default 5)"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "WebFetch",
+        "description": "Fetch a web page and return its content as clean Markdown (headings, links, lists, code, tables preserved; nav/footer/ads stripped). This reads the page server-side WITHOUT launching the browser — use it to look up a fact, scrape an article, or get a price/number from a URL. Only fall back to browser_navigate + browser_snapshot when the page needs JavaScript to render or WebFetch returns empty/blocked.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL to fetch"
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "text",
+                "html"
+              ],
+              "description": "Return format: text (default, Markdown) or html (raw)."
+            }
+          },
+          "required": [
+            "url"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_navigate",
+        "description": "Open a URL in the Warden Chrome (real Chrome, persistent profile — the user is already signed in to their accounts). Launches Chrome automatically if it is not running. Returns the page title, URL, and an accessibility snapshot with element refs like [ref=e12] that you pass to browser_click / browser_type. Accepts http(s):// URLs, file:// URLs, or a bare local path (e.g. /home/dominic/Warden/baben-sushi.html, ~/site/index.html, ./page.html) — a bare path is resolved to a file:// URL and opened IN the Warden Chrome itself (its persistent profile, no fresh \"Welcome to Chrome\" session), and the page is snapshotted so you can verify it. This is the right way to show the user a local HTML/PDF/image. Do NOT spawn a separate chrome/google-chrome-stable via Bash to open a local file — that creates a throwaway profile and a \"sign in / welcome\" screen. Only use open_app (xdg-open) for a local file you specifically want in its OS-default app rather than the browser.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "Full URL (https://youtube.com) or a local path (/abs/file.html, ~/rel.html, ./rel.html) — local paths open as file:// in the Warden Chrome."
+            }
+          },
+          "required": [
+            "url"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_click",
+        "description": "Click an element on the page by its snapshot ref. Returns the updated page snapshot when the click changes the page, or a \"did not visibly change\" note when it has no visible effect — that note means the click did nothing: switch approach (browser_evaluate, URL parameters, a different element) instead of repeating it.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "description": "Element ref from the snapshot, e.g. \"e12\"."
+            },
+            "element": {
+              "type": "string",
+              "description": "Human-readable description of the element (for the log)."
+            },
+            "double": {
+              "type": "boolean",
+              "description": "Double-click (default false)."
+            }
+          },
+          "required": [
+            "ref"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_type",
+        "description": "Type text into an input/textarea identified by its snapshot ref. Replaces the current value.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "description": "Element ref from the snapshot, e.g. \"e12\"."
+            },
+            "text": {
+              "type": "string",
+              "description": "Text to enter."
+            },
+            "submit": {
+              "type": "boolean",
+              "description": "Press Enter after typing (default false)."
+            }
+          },
+          "required": [
+            "ref",
+            "text"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_press_key",
+        "description": "Press a keyboard key in the browser page, e.g. \"Enter\", \"Escape\", \"ArrowDown\", \"Control+a\", \"k\" (YouTube play/pause). Pass ref to press the key ON a specific element (focuses it first) — without a ref the key goes to whatever happens to be focused, which may be nothing. Returns the updated snapshot when the page changes, or a \"did not visibly change\" note when it does not.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key or combo in Playwright syntax, e.g. \"Enter\", \"Control+a\"."
+            },
+            "ref": {
+              "type": "string",
+              "description": "Optional element ref from the snapshot to focus and press on, e.g. \"e12\"."
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_select_option",
+        "description": "Select an option in a <select> dropdown identified by its snapshot ref. Returns the updated snapshot when the page changes, or a \"did not visibly change\" note when the selection alone doesn't trigger anything (e.g. a filter that needs an Apply button).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "description": "Element ref from the snapshot, e.g. \"e12\"."
+            },
+            "value": {
+              "type": "string",
+              "description": "Option value or visible label to select."
+            }
+          },
+          "required": [
+            "ref",
+            "value"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_hover",
+        "description": "Hover the mouse over an element by its snapshot ref (opens menus, reveals tooltips). Returns the updated snapshot showing whatever appeared.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "description": "Element ref from the snapshot, e.g. \"e12\"."
+            }
+          },
+          "required": [
+            "ref"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_evaluate",
+        "description": "Run JavaScript in the page and return the JSON-serialized result. Use for reading data the snapshot misses, dispatching events, or controlling media (e.g. document.querySelector(\"video\").pause()). NOTE: document.querySelector does NOT see inside web components (shadow DOM) — e.g. Reddit's submit button lives in <shreddit-post-composer>'s shadow root, so querySelector(\"button[type=submit]\") returns null. Use the injected helper instead: window.__warden.query(\"button[type=submit]\") (first match), window.__warden.queryAll(\"button\") (all matches, pierces shadow roots), window.__warden.byText(\"Post\") (leaf elements whose text contains it), or window.__warden.click(\"button[type=submit]\") (clicks the first match).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "js": {
+              "type": "string",
+              "description": "JavaScript expression or IIFE to evaluate in the page."
+            }
+          },
+          "required": [
+            "js"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_wait_for",
+        "description": "Wait for text to appear on the page, or for a fixed number of seconds. Use after actions that trigger slow loads.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Wait until this text is visible on the page."
+            },
+            "seconds": {
+              "type": "number",
+              "description": "Or wait this many seconds (max 30)."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_tabs",
+        "description": "Manage browser tabs: list them, switch the active tab, open a new one, or close one.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "list",
+                "select",
+                "new",
+                "close"
+              ],
+              "description": "What to do."
+            },
+            "index": {
+              "type": "number",
+              "description": "Tab index from list (required for select/close)."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_back",
+        "description": "Go back to the previous page in the active tab.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browser_current_url",
+        "description": "Read the URL and title of the page the user is currently viewing in the browser. Use this when the user asks \"what page am I on\" or refers to \"this page\" without naming a URL.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Bash",
+        "description": "Execute a bash command.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Command to execute"
+            },
+            "timeout": {
+              "type": "number",
+              "description": "Timeout in ms"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "open_app",
+        "description": "SHOW something on the host display and return immediately — a PDF, a folder, an image, or an app the user just wants open. Use app 'xdg-open' with an absolute path for a file in its default viewer, or the app binary to launch it. This is fire-and-forget: it does NOT let you drive what it opened. To DRIVE a desktop app (click its controls, type into it) launch it with Bash instead, then desktop_screenshot to see it and desktop_click / desktop_type to work it. For a web page, browser_navigate — never xdg-open a URL you intend to keep working in.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "app": {
+              "type": "string",
+              "description": "Application binary name or full path"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional arguments to pass to the application"
+            }
+          },
+          "required": [
+            "app"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "desktop_click",
+        "description": "Click at absolute screen coordinates. Use coordinates from a desktop_screenshot image.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "description": "X coordinate (pixels from left)"
+            },
+            "y": {
+              "type": "number",
+              "description": "Y coordinate (pixels from top)"
+            },
+            "button": {
+              "type": "string",
+              "enum": [
+                "left",
+                "right",
+                "middle"
+              ],
+              "description": "Mouse button (default: left)"
+            },
+            "double": {
+              "type": "boolean",
+              "description": "Double-click (default: false)"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "desktop_type",
+        "description": "Type text or send keyboard shortcuts on the desktop. Use for typing into focused fields or sending key combos like ctrl+c. Multi-line text is fine — pass it with real line breaks and each line is typed with a Return between; never write \"\\n\" as two characters, and never flatten a document to one line.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Text to type. Cannot be used together with keys."
+            },
+            "keys": {
+              "type": "string",
+              "description": "Key combo to send, e.g. \"ctrl+c\", \"Return\", \"alt+F4\", \"ctrl+shift+t\". Cannot be used together with text."
+            },
+            "delay_ms": {
+              "type": "number",
+              "description": "Delay between keystrokes in ms (default 12). Increase for slow apps."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "generate_pdf",
+        "description": "Generate a professional styled PDF document from markdown content. Use this instead of writing Python scripts for PDF creation. Supports headings, tables, lists, code blocks, bold, italic, checkboxes, blockquotes.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "filename": {
+              "type": "string",
+              "description": "Output filename (e.g. \"report.pdf\")"
+            },
+            "content": {
+              "type": "string",
+              "description": "Markdown content for the PDF"
+            }
+          },
+          "required": [
+            "filename",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "convert_file",
+        "description": "Convert files between formats using LibreOffice. Supports: docx/doc to pdf, xlsx/xls to pdf, pptx/ppt to pdf, csv to xlsx, md to docx, and more. Use this instead of writing conversion scripts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string",
+              "description": "Path to input file"
+            },
+            "format": {
+              "type": "string",
+              "description": "Target format: pdf, docx, xlsx, pptx, csv, html, txt, odt, ods, odp"
+            }
+          },
+          "required": [
+            "input",
+            "format"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "audio_volume",
+        "description": "Control the SPEAKER (output) volume. action 'get' returns the current level, 'set' takes level (0-100), 'toggle_mute' mutes/unmutes the speaker. Use this for the user's speaker loudness — not the mic.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "get",
+                "set",
+                "toggle_mute"
+              ],
+              "description": "What to do: 'get' current volume, 'set' to level, or 'toggle_mute'."
+            },
+            "level": {
+              "type": "number",
+              "description": "Target volume 0-100. Required when action='set', ignored otherwise."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mic_volume",
+        "description": "Control the MIC (input/capture) volume. action 'get' returns the current level, 'set' takes level (0-100), 'toggle_mute' mutes/unmutes the microphone. Use this for microphone sensitivity, not the speaker.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "get",
+                "set",
+                "toggle_mute"
+              ],
+              "description": "What to do: 'get' current mic level, 'set' to level, or 'toggle_mute'."
+            },
+            "level": {
+              "type": "number",
+              "description": "Target volume 0-100. Required when action='set', ignored otherwise."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "media_control",
+        "description": "Control media playback (play, pause, toggle, next track, previous track, stop) on a running media player — a browser YouTube tab, Spotify, mpv, VLC, etc. Anything exposing MPRIS. Returns the resulting playback status. If no player is running it says so.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "play",
+                "pause",
+                "play_pause",
+                "next",
+                "previous",
+                "stop"
+              ],
+              "description": "Playback action."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "youtube",
+        "description": "Play and control YouTube in the user's real Chrome. action 'play' takes what they asked for as `query` (or a URL/video id as `url`), finds the video, plays it IN THE YOUTUBE TAB THAT IS ALREADY OPEN (replacing whatever was playing, and pausing any other YouTube tab) or opens one if there is none, and confirms playback from the <video> element itself — one call for \"play X on youtube\", no search-then-navigate-then-evaluate dance, and no tab cleanup afterwards: switching songs never leaves a second tab playing. Other actions: 'search' (query → ranked results with channel + duration, when they want to choose), 'now_playing', 'pause', 'resume', 'next' (next video), 'seek' (seconds), 'fullscreen'. The result text IS the confirmation — never screenshot to check. For a non-YouTube player (Spotify, mpv, VLC) or the system volume, use media_control / audio_volume instead.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "play",
+                "search",
+                "now_playing",
+                "pause",
+                "resume",
+                "next",
+                "seek",
+                "fullscreen"
+              ],
+              "description": "What to do."
+            },
+            "query": {
+              "type": "string",
+              "description": "What to play or search for, in the user's own words (e.g. 'chillstep mix'). Used by play and search."
+            },
+            "url": {
+              "type": "string",
+              "description": "A YouTube URL or 11-character video id, when you already have the exact video. Used by play."
+            },
+            "limit": {
+              "type": "number",
+              "description": "How many results to return for action 'search' (1-10, default 5)."
+            },
+            "seconds": {
+              "type": "number",
+              "description": "Position in seconds for action 'seek'."
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "project",
+        "description": "Projects, work tasks, deliverables, blockers, priorities, and financials. kind=project: action=create (name, description, due_date), list, get (project_id), update (project_id + fields), archive, complete, delete. kind=task (work tasks on the user dashboard): action=create (title, description, notes, priority, due_date, project_id — a plain task with no project lands in the user Personal project), list, update (task_id), delete (task_id). kind=deliverable: action=add (project_id, name, due_date), toggle (deliverable_id), delete (deliverable_id). kind=blocker: action=add (project_id, description, severity), delete (blocker_id). kind=priority: action=add (project_id, item, impact), delete (priority_id). kind=financials: action=update (project_id, budget, spent, revenue, notes).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "project",
+                "task",
+                "deliverable",
+                "blocker",
+                "priority",
+                "financials"
+              ],
+              "description": "Which record type to operate on."
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "list",
+                "get",
+                "update",
+                "archive",
+                "complete",
+                "delete",
+                "add",
+                "toggle"
+              ],
+              "description": "Which operation to perform (not all apply to every kind)."
+            },
+            "project_id": {
+              "type": "string",
+              "description": "id of the project (most actions; task create: optional — omit to use the Personal project)"
+            },
+            "id": {
+              "type": "string",
+              "description": "id of the record being managed: task_id for tasks, deliverable_id, blocker_id, priority_id"
+            },
+            "name": {
+              "type": "string",
+              "description": "project create: project name | deliverable add: deliverable name"
+            },
+            "title": {
+              "type": "string",
+              "description": "task create/update: task title"
+            },
+            "description": {
+              "type": "string",
+              "description": "project/task create/update, blocker add: description text"
+            },
+            "notes": {
+              "type": "string",
+              "description": "task create/update, financials update: notes"
+            },
+            "due_date": {
+              "type": "string",
+              "description": "project/task/deliverable create: due date"
+            },
+            "project_code": {
+              "type": "string",
+              "description": "project create/update: project code"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "On Track",
+                "At Risk",
+                "Blocked"
+              ],
+              "description": "project update: status"
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "urgent"
+              ],
+              "description": "task create/update: priority"
+            },
+            "task_status": {
+              "type": "string",
+              "enum": [
+                "todo",
+                "in_progress",
+                "done"
+              ],
+              "description": "task update: status"
+            },
+            "severity": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ],
+              "description": "blocker add: severity"
+            },
+            "item": {
+              "type": "string",
+              "description": "priority add: the priority item"
+            },
+            "impact": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "description": "priority add: impact"
+            },
+            "budget": {
+              "type": "number",
+              "description": "financials update: budget"
+            },
+            "spent": {
+              "type": "number",
+              "description": "financials update: amount spent"
+            },
+            "revenue": {
+              "type": "number",
+              "description": "financials update: revenue"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_chat_history",
+        "description": "Get recent chat history.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Read",
+        "description": "Read a file from the workspace or any local path. Accepts a workspace-relative path (e.g. \"notes.md\", \"attachments/photo.jpg\"), an absolute local path (a path starting with \"/\" or \"~/\"), or a directory (returns a listing of its contents). For image files (png, jpg, jpeg, gif, webp), this gives you vision — you will see the image contents. Always use Read on images instead of Bash/PIL. Use this when the user points you at a local file or directory to look at.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to read: workspace-relative (\"notes.md\", \"attachments/photo.jpg\"), absolute local (starts with \"/\" or \"~/\"), or a directory."
+            },
+            "offset": {
+              "type": "number",
+              "description": "Line number to start from (text files only)"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Number of lines to read (text files only)"
+            }
+          },
+          "required": [
+            "file_path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Write",
+        "description": "Write content to a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Relative path to file (e.g. \"notes.md\" or \"docs/plan.md\")"
+            },
+            "content": {
+              "type": "string",
+              "description": "Content to write"
+            }
+          },
+          "required": [
+            "file_path",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Edit",
+        "description": "Edit a file by replacing text.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to file"
+            },
+            "old_string": {
+              "type": "string",
+              "description": "Exact text to replace"
+            },
+            "new_string": {
+              "type": "string",
+              "description": "Replacement text"
+            }
+          },
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Glob",
+        "description": "Find files matching a pattern.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Glob pattern like \"**/*.ts\""
+            },
+            "path": {
+              "type": "string",
+              "description": "Directory to search"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Grep",
+        "description": "Search for text in files.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Regex to search for"
+            },
+            "path": {
+              "type": "string",
+              "description": "Directory or file to search"
+            },
+            "glob": {
+              "type": "string",
+              "description": "File pattern filter"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "vulkan",
+        "description": "Delegate to Vulkan for code and build/test work. Vulkan ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:\"blocking\".",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order."
+            },
+            "urgent": {
+              "type": "boolean",
+              "description": "Inject the result into your context immediately when it finishes, even mid-task (default false)."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "iris",
+        "description": "Delegate to Iris for email, calendar, reminders, and alarms. You do NOT have these tools directly — send a structured brief and you will receive one short result line.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "A structured brief and nothing else — no preamble, no explanation, and no time (the runner prepends the current local time). One line: \"TASK: <one imperative sentence naming the outcome>\". Every id, address, filename and value the sentence needs goes INLINE in that sentence. Example:\nTASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "escalate_to_cloud",
+        "description": "Hand a task to the cloud reasoning model when the work exceeds what you can do well locally: long-form writing (documents, posts, letters), synthesis or analysis over many pages, multi-step planning that must be exact, or a judgment call you are not confident in. Carries the FULL ask verbatim — the cloud model sees nothing of this conversation except what you pass. Do not escalate what you can finish with your own tools in a few calls; do not escalate browser/desktop/media work (that is yours, and the cloud model has no hands here).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "The complete ask, verbatim from the conversation, plus every fact (paths, names, values, deadlines) needed to act on it cold. Add one line of context only when the ask references something not in the text."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_running_agents",
+        "description": "List currently-running Atlas background jobs with their elapsed time, tool call count, last action, and job id. Use this when you want to check on what a background Atlas is doing before deciding whether to stop it.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "stop_agent",
+        "description": "Stop a running Atlas background job by job id (obtained from list_running_agents or the job id returned when you delegated). The agent is given a chance to return its partial result. Use this when an Atlas is stuck, looping, or doing the wrong thing — then re-delegate with corrected instructions if needed.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The atlas-XXXX job id to stop."
+            }
+          },
+          "required": [
+            "job_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "nudge_agent",
+        "description": "Steer a running background job without killing it: inject a short instruction into its next turn naming what it should commit to, based on what it is actually doing wrong. Use this when the supervisor flags a job as off-track (grinding, off-task, or repeating failing calls) and redirecting it is better than stopping it. For a job that should be killed, use stop_agent instead. The job keeps running and sees your message on its next iteration.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The atlas-XXXX / vulkan-XXXX job id to steer (from list_running_agents or a supervisor flag)."
+            },
+            "message": {
+              "type": "string",
+              "description": "A short, specific instruction naming what the job should commit to on its next turn, based on what it is doing wrong and what the task actually needs."
+            }
+          },
+          "required": [
+            "job_id",
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "agent_logs",
+        "description": "Read a background agent's step-by-step activity log — every tool call it made, with a preview of each call's result. Works on a running job (live progress) or a finished one (what it actually did, in order). Use this when you need to know what an agent actually did — whether it succeeded, what it changed, where it looked — instead of asking it to re-run or re-check. Pass the job id (e.g. atlas-abcd); omit it to get a one-line list of recent jobs.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The job id (e.g. atlas-abcd). Omit to list recent jobs."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_job_result",
+        "description": "Read the full stored output of a finished background job from your inbox (e.g. when the user asks for the raw result, or a preview was truncated). Call with no job_id to list all stored results.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "Job id like \"atlas-4f2a\". Omit to list available results."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "report_task_failure",
+        "description": "Record that a finished background job PROVEN failed — its result shows the deliverable is wrong or missing (not merely that success is hard to see). Call this before re-delegating; the runner allows the task exactly one automatic retry, consumed on the next dispatch, then refuses further retries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "The failed task, as it was delegated."
+            },
+            "reason": {
+              "type": "string",
+              "description": "What proved it failed — the evidence from the result."
+            }
+          },
+          "required": [
+            "task",
+            "reason"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__marm__marm_smart_recall",
+        "description": "Recall memories by semantic similarity or keyword match: ranked results with similarity scores for a query over everything the memory distiller has ever logged. Call it (exactly this name) before delegating a search, a lookup or a find — memory may already hold the answer.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "What to recall, in natural language."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default 5)."
+            },
+            "search_all": {
+              "type": "boolean",
+              "description": "Search every session, not just the current one."
+            },
+            "include_logs": {
+              "type": "boolean",
+              "description": "Also search raw log entries."
+            },
+            "exact_mode": {
+              "type": "string",
+              "description": "\"auto\", \"keyword\", or \"semantic\"."
+            },
+            "project": {
+              "type": "string",
+              "description": "Restrict to one project."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    }
   ]
 }
