@@ -37,8 +37,11 @@ const mods = [
   'media.js',          // audio_volume, mic_volume, media_control
   'youtube.js',        // youtube (merged YouTube toolchain, 2026-09-18)
   'project-tools.js',  // project (work tasks / projects / deliverables)
-  'chat-tools.js',     // get_chat_history
+  'chat-tools.js',     // get_chat_history, attach_file
   'file-read.js', 'file-grep.js', 'file-glob.js', 'file-write.js', 'file-edit.js',
+  'api-tools.js',      // list_api_keys, api_request (the internal warden loopback)
+  'context-tools.js',  // clear_context
+  'fabric-tools.js',   // fabric_pattern
 ];
 for (const m of mods) await import(url('tools/' + m));
 
@@ -57,13 +60,55 @@ const { resolveToolset } = await import(url('toolsets.js'));
 // the registry — when it lands, replace the hand-built def with the dumped
 // registry shape so training keeps matching inference).
 const sets = { iris: 'iris-core' };
-const MERGED_EXTRA = ['project', 'get_chat_history', 'Read', 'Write', 'Edit', 'Glob', 'Grep'];
+// 2026-09-18b: the seat's INTERNAL hands were missing from the dumped schema
+// even though the live seat carries them every turn (fullToolDefs in the runner
+// keeps every registry tool no sub-agent owns) — api_request/list_api_keys (the
+// keyless `warden` loopback), attach_file, clear_context, fabric_pattern.
+const MERGED_EXTRA = [
+  'project', 'get_chat_history', 'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'api_request', 'list_api_keys', 'attach_file', 'clear_context', 'fabric_pattern',
+];
 const DELEGATE_DEFS = {
   vulkan: {
     type: 'function',
     function: {
       name: 'vulkan',
       description: `Delegate to Vulkan for code and build/test work. Vulkan ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:"blocking".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order.' },
+          urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
+        },
+        required: ['task'],
+      },
+    },
+  },
+  // artemis + sentry: same async delegateToolDef() branch as vulkan (prose task
+  // + urgent), description = `Delegate to <label> for <summary>.` with each
+  // seat's SUBAGENTS `summary` verbatim from the runner source. Artemis is the
+  // seat the user reaches for by asking what went wrong — a stalled job, a
+  // report that never came back, a second opinion before something final.
+  artemis: {
+    type: 'function',
+    function: {
+      name: 'artemis',
+      description: `Delegate to Artemis for a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important. Artemis ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:"blocking".`,
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order.' },
+          urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
+        },
+        required: ['task'],
+      },
+    },
+  },
+  sentry: {
+    type: 'function',
+    function: {
+      name: 'sentry',
+      description: `Delegate to Sentry for security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.. Sentry ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:"blocking".`,
       parameters: {
         type: 'object',
         properties: {
@@ -213,6 +258,186 @@ const SUPERVISION_DEFS = [
     },
   },
 ];
+// The seat's INTERNAL machinery — runtime-built defs, verbatim from their
+// sources, added 2026-09-18b because the dataset had no coverage of the things
+// the seat reaches for when Warden itself is the subject:
+//   council / council_status  — index.ts COUNCIL_TOOL_DEF / COUNCIL_STATUS_TOOL_DEF
+//   atlas_background          — index.ts ATLAS_BACKGROUND_TOOL_DEF (a background
+//                               copy of itself, for work too long for a chat turn)
+//   the six skill meta-tools  — skills.ts buildAlwaysOnTools(); the "core"
+//                               builtin skill is auto-activated, so these are on
+//                               EVERY live turn (install_mcp_server is how a new
+//                               MCP server gets added, and the tools it brings
+//                               appear as a skill on the NEXT turn)
+//   mcp__marm__marm_log_entry — the MARM write half, taken from the live server's
+//                               tools/list (name prefixed mcp__marm__, description
+//                               and inputSchema exactly as the wire carries them),
+//                               so the trained shape is the served shape.
+// read_file / write_file / list_file (also in the core skill) are deliberately
+// LEFT OUT: they are weaker duplicates of Read/Write, and a def the model can
+// see is a def it will pick — file work in this dataset is Read/Write/Edit.
+const INTERNAL_DEFS = [
+  {
+    type: 'function',
+    function: {
+      name: 'council',
+      description: 'Convene The Council — three Artemis instances (Skeptic, Pragmatist, Synthesist) deliberate in parallel on the same question from three different angles. Each round, all three answers are shared and each seat re-evaluates independently. The loop repeats until all three agree on a single answer (or max_rounds is hit). Use for high-stakes questions where you want a council consensus rather than a single answer. Slower than a single delegate call — expect 1-3 minutes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'The question for The Council to deliberate on. Self-contained — no chat history available to the seats.' },
+          max_rounds: { type: 'number', description: 'Maximum deliberation rounds. Default 4, capped at 15. Each round spawns 3 parallel Artemis calls; seats argue, disagree, present new points, and work toward one answer all three can endorse.' },
+        },
+        required: ['task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'council_status',
+      description: "Peek at what The Council is doing right now. Returns the deliberation status (round in progress, elapsed time) and each seat's answer from the completed rounds, or the outcome if it already finished. Use when the user asks how the council is doing, what it is thinking, or whether it is done. Read-only — does not interrupt the deliberation.",
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'atlas_background',
+      description: 'Run work in the BACKGROUND as a copy of yourself, on your own model and tools, when it is too long for a chat turn (minutes of browsing, a multi-step build). The result arrives in your inbox and you keep talking meanwhile. For anything you can finish in this turn, just do it yourself with your tools instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, where to look, how to code, or tool names.' },
+          urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
+        },
+        required: ['task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'activate_skill',
+      description: "Load a skill's tools into your context for this turn. Call this before using any tool that is not in your current tool list. The skill index in your system prompt lists the available names.",
+      parameters: {
+        type: 'object',
+        properties: { name: { type: 'string', description: 'Skill name from the skill index' } },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'deactivate_skill',
+      description: "Drop a previously-activated skill's tools from your context.",
+      parameters: {
+        type: 'object',
+        properties: { name: { type: 'string', description: 'Skill name to deactivate' } },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_skills',
+      description: 'Re-list the skill index (useful after install_mcp_server or create_skill, which add skills that appear on the next turn).',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'install_mcp_server',
+      description: 'Register a new MCP server (written to data/mcp-servers.json). Available as a skill on the next turn.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          command: { type: 'string' },
+          args: { type: 'array', items: { type: 'string' } },
+          env: { type: 'object', description: 'Optional env vars for the subprocess' },
+        },
+        required: ['name', 'command', 'args'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'uninstall_mcp_server',
+      description: 'Remove an MCP server from data/mcp-servers.json. Takes effect next turn.',
+      parameters: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_skill',
+      description: 'Create a new user-defined skill by writing data/skills/<name>/SKILL.md. Use this to package a multi-step workflow the user just completed with you so it can be repeated for similar future tasks. Available on the next turn. Prefer the structured fields (when_to_use, parameters, example_prompt, steps) over a freeform instructions string — they produce a SKILL.md the next session can actually follow.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Alphanumeric + dashes only, 1-64 chars. Pick a name that describes the workflow, e.g. "deploy-nightly" or "triage-inbox".' },
+          description: { type: 'string', description: 'One-line description of what the skill does.' },
+          when_to_use: { type: 'string', description: 'When this skill should be activated. One or two sentences describing the trigger conditions / user intent that maps to this workflow.' },
+          parameters: {
+            type: 'array',
+            description: 'Inputs the workflow expects from the user at repeat time. Each entry: { name, description, example }.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Parameter name (lowercase, words separated by dashes or underscores).' },
+                description: { type: 'string', description: 'What this parameter means.' },
+                example: { type: 'string', description: 'A concrete example value the user might supply.' },
+              },
+              required: ['name', 'description'],
+            },
+          },
+          steps: {
+            type: 'array',
+            description: 'Ordered list of concrete steps that make up the workflow. Each step is what you would do, in order, to take a fresh user request from start to finish.',
+            items: {
+              type: 'object',
+              properties: {
+                description: { type: 'string', description: 'What this step does in plain language.' },
+                tool: { type: 'string', description: 'Tool or sub-agent you would call (e.g. "Bash", "atlas", "read_file"). Leave empty if no tool call.' },
+                key_args: { type: 'string', description: 'Key arguments the tool call needs, with placeholders for parameters in {{param}} form (e.g. "git checkout {{branch_name}}").' },
+              },
+              required: ['description'],
+            },
+          },
+          example_prompt: { type: 'string', description: 'A concrete user prompt that would trigger this skill, written as if the user said it. Helps future-you recognize the workflow.' },
+          tools: { type: 'array', items: { type: 'string' }, description: 'Tool names this skill exposes (currently informational — leave empty for instruction-only skills).' },
+          instructions: { type: 'string', description: 'Optional freeform body of the SKILL.md. If you fill the structured fields above, this is rarely needed — use it only for notes that do not fit anywhere else.' },
+        },
+        required: ['name', 'description'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mcp__marm__marm_log_entry',
+      description: '\n    📝 Write a log entry to the active session.\n\n    Entries are stored with a date, topic, and summary. If `entry` begins with\n    "Session: [name]" or "Topic: [name]", the active session switches to that name\n    and all subsequent entries route there automatically. Entries are also stored\n    as semantic memories so marm_smart_recall can find them.\n\n    Entry format: YYYY-MM-DD-topic-summary (date prefix is optional; auto-tagged if omitted)\n\n    Parameters:\n    - entry: the text to log; plain text or prefixed with "Session:" / "Topic:" to switch sessions\n    - session_name: override the target session explicitly (optional; active session used if omitted)\n\n    Returns: status, message confirming the entry or session switch, entry_id, memory_id\n    ',
+      parameters: {
+        type: 'object',
+        properties: {
+          entry: { type: 'string', title: 'Entry' },
+          session_name: { anyOf: [{ type: 'string' }, { type: 'null' }], default: null, title: 'Session Name' },
+        },
+        required: ['entry'],
+        title: 'marm_log_entryArguments',
+      },
+    },
+  },
+];
 const out = {};
 for (const [agent, ts] of Object.entries(sets)) {
   const names = resolveToolset(ts);
@@ -232,8 +457,11 @@ for (const [agent, ts] of Object.entries(sets)) {
     ...registry.getDefinitions(names).map(({ tier, ...d }) => d),
     DELEGATE_DEFS.vulkan,
     DELEGATE_DEFS.iris,
+    DELEGATE_DEFS.artemis,
+    DELEGATE_DEFS.sentry,
     ESCALATE_DEF,
     ...SUPERVISION_DEFS,
+    ...INTERNAL_DEFS,
   ];
   console.error(`merged: ${out.merged.length} tools (${out.merged.map(t => t.function.name).join(', ')})`);
 }

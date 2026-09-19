@@ -43,19 +43,19 @@ window; reinforced with a busy-morning daily rep).
 
 ## The merged-seat dataset (orchatlas, 2026-09-18)
 
-`orchatlas-sft.jsonl` (**2090 rows**): fine-tune data for the merged
+`orchatlas-sft.jsonl` (**2190 rows**): fine-tune data for the merged
 orchestrator+atlas seat on **granite-4.2-8b** (`ibm-granite/granite-4.2-8b`),
 built yolo-style from the logs before the seat lands in `SUBAGENTS`. Same
 messages+`tools` format as the iris dataset; the tools array is the
-**40-tool merged schema** (`merged` key in `tool_schemas.json`, dumped from
-the live registry + hand-built delegate/escalate/supervision/marm defs — see
-`dump_tool_schemas.mjs`). The merged seat is visionless: no
+**57-tool merged schema** (`merged` key in `tool_schemas.json`, dumped from
+the live registry + hand-built delegate/escalate/supervision/internal/marm
+defs — see `dump_tool_schemas.mjs`). Train it with `./atlasorch.sh`. The merged seat is visionless: no
 browser_screenshot/browser_snapshot/desktop_screenshot anywhere — page state
 is read with `browser_evaluate`, difficult-to-drive screens get delegated to
 vulkan (the one seat with capture), and `desktop_click` stays as the
 last-resort hand for a broken site.
 
-The rows are hand-written by a fleet of subagents (23 sections, 25 rows per
+The rows are hand-written by a fleet of subagents (27 sections, 25 rows per
 part file) into `orchatlas-parts/`, then merged by `merge_orchatlas_parts.mjs`,
 which
 also normalizes benign shape drift (arguments-as-string → object, tool
@@ -108,30 +108,76 @@ stay terse):
 - **files/system/tasks/history/memory** — Read/Grep/Glob/Bash own-hands work,
   the `project` tool, get_chat_history, and `mcp__marm__marm_smart_recall`
   (the exact prefixed wire name — the unprefixed spelling caused 5 straight
-  "Unknown tool" failures on 2026-09-18).
+  "Unknown tool" failures on 2026-09-18);
+- **the internal machinery** (s24-s27, 100 rows, added 2026-09-18b) — the
+  things the seat reaches for when WARDEN ITSELF is the subject, and the one
+  area the first 23 sections never touched:
+  - *MCP + skills* (s24): `install_mcp_server` / `uninstall_mcp_server` with
+    real npx/uvx commands, the "available as a skill on the NEXT turn" truth
+    (never call what you just registered), installs bundled with a real task
+    that the seat finishes itself, a missing secret asked for instead of
+    invented, `list_skills` answered in spoken English, `activate_skill` on a
+    user skill vs the refusal on an MCP skill (those tools run in the
+    sub-agents, not here) vs the "that's a sub-agent, call it directly" error,
+    and `create_skill` packaging a finished workflow;
+  - *artemis* (s25): "why did that never come back", "what went wrong", "check
+    yourself before I send this" — plus the DIVIDING LINE the seat has to hold:
+    `list_running_agents` / `agent_logs` / `read_job_result` for a status
+    question, artemis only for diagnosis across the logs and the DB;
+  - *the Council* (s26): self-contained `task` strings (the seats see no chat
+    history), `max_rounds` used deliberately, the one-at-a-time collision,
+    `council_status` peeks summarized rather than pasted, and five decoys where
+    the phrasing invites a council but the right move is a lookup, vulkan,
+    artemis, or just doing it;
+  - *the rest* (s27): `atlas_background` hand-offs (and two rows that correctly
+    do NOT hand off), `sentry` peek/deep scans, `api_request` / `list_api_keys`
+    incl. the keyless `warden` loopback to localhost:3200, `attach_file`,
+    `clear_context` (only on an explicit ask), `fabric_pattern`, and
+    `mcp__marm__marm_log_entry` for a durable fact.
+  Verbatim live result strings for all of it live in
+  `orchatlas-parts/_internals.md` — the sheet the row writers worked from, so
+  no tool output in the dataset is invented.
 
-**MERGED_SYSTEM is authored (in `merge_orchatlas_parts.mjs`, enforced
-byte-identical across every row), not extracted** — the merged seat does not
-exist in the runner yet. When it lands, switch to verbatim extraction from
-the SUBAGENTS entry (the IRIS_SYSTEM pattern in `gen_toolcall_sft.mjs`) and
+**The system prompt is authored, not extracted** — the merged seat does not
+exist in the runner yet. It lives in ONE place, `orchatlas-parts/_sys.txt`:
+the file the row-writing subagents are handed, and the file
+`merge_orchatlas_parts.mjs` reads and enforces byte-identical across every row
+(2026-09-18b — it used to be a second copy inline in the merge script). Edit
+that file and every part row must be re-stamped with it, or the merge fails.
+When the seat lands in the runner, switch to verbatim extraction from the
+SUBAGENTS entry (the IRIS_SYSTEM pattern in `gen_toolcall_sft.mjs`) and
 replace the hand-built `escalate_to_cloud` def with the dumped registry
 shape, so training keeps matching inference.
 
-**Sequence length is the one hard constraint**: the 40-tool schema block
-puts every row at **min/mean/p95/max 7253/7495/7819/8566** tokens on the
+**Sequence length is the one hard constraint**: the 57-tool schema block
+puts every row at **min/mean/p95/max 10472/10717/11050/11785** tokens on the
 4.2-8b tokenizer (check: `./.venv/bin/python check_seqlen.py
-orchatlas-sft.jsonl ibm-granite/granite-4.2-8b`). The trainer's `--max-len
-6144` default left-truncates EVERY row of this dataset — train orchatlas
-with `--max-len 8704`. No dryfire suite yet (the seat is not live); when one
-is written, re-baseline stock granite-4.2-8b before trusting it.
+orchatlas-sft.jsonl ibm-granite/granite-4.2-8b`) — up from 7253/…/8566 when
+the schema was 40 tools. The trainer's `--max-len 6144` default
+left-truncates EVERY row of this dataset, and truncation is keep-last-N, so a
+low cap silently amputates the system prompt and the tool schemas — the two
+things this fine-tune exists to learn. Train with **`--max-len 12032`**, or
+just run `./atlasorch.sh`, which measures the data and rounds up to the next
+multiple of 256 so the cap can never clip a row. No dryfire suite yet (the
+seat is not live); when one is written, re-baseline stock granite-4.2-8b
+before trusting it.
 
 ## Pipeline
 
 ```
-node dump_tool_schemas.mjs   # tool_schemas.json — live schemas: iris-core (4 action tools)
+node dump_tool_schemas.mjs   # tool_schemas.json — live schemas: iris-core (4 action tools) + the 57-tool merged seat
 node gen_toolcall_sft.mjs    # toolcall-sft.jsonl — the SFT dataset (iris rows)
 ./run.sh                     # train (torchrun, both RTX 5000s) + pack → ollama:toolcall-ft
 node dryfire.mjs             # verify the fine-tune against the real run contract
+```
+
+The merged seat has its own pipeline (same trainer, different base, dataset,
+sequence length and Ollama name — neither run overwrites the other's adapter):
+
+```
+node dump_tool_schemas.mjs        # refresh the 57-tool merged schema
+node merge_orchatlas_parts.mjs    # orchatlas-parts/*.jsonl → orchatlas-sft.jsonl (also the validator)
+./atlasorch.sh                    # measure seq-len → train granite-4.2-8b → pack → ollama:orchatlas-ft
 ```
 
 Run `dump_tool_schemas.mjs` **after** building the agent-runner
