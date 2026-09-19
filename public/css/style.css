@@ -979,18 +979,80 @@ textarea { resize: vertical; min-height: 34px; line-height: 1.5; }
 }
 
 /* --- skills / mcp --- */
+/* The Skills view had NO rules for any of its content: .mcp-row's .name/.meta/
+   .desc, the whole toggle switch (markup uses .slider, which existed nowhere),
+   and every .skill-card child (.dot/.name/.state/.del) were raw inline text.
+   Redone 2026-09-19 from the design tokens; no new visual language. */
 .mcp-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+
 .mcp-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   font-size: 13px;
+  min-width: 0;
 }
-.mcp-toggle { margin-left: auto; }
+/* DOM order is [toggle, info, del]; visually info left, toggle right, del far
+   right — order + margin-left:auto on the toggle, no markup gymnastics. */
+.mcp-row > div { order: 1; flex: 1 1 auto; min-width: 0; }
+.mcp-row .name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-row .meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-row .desc { margin-top: 4px; font-size: 12px; color: var(--text-dim); line-height: 1.45; }
+.mcp-row.disabled { border-color: var(--border-soft); background: var(--bg-elev); }
+.mcp-row.disabled .name { color: var(--text-faint); }
+
+/* Toggle switch — same look as the .toggle-switch component; the Skills markup
+   spells it <label class="mcp-toggle"><input><span class="slider">, so the
+   rules are scoped to those classes instead of changing every row's markup. */
+.mcp-toggle {
+  position: relative;
+  order: 2;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 22px;
+  margin-left: auto;
+  cursor: pointer;
+}
+.mcp-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.mcp-toggle .slider {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-3);
+  border-radius: 22px;
+  transition: background 0.18s ease;
+}
+.mcp-toggle .slider::before {
+  content: "";
+  position: absolute;
+  left: 3px; top: 3px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform 0.18s ease;
+}
+.mcp-toggle input:checked + .slider { background: var(--accent); }
+.mcp-toggle input:checked + .slider::before { transform: translateX(18px); }
+.mcp-toggle input:focus-visible + .slider { box-shadow: 0 0 0 3px var(--accent-soft); }
+
 .mcp-add-details { margin-top: 8px; }
 .mcp-add-details summary { cursor: pointer; list-style: none; }
 .mcp-add-form {
@@ -1004,14 +1066,105 @@ textarea { resize: vertical; min-height: 34px; line-height: 1.5; }
   border-radius: var(--r-lg);
 }
 .mcp-add-form label { display: flex; flex-direction: column; gap: 5px; font-weight: 600; }
+.mcp-add-form textarea { resize: vertical; min-height: 44px; }
+
+/* --- skill cards --- */
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .skill-card {
-  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   font-size: 13px;
+  min-width: 0;
 }
+.skill-card[data-skill-toggle] { cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; }
+.skill-card[data-skill-toggle]:hover { border-color: var(--border-hi); background: var(--surface-2); }
+.skill-card .dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-hi);
+}
+.skill-card.installed .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok-soft); }
+.skill-card .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.skill-card .state {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.skill-card.installed .state {
+  color: var(--ok);
+  border-color: var(--ok-soft);
+  background: var(--ok-soft);
+}
+
+/* Small × remove button — shared by mcp rows, skill cards and pin chips
+   (this page's markup only; the class had no rules at all before). */
+.del {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+}
+.del:hover { color: var(--danger); background: var(--danger-soft); }
+.mcp-row .del { order: 3; }
+
+/* --- pinned tools (Default apps card, settings) --- */
+.pin-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.pin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 20px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.pin-chip .del { width: 18px; height: 18px; font-size: 13px; color: var(--accent); }
+.pin-chip .del:hover { color: var(--danger); background: var(--danger-soft); }
+.pin-add-row { display: flex; align-items: center; gap: 8px; }
+.pin-add-row .select { flex: 1 1 200px; min-width: 0; }
+.status { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
 
 /* --- pim: calendar + mail --- */
 .pim-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }

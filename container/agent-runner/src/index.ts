@@ -2,7 +2,9 @@
  * Warden Agent Runner
  * Runs as a child Node process on the user's real system, receives config via stdin,
  * outputs result to stdout. Files live on disk under WORKSPACE_ROOT (default ~/Projects).
- * The workspace boundary is enforced in the tool layer by resolveInsideWorkspace().
+ * Paths are resolved in the tool layer by resolveInsideWorkspace() (~ expansion +
+ * workspace-relative joining); no boundary is enforced — the runner works across
+ * the workspace, /opt/Warden and the wider home dir by design.
  *
  * Input protocol:
  *   Stdin: Full ContainerInput JSON (read until EOF)
@@ -31,7 +33,7 @@ import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
 import { createProvider } from './providers/index.js';
 import type { ChatProvider } from './providers/types.js';
-import { resolveInsideWorkspace, WorkspaceBoundaryError } from './workspace-boundary.js';
+import { resolveInsideWorkspace } from './workspace-boundary.js';
 import {
   loadSkills,
   renderSkillIndex,
@@ -242,14 +244,9 @@ async function disconnectMcpClients(): Promise<void> {
     skillState.clients.clear();
 }
 
-/** Resolve a workspace-relative path, returning a boundary error message on failure. */
-function safeResolve(inputPath: string): { ok: true; path: string } | { ok: false; error: string } {
-    try {
-        return { ok: true, path: resolveInsideWorkspace(inputPath) };
-    } catch (e) {
-        if (e instanceof WorkspaceBoundaryError) return { ok: false, error: e.message };
-        throw e;
-    }
+/** Resolve a path (~ expansion + workspace-relative joining). Never fails. */
+function safeResolve(inputPath: string): { ok: true; path: string } {
+    return { ok: true, path: resolveInsideWorkspace(inputPath) };
 }
 
 // Lazy provider — created on first use based on env vars
@@ -505,7 +502,6 @@ function toolDetailLabel(name, args) {
         case 'convert_file': return `Convert ${clean(args.input || '')} → ${args.format || '?'}`;
         case 'read_sms': return `Read SMS${args.from ? ' from ' + short(args.from, 20) : ''}`;
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
-        case 'set_user_email': return `Set email: ${short(args.email || '', 30)}`;
         case 'atlas': return `🌍 Atlas: ${args.task || ''}`;
         case 'artemis': return `🏹 Artemis: ${args.task || 'reviewing the conversation'}`;
         case 'iris': return `✉️ Iris: ${args.task || ''}`;
@@ -1108,7 +1104,7 @@ Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with
 3. THE TOOL RESULT IS THE TRUTH. Report the outcome from the result itself. A successful write, edit or command is proof; a page you changed gets one end-state check; anything the captain can already see or hear is confirmed by the tool's own result.
 4. FINISH THE CHAIN. A multi-step ask is yours end to end: state the chain once ("Plan: A → B → C"), take each step with your own tools or a brief, move to the next when the last lands.
 5. WHEN A PAGE OR COMMAND FAILS, try three genuinely different approaches before calling it blocked; an empty search result is an answer, not a reason to search again.
-6. SPEAK PLAIN AND SHORT. One to three sentences, the answer carried in the words themselves. Plain spoken English; this is read aloud.
+6. SPEAK SHORT, FORMAT FOR THE DASH. One to three sentences, the answer carried in the words themselves. Markdown welcome (bold, bullets, code) — the dashboard renders it and the voice app strips it when a reply is spoken.
 
 # RUNNING JOBS
 
@@ -1133,6 +1129,27 @@ function crewBlock(): string {
         .map(s => `- **${s.delegate}** — ${s.routing}${s.background ? ' Runs in the background: you get a job id, the result lands in your inbox.' : ' Answers in line.'}`);
     lines.push('- **council** — three seats deliberate in parallel on a costly, hard-to-reverse decision until they agree (see COUNCIL).');
     return lines.join('\n');
+}
+
+/** `# DEFAULT APPS` — GENERATED from DEFAULT_APPS + the live skill layer, the
+ *  same source applyDefaultApps uses, so the prose can never claim a provider
+ *  the tool list contradicts (the prompt-vs-tools drift rule). Omitted when no
+ *  default is set, or when the chosen server has no tools connected — there
+ *  applyDefaultApps keeps the built-in and the section must not say otherwise. */
+function defaultsSection(): string {
+    if (!skillState) return '';
+    const lines: string[] = [];
+    for (const cap of Object.keys(CAPABILITY_BUILTINS)) {
+        const server = providerFor(cap);
+        if (!server) continue;
+        const prefix = `mcp__${server}__`;
+        const connected = skillState.skills.some(s => s.source === 'mcp'
+            && s.tools.some(t => String(t?.function?.name || '').startsWith(prefix)));
+        if (!connected) continue;
+        lines.push(`- ${cap} → the \`${server}\` skill's MCP tools. The built-in ${cap} tools are withheld; use the \`${server}\` ones for all ${cap} work.`);
+    }
+    if (lines.length === 0) return '';
+    return `\n\n# DEFAULT APPS\n\nThe captain chose these providers in Settings. For each capability the named skill's MCP tools REPLACE the built-in tools — always use them:\n\n${lines.join('\n')}\n`;
 }
 
 const SUBAGENT_OWNED = new Set<string>(SUBAGENTS.flatMap(s => getSubAgentToolNames(s)));
@@ -2199,7 +2216,7 @@ function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string
         if (!raw) continue;
         let resolved: string;
         try { resolved = resolveInsideWorkspace(raw); }
-        catch { continue; } // outside workspace boundary — skip
+        catch { continue; } // resolve never throws; keep the guard shape anyway
         if (seen.has(resolved)) continue;
         let size = 0, mtime: string | null = null, exists = false;
         try {
@@ -3099,7 +3116,6 @@ async function runSubAgent(
         try {
             const refRel = `data/agents/${agentName}`;
             const resolved = safeResolve(refRel);
-            if (!resolved.ok) return '';
             const dir = resolved.path;
             if (!fs.existsSync(dir)) return '';
             let instr = '', instrFile = '';
@@ -3860,12 +3876,24 @@ const ALWAYS_INCLUDED_TOOLS = new Set<string>([
     // `mcpServers: ['*']` and get every installed server. marm stays reachable
     // here because memory recall is assistant state, the same class as
     // get_chat_history — every other mcp__ server routes through a delegate.
+    // EXCEPTION: a server the captain chose as a DEFAULT APP (Settings →
+    // Default apps) is this seat's provider for that capability. Withholding
+    // it here while its built-in stand-in stayed is why a default never took
+    // effect on the seat (2026-09-19): the model kept the built-in tools and
+    // the chosen server was invisible. Defaults are re-synced each turn, so
+    // this list follows a Settings change live.
+    const defaultProviderPrefixes = Object.values(DEFAULT_APPS)
+        .map((v) => String(v || '').trim())
+        .filter((v) => v.startsWith('mcp:'))
+        .map((v) => `mcp__${v.slice(4).trim()}__`);
     const orchToolBlocked = (n: string): boolean => {
         // Checked BEFORE the atlas-owned bypass: these are atlas's tools, and
         // the point is to withhold them from this seat specifically.
         if (BLOCKED_ORCHESTRATOR_TOOLS.has(n)) return true;
         if (ATLAS_OWNED.has(n)) return false;
-        return (n.startsWith('mcp__') && !n.startsWith('mcp__marm__')) || blockedPrefix(n);
+        if (n.startsWith('mcp__') && !n.startsWith('mcp__marm__')
+            && !defaultProviderPrefixes.some((p) => n.startsWith(p))) return true;
+        return blockedPrefix(n);
     };
 
     /** Merge skill-layer tools (always-on core + active skill tools) into the active tool list. Dedupes by name. */
@@ -3875,8 +3903,12 @@ const ALWAYS_INCLUDED_TOOLS = new Set<string>([
             const n = t?.function?.name;
             return typeof n === 'string' && orchToolBlocked(n);
         };
-        const base = (activeToolDefs as any[]).filter((t) => !blocked(t));
         const skillTools = (skillToolDefs() as any[]).filter((t) => !blocked(t));
+        // Default apps: a capability handed to a chosen MCP server stands the
+        // BUILT-IN down — substitution, not addition (same rule as the delegate
+        // path). applyDefaultApps only drops a built-in whose replacement is
+        // actually connected, so a dead server never leaves the seat mute.
+        const base = applyDefaultApps((activeToolDefs as any[]).filter((t) => !blocked(t)), skillTools);
         if (skillTools.length === 0) return base;
         const seen = new Set(base.map((t) => t.function?.name));
         const extras = skillTools.filter((t) => !seen.has(t.function?.name));
@@ -4074,7 +4106,10 @@ const marmRecallSection = marmEnabled
                 // here: the journal carries the user's standing instructions and
                 // learned facts, and the skill index is the only thing that
                 // tells this seat its 60+ skills exist and how to activate one.
+                // defaultsSection() is generated from the same DEFAULT_APPS the
+                // tool gate uses — the claim and the tool list cannot drift.
                 + journalSection + fabricSection + skillIndexSection
+                + defaultsSection()
                 + orchestratorNowLine + marmRecallSection;
     };
     // Per-agent model system — every agent has its own concrete model from
@@ -5209,10 +5244,6 @@ const marmRecallSection = marmEnabled
         for (const filePath of unsent) {
             const cleaned = cleanFilePath(filePath);
             const resolved = safeResolve(cleaned);
-            if (resolved.ok === false) {
-                log(`Auto-attach skipped ${filePath}: ${resolved.error}`);
-                continue;
-            }
             if (fs.existsSync(resolved.path)) {
                 const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(filePath);
                 // Tag with the RESOLVED absolute path — the host (telegram
@@ -5390,7 +5421,6 @@ function handleBasicFileOp(name: string, args: any): string {
     const rawPath = (args?.path as string) || '';
     if (name === 'list_file') {
         const resolved = safeResolve(rawPath || '.');
-        if (resolved.ok === false) return `Error: ${resolved.error}`;
         try {
             const entries = fs.readdirSync(resolved.path, { withFileTypes: true });
             return entries.map((e) => (e.isDirectory() ? e.name + '/' : e.name)).join('\n');
@@ -5400,7 +5430,6 @@ function handleBasicFileOp(name: string, args: any): string {
     }
     if (name === 'read_file') {
         const resolved = safeResolve(rawPath);
-        if (resolved.ok === false) return `Error: ${resolved.error}`;
         try {
             return fs.readFileSync(resolved.path, 'utf8');
         } catch (err: any) {
@@ -5409,7 +5438,6 @@ function handleBasicFileOp(name: string, args: any): string {
     }
     if (name === 'write_file') {
         const resolved = safeResolve(rawPath);
-        if (resolved.ok === false) return `Error: ${resolved.error}`;
         const content = (args?.content as string) ?? '';
         try {
             fs.mkdirSync(path.dirname(resolved.path), { recursive: true });

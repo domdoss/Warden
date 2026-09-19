@@ -1417,7 +1417,27 @@ import {
 // Re-export so existing `from './status-server.js'` importers keep working.
 export { OllamaServer, readOllamaServers, writeOllamaServers, resolveOllamaServerUrl, resolveAgentOllamaUrl };
 
-function handleSettings(res: http.ServerResponse): void {
+// Live built-in tool vocabulary, for the pinned-tools control in Settings: the
+// same toolsets module the agent-runner's ranker draws from, imported from its
+// compiled dist. Cached after the first load; on any import failure the pool
+// is empty and the dashboard shows the current pins only.
+let cachedToolPool: string[] | null = null;
+async function readToolPool(): Promise<string[]> {
+  if (cachedToolPool) return cachedToolPool;
+  try {
+    const m = (await import('../dist/agent-runner/toolsets.js')) as { TOOLSETS?: Record<string, { tools?: unknown[] }> };
+    const names = Object.values(m.TOOLSETS || {})
+      .flatMap((t) => (Array.isArray(t?.tools) ? t.tools : []))
+      .filter((n): n is string => typeof n === 'string' && !!n);
+    cachedToolPool = [...new Set(names)].sort();
+  } catch (err: any) {
+    logger.warn({ err: err?.message ?? err }, 'tool pool unavailable — pinned-tools select shows current pins only');
+    cachedToolPool = [];
+  }
+  return cachedToolPool;
+}
+
+async function handleSettings(res: http.ServerResponse): Promise<void> {
   const envVals = readEnvFile([
     'CALENDAR_TOKEN',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
@@ -1522,6 +1542,9 @@ function handleSettings(res: http.ServerResponse): void {
     // capability so a new capability needs no schema change.
     defaultApps: readDefaultApps(),
     pinnedTools: readPinnedTools(),
+    // Live built-in tool names (see readToolPool) — the checkbox pool for the
+    // pinned-tools control, so pins are picked from real tools, never typed.
+    toolPool: await readToolPool(),
     defaultAppCapabilities: DEFAULT_APP_CAPABILITIES,
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)

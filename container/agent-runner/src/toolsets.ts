@@ -57,7 +57,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // pause/skip/volume, and youtube needs the browser, which the orchestrator
     // no longer has.
     youtube:      { name: 'youtube',   tools: ['youtube'], tier: 'public' },
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','media','youtube'] },
+    // desktop-vision rides WITH terminal (2026-09-19): terminal carries
+    // desktop_click/desktop_type, and a seat that can click and type needs to
+    // see the frame (runSubAgent drains captures into the next iteration) —
+    // without this include the seat drove native apps blind.
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','desktop-vision','documents','media','youtube'] },
     // Vulkan — the coding specialist, coding-only. Read/Write/Edit/Glob/Grep
     // to edit source, Bash to run builds/tests/git. NO browser, NO desktop,
     // NO screenshot, NO open_app — vulkan edits code and reports done; seeing

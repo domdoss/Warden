@@ -1,15 +1,10 @@
 import * as path from 'node:path';
 
-export class WorkspaceBoundaryError extends Error {
-  readonly resolvedPath: string;
-  readonly workspaceRoot: string;
-  constructor(resolvedPath: string, workspaceRoot: string) {
-    super(`path '${resolvedPath}' is outside the workspace boundary '${workspaceRoot}'`);
-    this.name = 'WorkspaceBoundaryError';
-    this.resolvedPath = resolvedPath;
-    this.workspaceRoot = workspaceRoot;
-  }
-}
+// No boundary is enforced here, on purpose (2026-09-19): the runner routinely
+// works outside WORKSPACE_ROOT — /opt/Warden source edits, ~/.config reads,
+// /tmp scratch — and the old WorkspaceBoundaryError was defined but never
+// thrown, so every "enforced" comment downstream was a false claim. This
+// module now only resolves paths (~ expansion + workspace-relative joining).
 
 function expandTilde(p: string): string {
   if (!p) return p;

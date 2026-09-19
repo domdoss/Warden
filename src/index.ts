@@ -157,7 +157,13 @@ function saveState(): void {
 }
 
 const MERCURY_MEMORY_FILE = 'MERCURY_MEMORY.md';
-const MERCURY_RECENT_MESSAGES = 12;
+// The last N messages are ignored by the mercury summary WHOLESALE: they stay
+// verbatim in <chat_history> and are never compacted into the summary, so the
+// summary cannot duplicate turns the model is already reading live (2026-09-19:
+// with 12, fresh turns landed in the summary and got re-injected next to
+// themselves). Compaction only folds material OLDER than this window; RAG also
+// only retrieves from beyond it, so there is no dead zone between the two.
+const MERCURY_RECENT_MESSAGES = 30;
 const MERCURY_CONTEXT_TURNS = 8;
 
 // Mercury's I/O contract. Mercury shares the toolcall fine-tune with iris, so
@@ -1645,52 +1651,40 @@ export function buildAgentCallbacks(): CallbackMap {
 }
 
 // Mercury scheduling — runs on the 2s poll loop (see startMessageLoop), not
-// the per-turn tail, so the downtime trigger can fire while no turn is in
-// flight. Two independent triggers, both idle-gated (agent:processing !==
-// 'true') so a compaction never contends with an in-flight orchestrator turn:
-//   - interval  (mercury:interval_minutes,  default 30, 0 = off): fire if it's
-//     been at least this long since the last compaction.
-//   - downtime  (mercury:downtime_minutes,  default  5, 0 = off): fire if the
-//     user has been quiet this long (and at least this long since the last run).
-// All thresholds are read LIVE from router_state, so a dashboard settings
-// change takes effect on the next tick — no restart. cleanerBusy is the
-// shared stagger lock (see digestMonitorBusy): Mercury compaction, the Iris
-// digests, and memory writeback all acquire it so no two cleaners run at once.
+// the per-turn tail. ONE trigger, locked (2026-09-19): fire after 30 new user
+// turns since the last compaction. No time-based interval/downtime triggers —
+// those compacted mid-conversation and folded fresh turns into the summary
+// while the model was still reading them live in <chat_history>. Idle-gated
+// (agent:processing !== 'true') so a compaction never contends with an
+// in-flight orchestrator turn. cleanerBusy is the shared stagger lock (see
+// digestMonitorBusy): Mercury compaction, the Iris digests, and memory
+// writeback all acquire it so no two cleaners run at once.
+// mercury:interval_minutes / mercury:downtime_minutes are no longer read; the
+// dashboard rows are inert.
 let cleanerBusy = false;
 let mercuryRunning = false;
+
+// Compaction fires every this many user turns, locked.
+const MERCURY_TURNS_PER_COMPACTION = 30;
 
 function maybeScheduleMercury(): void {
   if (mercuryMode() === 'off') return;
   if (cleanerBusy || mercuryRunning) return;
   const now = Date.now();
   // Lazy first-boot seed (mirrors digest:lastrun seeding): advance to now and
-  // wait for the interval/downtime rather than compacting immediately at boot.
+  // wait for the turn count rather than compacting immediately at boot.
   const lastRaw = getRouterState('mercury:lastrun') || '';
   const last = Date.parse(lastRaw) || 0;
   if (!last) {
     setRouterState('mercury:lastrun', new Date(now).toISOString());
     return;
   }
-  // '' → default, '0' → disabled — same parse as the idle-clear consumer.
-  const intervalRaw = getRouterState('mercury:interval_minutes') || '';
-  const intervalMin = intervalRaw === '' ? 30 : (parseInt(intervalRaw, 10) || 0);
-  const downtimeRaw = getRouterState('mercury:downtime_minutes') || '';
-  const downtimeMin = downtimeRaw === '' ? 5 : (parseInt(downtimeRaw, 10) || 0);
-  if (intervalMin === 0 && downtimeMin === 0) return;
+  // Turn-count trigger: user turns (non-bot messages) newer than the last run.
+  // A deep window so a burst of short turns cannot hide below the horizon.
+  const turnsSince = (getChatHistory(OWNER_JID, 200) as unknown as NewMessage[])
+    .filter((m) => !m.is_bot_message && (m.timestamp || '') > lastRaw).length;
+  if (turnsSince < MERCURY_TURNS_PER_COMPACTION) return;
   if (getRouterState('agent:processing') === 'true') return; // idle-gate
-
-  const sinceRun = now - last;
-  // Only compact when there is NEW conversation since the last run — otherwise
-  // a long idle would re-compact identical content every few minutes (and an
-  // unchanged summary is pure token waste).
-  const lastUser = Date.parse(getRouterState('orchestrator:last_user_message_at') || '');
-  const newContent = !!lastUser && lastUser > last;
-  const timeDue = intervalMin > 0 && sinceRun >= intervalMin * 60_000 && newContent;
-  const downDue =
-    downtimeMin > 0 &&
-    newContent &&
-    now - lastUser >= downtimeMin * 60_000; // user quiet, and (since lastUser > last) it's been at least this long since the last run
-  if (!timeDue && !downDue) return;
 
   // Advance lastrun BEFORE firing so a slow run can't double-fire on the next tick.
   setRouterState('mercury:lastrun', new Date(now).toISOString());
@@ -3002,6 +2996,13 @@ function spawnChrome(): void {
     `--remote-debugging-port=${CHROME_CDP_PORT}`,
     `--user-data-dir=${WARDEN_CHROME_PROFILE}`,
     '--no-sandbox',
+    // Chrome stores its cookie/credential encryption key in the system keyring
+    // (kwallet here). This service starts Chrome before the graphical session has
+    // unlocked kwallet, so Chrome cannot decrypt its own store and falls back to
+    // asking Google to "verify it's you" — every reboot, in a blue window.
+    // `basic` uses Chrome's own file-backed store instead, removing the keyring
+    // dependency entirely. Site logins persist; only the keyring handoff changes.
+    '--password-store=basic',
     '--no-first-run',
     '--no-default-browser-check',
     // Suppress the recurring "Verify it's you" Google-account sync re-auth

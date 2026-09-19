@@ -20,6 +20,18 @@ const DEFAULT_EXECUTABLE = 'node';
 // PROJECT_ROOT in config.ts) — not __dirname, which is undefined under ESM.
 const DEFAULT_EXECUTABLE_ARGS = [path.resolve(process.cwd(), 'dist', 'agent-runner', 'index.js')];
 
+// Config home for the agent-runner child: the REPO's data dir, never the
+// workspace. The workspace (~/Warden) is for document output only. The runner
+// used to resolve data/mcp-servers.json and data/skills against its cwd
+// (= WORKSPACE_ROOT), so a second copy of each lived there and drifted from
+// the repo's — servers and skills the user installed in /opt never reached
+// the agent (2026-09-19: defaults pointed at servers the runner couldn't
+// even see). One canonical copy, in the repo.
+const RUNNER_CONFIG_ENV = {
+  MCP_SERVERS_CONFIG: path.resolve(process.cwd(), 'data', 'mcp-servers.json'),
+  SKILLS_DIR: path.resolve(process.cwd(), 'data', 'skills'),
+};
+
 export type CallbackHandler = (args: any) => Promise<any>;
 export type CallbackMap = Record<string, CallbackHandler>;
 
@@ -52,7 +64,7 @@ export type AgentRunInput = AgentInput & {
 export function runSubAgentBackground(input: AgentRunInput): void {
   const exe = input.executable ?? DEFAULT_EXECUTABLE;
   const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
-  const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
+  const env = { ...process.env, ...RUNNER_CONFIG_ENV, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
   // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
   // (the code/repo dir). The agent's file tools resolve relative paths against
   // process.cwd(); without this the child inherits the repo cwd and writes
@@ -170,7 +182,7 @@ export function runSubAgentSync(input: AgentRunInput): Promise<{ content: string
   return new Promise((resolve) => {
     const exe = input.executable ?? DEFAULT_EXECUTABLE;
     const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
-    const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
+    const env = { ...process.env, ...RUNNER_CONFIG_ENV, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
     // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
   // (the code/repo dir). The agent's file tools resolve relative paths against
   // process.cwd(); without this the child inherits the repo cwd and writes
@@ -952,7 +964,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
     // Spawn a fresh persistent child.
     const exe = input.executable ?? DEFAULT_EXECUTABLE;
     const exeArgs = input.executableArgs ?? DEFAULT_EXECUTABLE_ARGS;
-    const env = { ...process.env, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
+    const env = { ...process.env, ...RUNNER_CONFIG_ENV, WORKSPACE_ROOT: input.workspaceRoot, AGENT_TIMEOUT: String(input.timeoutMs) };
     // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
   // (the code/repo dir). The agent's file tools resolve relative paths against
   // process.cwd(); without this the child inherits the repo cwd and writes

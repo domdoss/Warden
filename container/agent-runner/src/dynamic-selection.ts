@@ -108,6 +108,16 @@ function scoreText(keywords: string[], nameWords: Set<string>, descText: string)
     return score;
 }
 
+// Generic filesystem/shell tools score on almost any sentence, so on a vague
+// ask they crowd out the specific tool that owns the job ("change the song"
+// → read_file/list_file/bash, observed 2026-09-19). When any SPECIFIC tool
+// scores at all, generic ones compete at half weight — they still surface for
+// genuinely generic asks, but a specific match beats them.
+const GENERIC_TOOLS = new Set([
+    'read_file', 'list_file', 'write_file', 'edit_file',
+    'bash', 'Bash', 'Read', 'Read_file', 'Glob', 'Grep', 'open_app',
+]);
+
 /**
  * Rank tool defs by keyword overlap against tool name (snake_case split) +
  * description. Returns the names of the top-K tools that scored above zero.
@@ -124,7 +134,17 @@ export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = 
             const score = scoreText(keywords, nameWords, descText);
             if (score > 0) scored.push({ name, score });
         }
-        return scored.sort((a, b) => b.score - a.score).slice(0, topK).map((s) => s.name);
+        const anySpecific = scored.some((s) => s.score > 0 && !GENERIC_TOOLS.has(s.name));
+        const weight = (n: string) => anySpecific && GENERIC_TOOLS.has(n) ? 0.5 : 1;
+        const ranked = scored
+            .map((s) => ({ ...s, rank: s.score * weight(s.name) }))
+            .sort((a, b) => b.rank - a.rank)
+            .slice(0, topK);
+        // One line per turn showing what actually won and at what score — the
+        // only way to see a specific tool losing to a generic one (the youtube
+        // failure ranked #1 in isolation but lost in the live pool).
+        log(`[dynamic-selection] top-${topK}: ${ranked.map((s) => `${s.name}=${s.score}${weight(s.name) < 1 ? '*' : ''}`).join(', ')}${anySpecific ? ' (* generic, halved)' : ''}`);
+        return ranked.map((s) => s.name);
     } catch (err: any) {
         log(`[dynamic-selection] rankTools failed: ${err?.message || err}`);
         return [];
