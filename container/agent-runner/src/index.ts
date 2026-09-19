@@ -1600,6 +1600,13 @@ function goalRetryExhausted(task: string): boolean {
 // refusal text — which the caller returns as the tool result; no job spawns.
 // Only a FAILED precursor engages the rail: successful jobs in the inbox for
 // a similar goal are legitimate chained phases (rule 7), not retries.
+// Marks a verdict that was never actually formed — the second-reader pass was
+// skipped (supervisor Off, or no model configured), so the job was not judged
+// at all. 'unverifiable' alone cannot carry this: it is also the honest answer
+// when the judge DID look and could not tell from text (a song that started
+// playing), and that case must keep blocking re-dispatch.
+const VERDICT_NOT_JUDGED = 'not-judged';
+
 function retryGate(task: string): string | null {
     if (!turnWasInboxDigest) return null; // user turn: always allow
     const goal = goalSig(task);
@@ -1610,7 +1617,14 @@ function retryGate(task: string): string | null {
     // "play a song → re-delegate → new job → new digest → re-delegate" loop
     // (2026-09-18). Re-delegating an already-good result is never a legitimate
     // chain next-step (chains move to a materially different goal).
-    const alreadyDone = inbox.all().some(i => (i.verdict === 'confirmed' || i.verdict === 'unverifiable') && sameGoal(goal, goalSig(String(i.task || ''))));
+    // An UNVERIFIABLE that was never judged (supervisor Off) is not evidence the
+    // goal is done — counting it meant that with the supervisor off, every
+    // finished job sealed its goal and a legitimate chained next-step on a
+    // similarly-worded task was refused on a digest turn.
+    const judged = (i: { verdict?: string; verdictReason?: string }) =>
+        i.verdict === 'confirmed'
+        || (i.verdict === 'unverifiable' && !String(i.verdictReason || '').startsWith(VERDICT_NOT_JUDGED));
+    const alreadyDone = inbox.all().some(i => judged(i) && sameGoal(goal, goalSig(String(i.task || ''))));
     if (alreadyDone && !failedBefore && !creditUsed) {
         log(`[retry-ledger] blocked re-delegation of an already-completed goal: ${taskSig(task)}`);
         return `STOP — this task already ran and its result is in your inbox above. Do not dispatch it again. Report that result to the user, or stay silent if it is media already playing.`;
@@ -2252,9 +2266,9 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     // is the only surviving supervisor (the periodic watchdog tick was removed
     // 2026-09-17), so "supervisor Off" has to mean "no second-reader pass" or
     // the setting controls nothing at all.
-    if (!SUPERVISOR_ENABLED) { log('[completion-verdict] supervisor Off — skipping verdict'); return { verdict: 'unverifiable', reason: 'supervisor disabled in settings' }; }
+    if (!SUPERVISOR_ENABLED) { log('[completion-verdict] supervisor Off — skipping verdict'); return { verdict: 'unverifiable', reason: `${VERDICT_NOT_JUDGED}: supervisor disabled in settings` }; }
     let model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
-    if (!model) { log('[completion-verdict] no supervisor/orchestrator model — skipping'); return { verdict: 'unverifiable', reason: 'no model configured' }; }
+    if (!model) { log('[completion-verdict] no supervisor/orchestrator model — skipping'); return { verdict: 'unverifiable', reason: `${VERDICT_NOT_JUDGED}: no model configured` }; }
     // Don't evict a resident model to judge a job. The verdict is a two-second
     // read, but when its model is not the one in VRAM, asking for it makes
     // Ollama unload whatever is resident — and on this box that is a 17 GB
@@ -3766,7 +3780,16 @@ async function runNativeOllama(input: ContainerInput) {
     // from ORCHESTRATOR_SHARED_TOOLS keeps them out of the ranked base, but an
     // active skill can still carry them in through the skill layer, and a tool
     // the model can see is a tool it will call.
-    const BLOCKED_ORCHESTRATOR_TOOLS = new Set<string>();
+    // Withheld from the CHAT SEAT only — the background atlas job still holds
+    // these via the browser toolset. The seat runs a visionless model, and both
+    // were what it reached for by reflex: snapshot returned a whole-page dump it
+    // then hand-drove from instead of calling the tool that owns the job
+    // (2026-09-18 "change the song" → browser_snapshot → dead turn). The seat
+    // reads page state with browser_evaluate, which returns the values asked
+    // for. Removing them from the toolset instead does the OPPOSITE: an un-owned
+    // tool passes the seat's `!SUBAGENT_OWNED` filter, so the seat keeps it and
+    // background atlas loses it.
+    const BLOCKED_ORCHESTRATOR_TOOLS = new Set<string>(['browser_snapshot', 'browser_screenshot']);
     // The browser/desktop prefix block existed because the orchestrator and a
     // running atlas were two actors on one page (2026-09-18 10:41: it drove a
     // tab atlas owned and the turn died with no reply). This seat IS atlas now,
@@ -3777,8 +3800,11 @@ async function runNativeOllama(input: ContainerInput) {
     // marm__ is the MCP server this seat calls directly for memory. Atlas-owned
     // MCP tools are its own hands now; every other mcp__ server stays blocked.
     const orchToolBlocked = (n: string): boolean => {
+        // Checked BEFORE the atlas-owned bypass: these are atlas's tools, and
+        // the point is to withhold them from this seat specifically.
+        if (BLOCKED_ORCHESTRATOR_TOOLS.has(n)) return true;
         if (ATLAS_OWNED.has(n)) return false;
-        return (n.startsWith('mcp__') && !n.startsWith('mcp__marm__')) || blockedPrefix(n) || BLOCKED_ORCHESTRATOR_TOOLS.has(n);
+        return (n.startsWith('mcp__') && !n.startsWith('mcp__marm__')) || blockedPrefix(n);
     };
 
     /** Merge skill-layer tools (always-on core + active skill tools) into the active tool list. Dedupes by name. */
@@ -5646,7 +5672,13 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // Immediate tool result for the orchestrator — tell it to end its
             // turn silently. The final verdict will be pushed as the only
             // assistant message when the background Council loop completes.
-            result = `The Council is now deliberating in the background on this question. Do NOT write any message to the user now — end your turn immediately. The final verdict will be delivered to the user automatically when The Council completes (a few minutes — they argue up to 15 rounds before converging). If the user asks about its progress in the meantime, call council_status.`;
+            // One short line, then end the turn. The old contract was "write NO
+            // message at all", which left the user staring at silence for the
+            // several minutes a deliberation takes — and gave the fine-tune no
+            // reply shape to learn for this tool. The verdict still arrives on
+            // its own, so the line must not promise a summary or restate the
+            // question; it says the Council has it and stops.
+            result = `The Council is now deliberating in the background on this question. Reply with ONE short line saying the Council has it, then end your turn — do not answer the question yourself and do not promise a summary. The final verdict will be delivered to the user automatically when The Council completes (a few minutes — they argue up to 15 rounds before converging). If the user asks about its progress in the meantime, call council_status.`;
         }
     } else if (toolName === 'council_status') {
         if (!councilLive) {

@@ -843,11 +843,15 @@
     }).join('');
   }
   function buildOutputOptions(currentValue) {
-    const common = ['1024', '2048', '4096', '8192', '16384', '32768'];
+    // '' (model default) must be FIRST, like buildCtxOptions: with no blank
+    // option an unset value (fresh install) matched nothing, left the select on
+    // 1024, and the next Save wrote max_output_tokens=1024 — silently capping
+    // every reply, including a sub-agent writing a file.
+    const common = ['', '1024', '2048', '4096', '8192', '16384', '32768'];
     const cur = String(currentValue || '');
     if (cur && !common.includes(cur)) common.push(cur);
-    common.sort((a, b) => Number(a) - Number(b));
-    return common.map(v => modelOption(v, v, cur === v)).join('');
+    common.sort((a, b) => (a === '' ? -1 : b === '' ? 1 : Number(a) - Number(b)));
+    return common.map(v => modelOption(v, v || 'default', cur === v)).join('');
   }
 
   function buildCtxOptions(currentValue) {
