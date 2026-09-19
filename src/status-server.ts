@@ -1449,8 +1449,10 @@ function handleSettings(res: http.ServerResponse): void {
     ollamaModel: process.env.OLLAMA_MODEL || '',
     ollamaChatModel: process.env.OLLAMA_CHAT_MODEL || OLLAMA_CHAT_MODEL,
     defaultModelMode: DEFAULT_MODEL_MODE,
+    // Max tokens one reply may generate. NOT ctx — this is the output cap, and
+    // a blank row means the built-in default applies.
+    maxOutputTokens: getRouterState('local:max_output_tokens') || '',
     orchestratorModel: getRouterState('orchestrator:model') || '',
-    atlasModel: getRouterState('atlas:model') || '',
     vulkanModel: getRouterState('vulkan:model') || '',
     // Supervisor = the completion verdict on finished jobs. Blank = verdicts
     // run the orchestrator model. supervisorEnabled toggles the verdict pass.
@@ -1479,7 +1481,6 @@ function handleSettings(res: http.ServerResponse): void {
     ollamaServers: readOllamaServers(),
     ollamaDefaultServerId: getRouterState('ollama:default_server') || '',
     orchestratorOllamaServer: getRouterState('orchestrator:ollama_server') || '',
-    atlasOllamaServer: getRouterState('atlas:ollama_server') || '',
     vulkanOllamaServer: getRouterState('vulkan:ollama_server') || '',
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     hybridPrivacy: getRouterState('hybrid_privacy') || '',
@@ -1490,8 +1491,13 @@ function handleSettings(res: http.ServerResponse): void {
     google_configured: !!(googleId && googleSecret),
     microsoft_configured: !!(msId && msSecret),
     orchestratorCtx: getRouterState('local:orchestrator_ctx') || '',
-    subagentCtx: getRouterState('local:subagent_ctx') || '',
+    // Atlas (background jobs) — blank = inherit the Warden (orchestrator)
+    // model and ctx. Restored 2026-09-18: the merged seat made background
+    // atlas a copy of itself, but the dashboard still needs a row to pick a
+    // different model for background work.
+    atlasModel: (getRouterState('atlas:model') || '').replace(/^local:/, ''),
     atlasCtx: getRouterState('local:atlas_ctx') || '',
+    subagentCtx: getRouterState('local:subagent_ctx') || '',
     toolsCtx: getRouterState('local:tools_ctx') || '',
     // Per-agent num_ctx overrides — blank means the model's native window.
     // Iris (the single toolcall agent) uses the dashboard "Toolcall model" row.
@@ -1508,11 +1514,14 @@ function handleSettings(res: http.ServerResponse): void {
     // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min). Set by the
     // dashboard "Keep alive" checkboxes on the Orchestrator/Atlas/Toolcall rows.
     orchestratorKeepAlive: getRouterState('local:orch_keep_alive') || '',
-    atlasKeepAlive: getRouterState('local:atlas_keep_alive') || '',
     toolcallKeepAlive: getRouterState('local:toolcall_keep_alive') || '',
     thinking: getRouterState('local:thinking')
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
+    // Agent mode: 'few' = direct (the local seat does the work itself),
+    // 'many' = orchestrator (routes work to the fleet).
+    agentMode: getRouterState('local:agent_mode') === 'many' ? 'many' : 'few',
+    verbose: true,
     // Minutes of user-message idle before the orchestrator context auto-clears.
     // 0 = never. Default 0 (off) — see src/index.ts idle-context-clear block for
     // why a desktop assistant must not auto-clear on idle. Set by the Model
@@ -1560,9 +1569,6 @@ async function handleSettingsSave(
   if (body.localPrivateModel !== undefined) {
     setRouterState('local:private_model', String(body.localPrivateModel));
   }
-  if (body.atlasModel !== undefined) {
-    setRouterState('atlas:model', String(body.atlasModel));
-  }
   if (body.vulkanModel !== undefined) {
     setRouterState('vulkan:model', String(body.vulkanModel || ''));
   }
@@ -1573,6 +1579,9 @@ async function handleSettingsSave(
     setRouterState('supervisor:enabled', body.supervisorEnabled ? 'true' : 'false');
   }
   // Per-agent models — each agent owns its own model (no blank/inherit, no fallback).
+  if (body.maxOutputTokens !== undefined) {
+    setRouterState('local:max_output_tokens', String(body.maxOutputTokens || ''));
+  }
   if (body.irisModel !== undefined) {
     setRouterState('iris:model', String(body.irisModel || ''));
   }
@@ -1659,9 +1668,6 @@ async function handleSettingsSave(
   if (body.orchestratorOllamaServer !== undefined) {
     setRouterState('orchestrator:ollama_server', String(body.orchestratorOllamaServer || ''));
   }
-  if (body.atlasOllamaServer !== undefined) {
-    setRouterState('atlas:ollama_server', String(body.atlasOllamaServer || ''));
-  }
   if (body.vulkanOllamaServer !== undefined) {
     setRouterState('vulkan:ollama_server', String(body.vulkanOllamaServer || ''));
   }
@@ -1677,6 +1683,13 @@ async function handleSettingsSave(
   if (body.orchestratorCtx !== undefined) {
     setRouterState('local:orchestrator_ctx', String(body.orchestratorCtx || ''));
   }
+  // Atlas (background jobs) — blank = inherit the Warden model/ctx.
+  if (body.atlasModel !== undefined) {
+    setRouterState('atlas:model', String(body.atlasModel || ''));
+  }
+  if (body.atlasCtx !== undefined) {
+    setRouterState('local:atlas_ctx', String(body.atlasCtx || ''));
+  }
   if (body.subagentCtx !== undefined) {
     setRouterState('local:subagent_ctx', String(body.subagentCtx || ''));
   }
@@ -1685,14 +1698,8 @@ async function handleSettingsSave(
   if (body.orchestratorKeepAlive !== undefined) {
     setRouterState('local:orch_keep_alive', String(body.orchestratorKeepAlive || ''));
   }
-  if (body.atlasKeepAlive !== undefined) {
-    setRouterState('local:atlas_keep_alive', String(body.atlasKeepAlive || ''));
-  }
   if (body.toolcallKeepAlive !== undefined) {
     setRouterState('local:toolcall_keep_alive', String(body.toolcallKeepAlive || ''));
-  }
-  if (body.atlasCtx !== undefined) {
-    setRouterState('local:atlas_ctx', String(body.atlasCtx || ''));
   }
   if (body.toolsCtx !== undefined) {
     setRouterState('local:tools_ctx', String(body.toolsCtx || ''));
@@ -1735,15 +1742,19 @@ async function handleSettingsSave(
     setRouterState('local:thinking', normalized);
     setRouterState(`thinking:${WEB_DASHBOARD_JID}`, normalized);
   }
+  if (body.agent_mode !== undefined) {
+    setRouterState('local:agent_mode', body.agent_mode === 'many' ? 'many' : 'few');
+  }
 
   // Track whether any router-state settings were saved
   const hadRouterState = body.globalDefaultModel !== undefined ||
     body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
-    body.atlasModel !== undefined || body.vulkanModel !== undefined || body.supervisorModel !== undefined || body.drivingForce !== undefined ||
+    body.vulkanModel !== undefined || body.supervisorModel !== undefined || body.drivingForce !== undefined ||
     body.irisModel !== undefined || body.artemisModel !== undefined ||
     body.sentryModel !== undefined ||
     body.irisCtx !== undefined || body.artemisCtx !== undefined ||
     body.vulkanCtx !== undefined ||
+    body.atlasModel !== undefined || body.atlasCtx !== undefined ||
     body.sentryCtx !== undefined ||
     body.councilSkepticModel !== undefined ||
     body.councilPragmatistModel !== undefined || body.councilSynthesistModel !== undefined ||
@@ -1751,13 +1762,15 @@ async function handleSettingsSave(
     body.contextIdleClearMinutes !== undefined ||
     body.mercuryIntervalMinutes !== undefined || body.mercuryDowntimeMinutes !== undefined ||
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
+    body.maxOutputTokens !== undefined ||
     body.thinking !== undefined ||
+    body.agent_mode !== undefined ||
     body.wardenUrl !== undefined || body.audioServerUrl !== undefined ||
     body.satelliteUrl !== undefined ||
     body.transcriptionUrl !== undefined || body.transcriptionApiUrl !== undefined ||
     body.ollamaServers !== undefined ||
     body.ollamaDefaultServerId !== undefined ||
-    body.orchestratorOllamaServer !== undefined || body.atlasOllamaServer !== undefined ||
+    body.orchestratorOllamaServer !== undefined ||
     body.vulkanOllamaServer !== undefined;
 
   const vars: Record<string, string> = {};

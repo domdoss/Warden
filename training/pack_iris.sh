@@ -3,7 +3,7 @@
 #   merged HF model → GGUF (f16) → quantized (Q4_K_M) → Ollama model (default
 #   "toolcall-ft"; run.sh passes "toolcall-ft" — the single merged-iris model).
 #
-# Reuses the EXACT TEMPLATE + PARAMETER block from the stock granite4.1:3b so
+# Reuses the EXACT TEMPLATE + PARAMETER block from the stock granite4.2:3b so
 # the fine-tune renders tool calls the same way Ollama already parses. Requires
 # a built llama.cpp (convert_hf_to_gguf.py + llama-quantize).
 #
@@ -37,13 +37,13 @@ fi
 echo "==> converting HF → GGUF (f16)"
 "$PY" "$LLAMA_CPP/convert_hf_to_gguf.py" "$MERGED" --outtype f16 --outfile "$F16"
 
-echo "==> quantizing → Q4_K_M (matches stock granite4.1:3b)"
+echo "==> quantizing → Q4_K_M (matches stock granite4.2:3b)"
 "$LLAMA_CPP/llama-quantize" "$F16" "$Q4" Q4_K_M
 
-echo "==> building Modelfile from stock granite4.1:3b (reusing TEMPLATE + PARAMETERs)"
+echo "==> building Modelfile from stock granite4.2:3b (reusing TEMPLATE + PARAMETERs)"
 # Take the stock modelfile and swap only the FROM line to point at the new GGUF.
 # The TEMPLATE block is the Granite tool-call template Ollama already parses.
-ollama show granite4.1:3b --modelfile \
+ollama show granite4.2:3b --modelfile \
   | sed -E "s|^FROM .*|FROM $Q4|" > "$MODFILE"
 
 echo "==> ollama create $NAME"

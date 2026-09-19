@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Toolcall (iris) LoRA SFT — fine-tune granite-4.1-3b on the toolcall (iris) dataset.
+Toolcall (iris) LoRA SFT — fine-tune granite-4.2-3b on the toolcall (iris) dataset.
 
 UNSLOTH build (2026-09-17): loads via unsloth's FastLanguageModel, which has a
 native fast-G Granite patch, and defaults to 4-bit QLoRA — roughly half the
@@ -302,8 +302,8 @@ class PadCollator:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="ibm-granite/granite-4.1-3b",
-                    help="HF model id or local path (must match Ollama granite4.1:3b)")
+    ap.add_argument("--model", default="ibm-granite/granite-4.2-3b",
+                    help="HF model id or local path (must match Ollama granite4.2:3b)")
     ap.add_argument("--data", default=os.path.join(os.path.dirname(__file__), "toolcall-sft.jsonl"))
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "toolcall-lora"))
     ap.add_argument("--merged-out", default=os.path.join(os.path.dirname(__file__), "toolcall-lora-merged"))

@@ -8,7 +8,7 @@ function writeCallback(tool: string, args: unknown): void {
 
 registry.register({
     name: 'open_app',
-    description: 'Launch a desktop application on the host machine display. Use for GUI apps that need a real graphical environment. The app launches detached and immediately returns. For example, to show the user a local file use app \'xdg-open\' with the absolute path — it opens in their default browser/viewer on the host display.',
+    description: 'SHOW something on the host display and return immediately — a PDF, a folder, an image, or an app the user just wants open. Use app \'xdg-open\' with an absolute path for a file in its default viewer, or the app binary to launch it. This is fire-and-forget: it does NOT let you drive what it opened. To DRIVE a desktop app (click its controls, type into it) launch it with Bash instead, then desktop_screenshot to see it and desktop_click / desktop_type to work it. For a web page, browser_navigate — never xdg-open a URL you intend to keep working in.',
     schema: {
         type: 'object',
         properties: {

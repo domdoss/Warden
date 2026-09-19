@@ -386,7 +386,7 @@
     const fg = (d.groups || []).find(g => g.active && !g.idle);
     if (fg) {
       const label = (fg.liveLabel || fg.livePhase || 'working on your message').replace(/^Warden is (generating|thinking)[.…]*$/i, 'composing a reply…');
-      rows.push(ovRow('warden', '', label, '', 'fg'));
+      rows.push(ovRow('Warden', '', label, '', 'fg'));
     }
     // One row per running background job — factual reporting only. The only
     // reliable signals are calls, elapsed time, and seconds since the last tool
@@ -842,6 +842,14 @@
       return modelOption(value, label);
     }).join('');
   }
+  function buildOutputOptions(currentValue) {
+    const common = ['1024', '2048', '4096', '8192', '16384', '32768'];
+    const cur = String(currentValue || '');
+    if (cur && !common.includes(cur)) common.push(cur);
+    common.sort((a, b) => Number(a) - Number(b));
+    return common.map(v => modelOption(v, v, cur === v)).join('');
+  }
+
   function buildCtxOptions(currentValue) {
     const common = ['', '2048', '4096', '8192', '16384', '32768', '65536', '128000', '262144', '524288', '1048576'];
     const cur = String(currentValue || '');
@@ -901,38 +909,43 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint">Orchestrator replies to you. Supervisor runs the periodic checks on background jobs (small/cloud model recommended). Atlas does browser/research/review. Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
-        <div class="setting-row"><label>Orchestrator</label>
+        <div class="hint"><b>Warden</b> is the one seat you talk to: it replies <em>and</em> does the work itself — browser, desktop, files, shell, web. Long jobs run as a background copy of it, on these same settings. Supervisor runs the checks on background jobs (small/cloud model recommended). Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management, and email always routes there. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
+        <div class="setting-row"><label>Warden</label>
           <select class="select" id="sOrchestrator">${orchHtml}</select>
         </div>
-        <div class="setting-row"><label>Orchestrator Ollama</label>
+        <div class="setting-row"><label>Warden Ollama</label>
           <select class="select" id="sOrchestratorOllamaServer"></select>
           <span class="dim mono" style="font-size:10px">blank = default server</span>
         </div>
-        <div class="setting-row"><label>Orchestrator ctx</label>
+        <div class="setting-row"><label>Warden ctx</label>
           <select class="select small" id="sOrchestratorCtx">${buildCtxOptions(d.orchestratorCtx)}</select>
           <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
         <div class="setting-row"><label>Keep alive</label>
           <label class="check"><input type="checkbox" id="sOrchKeepAlive"> hold model in VRAM between turns (no reload)</label>
         </div>
+        <div class="setting-row"><label>Atlas</label>
+          <select class="select" id="sAtlas"><option value="">— inherit Warden —</option>${orchHtml}</select>
+          <span class="dim mono" style="font-size:10px">the direct agent — in Few the chat runs on this; in Many it is the fleet's atlas; blank = inherit Warden</span>
+        </div>
+        <div class="setting-row"><label>Atlas ctx</label>
+          <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
+          <span class="dim mono" style="font-size:10px">blank = inherit Warden ctx</span>
+        </div>
+        <div class="setting-row"><label>Max output</label>
+          <select class="select small" id="sMaxOutput">${buildOutputOptions(d.maxOutputTokens)}</select>
+          <span class="dim mono" style="font-size:10px">tokens one reply may generate (not ctx) — caps a model that loses the thread</span>
+        </div>
         <div class="setting-row"><label>Driving force</label>
           <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
           <span class="dim mono" style="font-size:10px">orchestrator persona; switching clears context</span>
         </div>
-        <div class="setting-row"><label>Atlas</label>
-          <select class="select" id="sAtlas">${orchHtml}</select>
-        </div>
-        <div class="setting-row"><label>Atlas Ollama</label>
-          <select class="select" id="sAtlasOllamaServer"></select>
-          <span class="dim mono" style="font-size:10px">blank = default server</span>
-        </div>
-        <div class="setting-row"><label>Atlas ctx</label>
-          <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
-          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
-        </div>
-        <div class="setting-row"><label>Keep alive</label>
-          <label class="check"><input type="checkbox" id="sAtlasKeepAlive"> hold model in VRAM between turns (no reload)</label>
+        <div class="setting-row"><label>Agent mode</label>
+          <select class="select" id="sAgentMode">
+            <option value="few">Few — direct (Warden does the work itself)</option>
+            <option value="many">Many — orchestrator (Warden routes to the fleet)</option>
+          </select>
+          <span class="dim mono" style="font-size:10px">how the seat works; applies on the next turn</span>
         </div>
         <div class="setting-row"><label>Artemis</label>
           <select class="select" id="sArtemis">${orchHtml}</select>
@@ -1130,7 +1143,6 @@
       }
     };
     setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
-    setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
     setSelect('sSentry', (d.sentryModel || '').replace(/^local:/, ''));
     setSelect('sSentryCtx', d.sentryCtx || '');
@@ -1138,6 +1150,7 @@
     setSelect('sToolcallModel', (d.ollamaChatModel || '').replace(/^local:/, ''));
     setSelect('sToolcallCtx', d.subagentCtx || '');
     setSelect('sDrivingForce', d.drivingForce || '');
+    setSelect('sAgentMode', d.agentMode || 'few');
     setSelect('sSkeptic', (d.councilSkepticModel || '').replace(/^local:/, ''));
     setSelect('sPragmatist', (d.councilPragmatistModel || '').replace(/^local:/, ''));
     setSelect('sSynthesist', (d.councilSynthesistModel || '').replace(/^local:/, ''));
@@ -1148,7 +1161,6 @@
     setSelect('sThinking', d.thinking || 'true');
     // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
     $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
-    $('sAtlasKeepAlive').checked = d.atlasKeepAlive === '-1';
     $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
     setSelect('sContextIdleClear', d.contextIdleClearMinutes || '0');
     setSelect('sMercuryInterval', d.mercuryIntervalMinutes || '30');
@@ -1165,7 +1177,9 @@
       _sel.value = _tz;
     })();
     setSelect('sOrchestratorCtx', d.orchestratorCtx || '');
+    setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sAtlasCtx', d.atlasCtx || '');
+    setSelect('sMaxOutput', d.maxOutputTokens || '');
     setSelect('sArtemisCtx', d.artemisCtx || '');
     setSelect('sVulkanCtx', d.vulkanCtx || '');
     setSelect('sIrisCtx', d.irisCtx || '');
@@ -1205,7 +1219,6 @@
       if (opt) sel.value = v;
     };
     fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
-    fillAgentServerSelect('sAtlasOllamaServer', d.atlasOllamaServer || '');
     fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
     fillAgentServerSelect('sOculusOllamaServer', d.oculusOllamaServer || '');
 
@@ -1301,13 +1314,13 @@
       const prevDrivingForce = (STATE.cachedSettings && STATE.cachedSettings.drivingForce) || '';
       const body = {
         globalDefaultModel: stripLocal($('sOrchestrator').value),
-        atlasModel: stripLocal($('sAtlas').value),
         artemisModel: stripLocal($('sArtemis').value),
         sentryModel: stripLocal($('sSentry').value),
         sentryCtx: $('sSentryCtx').value,
         vulkanModel: stripLocal($('sVulkan').value),
         ollamaChatModel: stripLocal($('sToolcallModel').value),
         drivingForce: $('sDrivingForce').value,
+        agent_mode: $('sAgentMode').value,
         councilSkepticModel: stripLocal($('sSkeptic').value),
         councilPragmatistModel: stripLocal($('sPragmatist').value),
         councilSynthesistModel: stripLocal($('sSynthesist').value),
@@ -1321,17 +1334,17 @@
         mercuryIntervalMinutes: $('sMercuryInterval').value,
         mercuryDowntimeMinutes: $('sMercuryDowntime').value,
         orchestratorCtx: $('sOrchestratorCtx').value,
+        atlasModel: stripLocal($('sAtlas').value),
         atlasCtx: $('sAtlasCtx').value,
+        maxOutputTokens: $('sMaxOutput').value,
         artemisCtx: $('sArtemisCtx').value,
         vulkanCtx: $('sVulkanCtx').value,
         subagentCtx: $('sToolcallCtx').value,
         ollamaUrl: $('sOllamaUrl').value,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
-        atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
         oculusOllamaServer: $('sOculusOllamaServer').value,
         orchestratorKeepAlive: $('sOrchKeepAlive').checked ? '-1' : '300',
-        atlasKeepAlive: $('sAtlasKeepAlive').checked ? '-1' : '300',
         toolcallKeepAlive: $('sToolcallKeepAlive').checked ? '-1' : '300',
       };
       await postJson('/api/settings', body);
@@ -1372,7 +1385,6 @@
         ollamaDefaultServerId: defIdx >= 1 && defIdx <= 3 ? slotIds[defIdx - 1] : '',
         ollamaServers,
         orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
-        atlasOllamaServer: $('sAtlasOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
         oculusOllamaServer: $('sOculusOllamaServer').value,
       };

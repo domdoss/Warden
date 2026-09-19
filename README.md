@@ -50,7 +50,7 @@ Warden is a personal AI assistant that lives on your desktop. It runs local mode
 
 ### The Orchestrator
 
-A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: it can run on an **e4b** (`gemma4:latest`) locally on Ollama — but a **31B cloud model is recommended**. It doesn't write your reports, doesn't browse the web, doesn't run shell commands. It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A small model supervising a frontier model, and it doesn't fuck up.
+A single LLM — the **orchestrator** — runs the show. It's the only thing you talk to, and it's deliberately *small*: it can run on an **e4b** (`gemma4:latest`) locally on Ollama — but a **31B cloud model is recommended**. It doesn't write your reports and it never touches the web — no search, no fetch, no browser. (A one-shot local check is its own: a status command, a file read, volume and playback controls. Everything else is a specialist's, and the list it's given is generated from the tools it actually holds, so the prompt can't promise what the code doesn't grant.) It reads your message, works out what you actually want, hands a clean brief to the right specialist, and then **babysits** that specialist until the job is done — cutting loose the ones that go sideways and re-briefing the ones that fail. A small model supervising a frontier model, and it doesn't fuck up.
 
 ```
 You → Orchestrator (small; e4b local works, 31B cloud recommended) → Atlas (large, cloud) → result → Orchestrator → You

@@ -22,8 +22,15 @@ function defaultWorkspaceRoot(): string {
 }
 
 export function resolveInsideWorkspace(inputPath: string, workspaceRoot: string = defaultWorkspaceRoot()): string {
-  const absolute = path.isAbsolute(inputPath)
-    ? inputPath
-    : path.resolve(workspaceRoot, inputPath);
+  // `~` is a shell convention, not a path segment. expandTilde was applied to
+  // WORKSPACE_ROOT but never to the caller's path, so "~/Desktop/notes.md" was
+  // treated as relative and landed in a literal `~` DIRECTORY inside the
+  // workspace (/home/dominic/Warden/~/Desktop/...). read_file resolved it the
+  // same wrong way, so the file read back fine and the agent reported "saved to
+  // your Desktop" for a file that was not on the Desktop (2026-09-18).
+  const expanded = expandTilde(inputPath);
+  const absolute = path.isAbsolute(expanded)
+    ? expanded
+    : path.resolve(workspaceRoot, expanded);
   return path.normalize(absolute);
 }

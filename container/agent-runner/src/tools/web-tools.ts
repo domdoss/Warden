@@ -12,7 +12,7 @@ const MAX_CHARS = 50_000;
 
 registry.register({
     name: 'WebSearch',
-    description: 'Search the web and return results.',
+    description: 'Search the web and return ranked results. This FINDS a URL — it does not read the page. Read it with WebFetch; SHOW it to the user, or interact with it, via browser_navigate. Prefer one WebFetch on a known URL over a search when you already know where the answer lives.',
     schema: {
         type: 'object',
         properties: {

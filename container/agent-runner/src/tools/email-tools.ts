@@ -25,6 +25,19 @@ registry.register({
     },
     handler: async (args, context) => {
         const limit = Math.min(parseInt(args.limit) || 500, 500);
+        // A `since` in the FUTURE can only ever match zero emails, and the empty
+        // result reads as a factual "you have no such mail". 2026-09-18 19:07:51:
+        // iris searched since 19:10:00 — three minutes ahead of the clock — and
+        // the user was told they had never replied to someone, on the strength of
+        // a search that could not have returned anything. The model keeps
+        // miscomputing this, so the tool refuses to run a search that is
+        // guaranteed empty and says why.
+        if (typeof args.since === 'string' && args.since.trim()) {
+            const t = Date.parse(args.since);
+            if (Number.isFinite(t) && t > Date.now() + 60_000) {
+                return `Not searched: since="${args.since}" is in the future, so it cannot match any email (nothing has arrived after now). Retry without \`since\` for the whole inbox, or pass a past timestamp for a real date range.`;
+            }
+        }
         // A date-range lookup (since/before) with a large limit can take well
         // over the default 30s — fetching hundreds of emails from Gmail/Graph
         // is slow. Give read_emails a 90s ceiling so Iris doesn't get a

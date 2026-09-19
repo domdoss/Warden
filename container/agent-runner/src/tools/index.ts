@@ -16,5 +16,6 @@ import './host-tools.js';
 import './desktop.js';
 import './browser.js';
 import './media.js';
+import './youtube.js';
 import './sentry-tools.js';
 import './vision-qa.js';

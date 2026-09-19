@@ -1,9 +1,9 @@
 ---
-base_model: ibm-granite/granite-4.1-3b
+base_model: ibm-granite/granite-4.2-3b
 library_name: peft
 pipeline_tag: text-generation
 tags:
-- base_model:adapter:ibm-granite/granite-4.1-3b
+- base_model:adapter:ibm-granite/granite-4.2-3b
 - lora
 - transformers
 ---

@@ -54,6 +54,38 @@ function resolveMemoryModel(): string {
     .trim();
 }
 
+/**
+ * Don't evict a resident model to distill memory. Writeback is background
+ * housekeeping, but its model (the toolcall fine-tune) is not the one in VRAM,
+ * so asking for it makes Ollama unload the 17 GB orchestrator/atlas model —
+ * and the next user turn pays an ~85s cold reload. Measured 2026-09-18 13:16:
+ * atlas finishes a song, writeback pulls the small model in, granite is gone.
+ * When the configured model is not already loaded and the orchestrator's IS,
+ * distill on the resident one instead. Same work, no eviction. Settings are
+ * untouched — this only picks which of the user's own models answers now.
+ */
+async function residentOrConfiguredModel(wanted: string): Promise<string> {
+  const orch = (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim();
+  if (!orch || orch === wanted) return wanted;
+  if (/cloud/i.test(wanted) || /cloud/i.test(orch)) return wanted; // cloud holds no VRAM
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/ps`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return wanted;
+    const data = (await res.json()) as { models?: Array<{ name?: string; model?: string }> };
+    const loaded = (data.models || []).map((m) => (m.name || m.model || '').trim()).filter(Boolean);
+    if (loaded.length === 0) return wanted;
+    const has = (n: string) => loaded.some((l) => l === n || l.replace(/:latest$/, '') === n.replace(/:latest$/, ''));
+    if (has(wanted)) return wanted;
+    if (has(orch)) {
+      logger.info({ wanted, using: orch }, 'Memory writeback: configured model not resident — distilling on the loaded model instead of evicting it');
+      return orch;
+    }
+    return wanted;
+  } catch {
+    return wanted;
+  }
+}
+
 // Memory writeback has its own model + ctx rows in Settings (mercury:model /
 // local:mercury_ctx). A bare /api/chat with no num_ctx/keep_alive loads a
 // SECOND copy of the model at Ollama's native 2048 ctx / 300s default, which
@@ -73,7 +105,7 @@ function resolveMemoryKeepAlive(): number {
   return Number.isFinite(n) ? n : 300;
 }
 
-async function ollamaChat(system: string, user: string, model: string): Promise<string | null> {
+async function ollamaChat(system: string, user: string, model: string, maxTokens?: number): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -82,6 +114,14 @@ async function ollamaChat(system: string, user: string, model: string): Promise<
     const options: Record<string, unknown> = { temperature: 0 };
     const numCtx = resolveMemoryCtx();
     if (numCtx) options.num_ctx = numCtx;
+    // ALWAYS cap the generation. Without num_predict a small model that loses
+    // the thread never stops: llama.cpp context-shifts (n_keep=4, discard half)
+    // and generates until the 120s abort — 2026-09-18 10:57, a journal
+    // compaction burned GPU0 at 95% for the full two minutes and emitted 10k
+    // tokens of nothing, then fell through to the deterministic path anyway.
+    // Every call here has a known output size, so bound it: the reply is
+    // rejected on truncation, which costs seconds instead of minutes.
+    if (maxTokens && maxTokens > 0) options.num_predict = maxTokens;
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -105,6 +145,23 @@ async function ollamaChat(system: string, user: string, model: string): Promise<
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Rough token estimate for an English/markdown blob (~4 chars per token). */
+function estTokens(chars: number): number {
+  return Math.ceil(chars / 4);
+}
+
+/** Can this model actually rewrite `contentChars` down to `targetChars` in one
+ *  pass? A rewrite has to hold the whole input AND emit the whole output inside
+ *  one context window. When it doesn't fit, the model cannot succeed — it
+ *  context-shifts and babbles until the timeout — so the caller skips it and
+ *  uses its deterministic fallback instead of burning the GPU to fail. */
+function compactionFits(contentChars: number, targetChars: number): boolean {
+  const ctx = resolveMemoryCtx();
+  if (!ctx) return true; // no ctx row: Ollama's own default applies, leave the call alone
+  const needed = estTokens(contentChars) + estTokens(targetChars) + 512; // +512 prompt/format overhead
+  return needed < ctx;
 }
 
 /** Strip <think> blocks and code fences a local model may wrap output in. */
@@ -269,10 +326,20 @@ function parseDistilled(raw: string): Distilled | null {
 async function compactMemoryFile(memoryPath: string, model: string): Promise<void> {
   const content = fs.readFileSync(memoryPath, 'utf-8');
   if (content.length <= MEMORY_COMPACT_THRESHOLD) return;
+  if (!compactionFits(content.length, MEMORY_COMPACT_TARGET)) {
+    // No safe fallback here (memory is curated durable facts — never trim it
+    // blind), so leave the file alone and say why.
+    logger.info(
+      { memoryPath, chars: content.length, model, ctx: resolveMemoryCtx() },
+      'MEMORY.md compaction skipped — file does not fit the memory model context',
+    );
+    return;
+  }
   const compacted = await ollamaChat(
     'You compact an agent memory file. Merge duplicates, drop stale/ephemeral items, keep all durable facts about people, preferences, decisions, and standing instructions. Preserve the markdown structure (# Memory, ## People, ## Notes). Output ONLY the new file content.',
     `Compact this memory file to under ${MEMORY_COMPACT_TARGET} characters:\n\n${content}`,
     model,
+    estTokens(MEMORY_COMPACT_TARGET) + 256,
   );
   const cleaned = compacted ? cleanModelOutput(compacted) : '';
   // Only accept a sane result — never destroy memory on a bad model reply.
@@ -296,11 +363,17 @@ async function compactJournalFile(journalPath: string, model: string): Promise<v
   const headers = content.match(/^### .*$/gm) || [];
   const lastHeader = headers[headers.length - 1] || '';
 
-  const compacted = await ollamaChat(
-    'You compact a session journal. Keep the most recent session entries VERBATIM with their ### date headers and one-line summaries. Condense everything older into a "## Earlier sessions" bullet list: one short line per session (date + gist). Preserve markdown. Output ONLY the new file content, starting with "# Journal".',
-    `Compact this journal to under ${JOURNAL_COMPACT_TARGET} characters:\n\n${content}`,
-    model,
-  );
+  // Only ask the model when a full rewrite can actually fit its window. A
+  // 20k-char journal against an 8k-ctx Mercury model cannot, and the attempt
+  // is pure loss: two minutes of GPU, then this same deterministic trim.
+  const compacted = compactionFits(content.length, JOURNAL_COMPACT_TARGET)
+    ? await ollamaChat(
+        'You compact a session journal. Keep the most recent session entries VERBATIM with their ### date headers and one-line summaries. Condense everything older into a "## Earlier sessions" bullet list: one short line per session (date + gist). Preserve markdown. Output ONLY the new file content, starting with "# Journal".',
+        `Compact this journal to under ${JOURNAL_COMPACT_TARGET} characters:\n\n${content}`,
+        model,
+        estTokens(JOURNAL_COMPACT_TARGET) + 256,
+      )
+    : null;
   const cleaned = compacted ? cleanModelOutput(compacted) : '';
   if (
     cleaned.startsWith('# ') &&
@@ -314,16 +387,28 @@ async function compactJournalFile(journalPath: string, model: string): Promise<v
     return;
   }
 
-  // Fallback: model failed to shrink safely — hard-cap to the most recent
-  // entries so the journal can never become a multi-megabyte mess.
+  // Fallback: no model pass, or it failed to shrink safely — keep the most
+  // recent entries that fit the TARGET (not just an entry count). Trimming to
+  // the count alone left the file just under the threshold, so the next
+  // writeback crossed it again and re-ran the whole thing; trimming to the
+  // target gives real headroom. The entry ceiling still applies on top, so the
+  // journal can never become a multi-megabyte mess.
   const entries = content.split(/\n(?=### )/).filter((e) => e.trim());
-  const kept = entries.slice(-JOURNAL_HARD_CAP_ENTRIES).join('\n').trim();
+  const recent = entries.slice(-JOURNAL_HARD_CAP_ENTRIES);
+  const fitted: string[] = [];
+  let used = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    used += recent[i].length + 1;
+    if (used > JOURNAL_COMPACT_TARGET && fitted.length > 0) break;
+    fitted.unshift(recent[i]);
+  }
+  const kept = fitted.join('\n').trim();
   if (kept && kept.length < content.length) {
     fs.writeFileSync(journalPath + '.bak', content, 'utf-8');
     fs.writeFileSync(journalPath, '# Journal\n' + kept + '\n', 'utf-8');
     logger.info(
-      { journalPath, from: content.length, to: kept.length, entries: entries.length, kept: JOURNAL_HARD_CAP_ENTRIES },
-      'JOURNAL.md hard-capped (model compaction rejected)',
+      { journalPath, from: content.length, to: kept.length, entries: entries.length, kept: fitted.length, modelPass: !!compacted },
+      'JOURNAL.md trimmed to the most recent entries',
     );
   }
 }
@@ -353,8 +438,9 @@ export async function runMemoryWriteback(chatJid: string): Promise<void> {
     // Claim the slot up-front so concurrent calls for the same chat bail out.
     lastWriteback[chatJid] = { ts: Date.now(), lastMessageTs: newest };
 
-    const model = resolveMemoryModel();
-    if (!model) return; // no Mercury/Orchestrator model set in Settings — never fall back to a hardcoded model
+    const configured = resolveMemoryModel();
+    if (!configured) return; // no Mercury/Orchestrator model set in Settings — never fall back to a hardcoded model
+    const model = await residentOrConfiguredModel(configured);
     const memoryPath = path.join(WORKSPACE_ROOT, 'MEMORY.md');
     const journalPath = path.join(WORKSPACE_ROOT, 'JOURNAL.md');
     const existingMemory = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, 'utf-8') : '';
@@ -390,6 +476,9 @@ Format: Reply with ONLY this JSON object, no prose:
 {"memory": ["short fact", ...], "journal": "one sentence: what this session was about"}`,
       `Existing memory file:\n${existingMemory.slice(0, 6000)}\n\nUser messages this session:\n${transcript.slice(0, 12000)}`,
       model,
+      // The answer is a small JSON object (≤3 one-line facts + one sentence).
+      // Anything past this is the model having lost the format, not content.
+      512,
     );
     if (!raw) return;
     const distilled = parseDistilled(raw);

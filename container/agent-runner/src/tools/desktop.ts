@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
 import { writeCallbackAsync } from '../index.js';
@@ -15,6 +15,29 @@ function run(cmd: string, extraEnv: Record<string, string> = {}): string {
         timeout: 15000,
         env: { ...process.env, ...DISPLAY_ENV, ...extraEnv },
     }).trim();
+}
+
+/** Run a command with an ARGV array — no shell, so the bytes we pass are the
+ *  bytes the program receives. Anything carrying user/model text (typed
+ *  strings, key combos) must go through here, never through a shell string. */
+function runArgs(cmd: string, args: string[], extraEnv: Record<string, string> = {}): string {
+    return execFileSync(cmd, args, {
+        encoding: 'utf-8',
+        timeout: 30000,
+        env: { ...process.env, ...DISPLAY_ENV, ...extraEnv },
+    }).trim();
+}
+
+/** Models emit newlines two ways: a real newline in the JSON string, or the
+ *  two characters backslash-n when they over-escape. Typing a literal "\n"
+ *  into a markdown editor is never what anyone meant, so fold the escaped
+ *  forms back into real characters before typing. */
+function unescapeTypedText(text: string): string {
+    return text
+        .replace(/\r\n/g, '\n')
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t');
 }
 
 /** Push a base64 image into the vision-context queue consumed after this tool call. */
@@ -154,7 +177,7 @@ registry.register({
 
 registry.register({
     name: 'desktop_type',
-    description: 'Type text or send keyboard shortcuts on the desktop. Use for typing into focused fields or sending key combos like ctrl+c.',
+    description: 'Type text or send keyboard shortcuts on the desktop. Use for typing into focused fields or sending key combos like ctrl+c. Multi-line text is fine — pass it with real line breaks and each line is typed with a Return between; never write "\\n" as two characters, and never flatten a document to one line.',
     schema: {
         type: 'object',
         properties: {
@@ -169,7 +192,7 @@ registry.register({
 
         if (args.keys) {
             try {
-                run(`xdotool key --clearmodifiers "${args.keys}"`);
+                runArgs('xdotool', ['key', '--clearmodifiers', String(args.keys)]);
                 return `Sent keys: ${args.keys}`;
             } catch (err: any) {
                 return `Error sending keys "${args.keys}": ${err.message}`;
@@ -177,9 +200,25 @@ registry.register({
         }
 
         if (args.text) {
+            // The old path built a shell string with JSON.stringify(text) for
+            // quoting. JSON.stringify turns a real newline into the two
+            // characters backslash-n, the shell passes those through verbatim,
+            // and xdotool TYPES them: every multi-line write landed in the
+            // editor as one wall of text with literal \n between the lines —
+            // the demo failure Dominic reported over and over (2026-09-17
+            // "that is not markdown, that is a wall of text with backslash n").
+            // argv, not a shell string, and press Return between lines.
+            const text = unescapeTypedText(String(args.text));
             try {
-                run(`xdotool type --clearmodifiers --delay ${delay} -- ${JSON.stringify(args.text)}`);
-                return `Typed: ${args.text.slice(0, 80)}${args.text.length > 80 ? '…' : ''}`;
+                const lines = text.split('\n');
+                for (let i = 0; i < lines.length; i++) {
+                    if (i > 0) runArgs('xdotool', ['key', '--clearmodifiers', 'Return']);
+                    if (lines[i].length > 0) {
+                        runArgs('xdotool', ['type', '--clearmodifiers', '--delay', String(delay), '--', lines[i]]);
+                    }
+                }
+                const preview = text.slice(0, 80).replace(/\n/g, '⏎');
+                return `Typed ${text.length} chars (${lines.length} line${lines.length === 1 ? '' : 's'}): ${preview}${text.length > 80 ? '…' : ''}`;
             } catch (err: any) {
                 return `Error typing text: ${err.message}`;
             }

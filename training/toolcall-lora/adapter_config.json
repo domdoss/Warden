@@ -3,7 +3,7 @@
   "alpha_pattern": {},
   "arrow_config": null,
   "auto_mapping": null,
-  "base_model_name_or_path": "ibm-granite/granite-4.1-3b",
+  "base_model_name_or_path": "ibm-granite/granite-4.2-3b",
   "bias": "none",
   "corda_config": null,
   "ensure_weight_tying": false,

@@ -3,11 +3,21 @@ import { ToolsetDef, registry } from './tool-registry.js';
 export const TOOLSETS: Record<string, ToolsetDef> = {
     file:      { name: 'file',      tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'query_image'], tier: 'both' },
     web:       { name: 'web',       tools: ['WebSearch', 'WebFetch'], tier: 'public' },
-    browser:   { name: 'browser',   tools: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
+    // browser_screenshot and browser_snapshot are OUT (2026-09-18): the local
+    // seat runs a visionless model, and both were what it reached for by
+    // reflex — snapshot returned a page dump it then hand-drove from, instead
+    // of calling the tool that owns the job (youtube for the player). Page
+    // state is read with browser_evaluate, which returns the specific values
+    // asked for rather than the whole tree.
+    browser:   { name: 'browser',   tools: ['browser_navigate', 'browser_click', 'browser_type',
                                              'browser_press_key', 'browser_select_option', 'browser_hover',
-                                             'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
+                                             'browser_evaluate', 'browser_wait_for',
                                              'browser_tabs', 'browser_back', 'browser_current_url'], tier: 'public' },
     terminal:  { name: 'terminal',  tools: ['Bash', 'open_app', 'desktop_click', 'desktop_type'], tier: 'public' },
+    // Vision capture belongs to VULKAN, not the local seat: the local seat runs
+    // a visionless model (granite4.1:8b), so handing it a screenshot tool buys
+    // a capture nothing can read. Vulkan is the cloud seat, so it is the one
+    // that can actually look at the frame.
     // Desktop vision — desktop_screenshot is the one capture sub-agents need, so
     // they can SEE the screen while driving native apps with desktop_click/type.
     // runSubAgent drains _pendingImages into the next iteration (mirroring the
@@ -41,7 +51,14 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // (Byte was merged into iris 2026-09-05; its work-management toolsets were
     // dropped entirely in the 2026-09-09 collapse.)
     media:        { name: 'media',     tools: ['audio_volume','mic_volume','media_control'], tier: 'public' },
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','desktop-vision','media'] },
+    // YouTube is atlas's alone (2026-09-18, with the orchestrator's web/browser
+    // tools removed): one merged `youtube` tool — find it, open it, confirm it
+    // is actually playing — instead of search → navigate → evaluate by hand.
+    // Deliberately NOT in `media`: `media` is shared with the orchestrator for
+    // pause/skip/volume, and youtube needs the browser, which the orchestrator
+    // no longer has.
+    youtube:      { name: 'youtube',   tools: ['youtube'], tier: 'public' },
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','documents','media','youtube'] },
     // Vulkan — the coding specialist, coding-only. Read/Write/Edit/Glob/Grep
     // to edit source, Bash to run builds/tests/git. NO browser, NO desktop,
     // NO screenshot, NO open_app — vulkan edits code and reports done; seeing
@@ -53,7 +70,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // merge active skill tools at spawn, so the data/skills/ library is inherited.
     // 'email' added 2026-09-15 (Dom, "just in case"): vulkan can email Dom a
     // bug report / .patch directly instead of only reporting via orchestrator.
-    'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash','email'] },
+    'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash','email'], includes: ['capture'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris — single toolcall agent (byte merged in 2026-09-05). 2026-09-09
     // collapse: 4 merged action tools (email/task/calendar/alarm), one per
