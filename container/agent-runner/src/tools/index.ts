@@ -14,7 +14,6 @@ import './context-tools.js';
 import './fabric-tools.js';
 import './host-tools.js';
 import './desktop.js';
-import './browser.js';
 import './media.js';
 import './youtube.js';
 import './sentry-tools.js';

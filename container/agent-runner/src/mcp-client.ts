@@ -15,6 +15,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -101,9 +102,51 @@ export class ExternalMcpClient {
       this.transport = transport;
       await client.connect(transport);
     } else if (this.config.transport === 'http') {
-      const transport = new StreamableHTTPClientTransport(new URL(this.config.url));
-      this.transport = transport;
-      await client.connect(transport);
+      const serverUrl: string = this.config.url;
+      const connectHttp = async () => {
+        const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
+        this.transport = transport;
+        await client.connect(transport);
+      };
+      try {
+        await connectHttp();
+      } catch (err: any) {
+        // Single-session Streamable HTTP servers (e.g. mcp-chrome-bridge):
+        // one transport slot for the whole server process. The previous
+        // client's close-DELETE is fire-and-forget in the SDK, so an immediate
+        // reconnect can race it ("Already connected to a transport"). Send our
+        // own sessionless DELETE as a nudge, then retry with backoff — the
+        // slot frees once the in-flight DELETE lands.
+        if (!/Already connected to a transport/i.test(String(err?.message ?? err))) throw err;
+        let connected = false;
+        for (let attempt = 0; attempt < 6 && !connected; attempt++) {
+          process.stderr.write(`[mcp:${this.config.name}] transport slot busy — reaping and retrying (${attempt + 1}/6)\n`);
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 5000);
+            await fetch(serverUrl, { method: 'DELETE', signal: ctrl.signal });
+            clearTimeout(t);
+          } catch { /* best-effort */ }
+          await new Promise((r) => setTimeout(r, 1000));
+          this.client = new Client({ name: 'dockbox-agent-runner', version: '1.0.0' }, { capabilities: {} });
+          try {
+            await connectHttp();
+            connected = true;
+          } catch (retryErr: any) {
+            if (!/Already connected to a transport/i.test(String(retryErr?.message ?? retryErr))) throw retryErr;
+          }
+        }
+        if (!connected) {
+          // Slot is bound to a dead client's session that no DELETE can free.
+          // Kill the stale server; its supervisor respawns it, then connect.
+          if (await reapStaleServer(serverUrl)) {
+            this.client = new Client({ name: 'dockbox-agent-runner', version: '1.0.0' }, { capabilities: {} });
+            await connectHttp();
+            connected = true;
+          }
+        }
+        if (!connected) throw new Error('Already connected to a transport (slot stayed busy after retries)');
+      }
     } else {
       const transport = new StdioClientTransport({
         command: this.config.command,
@@ -182,6 +225,44 @@ export class ExternalMcpClient {
   }
 }
 
+// HTTP-transport clients persist across turns: single-session servers (the
+// bridge) bind one transport slot per server process, so a per-turn
+// disconnect/reconnect race leaves the slot bound to a dead session.
+// Reused while alive; disconnected only on process exit.
+const persistentClients = new Map<string, ExternalMcpClient>();
+
+let lastReapAt = 0;
+
+/** A single-session server's slot can outlive its client (dirty exit). Kill
+ *  whoever holds the configured port — the supervisor (browser extension
+ *  reconnect) respawns a clean server — and wait for that respawn. At most
+ *  once a minute. */
+async function reapStaleServer(url: string): Promise<boolean> {
+  if (Date.now() - lastReapAt < 60_000) return false;
+  try {
+    const port = new URL(url).port;
+    if (!port) return false;
+    const holder = (): number | null => {
+      try {
+        const m = /pid=(\d+)/.exec(execSync(`ss -tlnp 2>/dev/null | grep ":${port} "`).toString());
+        return m ? Number(m[1]) : null;
+      } catch { return null; }
+    };
+    const pid = holder();
+    if (!pid) return false;
+    process.stderr.write(`[mcp] reaping stale server pid ${pid} (slot bound to a dead client)\n`);
+    process.kill(pid, 'SIGTERM');
+    lastReapAt = Date.now();
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      const now = holder();
+      if (now && now !== pid) return true;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  } catch { /* port absent or ss unavailable */ }
+  return false;
+}
+
 /**
  * Load every enabled MCP server from the config file, spawn a client for each,
  * and connect. Returns ready-to-use clients. Failures are isolated: a single
@@ -197,12 +278,35 @@ export async function loadExternalMcpClients(
   // wait from sum-of-servers to max-of-servers.
   const results = await Promise.allSettled(
     configs.map(async (cfg) => {
+      if (cfg.transport === 'http') {
+        const cached = persistentClients.get(cfg.name);
+        if (cached) {
+          try {
+            await cached.listTools();
+            return cached;
+          } catch {
+            persistentClients.delete(cfg.name);
+            try { await cached.disconnect(); } catch { /* ignore */ }
+          }
+        }
+      }
       const client = new ExternalMcpClient(cfg);
       try {
         await Promise.race([
           client.connect(),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('connect timeout')), 10000)),
         ]);
+        if (cfg.transport === 'http') {
+          // The bridge listens before its extension link is up; the tool list
+          // lands a beat later. Give it a short window so turn one has tools.
+          for (let i = 0; i < 15; i++) {
+            try {
+              if ((await client.listTools()).length > 0) break;
+            } catch { /* retry */ }
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+          persistentClients.set(cfg.name, client);
+        }
         return client;
       } catch (err) {
         process.stderr.write(

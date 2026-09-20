@@ -11,6 +11,7 @@ import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { syncAgentCtxEnv } from './index.js';
 import { parseRelativeDuration } from './task-scheduler.js';
+import { handleBrowserMcp, startBrowserGate } from './browser-mcp-gate.js';
 import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts, scanConfig, setScanConfig, requestScanAbort } from './memory-tree.js';
 import {
   ASSISTANT_NAME,
@@ -1429,7 +1430,14 @@ async function readToolPool(): Promise<string[]> {
     const names = Object.values(m.TOOLSETS || {})
       .flatMap((t) => (Array.isArray(t?.tools) ? t.tools : []))
       .filter((n): n is string => typeof n === 'string' && !!n);
-    cachedToolPool = [...new Set(names)].sort();
+    // MCP servers are pinnable too: one entry per ENABLED server, named
+    // mcp__<server> — the runner treats it as a prefix pin covering every
+    // tool that server exposes (its tool list lives only in the runner's
+    // live connection, so a per-tool pool here would always be stale).
+    const mcpEntries = loadMcpServers()
+      .filter((s) => s.enabled)
+      .map((s) => `mcp__${s.name}`);
+    cachedToolPool = [...new Set([...names, ...mcpEntries])].sort();
   } catch (err: any) {
     logger.warn({ err: err?.message ?? err }, 'tool pool unavailable — pinned-tools select shows current pins only');
     cachedToolPool = [];
@@ -2821,6 +2829,7 @@ function ensureHeartbeatTask(): void {
 export function startStatusServer(d: StatusDeps): void {
   deps = d;
   startInboxCacheWarmer();
+  startBrowserGate();
 
   // --- Email ---
 
@@ -3767,6 +3776,9 @@ export function startStatusServer(d: StatusDeps): void {
     }
 
     try {
+      // Browser-driving MCP gate: stateless front for the extension bridge's
+      // single slot (see browser-mcp-gate.ts). Mounted before everything else.
+      if (pathname === '/mcp/browser') return await handleBrowserMcp(req, res);
       // --- Dropped route trees (single-user Warden: no admin, no per-user APIs) ---
       // The old multi-user / admin / group / company / work-task / session-link
       // route trees are gone. Surviving endpoints live directly under /api/*

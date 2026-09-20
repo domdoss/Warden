@@ -64,6 +64,8 @@ export interface AgentInput {
   showThinking?: boolean | string;
   /** Default apps: capability -> 'builtin' | 'mcp:<server>'. An MCP server named here replaces that capability's built-in tools. */
   defaultApps?: Record<string, string>;
+  /** The agent's own name as set for the dash — spoken in the seat's own prompt. */
+  assistantName?: string;
   /** Tools exempt from relevance ranking. */
   pinnedTools?: string[];
   verbose?: boolean;

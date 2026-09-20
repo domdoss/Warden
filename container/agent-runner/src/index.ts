@@ -20,6 +20,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
@@ -138,18 +139,40 @@ function skillToolDefs(): Tool[] {
 // from settings, so a change takes effect on the next dispatch.
 let DEFAULT_APPS: Record<string, string> = {};
 
+// The agent's own name, as set for the dash (ASSISTANT_NAME host-side).
+// Spoken in the seat's own prompt — a whitelabel name changes the speech.
+let AGENT_NAME = 'Warden';
+
 // Tools exempt from relevance ranking, on top of the discovery escape hatch.
 // The ranker scores name + description, so a tool whose description does not
 // carry the words people actually use loses to tools that do — `youtube` lost
 // "change the song" to read_file/list_file/bash. Pinning is the override for
-// that, and it is a SETTING so a new one needs no code change.
-let PINNED_TOOLS: string[] = ['youtube'];
+// that, and it is a SETTING so a new one needs no code change: the list is
+// owned entirely by router_state `local:pinned_tools` (dashboard Pinned tools;
+// host default lives in db.ts readPinnedTools) and rides the spawn payload +
+// per-turn settings sync. Nothing is pinned in code — and an MCP tool may be
+// pinned by its full wire name (mcp__<server>__<tool>).
+let PINNED_TOOLS: string[] = [];
+
+/** Is a tool covered by a pin? Exact name, or — for an MCP SERVER pin
+ *  (`mcp__<server>`, what the dashboard's pin select offers) — any tool that
+ *  server exposes. */
+function isPinnedTool(n: string): boolean {
+    return PINNED_TOOLS.some((p) => n === p || (p.startsWith('mcp__') && n.startsWith(p + '__')));
+}
 
 /** The MCP server chosen to provide `capability`, or '' when the built-in has it. */
 function providerFor(capability: string): string {
     const v = String(DEFAULT_APPS[capability] || '').trim();
     return v.startsWith('mcp:') ? v.slice(4).trim() : '';
 }
+
+/** Asks the core `youtube` tool owns: playback + transport control of media.
+ *  On these turns the default browser provider's raw page tools stand down
+ *  from the seat's tool pools (see alwaysIn) — the consumer tool IS the
+ *  interface. Bare 'next'/'previous' are deliberately absent so "next steps"
+ *  never hides the browser. */
+const PLAYBACK_ASK_RE = /\b(play|playing|played|pause|paused|resume|skip|skipped|song|songs|music|video|videos|track|tracks|playlist|playlists|youtube|lofi|chillstep|chill|mix|fullscreen|now playing|put on|listen|queue)\b/i;
 
 /** Apply the default-app choices to one seat's tool list.
  *  For a capability handed to an MCP server: drop that capability's BUILT-IN
@@ -161,16 +184,17 @@ function applyDefaultApps(builtins: any[], mcpDefs: any[]): any[] {
     for (const [cap, names] of Object.entries(CAPABILITY_BUILTINS)) {
         const server = providerFor(cap);
         if (!server) continue;
+        // Unconditional: naming a default app for a capability withholds that
+        // capability's built-in tools, whether or not the chosen server is
+        // currently connected. This used to keep the built-in as a fallback
+        // when the replacement had no tools loaded — but the whole point of
+        // choosing a default is that the model should never see the built-in
+        // as an option at all; a broken default should surface as "no tool
+        // for this," not a silent swap back to the thing the user turned off.
         const prefix = `mcp__${server}__`;
-        // Only stand the built-in down when the replacement is actually
-        // connected: a server that failed to start must not leave the seat with
-        // no way to do the job at all.
-        if (!mcpDefs.some(t => String(t?.function?.name || '').startsWith(prefix))) {
-            log(`[default-apps] ${cap} -> ${server}, but that server has no tools loaded — keeping the built-in`);
-            continue;
-        }
+        const loaded = mcpDefs.some(t => String(t?.function?.name || '').startsWith(prefix));
         for (const n of names) drop.add(n);
-        log(`[default-apps] ${cap} -> mcp:${server} (built-in ${cap} tools withheld)`);
+        log(`[default-apps] ${cap} -> mcp:${server} (built-in ${cap} tools withheld${loaded ? '' : ' — WARNING: server has no tools loaded right now, capability is unavailable until it connects'})`);
     }
     if (drop.size === 0) return builtins;
     return builtins.filter(t => !drop.has(String(t?.function?.name || '')));
@@ -235,13 +259,65 @@ function resolveMcpTool(name: string): { client: ExternalMcpClient; tool: string
     return { client, tool };
 }
 
-/** Disconnect all MCP clients (called at turn end / on exit). */
-async function disconnectMcpClients(): Promise<void> {
+/** Disconnect all MCP clients (called at turn end / on exit). HTTP clients
+ *  persist across turns (single-session servers) unless force=true. */
+async function disconnectMcpClients(force = false): Promise<void> {
     if (!skillState) return;
     for (const c of skillState.clients.values()) {
+        if (!force && c.config.transport === 'http') continue;
         try { await c.disconnect(); } catch { /* best-effort */ }
     }
-    skillState.clients.clear();
+    for (const [name, c] of skillState.clients) {
+        if (!force && c.config.transport === 'http') continue;
+        skillState.clients.delete(name);
+    }
+}
+
+// Capability tools that must FOLLOW THE DEFAULT APP (youtube drives whatever
+// browser the captain chose in Settings → Default apps) live in tools/ and
+// cannot import this file (circular), so the two facts they need are exposed
+// here. Lazy readers — skillState and DEFAULT_APPS are reassigned as turns
+// reload — so these are functions and live lookups, never snapshots.
+(globalThis as any).__wardenDefaultApps = () => DEFAULT_APPS;
+(globalThis as any).__mcpBridge = {
+    /** Connected tool defs for one server: [{ name ('mcp__srv__tool'), description, params }] */
+    listTools: (server: string) => {
+        if (!skillState) return [];
+        const prefix = `mcp__${server}__`;
+        const out: any[] = [];
+        for (const sk of skillState.skills) {
+            if (sk.source !== 'mcp') continue;
+            for (const t of sk.tools) {
+                const n = String(t?.function?.name || '');
+                if (n.startsWith(prefix)) {
+                    out.push({ name: n, description: t.function.description || '', params: (t.function.parameters || {}) as any });
+                }
+            }
+        }
+        return out;
+    },
+    /** Call one tool on one server. Throws when the server is not connected. */
+    call: async (server: string, tool: string, args: any) => {
+        const short = tool.startsWith(`mcp__${server}__`) ? tool.slice(`mcp__${server}__`.length) : tool;
+        const client = skillState?.clients.get(server);
+        if (!client) throw new Error(`MCP server "${server}" is not connected`);
+        return await client.callTool(short, args ?? {});
+    },
+};
+
+// Close MCP clients on SIGTERM/SIGINT before exiting. A single-session http
+// server (the Chrome extension's MCP endpoint) keeps its session server-side
+// when this process is killed without a DELETE on the transport — the next
+// process then fails every connect with "Already connected to a transport"
+// until the server drops the orphan (2026-09-19: each warden restart left one
+// behind and browser-driving went dark). Best-effort, 2s cap, then exit.
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(sig, () => {
+        void Promise.race([
+            disconnectMcpClients(true),
+            new Promise<void>((r) => setTimeout(r, 2000)),
+        ]).finally(() => process.exit(0));
+    });
 }
 
 /** Resolve a path (~ expansion + workspace-relative joining). Never fails. */
@@ -636,6 +712,9 @@ function applySettingsSync(data: any) {
             ? data.pinnedTools.filter((t: any) => typeof t === 'string' && t.trim()).map((t: string) => t.trim())
             : [];
     }
+    if (typeof data.assistantName === 'string' && data.assistantName.trim()) {
+        AGENT_NAME = data.assistantName.trim();
+    }
     if (data.defaultApps !== undefined) {
         DEFAULT_APPS = {};
         const src = (data.defaultApps && typeof data.defaultApps === 'object') ? data.defaultApps : {};
@@ -766,7 +845,18 @@ Date: ${e.date}`).join('\n---\n');
 
 // Strip tier field before sending to Ollama — it only expects { type, function }
 function stripTier(tools: any[]) {
-    return tools.map(({ tier, ...rest }) => rest);
+    // The tool schema block is re-ingested EVERY prompt — descriptions ride
+    // along at full length (MCP servers write paragraphs). Clamp to the first
+    // non-empty line: the name and parameter schema carry the contract, the
+    // prose cost more per turn than it taught (2026-09-19).
+    return tools.map(({ tier, ...rest }) => {
+        const d = rest?.function?.description;
+        if (typeof d === 'string' && d.length > 200) {
+            const first = d.split('\n').map((l: string) => l.trim()).find(Boolean) || d;
+            rest.function.description = first.length > 200 ? first.slice(0, 197).trimEnd() + '…' : first;
+        }
+        return rest;
+    });
 }
 
 // Derive full tool list from registry
@@ -859,7 +949,7 @@ Call each of these directly — the result comes back inline, in the same turn, 
 - **artemis** — a read-only audit or sanity-check of the conversation or the codebase.
 - **sentry** — a security scan.
 
-You have no hands of your own — no browser, no desktop, no file edits, nothing beyond a quick read-only check (Bash/Read/Grep) to verify a specialist's claim. Hands-on work belongs to whichever seat called you; it is never yours to do or to hand off further.
+You have SOME hands of your own, and they are for small steps and verification, not production: Bash for a quick check or a one-line command, the browser and web tools to confirm a specialist's claimed end state on the real page, and Read/Grep to check a claim on disk. Your browser is VISIONLESS — read page state with browser_evaluate, never snapshot or screenshot (you cannot see images). Your strength is decomposition: take the long instruction, break it into little bits, run the small command yourself when that is the fastest check, delegate the next piece, verify, continue. Building, editing source, and driving desktop apps belong to your specialists — a step that would turn into real work is a piece to delegate, not something you do yourself.
 
 # THE LOOP
 Every piece goes through this, not just a fire-and-forget dispatch:
@@ -888,8 +978,7 @@ You are Atlas. You execute. The task states what the user needs; the method is y
 Each tool's description is its instructions — read it and pick by intent. A capability you do not see listed is one call away: \`list_skills\`, then \`activate_skill\`.
 
 # THE MACHINE
-Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with their real accounts.
-- The browser is their signed-in Chrome, shared with the whole system. Work in the tab that is already open when the task is about what is on screen. Chrome is already running; use it.
+You act on a real person's live computer with their real accounts. What and where this machine is lives in memory — consult MARM when it matters, don't assume.
 - Warden's source: \`/opt/Warden\` (capital W) — \`src/\` (host), \`container/agent-runner/\` (agent), \`store/\`, \`data/\`, \`public/\`, \`eyes_ears/\`. \`dist/\` is built output. Edit source, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy.
 - The user's own files, uploads and deliverables: \`~/Warden\`.
 - Bash is a persistent shared shell — \`cd\` holds across calls, so work from the right directory. Absolute paths anywhere on the filesystem are available.
@@ -1093,15 +1182,16 @@ One or two sentences. For a scheduled scan the host posts findings itself. For a
         delegate: 'orch',
         label: 'Orch',
         background: true,
-        routing: "big or multi-part work that needs several other specialists coordinated and tracked — decomposes the task, calls vulkan/iris/artemis/sentry as needed, and returns one consolidated result. Not for a single-specialist job — call that specialist directly.",
+        routing: "big or multi-part work that needs several other specialists coordinated and tracked — decomposes the task, calls vulkan/iris/artemis/sentry as needed, and returns one consolidated result. REQUEST-ONLY: never call this on your own — suggest it to the user and let them decide. Not for a single-specialist job — call that specialist directly.",
         maxIterations: 60,
         summary: 'decomposing a large or multi-part task and coordinating vulkan (code), iris (email/calendar/tasks), artemis (audit) and sentry (security) to carry it out',
         systemPrompt: ORCH_MANAGER_SYSTEM,
         mcpServers: [],
-        // Read-only verification only (same shape as artemis-core): orch has
-        // no hands of its own, so it gets no browser/desktop/edit tools —
-        // Bash/Read/Grep/Glob to check a specialist's claim, nothing more.
-        toolsets: ['artemis-core'],
+        // Hands: the fine-tuned orchestrator model keeps real tools, not just
+        // delegation — read-only check work (artemis-core) plus the web tools.
+        // Interactive browsing arrives through the MCP merge (the default
+        // browser provider), NOT the retired CDP 'browser' toolset.
+        toolsets: ['artemis-core', 'web'],
     },
 ];
 
@@ -1125,42 +1215,39 @@ function getSubAgentToolNames(subagent: SubAgentDef): string[] {
 // `# THE CREW` is deliberately absent: crewBlock() generates the roster from
 // SUBAGENTS, so a hand-written one would both duplicate it and go stale the
 // moment a seat is added or re-scoped.
-const ORCH_SYSTEM = `# WHO YOU ARE
-
-You are Warden, first officer to the captain and the hands that carry the work out. You speak with the captain in chat, you act on their machine and the internet yourself, and you hand what you do not own to the crew.
-
-# THE MACHINE
-
-Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with their real accounts.
-
-- The browser is their signed-in Chrome. Work in the YouTube tab that is already open when the task is about what is on screen.
-- Warden's source is /opt/Warden (src/, container/agent-runner/; dist/ is build output). The user's own files, deliverables and uploads are in ~/Warden.
-- sudo is interactive: the USER types the password. Run an install once, say a prompt is waiting, and end your turn.
-
-# HOW YOU WORK
-
-1. ACT ON THE FIRST TURN. A task stating the outcome is all you need — pick the tool and call it.
-2. READ ONCE, WHOLE. One full read of each file the task names; to find one forgotten string, grep for it once.
-3. THE TOOL RESULT IS THE TRUTH. Report the outcome from the result itself. A successful write, edit or command is proof; a page you changed gets one end-state check; anything the captain can already see or hear is confirmed by the tool's own result.
-4. FINISH THE CHAIN. A multi-step ask is yours end to end: state the chain once ("Plan: A → B → C"), take each step with your own tools or a brief, move to the next when the last lands.
-5. WHEN A PAGE OR COMMAND FAILS, try three genuinely different approaches before calling it blocked; an empty search result is an answer, not a reason to search again.
-6. SPEAK SHORT, FORMAT FOR THE DASH. One to three sentences, the answer carried in the words themselves. Markdown welcome (bold, bullets, code) — the dashboard renders it and the voice app strips it when a reply is spoken.
-
-# RUNNING JOBS
-
-- Read \`list_running_agents\` before a delegate call. A running job that already owns this outcome keeps it — say so and wait.
-- \`stop_agent\` stops a stuck job; \`nudge_agent\` steers it without killing it.
-- \`read_job_result\` reads a finished job's full output; \`report_task_failure\` records a proven failure before re-delegating once with the gap named.
-
-# SKILLS AND MCP
-
-- \`list_skills\` lists what is installed; \`activate_skill\` loads one skill's tools for this turn.
-- \`install_mcp_server\` registers a server in data/mcp-servers.json — name, command, args. Its tools arrive as a skill on the NEXT turn: say that and stop, never call them in the same turn. \`uninstall_mcp_server\` removes one.
-- \`create_skill\` packages a workflow you just finished so it can be repeated.
-
-# REPORTING BACK
-
-Report each landed result in one or two plain sentences carrying the outcome itself. Work the captain can already see or hear: report only when it fails to start.`;
+const ORCH_SYSTEM = `{
+ "you": "Warden, first officer: act yourself, delegate the rest, chain steps through the crew until the task is done",
+ "machine": {
+  "host": "Arch + KDE + Wayland; browser = captain's signed-in Chrome",
+  "src": "/opt/Warden (dist = build output); captain's files in ~/Warden",
+  "mem": "MARM holds machine facts — consult when it matters",
+  "sudo": "user types the password: install once, say a prompt is waiting, end turn"
+ },
+ "rules": {
+  "act": "first turn — pick the tool, call it",
+  "read": "once, whole; grep once for one forgotten string",
+  "truth": "the tool result is the truth: success = proof, error = did not happen",
+  "chain": "state it once (Plan: A→B→C); each step your tool or a brief",
+  "fail": "3 genuinely different approaches before blocked; an empty result is an answer",
+  "reply": "outcome first, then substance; markdown ok — voice strips it"
+ },
+ "jobs": {
+  "before": "list_running_agents — a running job that owns the outcome keeps it",
+  "steer": "nudge_agent steers; stop_agent stops stuck",
+  "results": "read_job_result; report_task_failure once with the gap named, then re-delegate"
+ },
+ "skills": {
+  "find": "list_skills",
+  "load": "activate_skill — this turn",
+  "mcp": "install_mcp_server → tools arrive NEXT turn, say so; uninstall_mcp_server removes",
+  "package": "create_skill"
+ },
+ "report": "1-2 plain sentences, outcome only; work the captain can already see or hear: report only failures"
+}`;
+// The prompt going IN is dense nested JSON (granite's preferred shape; every
+// token is re-ingested every prompt, so keys carry the structure). The reply
+// going OUT stays markdown. Descends from the _sys.txt variant that tested
+// best on the 8b — positive rules, no rumination tails.
 
 function crewBlock(): string {
     const lines = SUBAGENTS
@@ -1186,10 +1273,13 @@ function defaultsSection(): string {
         const connected = skillState.skills.some(s => s.source === 'mcp'
             && s.tools.some(t => String(t?.function?.name || '').startsWith(prefix)));
         if (!connected) continue;
-        lines.push(`- ${cap} → the \`${server}\` skill's MCP tools. The built-in ${cap} tools are withheld; use the \`${server}\` ones for all ${cap} work.`);
+        lines.push(`- ${cap} → the \`${server}\` skill's MCP tools for all ${cap} work.`);
+        if (cap === 'browser') {
+            lines.push(`- music or video playback (play, pause, skip, seek, what's playing) → the \`youtube\` tool: one call does the whole job and its result is the confirmation.`);
+        }
     }
     if (lines.length === 0) return '';
-    return `\n\n# DEFAULT APPS\n\nThe captain chose these providers in Settings. For each capability the named skill's MCP tools REPLACE the built-in tools — always use them:\n\n${lines.join('\n')}\n`;
+    return `\n\n# DEFAULT APPS\n\nThe captain chose these providers in Settings. Always use them for their capability:\n\n${lines.join('\n')}\n`;
 }
 
 const SUBAGENT_OWNED = new Set<string>(SUBAGENTS.flatMap(s => getSubAgentToolNames(s)));
@@ -1744,6 +1834,9 @@ let turnWasInboxDigest = false;
 // its verdict judges against the real request — never against an injected
 // [Inbox] digest or urgent push.
 let lastUserAsk = '';
+// Orch is request-only: a call spawns once lastUserAsk changed after a
+// proposal (the user spoke again). Same-turn retries keep the same ask.
+let orchProposalAsk: string | null = null;
 interface RetryLedgerEntry { failCount: number; lastAt: number; goal: string[]; }
 const retryLedger = new Map<string, RetryLedgerEntry>();
 function taskSig(task: string): string {
@@ -1920,7 +2013,7 @@ const ATLAS_DYNAMIC_TOP_K = 12;
 function selectAtlasTools(allTools: any[], task: string): any[] {
     try {
         const keywords = extractKeywords([{ role: 'user', content: task }]);
-        const pinned = (n: string) => ATLAS_ALWAYS_INCLUDED_TOOLS.has(n) || PINNED_TOOLS.includes(n);
+        const pinned = (n: string) => ATLAS_ALWAYS_INCLUDED_TOOLS.has(n) || isPinnedTool(n);
         const coreDefs = allTools.filter((t: any) => pinned(t?.function?.name));
         if (keywords.length === 0) {
             log(`[atlas] dynamic tools: ${coreDefs.length} of ${allTools.length} selected (generic task — core only)`);
@@ -2061,6 +2154,8 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         const mcpTools = mergeActiveSkillTools(skillState.skills, allSkillNames) as any[];
         const existing = new Set(tools.map((t: any) => t.function?.name));
         tools = [...tools, ...mcpTools.filter((t: any) => !existing.has(t.function?.name))];
+        // Default apps are global — substitution on background jobs too.
+        tools = applyDefaultApps(tools, mcpTools);
     }
     // RAG-style dynamic tool selection for every seat EXCEPT iris: rank the
     // full pool against the task and keep the always-needed core plus the
@@ -3004,6 +3099,8 @@ const BROWSER_SNAPSHOT_RESULT_TOOLS = new Set([
 const SNAPSHOT_KEEP_FULL = 2;     // newest snapshots kept whole (current page + one back)
 const SNAPSHOT_STUB_MIN_CHARS = 1500; // a stub only pays for itself on real dumps
 
+// CDP debug-Chrome tools: registrations removed — the names no longer exist.
+
 /** Replace all but the newest few browser snapshot results in `msgs` with a
  *  short "elided" stub (page title + URL preserved). Returns how many were
  *  stubbed. Mutates the message objects in place — the caller's array sees it. */
@@ -3142,7 +3239,30 @@ function collapseToChatHistory(msgs: any[], keepMessages = 6, maxPerMsg = 1000):
     return [system, ...kept];
 }
 
+// Orch's shared piece-thread, scoped to one orch run (concurrent jobs don't
+// cross-contaminate). Specialists read prior pieces; results carry the model.
+const orchThread = new AsyncLocalStorage<string[]>();
+
 async function runSubAgent(
+    agentName: string,
+    model: string,
+    systemPrompt: string,
+    tools: any[],
+    task: string,
+    toolContext: any,
+    maxIterations = 200,
+    abortFlag?: { aborted: boolean; nudges?: string[] },
+    onToolCall?: (toolName: string, argsSummary: string, resultPreview?: string) => void,
+    temperature = 1,
+    format?: Record<string, any>,
+    jobId?: string,
+    job?: BackgroundJob,
+): Promise<{ content: string; modifiedFiles: string[] }> {
+    if (agentName !== 'orch') return runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job);
+    return orchThread.run([], () => runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job));
+}
+
+async function runSubAgentInner(
     agentName: string,
     model: string,
     systemPrompt: string,
@@ -3735,6 +3855,12 @@ interface ContainerInput {
     councilSynthesistModel?: string;
     supervisorModel?: string;
     supervisorEnabled?: boolean;
+    /** Default apps (capability -> 'builtin' | 'mcp:<server>'), from Settings.
+     *  Seeded into DEFAULT_APPS at boot so the seat gate is right on turn one. */
+    defaultApps?: Record<string, string>;
+    /** Pinned tools (router_state local:pinned_tools via the host) — exempt
+     *  from RAG ranking. May name MCP tools by full wire name. */
+    pinnedTools?: string[];
     userId?: string;
     userKeyId?: string;
     verbose?: boolean;
@@ -3839,62 +3965,11 @@ async function runNativeOllama(input: ContainerInput) {
         READ_JOB_RESULT_TOOL_DEF,
         REPORT_TASK_FAILURE_TOOL_DEF,
     ]);
-    // RAG-style dynamic tool selection: each turn, extract keywords from the
-    // conversation and rank the non-core tools by relevance, surfacing only the
-    // top-K to the model. This helps most when the user's prompt is vague or
-    // poorly specified — the keyword match still pulls in the right tools so the
-    // orchestrator can act instead of stalling. Core routing tools (sub-agents,
-    // Bash, Read, history, etc.) are always included; everything else is ranked.
-    // Same rule for the seat: only the discovery escape hatch is exempt. The seat
-// also gets the always-on "core" builtin skill layered in by mergeSkillTools(),
-// which carries the skill meta-tools and basic read/write, so the floor here can
-// be this thin without leaving it mute.
-const ALWAYS_INCLUDED_TOOLS = new Set<string>([
-    'list_skills', 'activate_skill',
-]);
-    // This seat holds atlas's core tools always (browser, web, file edit/read,
-    // desktop) — the same always-set atlas itself gets — so a "play this",
-    // "open that", "edit this file" ask never loses its tool to the ranking.
-    for (const t of ATLAS_ALWAYS_INCLUDED_TOOLS) ALWAYS_INCLUDED_TOOLS.add(t);
-    const DYNAMIC_TOOL_TOP_K = 8;
+    // Core base is always sent; RAG lives in mergeSkillTools.
     let activeToolDefs = fullToolDefs;
     function refreshActiveToolDefs() {
-        try {
-            const keywords = extractKeywords(messages);
-            if (keywords.length === 0) {
-                // Conversational turn (no extractable keywords — "hey", "thanks",
-                // "ok", etc.): don't dump the full 36-tool catalog at a small model.
-                // It hallucinates tool calls when it has nothing real to act on
-                // (the read_image parrot-path bug came from a tool being exposed on
-                // a trivial turn). Send an EMPTY base here; mergeSkillTools() still
-                // layers in the always-on "core" builtin skill on top — so the model
-                // sees only list_skills / activate_skill / deactivate_skill /
-                // install_mcp_server / create_skill + basic read/write/list_file. It
-                // can chat freely or pull in a skill, but sees no routing or hands-on
-                // tools it has no reason to call.
-                activeToolDefs = [];
-                log(`Tools: minimal (conversational — no keywords; skill meta-tools only via core skill)`);
-                return;
-            }
-            const seatPinned = (n: string) => ALWAYS_INCLUDED_TOOLS.has(n) || PINNED_TOOLS.includes(n);
-            const coreDefs = fullToolDefs.filter((d: any) => seatPinned(d.function?.name));
-            const restDefs = fullToolDefs.filter((d: any) => !seatPinned(d.function?.name));
-            const rankedNames = new Set(rankTools(restDefs, keywords, DYNAMIC_TOOL_TOP_K));
-            if (rankedNames.size === 0) {
-                // Keywords existed but matched no tool — effectively still
-                // conversational. Same treatment as the no-keyword path: don't
-                // dump all 36 at the small model. Empty base; mergeSkillTools()
-                // layers in the always-on core skill meta-tools only.
-                activeToolDefs = [];
-                log(`Tools: minimal (nothing ranked — skill meta-tools only via core skill)`);
-                return;
-            }
-            activeToolDefs = [...coreDefs, ...restDefs.filter((d: any) => rankedNames.has(d.function?.name))];
-            log(`Tools: ${activeToolDefs.length} of ${fullToolDefs.length} selected (dynamic)`);
-        } catch (err: any) {
-            log(`Warning: dynamic tool selection failed (${err?.message || err}) — using full list`);
-            activeToolDefs = fullToolDefs;
-        }
+        activeToolDefs = fullToolDefs;
+        log(`Tools: ${fullToolDefs.length} core tool defs (always sent)`);
     }
     // ─── The orchestrator's hands: ONE definition, used twice ───────────
     // This gate decides what the orchestrator may touch directly, and the
@@ -3922,65 +3997,106 @@ const ALWAYS_INCLUDED_TOOLS = new Set<string>([
     // WebSearch/WebFetch went IN on 2026-09-18 (the web removal): dropping them
     // from ORCHESTRATOR_SHARED_TOOLS keeps them out of the ranked base, but an
     // active skill can still carry them in through the skill layer, and a tool
-    // the model can see is a tool it will call.
-    // Withheld from the CHAT SEAT only — the background atlas job still holds
-    // these via the browser toolset. The seat runs a visionless model, and both
-    // were what it reached for by reflex: snapshot returned a whole-page dump it
-    // then hand-drove from instead of calling the tool that owns the job
-    // (2026-09-18 "change the song" → browser_snapshot → dead turn). The seat
-    // reads page state with browser_evaluate, which returns the values asked
-    // for. Removing them from the toolset instead does the OPPOSITE: an un-owned
-    // tool passes the seat's `!SUBAGENT_OWNED` filter, so the seat keeps it and
-    // background atlas loses it.
-    const BLOCKED_ORCHESTRATOR_TOOLS = new Set<string>(['browser_snapshot', 'browser_screenshot']);
-    // The browser/desktop prefix block existed because the orchestrator and a
-    // running atlas were two actors on one page (2026-09-18 10:41: it drove a
-    // tab atlas owned and the turn died with no reply). This seat IS atlas now,
-    // so its browser/desktop tools are its own and pass through; only a
-    // concurrent background atlas job could collide, and that one is spawned
-    // deliberately via atlas_background.
-    const blockedPrefix = (_n: string) => false;
-    // MCP belongs to the WORKING agents, not this seat: atlas and vulkan carry
-    // `mcpServers: ['*']` and get every installed server. marm stays reachable
-    // here because memory recall is assistant state, the same class as
-    // get_chat_history — every other mcp__ server routes through a delegate.
-    // EXCEPTION: a server the captain chose as a DEFAULT APP (Settings →
-    // Default apps) is this seat's provider for that capability. Withholding
-    // it here while its built-in stand-in stayed is why a default never took
-    // effect on the seat (2026-09-19): the model kept the built-in tools and
-    // the chosen server was invisible. Defaults are re-synced each turn, so
-    // this list follows a Settings change live.
-    const defaultProviderPrefixes = Object.values(DEFAULT_APPS)
-        .map((v) => String(v || '').trim())
-        .filter((v) => v.startsWith('mcp:'))
-        .map((v) => `mcp__${v.slice(4).trim()}__`);
-    const orchToolBlocked = (n: string): boolean => {
-        // Checked BEFORE the atlas-owned bypass: these are atlas's tools, and
-        // the point is to withhold them from this seat specifically.
-        if (BLOCKED_ORCHESTRATOR_TOOLS.has(n)) return true;
-        if (ATLAS_OWNED.has(n)) return false;
-        if (n.startsWith('mcp__') && !n.startsWith('mcp__marm__')
-            && !defaultProviderPrefixes.some((p) => n.startsWith(p))) return true;
-        return blockedPrefix(n);
-    };
+    // the model can see is a tool it will call. (2026-09-19: the CDP browser
+    // toolset they once rode with is retired below — the web tools remain,
+    // they need no browser.)
+    // The seat IS atlas (mcpServers ['*']): every connected MCP tool is a seat
+    // tool. Visibility within MCP is the RAG layer's job, not this gate's.
+    const orchToolBlocked = (_n: string): boolean => false;
 
-    /** Merge skill-layer tools (always-on core + active skill tools) into the active tool list. Dedupes by name. */
+    /** Merge skill-layer tools into the core base. Always in: core skill,
+     *  marm, default-app providers, pins. RAG pool: the rest, top-K by turn
+     *  keywords. */
+    let ragCache: { key: string; ranked: any[] } | null = null;
     function mergeSkillTools(): any[] {
-        //
         const blocked = (t: any) => {
             const n = t?.function?.name;
             return typeof n === 'string' && orchToolBlocked(n);
         };
         const skillTools = (skillToolDefs() as any[]).filter((t) => !blocked(t));
+        const activeFiltered = (activeToolDefs as any[]).filter((t) => !blocked(t));
+        const nameOf = (t: any) => String(t?.function?.name || '');
+        // Core-builtin skill tools: every non-MCP skill's tools (the 'core'
+        // builtin skill carries the meta tools + basic file ops; user skills
+        // are instruction-only today — if one grows tools it lands in the
+        // RAG pool like any other non-core skill).
+        const coreToolNames = new Set<string>();
+        for (const sk of skillState?.skills || []) {
+            if (sk.source !== 'mcp') for (const t of sk.tools) coreToolNames.add(nameOf(t));
+        }
+        const isDefaultProvider = (n: string) => Object.values(DEFAULT_APPS).some((v) => {
+            const s = String(v || '').trim();
+            return s.startsWith('mcp:') && n.startsWith(`mcp__${s.slice(4).trim()}__`);
+        });
+        // Playback/control asks are owned by the core `youtube` tool; the
+        // default browser provider's raw page tools stand down for that turn
+        // from BOTH pools. Given both, the model hand-drives chrome_* into
+        // snapshot-click churn and never picks a video (2026-09-19).
+        const lastUserText = (() => {
+            for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i]?.role === 'user') return String(messages[i].content || '');
+            }
+            return '';
+        })();
+        const browserProvider = providerFor('browser');
+        const providerPrefix = browserProvider && PLAYBACK_ASK_RE.test(lastUserText)
+            ? `mcp__${browserProvider}__`
+            : '';
+        if (providerPrefix) log(`[default-apps] playback ask — ${browserProvider} raw tools stand down (youtube owns it)`);
+        const stoodDown = (n: string) => !!providerPrefix && n.startsWith(providerPrefix);
+        const alwaysIn = skillTools.filter((t) => {
+            const n = nameOf(t);
+            if (stoodDown(n)) return false;
+            return coreToolNames.has(n) || n.startsWith('mcp__marm__') || isDefaultProvider(n)
+                || isPinnedTool(n); // a pin is always visible — MCP server pins included
+        });
+        // Stood-down tools must not fall through into the ranked pool — left
+        // there they simply rank back in and the hand-driving resumes.
+        const ragPool = skillTools.filter((t) => !alwaysIn.includes(t) && !stoodDown(nameOf(t)));
+        // Rank once per distinct (history length, pool) pair — mergeSkillTools
+        // runs several times per request cycle and extractKeywords on a long
+        // history is not free.
+        let ragRanked: any[] = [];
+        if (ragPool.length > 0) {
+            const key = `${messages.length}|${ragPool.map(nameOf).join(',')}`;
+            if (!ragCache || ragCache.key !== key) {
+                const keywords = extractKeywords(messages);
+                const ranked = keywords.length > 0
+                    ? new Set(rankTools(ragPool, keywords, ATLAS_DYNAMIC_TOP_K))
+                    : new Set<string>();
+                ragCache = { key, ranked: ragPool.filter((t) => ranked.has(nameOf(t))) };
+                log(`Tools: RAG ${ragCache.ranked.length} of ${ragPool.length} non-core skill tools ranked (marm/defaults/core exempt)`);
+            }
+            ragRanked = ragCache.ranked;
+        }
+        // Dedupe BEFORE default-app substitution, on the FULL union of all
+        // pools — activeToolDefs and skillTools carry the built-ins from
+        // different places (e.g. browser_navigate shows up in both), so
+        // running applyDefaultApps on one pool and merging the other back in
+        // unfiltered let a withheld built-in slip back in through whichever
+        // pool it wasn't dropped from (2026-09-19: browser_navigate kept
+        // reappearing after a default app was set for 'browser', because it
+        // survived in skillTools while activeToolDefs' copy got dropped).
+        const seen = new Set<string>();
+        const merged: any[] = [];
+        for (const t of [...activeFiltered, ...alwaysIn, ...ragRanked]) {
+            const n = t?.function?.name;
+            if (typeof n === 'string') {
+                if (seen.has(n)) continue;
+                seen.add(n);
+            }
+            merged.push(t);
+        }
         // Default apps: a capability handed to a chosen MCP server stands the
-        // BUILT-IN down — substitution, not addition (same rule as the delegate
-        // path). applyDefaultApps only drops a built-in whose replacement is
-        // actually connected, so a dead server never leaves the seat mute.
-        const base = applyDefaultApps((activeToolDefs as any[]).filter((t) => !blocked(t)), skillTools);
-        if (skillTools.length === 0) return base;
-        const seen = new Set(base.map((t) => t.function?.name));
-        const extras = skillTools.filter((t) => !seen.has(t.function?.name));
-        return [...base, ...extras];
+        // BUILT-IN down — substitution, not addition (same rule as the
+        // delegate path). Unconditional: the built-in drops the moment a
+        // default is set, whether or not the replacement is connected right
+        // now (a dead server surfaces as "no tool for this," not a silent
+        // fallback to the built-in the user turned off). Applied once, to the
+        // deduped union, so neither pool can reintroduce a withheld name.
+        // stripTier on the way out = the description clamp rides on every
+        // def that reaches the wire, skill/MCP tools included.
+        return applyDefaultApps(stripTier(merged), stripTier(skillTools));
     }
     log(`Tools: ${fullToolDefs.length} available`);
     // ─── Skill grouping layer (Task 23) ────────────────────────────────
@@ -4145,7 +4261,11 @@ const marmRecallSection = marmEnabled
         // The seat speaks as the captain's first officer. ORCH_SYSTEM is the
         // text the orchatlas fine-tune was trained on, used verbatim so the
         // model is conditioned at inference on the prompt it saw in training.
-        const atlasPrompt = ORCH_SYSTEM;
+        // The one token that may differ is the agent's own name — spoken as
+        // the dash sets it (AGENT_NAME, synced from ASSISTANT_NAME).
+        const atlasPrompt = AGENT_NAME && AGENT_NAME !== 'Warden'
+            ? ORCH_SYSTEM.replace('"you": "Warden,', `"you": "${AGENT_NAME},`)
+            : ORCH_SYSTEM;
         // The driving force (dashboard "Driving force") is the user's persona
         // knob. It used to ride on the old routing preamble, so it must be
         // applied here or the setting silently does nothing: persona leads,
@@ -4222,6 +4342,18 @@ const marmRecallSection = marmEnabled
     COUNCIL_MODEL_SKEPTIC = (input.councilSkepticModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_PRAGMATIST = (input.councilPragmatistModel || '').replace(/^local:/, '');
     COUNCIL_MODEL_SYNTHESIST = (input.councilSynthesistModel || '').replace(/^local:/, '');
+    // Default apps ride in the spawn payload too, but DEFAULT_APPS was only
+    // ever populated by the per-turn IPC settings sync — which first fires
+    // AFTER this boot section (drainIpcInput runs inside the loop below). The
+    // seat gate was therefore built against an empty DEFAULT_APPS and stayed
+    // that way for the whole process lifetime: every default provider's
+    // mcp__* tools were blocked alongside the rest of MCP, while
+    // applyDefaultApps() — reading the synced values — withheld the built-ins
+    // too. A defaulted capability ended up with NO tools at all ("atlas has
+    // no MCP servers", 2026-09-19). Seed it here so the gate is right on
+    // turn one; the per-turn syncs still keep it fresh.
+    if (input.defaultApps) applySettingsSync({ defaultApps: input.defaultApps });
+    if (input.pinnedTools) applySettingsSync({ pinnedTools: input.pinnedTools });
     const toolContext = { chatJid: input.chatJid, groupFolder: input.groupFolder, isMain: input.isMain, userId: process.env.WARDEN_USER_ID || '' };
     messages.push({ role: 'system', content: buildSystemPrompt() });
     // Log the seat identity the prompt actually resolved to. Which prompt is
@@ -4846,6 +4978,20 @@ const marmRecallSection = marmEnabled
                     for (const result of toolResults) {
                         const body = truncateToolResult('orchestrator', result.content);
                         messages.push({ role: 'tool', content: TRUSTED_RESULT_TOOLS.has(result.toolName) ? body : untrustedContextMessage(body) });
+                    }
+                    // Playback IS the answer. When a youtube action lands
+                    // (playing / resumed / already playing), end the turn with
+                    // an empty reply — the host treats that as "chose to say
+                    // nothing". On voice and Steve deployments a spoken recap
+                    // ("timestamp updated from 0:00 to 138:11…") talks over the
+                    // music and stalls the conversation (2026-09-19).
+                    const mediaSilent = toolResults.some(r => r.toolName === 'youtube'
+                        && /^(Playing|Resumed|Already playing|Queued|Still playing):/.test(String(r.content || '').trim()));
+                    if (mediaSilent && !errorOutputWritten) {
+                        log('[media] playback confirmed — ending turn silently');
+                        appendStatus({ phase: 'tool', label: '♫ playback confirmed — no reply needed' });
+                        writeOutput({ status: 'success', result: null, spontaneous: turnWasInboxDigest });
+                        return;
                     }
                     // #3 Mid-loop breaker tracking: record each call sig, detect
                     // runaway (same sig >= RUNAWAY_CALL_LIMIT) and circling
@@ -5581,16 +5727,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         }
     }
 
-    // The def-level filter hides mcp__ schemas from the orchestrator, but
-    // the model can still call them blind (activate_skill lists tool names).
-    // Enforce the block at execution time too, with a redirect that teaches
-    // the correct path. Bash is NO LONGER blocked (2026-09-12: the
-    // orchestrator runs one-shot commands directly — see
-    // ORCHESTRATOR_SHARED_TOOLS); only foreign MCP tools stay
-    // orchestrator-verboten.
-    if (opts?.orchestrator && toolName.startsWith('mcp__') && !toolName.startsWith('mcp__marm__')) {
-        return `Error: ${toolName} is not available here. Use your own tools for browser, web, files and shell; hand code to vulkan and email or scheduling to iris, with a {task} argument.`;
-    }
+    // Retired CDP tools are unregistered — unknown names die in dispatch.
 
     // Pre-tool hooks — can block execution
     const preResults = await hooks.invoke('pre_tool_call', {
@@ -5636,8 +5773,17 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             const history = await waitForResult('chat-history-');
             const transcript = history ? JSON.stringify(history, null, 2).slice(-12000) : '(conversation history unavailable)';
             const auditTask = `Focus your audit on: ${focus}\n\nAudit the following conversation (most recent messages last). Each entry has a sender_name and an is_bot_message flag — is_bot_message=1 is the AI assistant, otherwise it's the user.\n\n${transcript}`;
-            const artemisResult = await runSubAgent('artemis', ARTEMIS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, auditTask, context, def.maxIterations);
-            result = artemisResult.content || 'Artemis completed the audit (no text output).';
+            const orchThreadStore = orchThread.getStore();
+            const fullAuditTask = orchThreadStore?.length
+                ? `${auditTask}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${orchThreadStore.slice(-6).join('\n---\n').slice(-6000)}`
+                : auditTask;
+            const artemisResult = await runSubAgent('artemis', ARTEMIS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, fullAuditTask, context, def.maxIterations);
+            if (orchThreadStore) {
+                orchThreadStore.push(`## artemis (model ${ARTEMIS_MODEL}) — piece: ${focus.slice(0, 160)}\n${(artemisResult.content || '').slice(0, 1200)}`);
+                result = `[artemis · model ${ARTEMIS_MODEL}]\n${artemisResult.content || 'Artemis completed the audit (no text output).'}`;
+            } else {
+                result = artemisResult.content || 'Artemis completed the audit (no text output).';
+            }
         }
     } else if (toolName === 'artemis') {
         // Async artemis: start the audit as a background job (same pattern as
@@ -5914,8 +6060,23 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         if (!task) {
             result = 'Error: task is required';
         } else {
-            const saResult = await runSubAgent('vulkan', VULKAN_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('vulkan')!, task, context, def.maxIterations, undefined, undefined, def.temperature);
-            result = saResult.content;
+            // Orch-piece wiring: shared thread + model-labeled result.
+            const thread = orchThread.getStore();
+            const fullTask = thread?.length
+                ? `${task}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${thread.slice(-6).join('\n---\n').slice(-6000)}`
+                : task;
+            // Vulkan carries mcpServers ['*'], and default apps are global —
+            // merge the connected servers' tools and apply the substitution
+            // here exactly as the background path does.
+            let vkTools = SUBAGENT_TOOL_DEFS.get('vulkan')!;
+            const vkMcp = mcpToolDefsForServers(['*']);
+            if (vkMcp.length > 0) {
+                const seenNames = new Set(vkTools.map((t: any) => t.function?.name));
+                vkTools = applyDefaultApps([...vkTools, ...vkMcp.filter((t: any) => !seenNames.has(t.function?.name))], vkMcp);
+            }
+            const saResult = await runSubAgent('vulkan', VULKAN_MODEL, def.systemPrompt, vkTools, fullTask, context, def.maxIterations, undefined, undefined, def.temperature);
+            thread?.push(`## vulkan (model ${VULKAN_MODEL}) — piece: ${task.slice(0, 160)}\n${saResult.content.slice(0, 1200)}`);
+            result = `[vulkan · model ${VULKAN_MODEL}]\n${saResult.content}`;
             if (saResult.modifiedFiles.length > 0) log(`[orch→vulkan] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
         }
     } else if (toolName === 'vulkan') {
@@ -5954,8 +6115,13 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         if (!task) {
             result = 'Error: task is required';
         } else {
-            const saResult = await runSubAgent('sentry', SENTRY_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('sentry')!, task, context, def.maxIterations, undefined, undefined, def.temperature);
-            result = saResult.content;
+            const thread = orchThread.getStore();
+            const fullTask = thread?.length
+                ? `${task}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${thread.slice(-6).join('\n---\n').slice(-6000)}`
+                : task;
+            const saResult = await runSubAgent('sentry', SENTRY_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('sentry')!, fullTask, context, def.maxIterations, undefined, undefined, def.temperature);
+            thread?.push(`## sentry (model ${SENTRY_MODEL}) — piece: ${task.slice(0, 160)}\n${saResult.content.slice(0, 1200)}`);
+            result = `[sentry · model ${SENTRY_MODEL}]\n${saResult.content}`;
         }
     } else if (toolName === 'sentry') {
         // Async sentry: an on-demand scan requested by the user ("scan the pc").
@@ -5972,18 +6138,19 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             result = describeSpawn('Sentry', sp, urgent);
         }
     } else if (toolName === 'orch') {
-        // Async manager: start the job, return immediately, the consolidated
-        // result lands in the inbox just like vulkan/sentry. Internally orch
-        // calls vulkan/iris/artemis/sentry itself — those calls are blocking
-        // (see the !opts.orchestrator branches below), so its inbox result is
-        // already the finished, assembled answer.
+        // Request-only from the seat: propose first, spawn after the user
+        // replies. Background orch paths are untouched.
         const task = args.task as string;
         const urgent = args.urgent === true;
         if (!task) {
             result = 'Error: task is required';
-        } else {
+        } else if (orchProposalAsk !== null && orchProposalAsk !== lastUserAsk) {
+            orchProposalAsk = null;
             const sp = spawnBackgroundJob('orch', task, context, urgent);
             result = describeSpawn('Orch', sp, urgent);
+        } else {
+            orchProposalAsk = lastUserAsk;
+            result = 'The orchestrator runs only when the user asks for it. Do not start it on your own — tell the user what you would hand it and why, and call this again only after they reply wanting it.';
         }
     } else if (toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
@@ -6023,12 +6190,25 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // an empty model errors inside runSubAgent rather than swapping in
             // another model.
             const subModel = IRIS_MODEL;
+            // Orch-piece wiring (see the vulkan blocking branch): when ORCH is
+            // the caller, iris sees the orchestration's shared thread and its
+            // result is labeled with the model. The seat's iris path is
+            // untouched — that result format is what its fine-tune expects.
+            const orchThreadStore = orchThread.getStore();
+            const irisTask = orchThreadStore?.length
+                ? `${task}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${orchThreadStore.slice(-6).join('\n---\n').slice(-6000)}`
+                : task;
             // Pass def.temperature (10th arg) so iris honors its
             // SubAgentDef temperature override — without it the default `1`
             // applies and e.g. Iris's temperature:0 was inert. abortFlag +
             // onToolCall slots are unused on the synchronous path (undefined).
-            const saResult = await runSubAgent(toolName, subModel, def.systemPrompt, tools, task, context, def.maxIterations, undefined, undefined, def.temperature);
-            result = saResult.content;
+            const saResult = await runSubAgent(toolName, subModel, def.systemPrompt, tools, irisTask, context, def.maxIterations, undefined, undefined, def.temperature);
+            if (orchThreadStore) {
+                orchThreadStore.push(`## iris (model ${subModel}) — piece: ${task.slice(0, 160)}\n${saResult.content.slice(0, 1200)}`);
+                result = `[iris · model ${subModel}]\n${saResult.content}`;
+            } else {
+                result = saResult.content;
+            }
             if (saResult.modifiedFiles.length > 0) log(`[${toolName}] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
             writeStatus({ phase: toolName, label: `${def.label} complete`, ts: Date.now() });
         }

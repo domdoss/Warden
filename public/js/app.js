@@ -1173,21 +1173,49 @@
     // Default apps: one row per capability, options = built-in + every
     // installed MCP server. The server list comes from /api/mcp-servers so a
     // newly installed server shows up without a dashboard change.
+    // Each row states what the capability covers and what the built-in
+    // provides — a default here REPLACES those built-in tools everywhere, so
+    // the choice must be self-explanatory (a browser bridge cannot provide
+    // web search/fetch, an MCP shell is not the persistent Bash, etc.).
     (async function () {
       const rows = $('defaultAppsRows'); if (!rows) return;
       const caps = Array.isArray(d.defaultAppCapabilities) ? d.defaultAppCapabilities : [];
       const chosen = d.defaultApps || {};
       let servers = [];
       try { servers = ((await api('/api/mcp-servers')).servers || []).filter(x => x.enabled !== false); } catch (e) { servers = []; }
+      const CAP_INFO = {
+        browser: {
+          what: 'INTERACTIVE browsing — clicking, typing, logins, playing video in your real Chrome.',
+          builtin: 'none (the old debug browser is retired) — pick your browser bridge below',
+        },
+        web: {
+          what: 'READING and SEARCHING pages — WebSearch / WebFetch: plain HTTP, no browser, no login session.',
+          builtin: 'WebSearch + WebFetch. Keep built-in unless your MCP server truly provides search/fetch — a browser bridge cannot do this job.',
+        },
+        files: {
+          what: 'Reading and writing files — read_file / write_file / list_file, plus the Read / Write / Glob / Grep set for specialists.',
+          builtin: "the agent's own file tools",
+        },
+        shell: {
+          what: 'Running commands.',
+          builtin: "the agent's persistent Bash (cd and environment carry across calls). An MCP shell is one-shot per call.",
+        },
+        capture: {
+          what: 'Screen and webcam captures.',
+          builtin: "the agent's own capture tools",
+        },
+      };
       if (!caps.length) { rows.innerHTML = '<div class="dim mono" style="font-size:11px">No capabilities registered.</div>'; return; }
       rows.innerHTML = caps.map(cap => {
         const cur = String(chosen[cap] || 'builtin');
-        const opts = ['<option value="builtin"' + (cur === 'builtin' ? ' selected' : '') + '>Built-in (Warden)</option>']
+        const info = CAP_INFO[cap] || { what: '', builtin: "Warden's built-in tools" };
+        const opts = ['<option value="builtin"' + (cur === 'builtin' ? ' selected' : '') + '>Built-in — ' + esc(info.builtin) + '</option>']
           .concat(servers.map(sv => {
             const v = 'mcp:' + sv.name;
             return '<option value="' + escAttr(v) + '"' + (cur === v ? ' selected' : '') + '>' + esc(sv.name) + ' (MCP)</option>';
           }));
-        return '<div class="setting-row"><label>' + esc(cap) + '</label>'
+        return '<div class="setting-row" style="display:block"><label style="font-weight:600">' + esc(cap) + '</label>'
+          + '<div class="dim" style="font-size:11px;margin:2px 0 4px">' + esc(info.what) + '</div>'
           + '<select class="select" data-defaultapp="' + escAttr(cap) + '">' + opts.join('') + '</select></div>';
       }).join('');
     })();
