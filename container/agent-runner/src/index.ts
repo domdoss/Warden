@@ -4656,7 +4656,19 @@ const marmRecallSection = marmEnabled
                     // so spending iteration 1 in the think channel buys nothing
                     // and risks a turn with no content. An explicit 'max' from
                     // the user still wins — that knob is theirs.
-                    requestBody.think = thinkingAlways || toolIteration === 1 || modelRequiresThink(model);
+                    // A one-call mechanical ask (play/skip/pause — the playback
+                    // classifier) skips the planning pass entirely: 4.4k think
+                    // tokens before a single youtube call was ten seconds of
+                    // silence for nothing (2026-09-19).
+                    const lastAsk = (() => {
+                        for (let i = messages.length - 1; i >= 0; i--) {
+                            const m: any = messages[i];
+                            if (m?.role === 'user') return String(m.content || '');
+                        }
+                        return '';
+                    })();
+                    requestBody.think = thinkingAlways || modelRequiresThink(model)
+                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastAsk));
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
