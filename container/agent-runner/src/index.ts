@@ -4989,8 +4989,11 @@ const marmRecallSection = marmEnabled
                     // nothing". On voice and Steve deployments a spoken recap
                     // ("timestamp updated from 0:00 to 138:11…") talks over the
                     // music and stalls the conversation (2026-09-19).
-                    const mediaSilent = toolResults.some(r => r.toolName === 'youtube'
-                        && /^(Playing|Resumed|Already playing|Queued|Still playing):/.test(String(r.content || '').trim()));
+                    // ALL youtube actions are mute — play, skip, pause, even
+                    // its errors. The tool status line in the Oversight panel
+                    // carries the outcome; spoken/typed recaps only talk over
+                    // the music (2026-09-19).
+                    const mediaSilent = toolResults.some(r => r.toolName === 'youtube');
                     if (mediaSilent && !errorOutputWritten) {
                         log('[media] playback confirmed — ending turn silently');
                         appendStatus({ phase: 'tool', label: '♫ playback confirmed — no reply needed' });
