@@ -70,17 +70,20 @@ async function logPlay(url: string, title: string): Promise<void> {
     await marm.call({ entry: `youtube-play: ${title} (${url})` }).catch(() => { /* advisory */ });
 }
 
-async function recentPlayedUrls(query: string): Promise<Set<string>> {
-    const out = new Set<string>();
+async function recentPlayed(query: string): Promise<{ ids: Set<string>; titles: Set<string> }> {
+    const ids = new Set<string>();
+    const titles = new Set<string>();
     try {
         const marm = await marmTool(/marm_smart_recall$/);
-        if (!marm) return out;
+        if (!marm) return { ids, titles };
         const res = await marm.call({ query: `youtube-play ${query}`, limit: 20 });
-        for (const m of resultText(res).matchAll(/youtube-play:[^]*?\((https?:\/\/[^\s)]+)\)/g)) {
-            out.add(m[1]);
+        const text = resultText(res);
+        for (const m of text.matchAll(/youtube-play:\s*([^()\n]+)\s*\((https?:\/\/[^\s)]+)\)/g)) {
+            titles.add(m[1].trim().toLowerCase());
+            ids.add(/v=([\w-]{11})/.exec(m[2])?.[1] || m[2]);
         }
     } catch { /* recall is advisory — worst case a repeat slips through */ }
-    return out;
+    return { ids, titles };
 }
 
 const recentPicks = new Set<string>();
@@ -446,13 +449,18 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
         // carry the query's words (2026-09-19: it kept re-playing the same
         // first result).
         const qWords = new Set(target.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2));
-        const [marmPlayed] = await Promise.all([recentPlayedUrls(target)]);
-        const playedRecently = new Set([
-            ...[...marmPlayed, ...recentPicks].map(u => u.split('v=')[1] || u),
-        ]);
+        const recent = await recentPlayed(target);
+        const normTitle = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         const candidates = results
             .map((r, i) => ({ r, i }))
-            .filter(({ r }) => !sameVideo(wasUrl, r.url) && !playedRecently.has(r.url));
+            .filter(({ r }) => {
+                if (sameVideo(wasUrl, r.url)) return false;
+                if (recentPicks.has(r.url)) return false;
+                const id = /v=([\w-]{11})/.exec(r.url)?.[1];
+                if (id && recent.ids.has(id)) return false;
+                if (recent.titles.has(normTitle(r.title))) return false;
+                return true;
+            });
         const pool = candidates.length > 0 ? candidates : results.map((r, i) => ({ r, i }));
         const parseDur = (d: string): number => {
             const p = String(d).trim().split(':').map(x => parseInt(x, 10));
