@@ -1038,7 +1038,7 @@ ${agentKernel('every deliverable exists on disk — the file written, the edit a
         delegate: 'iris',
         label: 'Iris',
         background: false,
-        routing: "email, calendar, reminders, scheduled tasks, digests — anything in the user's mail/calendar, attachments included; brief with TASK: one imperative line, ids inline",
+        routing: "email, calendar, reminders, scheduled tasks, digests — anything in the user's mail/calendar, attachments included; brief = one JSON object {intent, ...}, result comes back JSON {result, items}",
         // Up to 3 tool calls per dispatch (was 1, 2026-09-15): iris is a
         // fine-tuned 3b that held list→id→act flows only across separate
         // orchestrator dispatches — the orchestrator had to re-delegate each
@@ -1085,7 +1085,7 @@ TOOLS — one tool per noun; 'action' selects the operation.
 
 INPUT
 - Line 1 is the current local time — use it when a schedule time is relative.
-- TASK: one imperative sentence naming the outcome, carrying every id, address, and value it needs inline.
+- BRIEF: one JSON object — {"intent": "read|send|download|schedule|list|create|update|delete", ...} — carrying every id, address, and value it needs inline.
 
 schedule_value
 - once, relative: ISO-8601 duration — PT2M, PT1H30M, P1D
@@ -1094,9 +1094,8 @@ schedule_value
 - recurring: 5-field cron — 0 9 * * 1-5
 
 OUTPUT
-- Answer from the values the tool returned.
-- Email list: one line each — sender and subject.
-- Everything else: one plain-text line.`,
+- Exactly one JSON object, nothing outside it: {"result": "<the outcome in one line>", "items": ["<one line per item, when the result is a list>"]}
+- Answer from the values the tools returned.`,
         toolsets: ['iris-core'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
         // structured tool use (so Iris reliably calls the email/task/calendar/alarm
@@ -1557,13 +1556,13 @@ function delegateToolDef(s: SubAgentDef) {
             type: 'function',
             function: {
                 name: s.delegate,
-                description: `Delegate to ${s.label} for ${s.summary}. You do NOT have these tools directly — send a structured brief and you will receive one short result line.`,
+                description: `Delegate to ${s.label} for ${s.summary}. You do NOT have these tools directly — send one JSON brief and you will receive one JSON result.`,
                 parameters: {
                     type: 'object',
                     properties: {
                         task: {
                             type: 'string',
-                            description: 'A structured brief and nothing else — no preamble, no explanation, and no time (the runner prepends the current local time). One line: "TASK: <one imperative sentence naming the outcome>". Every id, address, filename and value the sentence needs goes INLINE in that sentence. Example:\nTASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41.',
+                            description: 'One JSON object and nothing else — no preamble, no time (the runner prepends the current local time). Keys: intent (read|send|download|schedule|list|create|update|delete), plus every id, address, filename, date and value the intent needs inline. Example:\n{"intent":"download","email_id":"18f2c9ab41","filename":"invoice-2291.pdf"}',
                         },
                     },
                     required: ['task'],
