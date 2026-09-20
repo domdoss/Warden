@@ -2716,7 +2716,15 @@ function maxOutput(kind: keyof typeof DEFAULT_MAX_OUTPUT): number {
 // seat, the retry path or a model-specific sampler asked for. num_ctx is never
 // touched here — that knob is the user's.
 function graniteSampling(model: string): Record<string, number> {
-    return /granite/i.test(String(model || '')) ? { temperature: 0 } : {};
+    const m = String(model || '');
+    if (!/granite/i.test(m)) return {};
+    // Toolcall-trained small granite (iris/byte/dexter, toolcall-ft): the
+    // fine-tune transcribes tool calls — deterministic is the point.
+    if (/toolcall-ft|granite4\.1:3b/i.test(m)) return { temperature: 0 };
+    // Conversational granite (the 8b/30b seats): argmax replayed the last
+    // successful path verbatim — "play X" came back as chillstep again
+    // (2026-09-19). Use the model card's open-ended profile instead.
+    return { temperature: 0.6, top_p: 0.95 };
 }
 
 // Qwen-documented sampling (Qwen3.5 model card): any qwen model gets these;
