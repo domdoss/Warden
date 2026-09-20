@@ -3323,27 +3323,28 @@ async function warmResidentOllamaModels(): Promise<void> {
         .filter((m) => m && !/cloud/i.test(m)),
     ),
   ];
+  const ctxFor = (m: string): number | undefined => {
+    if (m === (getRouterState('local:subagent_model') || '').replace(/^local:/, '').trim()) {
+      const n = parseInt(getRouterState('local:subagent_ctx') || '', 10);
+      return n > 0 ? n : undefined;
+    }
+    if (m === (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim()) {
+      const n = parseInt(getRouterState('local:orchestrator_ctx') || '', 10);
+      return n > 0 ? n : undefined;
+    }
+    if (m === (getRouterState('atlas:model') || '').replace(/^local:/, '').trim()) {
+      const n = parseInt(getRouterState('local:atlas_ctx') || getRouterState('local:orchestrator_ctx') || '', 10);
+      return n > 0 ? n : undefined;
+    }
+    return undefined;
+  };
   for (const model of toWarm) {
     try {
       // Warm at the SAME num_ctx the settings page configures for this model —
       // a warmup load at Ollama's default ctx creates a resident instance that
       // the first real request (at the settings ctx) immediately discards and
       // reloads, defeating the warmup. ctx is 100% settings-derived: no literal.
-      const ctxFor = (m: string): number | undefined => {
-        if (m === (getRouterState('local:subagent_model') || '').replace(/^local:/, '').trim()) {
-          const n = parseInt(getRouterState('local:subagent_ctx') || '', 10);
-          return n > 0 ? n : undefined;
-        }
-        if (m === (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim()) {
-          const n = parseInt(getRouterState('local:orchestrator_ctx') || '', 10);
-          return n > 0 ? n : undefined;
-        }
-        if (m === (getRouterState('atlas:model') || '').replace(/^local:/, '').trim()) {
-          const n = parseInt(getRouterState('local:atlas_ctx') || getRouterState('local:orchestrator_ctx') || '', 10);
-          return n > 0 ? n : undefined;
-        }
-        return undefined;
-      };
+      // Declared above the loop: the minute-ly re-pin uses it too.
       const numCtx = ctxFor(model);
       const res = await fetch(`${OLLAMA_URL}/api/generate`, {
         method: 'POST',
@@ -3361,6 +3362,34 @@ async function warmResidentOllamaModels(): Promise<void> {
       logger.warn({ model, err }, 'Model warmup failed (non-fatal)');
     }
   }
+
+  // Ollama applies the keep_alive of the LAST request to a loaded model, so
+  // any worker that calls a pinned model without a keep_alive (marm's
+  // indexers, tree classification — anything on the host that omits it)
+  // silently demotes a checkbox-pinned model to a 5-minute TTL and dumps it
+  // from VRAM minutes later (2026-09-20, qwen3.5:35b "4 minutes from now").
+  // Re-pin every minute: one token of generation against an already-loaded
+  // model, cheaper than any reload.
+  const repin = async () => {
+    for (const model of toWarm) {
+      try {
+        const numCtx = ctxFor(model);
+        await fetch(`${OLLAMA_URL}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            prompt: ' ',
+            keep_alive: -1,
+            stream: false,
+            ...(numCtx ? { options: { num_ctx: numCtx } } : {}),
+          }),
+        });
+      } catch { /* next minute retries */ }
+    }
+  };
+  const repinTimer = setInterval(() => { void repin(); }, 60_000);
+  repinTimer.unref?.();
 }
 
 async function main(): Promise<void> {
