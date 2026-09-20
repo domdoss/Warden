@@ -22,13 +22,24 @@ def conv_brief(task):
     n_briefs += 1
     return json.dumps({"intent": intent, "detail": detail}, ensure_ascii=False)
 
+def flatten(t):
+    return ' '.join(str(t).split())
+
 def conv_result(content):
     global n_results
     c = (content or '').strip()
     if c.startswith('{"result"'):
-        return content
+        # Re-flatten already-wrapped rows: json.dumps escaped newlines as
+        # literal \n sequences — actual spaces instead.
+        try:
+            d = json.loads(c)
+        except Exception:
+            return content
+        flat = flatten(d.get('result', ''))
+        n_results += 1
+        return json.dumps({"result": flat, "items": d.get('items', [])}, ensure_ascii=False)
     n_results += 1
-    return json.dumps({"result": c}, ensure_ascii=False)
+    return json.dumps({"result": flatten(c)}, ensure_ascii=False)
 
 for f in sorted(glob.glob(os.path.join(BASE, 's*.jsonl'))):
     rows = [json.loads(l) for l in open(f) if l.strip()]
