@@ -1,74 +1,25 @@
 import { registry } from '../tool-registry.js';
-import { getPage, listPages, setActivePage } from '../browser.js';
 import { log } from '../ipc-helpers.js';
-import type { Page } from 'playwright-core';
 
-// YouTube toolchain (2026-09-18). Playing a video used to be hand-driven
-// browser work — WebSearch for the watch URL, browser_navigate, then
-// browser_evaluate("document.querySelector('video').play()") — three model
-// rounds, each a chance to pick a search-results page instead of a watch URL
-// or to report "playing" off a snapshot of a paused player. The orchestrator
-// lost its web/browser tools on 2026-09-18, so this flow now lives with atlas;
-// a flow that common deserves real tools rather than a prose recipe the model
-// re-derives every time. One merged `youtube` tool, one call per intent:
-// search → results, play → actually playing (verified against the <video>
-// element, not a snapshot), plus the transport actions on the live tab.
-//
-// media_control/audio_volume (MPRIS, toolset `media`) still own pause/skip/
-// volume for ANY player and stay shared with the orchestrator — this tool is
-// the YouTube-specific half: finding the video and getting it started.
+// YouTube toolchain (2026-09-18, re-wired 2026-09-19). Playing a video used to
+// be hand-driven browser work; it became one merged `youtube` tool. It drove
+// the dedicated debug Chrome over CDP (Playwright pages) until that browser
+// was retired: interactive browsing now has exactly ONE provider — the
+// default app (Settings → Default apps → browser, e.g. the browser-driving
+// MCP bridge on the user's real Chrome). This file keeps the battle-tested
+// flow (search-result ad filtering, the advancing-time playback check, the
+// never-send-a-toggle rule) and swaps the transport: a minimal Page-like
+// adapter over the provider's MCP tools. Capabilities are discovered from the
+// live connection at call time — navigate + script-eval are required, a tab
+// list and a key-press tool upgrade fidelity when present; anything missing
+// surfaces as an honest error, never a silent wrong action.
 
 const WATCH_RE = /youtube\.com\/watch|youtu\.be\//i;
 
-/** The tab already on a YouTube watch page, or null. */
-async function findWatchPage(): Promise<Page | null> {
-    try {
-        const pages = await listPages();
-        for (let i = pages.length - 1; i >= 0; i--) {
-            if (WATCH_RE.test(pages[i].url())) return pages[i];
-        }
-    } catch { /* browser not up */ }
-    return null;
-}
-
-/** The live player tab — the one already watching, else the agent's page. */
-async function playerPage(): Promise<{ page: Page; onWatch: boolean }> {
-    const watch = await findWatchPage();
-    if (watch) return { page: watch, onWatch: true };
-    return { page: await getPage(), onWatch: false };
-}
-
-/** The tab to put a video in. THE EXISTING YOUTUBE TAB WINS. getPage() alone
- *  opens a fresh tab per background job, so "play a new song" while one was
- *  already playing left two tabs playing at once and cost a second atlas job
- *  just to close the first (2026-09-18 12:03). One YouTube tab, reused: the
- *  new song replaces the old one the way it would for a person. */
-async function watchTarget(): Promise<Page> {
-    const watch = await findWatchPage();
-    const page = watch ?? (await getPage());
-    setActivePage(page); // claim it so the rest of this job stays in this tab
-    return page;
-}
-
-/** Pause every OTHER YouTube tab, so starting a song can never leave two
- *  playing over each other. Pause, not close — a tab the user opened is
- *  theirs, and silence is all we need. */
-async function pauseOtherPlayers(keep: Page): Promise<number> {
-    let paused = 0;
-    try {
-        for (const p of await listPages()) {
-            if (p === keep || !WATCH_RE.test(p.url())) continue;
-            const wasPlaying = await p.evaluate(() => {
-                const v = (document.querySelector('#movie_player video') || document.querySelector('video')) as HTMLVideoElement | null;
-                if (!v || v.paused) return false;
-                v.pause();
-                return true;
-            }).catch(() => false);
-            if (wasPlaying) paused++;
-        }
-    } catch { /* browser not up */ }
-    return paused;
-}
+// The youtube tab this runner adopted, kept across tool calls: navigate
+// without a tabId CREATES a tab, so every unpinned call would otherwise
+// multiply tabs. Reset when the tab disappears.
+let rememberedTabId: number | undefined;
 
 /** A bare video id or any youtube URL → a canonical watch URL. '' if neither. */
 function toWatchUrl(raw: string): string {
@@ -99,155 +50,349 @@ function sameVideo(a: string, b: string): boolean {
     return !!x && x === id(b);
 }
 
-/** Search results straight off the rendered results page (signed-in Chrome,
- *  so no consent wall). DOM, not ytInitialData: the rendered renderers are
- *  what the user would see, and they survive the shape changes that break
- *  ytInitialData paths. */
-async function searchYouTube(query: string, limit: number): Promise<Result[]> {
-    // Search in the tab that will show the result — no scratch tab. A scratch
-    // tab opened a visible results page and then closed it, which read as
-    // "opens a tab and closes it" (2026-09-18). Searching in place briefly
-    // interrupts whatever is playing, but a new song or an explicit search is
-    // replacing it anyway, and the tab never multiplies.
-    const page = await watchTarget();
-    return await runSearch(page, query, limit);
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ─── The default-app browser bridge ─────────────────────────────────────────
+
+interface BridgeToolDef { name: string; description: string; params: any }
+interface Bridge {
+    server: string;
+    tools: BridgeToolDef[];
+    call: (server: string, tool: string, args: any) => Promise<any>;
 }
 
-async function runSearch(page: Page, query: string, limit: number): Promise<Result[]> {
-    await page.goto(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-    });
-    // Wait on a watch LINK, not on one renderer tag. YouTube ships results in
-    // several components (`ytd-video-renderer`, the newer `yt-lockup-view-model`,
-    // compact/shorts variants) and which one you get varies by rollout: waiting
-    // for `ytd-video-renderer a#video-title` timed out after 15s on a page full
-    // of results and killed the whole play (2026-09-18). Every variant contains
-    // a /watch?v= anchor, so that is the thing that means "results are up".
-    await page.waitForSelector('a[href*="/watch?v="]', { timeout: 20000 });
-    return await page.evaluate((max: number) => {
-        const out: Result[] = [];
-        const seen = new Set<string>();
-        const idOf = (href: string) => {
-            const m = /[?&]v=([\w-]{11})/.exec(href);
-            return m ? m[1] : '';
-        };
-        const isAdRow = (el: Element): boolean => {
-            for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
-                const tag = (n.tagName || '').toLowerCase();
-                if (/ad-slot|promoted|in-feed-ad|ad-layout|companion-ad|display-ad/.test(tag)) return true;
-                const id = (n.id || '').toLowerCase();
-                if (id === 'player-ads' || id === 'masthead-ad') return true;
-            }
-            const badges = Array.from(el.querySelectorAll('ytd-badge-supported-renderer, [class*="badge" i], [aria-label]'));
-            for (const b of badges) {
-                const t = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '')).trim().toLowerCase();
-                if (/^(ad|ads|sponsored|promoted)\b/.test(t) || /\bsponsored\b/.test(t)) return true;
-            }
-            return false;
-        };
-        const push = (a: HTMLAnchorElement, scope: Element) => {
-            if (out.length >= max) return;
-            const href = a.href || '';
-            const id = idOf(href);
-            if (!id || seen.has(id)) return;
-            // Never return a promoted result as "the video". Checking only the
-            // row's own subtree was not enough: YouTube wraps promoted results
-            // in an ANCESTOR ad container, so a sponsored row looked ordinary
-            // from the inside and got played — 2026-09-18 "put on a lofi mix"
-            // started a 15-second Brain.fm advert. Walk up for an ad container,
-            // and read the row's badges by text rather than one fixed class
-            // (the badge component has been renamed repeatedly).
-            if (isAdRow(scope)) return;
-            const channel = (scope.querySelector('ytd-channel-name #text, .yt-content-metadata-view-model__metadata-text') as HTMLElement | null)?.innerText || '';
-            const duration = (scope.querySelector('ytd-thumbnail-overlay-time-status-renderer #text, .badge-shape__text, .ytThumbnailOverlayBadgeViewModelHost') as HTMLElement | null)?.innerText || '';
-            const title = (a.getAttribute('title') || (scope.querySelector('#video-title, .yt-lockup-metadata-view-model__title') as HTMLElement | null)?.innerText || a.innerText || '').trim();
-            if (!title) return;
-            seen.add(id);
-            out.push({ title, channel: channel.trim(), duration: duration.trim(), url: 'https://www.youtube.com/watch?v=' + id });
-        };
-        // Known result containers first — they carry channel + duration.
-        const rows = Array.from(document.querySelectorAll(
-            'ytd-video-renderer, yt-lockup-view-model, ytd-compact-video-renderer'));
-        for (const el of rows) {
-            const a = el.querySelector('a#video-title, a[href*="/watch?v="]') as HTMLAnchorElement | null;
-            if (a) push(a, el);
-            if (out.length >= max) break;
+async function browserBridge(): Promise<Bridge | null> {
+    const apps = ((globalThis as any).__wardenDefaultApps?.() || {}) as Record<string, string>;
+    const v = String(apps.browser || '').trim();
+    if (!v.startsWith('mcp:')) return null;
+    const server = v.slice(4).trim();
+    const bridge = (globalThis as any).__mcpBridge;
+    if (!bridge) return null;
+    const tools: BridgeToolDef[] = bridge.listTools(server) || [];
+    if (tools.length === 0) return null;
+    return { server, tools, call: bridge.call };
+}
+
+function pickTool(tools: BridgeToolDef[], re: RegExp, avoid: RegExp = /screenshot|content|console/i): BridgeToolDef | null {
+    const scored = tools.filter((t) => re.test(t.name) || re.test(t.description || ''));
+    return scored.find((t) => !avoid.test(t.name)) || scored[0] || null;
+}
+
+/** Find the parameter of `tool` whose name matches `re`. */
+function paramOf(tool: BridgeToolDef, re: RegExp): string | null {
+    const props = tool.params?.properties || {};
+    for (const k of Object.keys(props)) if (re.test(k)) return k;
+    return null;
+}
+
+/** Unwrap an MCP tool result to text. */
+function resultText(res: any): string {
+    if (res == null) return '';
+    if (typeof res === 'string') return res;
+    const c = res.content;
+    if (Array.isArray(c)) {
+        const t = c.find((x: any) => x?.type === 'text') || c[0];
+        return String(t?.text ?? '');
+    }
+    if (typeof res.result === 'string') return res.result;
+    return JSON.stringify(res);
+}
+
+/** Best-effort parse of a tool result that wraps a JSON payload. */
+function resultJson(res: any): any {
+    const t = resultText(res);
+    try {
+        const parsed = JSON.parse(t);
+        // chrome_* tools wrap: {success, tabId, engine, result: <value>, metrics}
+        // — the payload is the `result` member regardless of how many metadata
+        // keys ride along.
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'result' in parsed) {
+            const inner = parsed.result;
+            if (typeof inner === 'string') { try { return JSON.parse(inner); } catch { return inner; } }
+            return inner;
         }
-        // Fallback: an unknown renderer shipped. Take the watch links in page
-        // order — a title with no metadata still beats failing the whole play.
-        if (out.length === 0) {
-            for (const a of Array.from(document.querySelectorAll('a[href*="/watch?v="]')) as HTMLAnchorElement[]) {
-                push(a, a.closest('div, li, section') || a);
-                if (out.length >= max) break;
+        return parsed;
+    } catch { return t; }
+}
+
+/** Page-like adapter over the provider's MCP tools — just what the YouTube
+ *  flow needs: goto, url, evaluate, waitForSelector, waitForTimeout,
+ *  bringToFront, keyboard.press. `tabId` targets a specific tab when the
+ *  tools accept one; without it they act on the active tab. */
+class McpPage {
+    tabId?: number;
+    private bridge: Bridge;
+    private nav: BridgeToolDef;
+    private js: BridgeToolDef;
+    private tabsTool: BridgeToolDef | null;
+    /** 'body' = the tool runs the source as a function body (`return` works —
+     *  chrome_javascript). 'expr' = wrap the source in an IIFE expression. */
+    private jsBody: boolean;
+
+    constructor(bridge: Bridge, nav: BridgeToolDef, js: BridgeToolDef, jsBody: boolean, tabsTool: BridgeToolDef | null) {
+        this.bridge = bridge; this.nav = nav; this.js = js; this.jsBody = jsBody; this.tabsTool = tabsTool;
+    }
+
+    /** Re-read the tab list from the bridge. Null when the tool is absent. */
+    async refreshTabs(): Promise<Array<{ id?: number; url: string }> | null> {
+        if (!this.tabsTool) return null;
+        try {
+            const res = await this.bridge.call(this.bridge.server, this.tabsTool.name, {});
+            const parsed = resultJson(res);
+            let arr: any[] | null = null;
+            if (Array.isArray(parsed)) arr = parsed;
+            else if (Array.isArray(parsed?.tabs)) arr = parsed.tabs;
+            else if (Array.isArray(parsed?.windows)) {
+                arr = parsed.windows.flatMap((w: any) => Array.isArray(w?.tabs) ? w.tabs : []);
             }
+            return arr ? arr.map((t: any) => ({ id: t?.id ?? t?.tabId ?? t?.tab_id, url: String(t?.url || '') })) : null;
+        } catch { return null; }
+    }
+
+    /** First navigate may create its own tab (chrome_navigate without tabId
+     *  does). Adopt the tab this flow created so later calls pin to it:
+     *  preferWatch picks the playing tab (change-the-song), otherwise the
+     *  newest youtube tab that is NOT playing (a results page of its own). */
+    private async adoptYouTubeTab(preferWatch: boolean): Promise<void> {
+        if (this.tabId !== undefined) return;
+        const tabs = await this.refreshTabs();
+        const yt = tabs?.filter((t) => /youtube\.com|youtu\.be/i.test(t.url));
+        if (!yt || yt.length === 0) return;
+        const watch = yt.find((t) => WATCH_RE.test(t.url));
+        const picked = preferWatch
+            ? (watch || yt[yt.length - 1])
+            : (yt.filter((t) => !WATCH_RE.test(t.url)).slice(-1)[0] || yt[yt.length - 1]);
+        if (picked?.id !== undefined) this.tabId = picked.id;
+    }
+
+    private async evalTool(args: Record<string, any>): Promise<any> {
+        // Scope the eval to this page's tab — without a tabId the tool runs on
+        // the ACTIVE tab, which is whatever the user is looking at.
+        if (this.tabId !== undefined) {
+            const tabParam = paramOf(this.js, /tab_?id/i);
+            if (tabParam) args[tabParam] = this.tabId;
+        }
+        return await this.bridge.call(this.bridge.server, this.js.name, args);
+    }
+
+    private async navTool(args: Record<string, any>): Promise<any> {
+        return await this.bridge.call(this.bridge.server, this.nav.name, args);
+    }
+
+    /** Run a JS snippet in the page and parse the reply. Snippets are written
+     *  body-style (`return x;`). The arg is passed as a JSON-encoded string
+     *  constant; snippets parse it themselves (`JSON.parse(__arg)`), which
+     *  dodges the injection/escaping problem entirely. */
+    async evaluate<T = any>(body: string, arg?: unknown): Promise<T | null> {
+        const codeParam = paramOf(this.js, /code|script|func|expression|js|source/i) || 'code';
+        const argPre = arg !== undefined ? `const __arg = ${JSON.stringify(JSON.stringify(arg))};\n` : '';
+        const src = this.jsBody ? `${argPre}${body}` : `(function () {\n${argPre}${body}\n})()`;
+        const res = await this.evalTool({ [codeParam]: src }).catch((e) => { throw new Error(`browser script tool failed: ${e?.message || e}`); });
+        const out = resultJson(res);
+        if (out == null || out === '' || out === 'null' || out === 'undefined') {
+            log(`[youtube] eval(${this.js.name}) returned empty — raw: ${resultText(res).slice(0, 300)}`);
         }
         return out;
-    }, limit) as Result[];
+    }
+
+    async goto(url: string, _opts?: any, preferWatch = true): Promise<void> {
+        const urlParam = paramOf(this.nav, /url|link/i) || 'url';
+        const args: Record<string, any> = { [urlParam]: url };
+        const tabParam = paramOf(this.nav, /tab_?id/i);
+        if (tabParam && this.tabId !== undefined) args[tabParam] = this.tabId;
+        await this.navTool(args);
+        if (tabParam) await this.adoptYouTubeTab(preferWatch);
+        await this.waitForSelector('body', 15000).catch(() => {});
+    }
+
+    async url(): Promise<string> {
+        try {
+            const u = await this.evaluate(`return window.location.href;`);
+            return typeof u === 'string' ? u : '';
+        } catch { return ''; }
+    }
+
+    async waitForSelector(selector: string, timeoutMs = 10000): Promise<void> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const hit = await this.evaluate(`return !!document.querySelector(${JSON.stringify(selector)});`);
+            if (hit) return;
+            await sleep(400);
+        }
+        throw new Error(`waitForSelector timed out: ${selector}`);
+    }
+
+    async waitForTimeout(ms: number): Promise<void> { await sleep(ms); }
+
+    /** Close tabs by id (best-effort) — used to retire leftover watch tabs. */
+    async closeTabs(ids: number[]): Promise<void> {
+        const closeTool = pickTool(this.bridge.tools, /close.*tab/i);
+        if (!closeTool || ids.length === 0) return;
+        const idsParam = paramOf(closeTool, /tab_?ids/i) || 'tabIds';
+        await this.bridge.call(this.bridge.server, closeTool.name, { [idsParam]: ids }).catch(() => { /* best effort */ });
+    }
+
+    async bringToFront(): Promise<void> {
+        const act = pickTool(this.bridge.tools, /switch.*tab|activate.*tab|focus.*tab/i);
+        if (!act) return;
+        const tabParam = paramOf(act, /tab_?id/i);
+        if (!tabParam || this.tabId === undefined) return;
+        await this.bridge.call(this.bridge.server, act.name, { [tabParam]: this.tabId }).catch(() => {});
+    }
+
+    async pressKey(key: string): Promise<boolean> {
+        const keyTool = pickTool(this.bridge.tools, /keyboard|press.*key/i);
+        if (!keyTool) return false;
+        const keyParam = paramOf(keyTool, /keys|key\b|text/i) || 'keys';
+        const args: Record<string, any> = { [keyParam]: key };
+        const tabParam = paramOf(keyTool, /tab_?id/i);
+        if (tabParam && this.tabId !== undefined) args[tabParam] = this.tabId;
+        await this.bridge.call(this.bridge.server, keyTool.name, args);
+        return true;
+    }
+}
+
+/** The connected provider's pages, reduced to the adapter + a tab list. */
+async function openBrowser(): Promise<{ page: McpPage; tabs: Array<{ id?: number; url: string }> | null }> {
+    const bridge = await browserBridge();
+    if (!bridge) {
+        throw new Error('No default browser provider is connected. Set Settings → Default apps → browser to an MCP server (e.g. browser-driving) and make sure it is running.');
+    }
+    // chrome_javascript is the preferred eval tool: its `code` runs inside an
+    // async function body, so our body-style snippets work verbatim. inject/
+    // evaluate-shaped tools are the fallback (wrapped as an IIFE expression).
+    const nav = pickTool(bridge.tools, /navigat|goto/i) ?? pickTool(bridge.tools, /open.*tab|new.*tab/i);
+    const jsExact = bridge.tools.find((t) => /javascript$/i.test(t.name));
+    const js = jsExact ?? pickTool(bridge.tools, /inject.*script|evaluate|execute.*script/i);
+    if (!nav) throw new Error(`The default browser provider "${bridge.server}" exposes no navigate tool — it cannot open pages.`);
+    if (!js) throw new Error(`The default browser provider "${bridge.server}" exposes no script/evaluate tool — page control is not possible with it.`);
+    const jsBody = !!jsExact || /function body|return\s*\.\.\./i.test(js.description || '');
+    // Existing YouTube tab first — the tab discipline below depends on it.
+    const tabsTool = bridge.tools.find((t) => /windows_and_tabs/i.test(t.name)) ?? pickTool(bridge.tools, /list.*tabs?|tabs?$/i);
+    const page = new McpPage(bridge, nav, js, jsBody, tabsTool);
+    let tabs: Array<{ id?: number; url: string }> | null = null;
+    if (tabsTool) {
+        try {
+            const res = await bridge.call(bridge.server, tabsTool.name, {});
+            const parsed = resultJson(res);
+            let arr: any[] | null = null;
+            if (Array.isArray(parsed)) arr = parsed;
+            else if (Array.isArray(parsed?.tabs)) arr = parsed.tabs;
+            else if (Array.isArray(parsed?.windows)) {
+                // {windows: [{tabs: [...]}]} — flatten in window order
+                arr = parsed.windows.flatMap((w: any) => Array.isArray(w?.tabs) ? w.tabs : []);
+            }
+            if (arr) tabs = arr.map((t: any) => ({ id: t?.id ?? t?.tabId ?? t?.tab_id, url: String(t?.url || '') }));
+        } catch { tabs = null; }
+    }
+    // A tab already on a watch page first; else the user's open youtube tab
+    // (results/home) — that tab IS "the one I had open" and gets played into
+    // rather than spawning a duplicate.
+    const watch = tabs?.find((t) => WATCH_RE.test(t.url))
+        ?? tabs?.find((t) => /youtube\.com|youtu\.be/i.test(t.url));
+    if (watch && watch.id !== undefined) page.tabId = watch.id;
+    return { page, tabs };
+}
+
+// ─── The flow (transport-independent from here down) ────────────────────────
+
+/** The tab already on a YouTube watch page, or null. */
+async function findWatchPage(page: McpPage, tabs: Array<{ id?: number; url: string }> | null): Promise<McpPage | null> {
+    const watch = tabs?.find((t) => WATCH_RE.test(t.url));
+    if (watch && watch.id !== undefined) {
+        const p = Object.create(Object.getPrototypeOf(page));
+        Object.assign(p, page, { tabId: watch.id });
+        return p;
+    }
+    return WATCH_RE.test(await page.url()) ? page : null;
+}
+
+/** The live player tab — the one already watching, else the active page. */
+async function playerPage(page: McpPage, tabs: Array<{ id?: number; url: string }> | null): Promise<{ page: McpPage; onWatch: boolean }> {
+    const watch = await findWatchPage(page, tabs);
+    if (watch) return { page: watch, onWatch: true };
+    return { page, onWatch: false };
+}
+
+/** A page for work that must not touch the playing tab: a non-watch youtube
+ *  tab if one exists, else a fresh one (created by the first navigate). */
+async function sidePage(page: McpPage, tabs: Array<{ id?: number; url: string }> | null): Promise<McpPage> {
+    const side = Object.create(Object.getPrototypeOf(page));
+    Object.assign(side, page);
+    const others = tabs?.filter((t) => !WATCH_RE.test(t.url) && /youtube\.com|youtu\.be/i.test(t.url));
+    if (others && others.length > 0) side.tabId = others[others.length - 1].id;
+    else side.tabId = undefined; // next goto creates its own tab and adopts it
+    return side;
+}
+
+
+async function runSearch(page: McpPage, query: string, limit: number): Promise<Result[]> {
+    await page.goto(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, undefined, false);
+    // Wait on a watch LINK, not on one renderer tag — every result variant
+    // contains a /watch?v= anchor, so that is the thing that means "results
+    // are up" (a fixed renderer tag timed out on a page full of results).
+    await page.waitForSelector('a[href*="/watch?v="]', 20000);
+    // Extract IN the page — the read tools can't carry this (chrome_read_page
+    // is a viewport accessibility tree with no absolute URLs; get_web_content
+    // truncates to link-less text). Only script-eval sees the anchors.
+    const results = await page.evaluate<Result[]>(`const limit = JSON.parse(__arg);
+const seen = new Set(); const out = [];
+for (const a of document.querySelectorAll('a[href*="/watch?v="]')) {
+  const id = /[?&]v=([\\w-]{11})/.exec(a.href)?.[1];
+  if (!id || seen.has(id)) continue; seen.add(id);
+  const row = a.closest('ytd-video-renderer, ytd-compact-video-renderer, ytd-rich-item-renderer');
+  const title = (row?.querySelector('#video-title, h3, yt-formatted-string')?.textContent || a.textContent || '').trim().slice(0, 140);
+  const channel = (row?.querySelector('#channel-name a, ytd-channel-name a')?.textContent || '').trim();
+  const duration = (row?.querySelector('.badge-shape-wiz__text, ytd-thumbnail-overlay-time-status-renderer span')?.textContent || '').trim();
+  out.push({ title: title || ('Video ' + id), channel, duration, url: 'https://www.youtube.com/watch?v=' + id });
+  if (out.length >= limit) break;
+}
+return out;`, limit);
+    if (results == null) {
+        const title = await page.evaluate<string>(`return document.title;`).catch(() => '');
+        throw new Error(`the results page loaded but could not be read${title ? ` (title: "${String(title).slice(0, 80)}")` : ''}`);
+    }
+    return results.slice(0, limit);
 }
 
 /** Read the player's real state — the ground truth for "is it playing".
- *  Reads the PLAYER's video (`#movie_player video`), not the first <video> on
- *  the page: a results rail or a hover preview also matches a bare `video`
- *  selector, and their paused state has nothing to do with what is playing.
+ *  Reads the PLAYER's video (`#movie_player video`), not the first <video>.
  *  `advancing` is the honest signal — currentTime moving between two samples —
  *  because `paused` reads false during buffering and during an ad. */
-async function playerState(page: Page): Promise<{ paused: boolean; title: string; url: string; at: string; ad: boolean } | null> {
+async function playerState(page: McpPage): Promise<{ paused: boolean; title: string; url: string; at: string; ad: boolean } | null> {
     try {
-        const read = () => page.evaluate(() => {
-            const v = (document.querySelector('#movie_player video') || document.querySelector('video')) as HTMLVideoElement | null;
-            if (!v) return null;
-            const fmt = (s: number) => {
-                if (!Number.isFinite(s)) return '?';
-                const m = Math.floor(s / 60), r = Math.floor(s % 60);
-                return `${m}:${String(r).padStart(2, '0')}`;
-            };
-            const h1 = document.querySelector('#title h1, h1.ytd-watch-metadata') as HTMLElement | null;
-            const player = document.querySelector('#movie_player');
-            return {
-                paused: v.paused || v.ended,
-                t: v.currentTime,
-                ad: !!player && player.className.includes('ad-showing'),
-                title: (h1?.innerText || document.title.replace(/\s*-\s*YouTube$/, '')).trim(),
-                at: `${fmt(v.currentTime)} / ${fmt(v.duration)}`,
-            };
-        });
-        const a = await read();
+        const read = () => page.evaluate(`const v = document.querySelector('#movie_player video') || document.querySelector('video');
+if (!v) return null;
+const fmt = (s) => { if (!Number.isFinite(s)) return '?'; const m = Math.floor(s / 60), r = Math.floor(s % 60); return m + ':' + String(r).padStart(2, '0'); };
+const h1 = document.querySelector('#title h1, h1.ytd-watch-metadata');
+const player = document.querySelector('#movie_player');
+return { paused: !!(v.paused || v.ended), t: v.currentTime, ad: !!player && String(player.className).includes('ad-showing'),
+  title: ((h1 && h1.innerText) || document.title.replace(/\\s*-\\s*YouTube$/, '')).trim(),
+  at: fmt(v.currentTime) + ' / ' + fmt(v.duration) };`);
+        const a = await read() as any;
         if (!a) return null;
-        if (a.paused) return { paused: true, title: a.title, at: a.at, ad: a.ad, url: page.url() };
+        const url = await page.url();
+        if (a.paused) return { paused: true, title: a.title, at: a.at, ad: a.ad, url };
         // Not flagged paused — confirm it is actually moving before believing it.
         await page.waitForTimeout(400);
-        const b = await read();
+        const b = await read() as any;
         const advancing = !!b && !b.paused && b.t > a.t;
-        return { paused: !advancing, title: (b || a).title, at: (b || a).at, ad: (b || a).ad, url: page.url() };
+        return { paused: !advancing, title: (b || a).title, at: (b || a).at, ad: (b || a).ad, url };
     } catch { return null; }
 }
 
 /** Let it autoplay; only intervene when it demonstrably did not start.
- *
- *  YouTube autoplays in the user's real signed-in Chrome — the overwhelmingly
- *  common case is that the video is already running by the time we look, and
- *  the right action is NOTHING. The old version pressed 'k' whenever it could
- *  not read a playing state, and 'k' is YouTube's play/pause TOGGLE: an
- *  unreadable read, a buffering moment or an ad was enough to make it pause
- *  the video it had just started. So: wait for it to start on its own, act
- *  only on a confirmed pause, and never send a toggle — `video.play()` is
- *  idempotent, a keypress is not. */
-async function ensurePlaying(page: Page): Promise<boolean> {
-    // Give autoplay a chance before touching anything.
+ *  Never send a toggle — `video.play()` is idempotent, a keypress is not. */
+async function ensurePlaying(page: McpPage): Promise<boolean> {
     for (let i = 0; i < 6; i++) {
         const st = await playerState(page);
         if (st && !st.paused) return true;   // playing (or an ad is running) — leave it alone
         if (st && st.paused) break;          // confirmed stopped — fall through and start it
         await page.waitForTimeout(500);      // unreadable yet (still loading) — look again
     }
-    // Confirmed paused: start it directly. play() on an already-playing video
-    // is a no-op, so this can never stop anything.
     for (let attempt = 0; attempt < 3; attempt++) {
-        await page.evaluate(() => {
-            const v = (document.querySelector('#movie_player video') || document.querySelector('video')) as HTMLVideoElement | null;
-            if (v && v.paused) void v.play();
-        }).catch(() => {});
+        await page.evaluate(`const v = document.querySelector('#movie_player video') || document.querySelector('video');
+if (v && v.paused) { try { v.play(); } catch (e) {} }`).catch(() => {});
         await page.waitForTimeout(800);
         const st = await playerState(page);
         if (st && !st.paused) return true;
@@ -256,12 +401,13 @@ async function ensurePlaying(page: Page): Promise<boolean> {
     return !!st && !st.paused;
 }
 
-async function playYouTube(target: string): Promise<string> {
-    // Claim the one YouTube tab up front and hold it for the whole job — the
-    // query search below runs in THIS tab, so no scratch tab opens and closes,
-    // and no second tab ever appears.
-    const page = await watchTarget();
-    const wasUrl = page.url();
+async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string }> | null, target: string): Promise<string> {
+    // Tab policy: "change the song" happens IN the playing tab; a fresh play
+    // adopts the tab its first navigate creates. Nothing is ever paused or
+    // closed, and a search page never replaces a playing video.
+    const watch = await findWatchPage(page, tabs);
+    const player = watch || page;
+    const wasUrl = await player.url();
 
     let url = toWatchUrl(target);
     let picked: Result | null = null;
@@ -271,49 +417,59 @@ async function playYouTube(target: string): Promise<string> {
         // playing, instead of a reload that restarts the song.
         alreadyHere = sameVideo(wasUrl, url);
         if (alreadyHere) {
-            const cur = await playerState(page);
+            const cur = await playerState(player);
             if (cur && !cur.paused) {
-                await page.bringToFront().catch(() => {});
+                await player.bringToFront();
                 return `Already playing: ${cur.title} (${cur.at})\n${cur.url}`;
             }
             // Already on the right video but paused — resume below, no reload.
         }
+    } else if (player.tabId !== undefined) {
+        // Player holds a real tab (watch page, or the user's open results/
+        // home tab adopted in openBrowser): search OFF to the side so the
+        // results page never replaces what is in the player tab, then play
+        // the pick there.
+        // Changing the song by query: search OFF to the side so a results
+        // page never replaces the playing video, then play the pick here.
+        const results = await runSearch(await sidePage(page, tabs), target, 5);
+        if (results.length === 0) return `No YouTube results for "${target}".`;
+        picked = results.find(r => !sameVideo(wasUrl, r.url)) || results[0];
+        url = picked.url;
     } else {
         const results = await runSearch(page, target, 5);
         if (results.length === 0) return `No YouTube results for "${target}".`;
-        // "Change the song" arrives as a QUERY, not a video id, and the same
-        // query returns the same top result — the one already playing. Taking
-        // results[0] blindly re-navigated to the current video, which reloads
-        // it and reads as "it just refreshes, the song never changes"
-        // (2026-09-18: "Best of lofi 2018" re-picked at 89:11). If the top hit
-        // is what is playing right now, take the next distinct result.
-        picked = results.find(r => !sameVideo(wasUrl, r.url)) || results[0];
+        picked = results[0];
         url = picked.url;
     }
     if (!alreadyHere) {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await player.goto(url, undefined, !!watch);
     }
-    await page.waitForSelector('video', { timeout: 20000 }).catch(() => {});
-    await page.bringToFront().catch(() => {});
-    const silenced = await pauseOtherPlayers(page);
-    const playing = await ensurePlaying(page);
-    const st = await playerState(page);
+    await player.waitForSelector('video', 20000).catch(() => {});
+    await player.bringToFront();
+    const playing = await ensurePlaying(player);
+    const st = await playerState(player);
     const name = st?.title || picked?.title || url;
     if (!st) return `Opened ${url} but found no video element on the page — it may be a playlist or channel page, not a watch page.`;
-    const note = silenced > 0 ? ` (paused ${silenced} other YouTube tab${silenced === 1 ? '' : 's'})` : '';
+    // One song, one tab: any OTHER watch tab is a leftover that would keep
+    // playing under the new pick (the 2026-09-19 double-song). Close them,
+    // best-effort, once the new one is confirmed live.
+    const leftovers = (tabs || []).filter((t) => t.id !== undefined && t.id !== player.tabId && WATCH_RE.test(t.url));
+    if (leftovers.length > 0) await player.closeTabs(leftovers.map((t) => t.id as number));
     return playing
-        ? `Playing: ${name}${picked?.channel ? ` — ${picked.channel}` : ''} (${st.at})${note}\n${st.url}`
-        : `Opened ${name} but the player is still paused (autoplay blocked). The tab is in front — media_control('play') or a click on the player will start it.\n${st.url}`;
+        ? `Playing: ${name}${picked?.channel ? ` — ${picked.channel}` : ''} (${st.at})\n${st.url}`
+        : `Opened ${name} but the player is still paused (autoplay blocked). media_control('play') or a click on the player will start it.\n${st.url}`;
 }
 
 async function youtube(args: any): Promise<string> {
     const action = String(args?.action || '').trim();
     const target = String(args?.query || args?.url || '').trim();
+    const { page, tabs } = await openBrowser();
 
     if (action === 'search') {
         if (!target) return "Error: 'query' is required for action 'search'.";
         const limit = Math.max(1, Math.min(10, Number(args?.limit) || 5));
-        const results = await searchYouTube(target, limit);
+        // Search off to the side — a results page never replaces the playing video.
+        const results = await runSearch(await sidePage(page, tabs), target, limit);
         if (results.length === 0) return `No YouTube results for "${target}".`;
         return results
             .map((r, i) => `${i + 1}. ${r.title}${r.channel ? ` — ${r.channel}` : ''}${r.duration ? ` [${r.duration}]` : ''}\n   ${r.url}`)
@@ -322,35 +478,36 @@ async function youtube(args: any): Promise<string> {
 
     if (action === 'play') {
         if (!target) return "Error: 'query' (what to play) or 'url' is required for action 'play'.";
-        return await playYouTube(target);
+        return await playYouTube(page, tabs, target);
     }
 
     // Everything below acts on the live player tab.
-    const { page, onWatch } = await playerPage();
+    const { page: player, onWatch } = await playerPage(page, tabs);
     if (!onWatch) return "No YouTube video is open — use action 'play' with what you want to watch.";
 
     if (action === 'now_playing') {
-        const st = await playerState(page);
+        const st = await playerState(player);
         if (!st) return 'A YouTube tab is open but has no video element.';
         return `${st.paused ? 'Paused' : 'Playing'}: ${st.title} (${st.at})\n${st.url}`;
     }
 
     if (action === 'pause' || action === 'resume') {
         if (action === 'resume') {
-            const ok = await ensurePlaying(page);
-            const st = await playerState(page);
+            const ok = await ensurePlaying(player);
+            const st = await playerState(player);
             return ok ? `Resumed: ${st?.title || ''} (${st?.at || ''})` : 'The player would not resume (autoplay blocked).';
         }
-        await page.evaluate(() => ((document.querySelector('#movie_player video') || document.querySelector('video')) as HTMLVideoElement | null)?.pause()).catch(() => {});
-        const st = await playerState(page);
+        await player.evaluate(`const v = document.querySelector('#movie_player video') || document.querySelector('video');
+if (v) { try { v.pause(); } catch (e) {} }`).catch(() => {});
+        const st = await playerState(player);
         return `Paused: ${st?.title || ''} (${st?.at || ''})`;
     }
 
     if (action === 'next') {
-        await page.evaluate(() => (document.querySelector('#movie_player') as HTMLElement | null)?.focus()).catch(() => {});
-        await page.keyboard.press('Shift+N').catch(() => {});
-        await page.waitForTimeout(2500);
-        const st = await playerState(page);
+        const had = await player.pressKey('Shift+N');
+        if (!had) return 'The default browser provider exposes no key-press tool — use action "play" with the next video instead.';
+        await player.waitForTimeout(2500);
+        const st = await playerState(player);
         return st
             ? `${st.paused ? 'Queued' : 'Playing'}: ${st.title} (${st.at})\n${st.url}`
             : 'Pressed next but could not read the player.';
@@ -359,19 +516,18 @@ async function youtube(args: any): Promise<string> {
     if (action === 'seek') {
         const secs = Number(args?.seconds);
         if (!Number.isFinite(secs) || secs < 0) return "Error: 'seconds' (a non-negative number) is required for action 'seek'.";
-        await page.evaluate((s: number) => {
-            const v = (document.querySelector('#movie_player video') || document.querySelector('video')) as HTMLVideoElement | null;
-            if (v) v.currentTime = s;
-        }, secs).catch(() => {});
-        const st = await playerState(page);
+        await player.evaluate(`const v = document.querySelector('#movie_player video') || document.querySelector('video');
+if (v) v.currentTime = JSON.parse(__arg);`, secs).catch(() => {});
+        const st = await playerState(player);
         return `Seeked to ${st?.at || `${secs}s`} — ${st?.title || ''}`;
     }
 
     if (action === 'fullscreen') {
-        await page.bringToFront().catch(() => {});
-        await page.evaluate(() => (document.querySelector('#movie_player') as HTMLElement | null)?.focus()).catch(() => {});
-        await page.keyboard.press('f').catch(() => {});
-        const st = await playerState(page);
+        await player.bringToFront();
+        await player.evaluate(`const p = document.querySelector('#movie_player'); if (p) p.focus();`).catch(() => {});
+        const had = await player.pressKey('f');
+        if (!had) return 'The default browser provider exposes no key-press tool — fullscreen is not available through it.';
+        const st = await playerState(player);
         return `Fullscreen toggled — ${st?.title || 'player'}.`;
     }
 
@@ -380,7 +536,7 @@ async function youtube(args: any): Promise<string> {
 
 registry.register({
     name: 'youtube',
-    description: "Play and control YouTube in the user's real Chrome — music, a song, a track, a mix, a video: play it, pause it, skip to the next one, change what is playing. action 'play' takes what they asked for as `query` (or a URL/video id as `url`), finds the video, plays it IN THE YOUTUBE TAB THAT IS ALREADY OPEN (replacing whatever was playing, and pausing any other YouTube tab) or opens one if there is none, and confirms playback from the <video> element itself — one call for \"play X on youtube\", no search-then-navigate-then-evaluate dance, and no tab cleanup afterwards: switching songs never leaves a second tab playing. Other actions: 'search' (query → ranked results with channel + duration, when they want to choose), 'now_playing', 'pause', 'resume', 'next' (next video), 'seek' (seconds), 'fullscreen'. The result text IS the confirmation — never screenshot to check. For a non-YouTube player (Spotify, mpv, VLC) or the system volume, use media_control / audio_volume instead.",
+    description: "Play and control YouTube in the user's real Chrome — music, a song, a track, a mix, a video: play it, pause it, skip to the next one, change what is playing. action 'play' takes what they asked for as `query` (or a URL/video id as `url`) and confirms playback from the <video> element itself. Tab policy: plays INTO the youtube tab the user already has open (a watch page first, else their results/home tab); changing the song happens IN the playing tab; leftover watch tabs from before are closed so only one song ever plays. Other actions: 'search' (query → ranked results with channel + duration, in its own tab), 'now_playing', 'pause', 'resume', 'next' (next video), 'seek' (seconds), 'fullscreen'. Drives the DEFAULT browser provider (Settings → Default apps → browser); the result text IS the confirmation — never screenshot to check. For a non-YouTube player (Spotify, mpv, VLC) or the system volume, use media_control / audio_volume instead.",
     schema: {
         type: 'object',
         properties: {
