@@ -1,7 +1,5 @@
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
-import fs from 'fs';
-import path from 'path';
 
 // YouTube toolchain (2026-09-18, re-wired 2026-09-19). Playing a video used to
 // be hand-driven browser work; it became one merged `youtube` tool. It drove
@@ -50,38 +48,39 @@ function sameVideo(a: string, b: string): boolean {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Recently played video URLs — "change the song" must not re-deal the same
-// one because it ranks first. PERSISTED: the runner process is per-session,
-// so an in-memory set forgot everything between messages and the seat kept
-// re-serving the same couple of songs (2026-09-19). The history file survives
-// sessions; the last 20 entries are excluded from picking.
-const HISTORY_FILE = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'store', 'youtube-history.json');
+// one because it ranks first. The history LIVES IN MARM: each play logs a
+// "youtube-play:" memory entry, and the picker recalls them to know what to
+// exclude. No separate store to grow stale (2026-09-19).
 
-function loadHistory(): Array<{ url: string; title: string; ts: number }> {
-    try {
-        const h = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-        return Array.isArray(h) ? h : [];
-    } catch {
-        return [];
-    }
-}
-
-function recordPlay(url: string, title: string): void {
-    try {
-        const h = loadHistory();
-        h.push({ url, title, ts: Date.now() });
-        fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-        fs.writeFileSync(HISTORY_FILE, JSON.stringify(h.slice(-100), null, 1));
-    } catch { /* history is advisory — never fail the play over it */ }
-    // MARM too: each play becomes recallable memory, so "what did I play
-    // recently" survives sessions in the memory layer as well.
+async function marmTool(re: RegExp): Promise<{ call: (args: any) => Promise<any> } | null> {
     try {
         const bridge = (globalThis as any).__mcpBridge;
         const tools = bridge?.listTools?.('marm') || [];
-        const logTool = tools.find((t: any) => /marm_log_entry$/.test(t.name || ''));
-        if (logTool) {
-            void bridge.call('marm', logTool.name, { entry: `youtube-play: ${title} (${url})` }).catch(() => {});
+        const t = tools.find((x: any) => re.test(x.name || ''));
+        if (!t) return null;
+        return { call: (args: any) => bridge.call('marm', t.name, args) };
+    } catch {
+        return null;
+    }
+}
+
+async function logPlay(url: string, title: string): Promise<void> {
+    const marm = await marmTool(/marm_log_entry$/);
+    if (!marm) return;
+    await marm.call({ entry: `youtube-play: ${title} (${url})` }).catch(() => { /* advisory */ });
+}
+
+async function recentPlayedUrls(query: string): Promise<Set<string>> {
+    const out = new Set<string>();
+    try {
+        const marm = await marmTool(/marm_smart_recall$/);
+        if (!marm) return out;
+        const res = await marm.call({ query: `youtube-play ${query}`, limit: 20 });
+        for (const m of resultText(res).matchAll(/youtube-play:[^]*?\((https?:\/\/[^\s)]+)\)/g)) {
+            out.add(m[1]);
         }
-    } catch { /* advisory */ }
+    } catch { /* recall is advisory — worst case a repeat slips through */ }
+    return out;
 }
 
 const recentPicks = new Set<string>();
@@ -447,9 +446,9 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
         // carry the query's words (2026-09-19: it kept re-playing the same
         // first result).
         const qWords = new Set(target.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2));
+        const [marmPlayed] = await Promise.all([recentPlayedUrls(target)]);
         const playedRecently = new Set([
-            ...loadHistory().slice(-20).map(h => h.url.split('v=')[1] || h.url),
-            ...[...recentPicks].map(u => u.split('v=')[1] || u),
+            ...[...marmPlayed, ...recentPicks].map(u => u.split('v=')[1] || u),
         ]);
         const candidates = results
             .map((r, i) => ({ r, i }))
@@ -468,7 +467,7 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
             if (first) recentPicks.delete(first);
         }
         url = picked.url;
-        recordPlay(picked.url, picked.title);
+        void logPlay(picked.url, picked.title);
     }
     if (!alreadyHere) {
         await player.goto(url);
