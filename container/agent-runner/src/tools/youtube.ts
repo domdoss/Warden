@@ -470,7 +470,13 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
                 if (recent.titles.has(normTitle(r.title))) return false;
                 return true;
             });
-        const pool = candidates.length > 0 ? candidates : results.map((r, i) => ({ r, i }));
+        // No fallback to excluded candidates — a pool exhausted by exclusions
+        // means every hit was a recent play, and silently re-playing one of
+        // those is exactly the repeat the exclusions exist to stop.
+        if (candidates.length === 0) {
+            return `Every result for "${target}" was recently played. Try a different artist or genre — or action "next" to move on from the current video.`;
+        }
+        const pool = candidates;
         const parseDur = (d: string): number => {
             const p = String(d).trim().split(':').map(x => parseInt(x, 10));
             if (!p.length || p.some(isNaN)) return 0;
