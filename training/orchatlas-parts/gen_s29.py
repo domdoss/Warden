@@ -28,7 +28,7 @@ def tool(cid, name, content):
 def final(text):
     return {"role": "assistant", "content": text}
 
-def dumps(rows):
+def dumps(rows, repeat=1):
     lines = []
     for msgs in rows:
         assert msgs[0]["role"] == "user"
@@ -36,8 +36,10 @@ def dumps(rows):
         for m in msgs:
             for tc in (m.get("tool_calls") or []):
                 assert tc["function"]["name"] != "atlas", "seat delegates to atlas"
-        lines.append(json.dumps({"messages": [{"role": "system", "content": SYS}] + msgs},
-                                ensure_ascii=False))
+        obj = {"messages": [{"role": "system", "content": SYS}] + msgs}
+        if repeat > 1:
+            obj["repeat"] = repeat  # thin section — the merge emits it twice
+        lines.append(json.dumps(obj, ensure_ascii=False))
     return "\n".join(lines) + "\n"
 
 GATE = ("The orchestrator runs only when the user asks for it. Do not start it on your own — "
@@ -233,6 +235,70 @@ def bg_row(ask, task, start, ack):
         final(ack),
     ]
 
+# ─── kind 4: the gate's other outcomes — decline, urgent, mid-run status ────
+DECLINE_ROW = [
+    user("Tidy up the whole reports folder: rename everything to the ISO date format, build an index.md, and email the team the new layout."),
+    acall("c1", "orch", {"task": "Tidy ~/Warden/reports: rename every file to the ISO date format, build an index.md, and email the team the new layout."}),
+    tool("c1", "orch", GATE),
+    final("That's a rename-plus-index-plus-email chain — orch can run it whole in the background and hand up one result. Want me to send it?"),
+    user("no — just email the team that the layout will change soon, nothing else"),
+    acall("c2", "iris", {"task": "Email the team list a short note: the ~/Warden/reports folder layout will change to ISO-date filenames with an index.md soon — no action needed. Current local time is the anchor."}),
+    tool("c2", "iris", "Done. Note sent to the team list: reports layout changing to ISO-date filenames + index.md soon, no action needed."),
+    final("Orch stays parked — the team note is sent, and the folder itself stays as-is until you want the full tidy-up."),
+]
+
+URGENT_ROW = [
+    user("Compare our three supplier quotes in ~/Warden/quotes and get a recommendation drafted — I need it before the 3pm meeting, interrupt me the second it's ready."),
+    acall("c1", "orch", {"task": "Compare the three supplier quotes in ~/Warden/quotes (pricing, terms, risk) and draft a recommendation with the tradeoffs named."}),
+    tool("c1", "orch", GATE),
+    final("Quote comparison + a drafted recommendation is a chain — orch runs it whole in the background. Say go and I'll mark it urgent so it interrupts you the moment it lands."),
+    user("go, urgent"),
+    acall("c2", "orch", {"task": "Compare the three supplier quotes in ~/Warden/quotes (pricing, terms, risk) and draft a recommendation with the tradeoffs named.", "urgent": True}),
+    tool("c2", "orch", spawned("orch-tq08", urgent=True)),
+    final("Orch is on the quotes — flagged urgent, so the recommendation interrupts you the moment it's done."),
+]
+
+STATUS_ROW = [
+    user("is the q3 report chain done yet?"),
+    acall("c1", "list_running_agents", {}),
+    tool("c1", "list_running_agents", "Running: orch-hb27 (q3-report, iteration 23/60, started 12:41)."),
+    final("Still running — orch is 23 iterations into the q3 chain. The result lands here the moment it finishes."),
+]
+
+# ─── kind 5: harder report-backs — BLOCKED, and two results at once ─────────
+BLOCKED_REPORTBACK = [
+    {"role": "user", "content": reportback(
+        "orch-zf26",
+        "Set up the nightly database backup: dump the sqlite dbs, compress them, copy to the NAS share //nas/backup-warden, and email a confirmation each night.",
+        "BLOCKED — nightly db backup is built but cannot reach the NAS.\n"
+        "- Built and verified: backup.sh dumps both stores, zstd-compresses, keeps 7 nights, logs every run (dry-run clean).\n"
+        "- The blocker: //nas/backup-warden is not mounted and no credentials for it exist on this machine; the copy step is stubbed behind a clear error.\n"
+        "- Nothing was scheduled — a nightly confirmation email would be a lie while the NAS copy can't run.")},
+    final("The backup script is built and tested, but it's blocked on the NAS — the share isn't mounted and there are no credentials on this box. Nothing was scheduled. I need the mount or the credentials from you to finish the chain."),
+]
+
+TWOJOB_REPORTBACK = [
+    {"role": "user", "content": ANCHOR + "REPORT-BACK TURN — jobs below are FINISHED. Report each result.\n\n"
+     "[Inbox] 2 background job results completed:\n\n"
+     "- orch-jd45 (orch, done) — task: \"Clean the media library: dedupe ~/Pictures, re-encode oversized videos in ~/Videos, regenerate thumbnails, and write what was removed or shrunk to ~/Warden/reports/media-cleanup.txt.\"\n"
+     "Result:\nDONE — media library cleaned.\n- 143 duplicate photos removed, 17 oversized videos re-encoded (62 GB freed).\n- Thumbnails regenerated for everything remaining.\n- Full log: ~/Warden/reports/media-cleanup.txt\n\n"
+     "- artemis-ud31 (artemis, done) — task: \"Audit /opt/Warden/projects for stale lockfiles and dead temp dirs left by crashed jobs.\"\n"
+     "Result:\nArtemis audit complete: 3 stale lockfiles in /opt/Warden/projects (jobs that exited without cleanup) and one dead temp dir in /tmp/warden-scratch. All safe to remove; none are held by running processes."},
+    acall("c1", "Bash", {"command": "rm -f /opt/Warden/projects/*.lock /tmp/warden-scratch && du -sh ~/Pictures ~/Videos | tail -2"}),
+    tool("c1", "Bash", "removed: 3 lockfiles, 1 temp dir\nPictures  18G\nVideos  41G"),
+    final("Media cleanup freed 62 GB (143 dupes removed, 17 videos re-encoded — full log at ~/Warden/reports/media-cleanup.txt), and artemis's sweep found 3 stale lockfiles plus a dead temp dir, which I've removed."),
+]
+
+# ─── kind 6: mixed intents — not everything goes to one place ────────────────
+MIXED_ROW = [
+    user("tell the team standup is moved to 10:30 tomorrow, and while you're at it archive last month's reports into ~/Warden/archive."),
+    acall("c1", "iris", {"task": "Email the team list: tomorrow's standup moves to 10:30 (was 10:00). Current local time is the anchor."}),
+    tool("c1", "iris", "Done. Email sent to the team list: tomorrow's standup moved to 10:30."),
+    acall("c2", "Bash", {"command": "mkdir -p ~/Warden/archive/2026-08 && mv ~/Warden/reports/2026-08-*.md ~/Warden/archive/2026-08/ && ls ~/Warden/archive/2026-08 | wc -l"}),
+    tool("c2", "Bash", "14\nexit 0"),
+    final("Standup move is emailed to the team, and 14 of last month's reports are archived into ~/Warden/archive/2026-08."),
+]
+
 ROWS = []
 for g in GATE_ROWS:
     ROWS.append(gate_row(*g))
@@ -242,6 +308,12 @@ for r in IRIS_ROWS:
     ROWS.append(iris_row(*r))
 for r in BG_ROWS:
     ROWS.append(bg_row(*r))
+ROWS.append(DECLINE_ROW)
+ROWS.append(URGENT_ROW)
+ROWS.append(STATUS_ROW)
+ROWS.append(BLOCKED_REPORTBACK)
+ROWS.append(TWOJOB_REPORTBACK)
+ROWS.append(MIXED_ROW)
 
-open(os.path.join(BASE, "s29-1.jsonl"), "w").write(dumps(ROWS))
-print("s29-1: %d rows" % len(ROWS))
+open(os.path.join(BASE, "s29-1.jsonl"), "w").write(dumps(ROWS, repeat=2))
+print("s29-1: %d rows (all x2)" % len(ROWS))

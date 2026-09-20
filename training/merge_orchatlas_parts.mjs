@@ -65,6 +65,16 @@ for (const f of files) {
       return;
     }
     if (row.tools !== undefined) errors.push(`${where}: carries its own tools field`);
+    // Optional per-row upweight: `"repeat": 2` emits the row that many times —
+    // the intentional way to fatten a thin section (an exact copy written by
+    // hand into two files is still rejected as a duplicate below; only an
+    // explicit repeat multiplies).
+    let repeat = 1;
+    if (row.repeat !== undefined) {
+      repeat = Math.floor(Number(row.repeat));
+      if (!(repeat >= 1 && repeat <= 4)) errors.push(`${where}: repeat must be 1-4`);
+      repeat = Math.min(4, Math.max(1, repeat || 1));
+    }
     const msgs = row.messages;
     if (!Array.isArray(msgs) || msgs.length < 3) {
       errors.push(`${where}: messages missing/short`);
@@ -124,7 +134,7 @@ for (const f of files) {
       }
       if (m.role === 'tool' && !role.toolNames.has(m.name)) errors.push(`${where}: tool result for unknown tool "${m.name}"`);
     }
-    out.push({ messages: msgs, tools: role.tools });
+    out.push({ row: { messages: msgs, tools: role.tools }, repeat });
   });
 }
 
@@ -134,17 +144,21 @@ if (errors.length) {
   process.exit(1);
 }
 
-// Reject exact-duplicate rows (identical messages) across parts.
+// Reject exact-duplicate rows (identical messages) across parts — but a row's
+// own `repeat` stands: the FIRST occurrence carries the upweight, and a later
+// exact copy elsewhere is still just a duplicate.
 const seen = new Set();
 const unique = [];
 for (const r of out) {
-  const k = JSON.stringify(r.messages);
+  const k = JSON.stringify(r.row.messages);
   if (seen.has(k)) continue;
   seen.add(k);
-  unique.push(r);
+  for (let i = 0; i < r.repeat; i++) unique.push(r.row);
 }
-const dupes = out.length - unique.length;
+const distinct = seen.size;
+const droppedDupes = out.length - distinct;
+const repeatCopies = unique.length - distinct;
 
 writeFileSync(path.join(HERE, 'orchatlas-sft.jsonl'), unique.map((r) => JSON.stringify(r)).join('\n') + '\n');
-console.log(`Merged ${files.length} part files → ${unique.length} rows (${dupes} exact duplicates dropped)`);
+console.log(`Merged ${files.length} part files → ${unique.length} rows (${distinct} unique, ${repeatCopies} repeat-upweighted, ${droppedDupes} exact duplicates dropped)`);
 console.log(`seat: ${ROLES.seat.system.length}-char prompt, ${ROLES.seat.tools.length} tools | orch: ${ROLES.orch.system.length}-char prompt, ${ROLES.orch.tools.length} tools — both extracted live from the runner source`);
