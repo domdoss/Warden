@@ -454,9 +454,22 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
             .map((r, i) => ({ r, i }))
             .filter(({ r }) => !sameVideo(wasUrl, r.url) && !playedRecently.has(r.url));
         const pool = candidates.length > 0 ? candidates : results.map((r, i) => ({ r, i }));
+        const parseDur = (d: string): number => {
+            const p = String(d).trim().split(':').map(x => parseInt(x, 10));
+            if (!p.length || p.some(isNaN)) return 0;
+            return p.reduce((acc, v) => acc * 60 + v, 0);
+        };
+        const wantLong = /mix|live|hour|stream|compilation|set/i.test(target);
+        const durScore = (r: Result): number => {
+            const s = parseDur(r.duration);
+            if (!s) return 0;
+            if (s < 45) return -3;                    // teaser/short — never a song
+            if (wantLong) return s >= 1200 ? 2 : 0;   // long ask → long video
+            return s >= 90 && s <= 900 ? 2 : 0;       // song-ish window
+        };
         pool.sort((a, b) => {
-            const sa = [...qWords].filter(w => a.r.title.toLowerCase().includes(w)).length - a.i * 0.1;
-            const sb = [...qWords].filter(w => b.r.title.toLowerCase().includes(w)).length - b.i * 0.1;
+            const sa = [...qWords].filter(w => a.r.title.toLowerCase().includes(w)).length + durScore(a.r) - a.i * 0.1;
+            const sb = [...qWords].filter(w => b.r.title.toLowerCase().includes(w)).length + durScore(b.r) - b.i * 0.1;
             return sb - sa;
         });
         picked = pool[0].r;
