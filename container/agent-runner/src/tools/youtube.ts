@@ -47,6 +47,10 @@ function sameVideo(a: string, b: string): boolean {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// Recently played video URLs — "change the song" must not re-deal the same
+// one because it ranks first. Oldest entries fall off past 8.
+const recentPicks = new Set<string>();
+
 // ─── The default-app browser bridge ─────────────────────────────────────────
 
 interface BridgeToolDef { name: string; description: string; params: any }
@@ -403,9 +407,27 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
         // spawning a second YouTube tab (2026-09-19).
         const results = await runSearch(page, target, 5);
         if (results.length === 0) return `No YouTube results for "${target}".`;
-        // First organic result — but never the video already playing (that
-        // would reload and restart it).
-        picked = results.find(r => !sameVideo(wasUrl, r.url)) || results[0];
+        // The pick is a DECISION, not position 0: exclude what is playing and
+        // what this seat recently played, then prefer titles that actually
+        // carry the query's words (2026-09-19: it kept re-playing the same
+        // first result).
+        const qWords = new Set(target.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2));
+        const candidates = results
+            .map((r, i) => ({ r, i }))
+            .filter(({ r }) => !sameVideo(wasUrl, r.url) && !recentPicks.has(r.url));
+        const pool = candidates.length > 0 ? candidates : results.map((r, i) => ({ r, i }));
+        pool.sort((a, b) => {
+            const sa = [...qWords].filter(w => a.r.title.toLowerCase().includes(w)).length - a.i * 0.1;
+            const sb = [...qWords].filter(w => b.r.title.toLowerCase().includes(w)).length - b.i * 0.1;
+            return sb - sa;
+        });
+        picked = pool[0].r;
+        recentPicks.delete(picked.url);
+        recentPicks.add(picked.url);
+        if (recentPicks.size > 8) {
+            const first = recentPicks.values().next().value;
+            if (first) recentPicks.delete(first);
+        }
         url = picked.url;
     }
     if (!alreadyHere) {
