@@ -135,9 +135,11 @@ export function extractSubagentFields(delegate, src = runnerSrc()) {
   };
 }
 
-/** All non-atlas SUBAGENTS delegates (the ones delegateToolDef is called on). */
+/** All non-atlas SUBAGENTS delegates (the ones delegateToolDef is called on).
+ *  orch included since 8ddc077: it is a background subagent the seat calls for
+ *  long multi-specialist chains — the seat cannot call itself. */
 export function extractDelegates(src = runnerSrc()) {
-  const names = ['vulkan', 'iris', 'artemis', 'sentry'];
+  const names = ['vulkan', 'iris', 'artemis', 'sentry', 'orch'];
   const out = [];
   for (const n of names) {
     try { out.push(extractSubagentFields(n, src)); }
@@ -202,9 +204,19 @@ export function extractCrewBlock(src = runnerSrc()) {
 export function extractFewModeSystemPrompt(src = runnerSrc()) {
   const start = src.indexOf("const modeBlock = '");
   if (start === -1) throw new Error(drift('modeBlock'));
-  const end = src.indexOf("';", start + 400); // first quote-semicolon after the last concat branch
-  if (end === -1 || end - start > 4000) throw new Error(drift('modeBlock extent'));
-  const expr = src.slice(start + 'const modeBlock = '.length, end + 1);
+  // Walk to the statement's `;` outside any string — the concat branches are
+  // `'...'` literals + `crewBlock()`, so the first unquoted `;` ends it. (A
+  // fixed offset used to skip the terminator when the block got shorter.)
+  const bodyStart = start + 'const modeBlock = '.length;
+  let end = -1, inStr = false;
+  for (let i = bodyStart; i < src.length; i++) {
+    const ch = src[i];
+    if (inStr) { if (ch === '\\') i++; else if (ch === "'") inStr = false; continue; }
+    if (ch === "'") { inStr = true; continue; }
+    if (ch === ';') { end = i; break; }
+  }
+  if (end === -1 || end - start > 8000) throw new Error(drift('modeBlock extent'));
+  const expr = src.slice(bodyStart, end);
   if (!expr.includes('crewBlock()')) throw new Error(drift('modeBlock shape'));
   const crew = extractCrewBlock(src);
   const evalOut = eval(`(() => { const crewBlock = () => ${JSON.stringify(crew)}; return ${expr}; })()`);

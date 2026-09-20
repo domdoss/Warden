@@ -783,7 +783,7 @@
       "type": "function",
       "function": {
         "name": "youtube",
-        "description": "Play and control YouTube in the user's real Chrome — music, a song, a track, a mix, a video: play it, pause it, skip to the next one, change what is playing. action 'play' takes what they asked for as `query` (or a URL/video id as `url`) and confirms playback from the <video> element itself. Tab policy: plays INTO the youtube tab the user already has open (a watch page first, else their results/home tab); changing the song happens IN the playing tab; leftover watch tabs from before are closed so only one song ever plays. Other actions: 'search' (query → ranked results with channel + duration, in its own tab), 'now_playing', 'pause', 'resume', 'next' (next video), 'seek' (seconds), 'fullscreen'. Drives the DEFAULT browser provider (Settings → Default apps → browser); the result text IS the confirmation — never screenshot to check. For a non-YouTube player (Spotify, mpv, VLC) or the system volume, use media_control / audio_volume instead.",
+        "description": "YouTube in the user's real Chrome. PLAY: {\"action\":\"play\",\"query\":\"lofi mix\"} or {\"action\":\"play\",\"url\":\"<video id or link>\"}. SEARCH: {\"action\":\"search\",\"query\":\"lofi mix\",\"limit\":5}. CONTROL: now_playing | pause | resume | next | seek {\"action\":\"seek\",\"seconds\":30} | fullscreen. RULES: one youtube tab, reuse it; result text confirms, never screenshot; other players or volume → media_control / audio_volume.",
         "parameters": {
           "type": "object",
           "properties": {
