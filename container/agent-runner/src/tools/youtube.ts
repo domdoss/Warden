@@ -499,6 +499,17 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
             titles: new Set([...marmRecall.titles, ...dbPlayed.titles]),
         };
         const normTitle = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        // Containment, not equality: "Mix - NIGHT PROTOCOL ..." and the plain
+        // title are the same song to the ear, so a recent title kills any
+        // result title that contains it (or is contained by it).
+        const titlePlayed = (t: string): boolean => {
+            const n = normTitle(t);
+            if (!n) return false;
+            for (const p of recent.titles) {
+                if (p.length >= 12 && (n.includes(p) || p.includes(n))) return true;
+            }
+            return false;
+        };
         const candidates = results
             .map((r, i) => ({ r, i }))
             .filter(({ r }) => {
@@ -506,7 +517,7 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
                 if (recentPicks.has(r.url)) return false;
                 const id = /v=([\w-]{11})/.exec(r.url)?.[1];
                 if (id && recent.ids.has(id)) return false;
-                if (recent.titles.has(normTitle(r.title))) return false;
+                if (titlePlayed(r.title)) return false;
                 return true;
             });
         const pool = candidates.length > 0 ? candidates : results.map((r, i) => ({ r, i }));

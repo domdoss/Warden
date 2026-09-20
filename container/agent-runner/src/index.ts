@@ -1225,7 +1225,7 @@ const ORCH_SYSTEM = `{
  },
  "rules": {
   "act": "first turn — pick the tool, call it",
-  "play": "\"play X\" = ONE youtube play call, then silence. query is what a human types in the YouTube box: artist/genre/song only — no negations, no \"different\"; repeats are auto-skipped. \"another/next/more\" = youtube action next — never re-search the playing or last song. search only when they asked to search",
+  "play": "\"play X\" = ONE youtube play call, then silence. query is what a human types in the YouTube box: artist/genre/song only — no negations, no \"different\"; repeats are auto-skipped. \"another/next/more\" = query the ARTIST or genre alone — never a song title already played this session — or youtube action next. search only when they asked to search",
   "read": "once, whole; grep once for one forgotten string",
   "truth": "the tool result is the truth: success = proof, error = did not happen",
   "chain": "state it once (Plan: A→B→C); each step your tool or a brief",
