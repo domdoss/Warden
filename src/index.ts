@@ -2068,6 +2068,7 @@ async function processOwnerMessages(): Promise<void> {
     councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
     councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,
     defaultApps: readDefaultApps(),
+    assistantName: ASSISTANT_NAME,
     pinnedTools: readPinnedTools(),
     showThinking: getRouterState(`thinking:${OWNER_JID}`)
       || getRouterState('local:thinking')
@@ -3053,6 +3054,19 @@ function startChromeWatchdog(): void {
   let chromeFailures = 0;
   let chromeLaunched = false;
 
+  // The debug Chrome serves the stock CDP browser tools. When a default-app
+  // MCP provider owns the browser or web capability, EVERY consumer — the
+  // built-in browser tools AND the youtube tool — routes to that provider
+  // instead, so the debug browser has nothing to serve: the watchdog neither
+  // launches nor relaunches it (a live one is adopted, never killed).
+  // Flipping the default back to builtin resumes launching on the next tick.
+  const browserDefaultIsMcp = (): boolean => {
+    const b = (getRouterState('default_app:browser') || '').trim();
+    const w = (getRouterState('default_app:web') || '').trim();
+    return b.startsWith('mcp:') || w.startsWith('mcp:');
+  };
+  let chromeSkippedForMcpDefault = false;
+
   const httpOk = (url: string, timeoutMs = 3000) =>
     new Promise<boolean>((resolve) => {
       const req = http.get(url, { timeout: timeoutMs }, (res) => {
@@ -3103,7 +3117,13 @@ function startChromeWatchdog(): void {
       return;
     }
     // CDP unreachable: a hung Warden-profile Chrome may still hold the port or
-    // profile lock — kill it before starting fresh.
+    // profile lock — kill it before starting fresh. But first: if an MCP
+    // provider owns the browser/web capability, don't launch at all.
+    if (browserDefaultIsMcp()) {
+      chromeSkippedForMcpDefault = true;
+      logger.info({ cdpPort: CHROME_CDP_PORT }, 'Browser/web default is an MCP provider — not launching debug Chrome');
+      return;
+    }
     try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
     for (let i = 0; i < 15; i++) {
       const e = discoverDisplayEnv();
@@ -3120,12 +3140,26 @@ function startChromeWatchdog(): void {
   setInterval(async () => {
     const now = Date.now();
     if (now - chromeLaunchTime < 10000) return;
-    if (!chromeLaunched) return; // still waiting for the session before first launch
+    if (!chromeLaunched) {
+      if (!chromeSkippedForMcpDefault) return; // boot still waiting for the session
+      if (browserDefaultIsMcp()) return; // still wanted-off
+      // Default flipped back to builtin: launch once a graphical session exists.
+      const e0 = discoverDisplayEnv();
+      if ((e0.WAYLAND_DISPLAY && e0.XDG_RUNTIME_DIR) || e0.DISPLAY) {
+        chromeSkippedForMcpDefault = false;
+        spawnChrome();
+        chromeLaunched = true;
+        chromeLaunchTime = Date.now();
+        logger.info('Browser default back on builtin — launching debug Chrome');
+      }
+      return;
+    }
 
     // If Chrome started headless (no session yet) but one has since appeared,
     // relaunch it headed — visible window, and plasma-browser-integration-host
     // stops crashing (the Qt6 helper gets a real display instead of aborting).
     if (chromeHeadless) {
+      if (browserDefaultIsMcp()) return; // nobody is using the CDP browser
       const e = discoverDisplayEnv();
       if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) {
         restartChrome('graphical session appeared — switching to headed');
@@ -3135,6 +3169,12 @@ function startChromeWatchdog(): void {
 
     const chromeUp = await httpOk(`http://localhost:${CHROME_CDP_PORT}/json/version`, 3000);
     if (!chromeUp) {
+      if (browserDefaultIsMcp()) {
+        chromeLaunched = false;
+        chromeSkippedForMcpDefault = true;
+        logger.info('Browser/web default is an MCP provider — not relaunching debug Chrome');
+        return;
+      }
       chromeFailures++;
       if (chromeFailures >= 3) {
         restartChrome('Chrome CDP unreachable');
@@ -3175,9 +3215,12 @@ function seedPerAgentModelSettings(): void {
   // Orchestrator has historically been resident (keep_alive -1); materialize that
   // as the default so the checkbox reflects reality. Atlas IS the seat now, so
   // it gets the same resident default (it used to silently mirror orchestrator's
-  // value instead of having its own — fixed 2026-09-19). Toolcall stays unset →
-  // the runner defaults to 300 (its historic sub-agent TTL).
-  seed('local:orch_keep_alive', '-1');
+  // value instead of having its own — fixed 2026-09-19). Orchestrator is a
+  // callable manager, not a resident: pinning it -1 burned a multi-minute boot
+  // load it could not keep anyway once the seat's model warmed (30b + 8b do
+  // not co-reside on this GPU) — blank → Ollama's 5-minute default. Toolcall
+  // stays unset → the runner defaults to 300 (its historic sub-agent TTL).
+  seed('local:orch_keep_alive', '');
   seed('local:atlas_keep_alive', '-1');
   seed('local:sentry_keep_alive', '300');
   // New per-agent model keys inherit the legacy shared value.
@@ -3256,7 +3299,12 @@ async function warmResidentOllamaModels(): Promise<void> {
   }
 
   const candidates = [
-    getRouterState('orchestrator:model'),
+    // Gated on its own keep_alive like atlas/toolcall below. Pinning the
+    // orchestrator unconditionally made boot burn a multi-minute load on a
+    // manager model that the seat's warm (or plain VRAM limits) immediately
+    // evicted — the user watches 30b load and unload before anything happens
+    // (2026-09-19, granite4.2:30b + atlas 8b).
+    getRouterState('local:orch_keep_alive') === '-1' ? getRouterState('orchestrator:model') : '',
     // Atlas IS the chat seat — it needs warming too, or the first real message
     // pays a cold load while Orchestrator's model (which never replies unless
     // Atlas is blank) sits resident instead. Gated on its own keep-alive like
@@ -3318,10 +3366,17 @@ async function warmResidentOllamaModels(): Promise<void> {
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
-  // The auto-spawned dedicated Chrome session was disabled (2026-09-03) but
-  // re-enabled after Chrome was killed during debugging. Browser-automation
-  // tools attach over CDP :9222 to this persistent Chrome instance.
-  startChromeWatchdog();
+  // The dedicated debug Chrome (CDP :9222, playwright-jarvis profile) is
+  // RETIRED (2026-09-19): it confused the model twice over — built-in browser
+  // tools withheld by a default app while their CDP browser still spawned,
+  // then browser-driving's bridge offering 0 tools and the model reciting
+  // tool names nothing served. Browser capability now has exactly ONE
+  // provider: the default app (Settings → Default apps, e.g. the
+  // browser-driving MCP bridge on the user's real Chrome). Interactive
+  // browsing without a default provider is honestly unavailable — no silent
+  // fallback to a hidden debug browser. startChromeWatchdog stays in the
+  // source, dormant, for a deliberate re-enable.
+  // startChromeWatchdog();
   loadState();
   // Seed the three Iris digest automations (hourly/daily/weekly) as
   // scheduled_tasks rows so they show in the Sched tab and the host poll loop

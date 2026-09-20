@@ -3,15 +3,9 @@ import { ToolsetDef, registry } from './tool-registry.js';
 export const TOOLSETS: Record<string, ToolsetDef> = {
     file:      { name: 'file',      tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'query_image'], tier: 'both' },
     web:       { name: 'web',       tools: ['WebSearch', 'WebFetch'], tier: 'public' },
-    // browser_snapshot/browser_screenshot stay HERE so the background atlas job
-    // keeps them. They are withheld from the CHAT SEAT via
-    // BLOCKED_ORCHESTRATOR_TOOLS instead — deleting them from the toolset made
-    // them un-owned, and the seat's filter keeps every un-owned tool, so the
-    // seat kept them and background atlas lost them (the exact inverse).
-    browser:   { name: 'browser',   tools: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
-                                             'browser_press_key', 'browser_select_option', 'browser_hover',
-                                             'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
-                                             'browser_tabs', 'browser_back', 'browser_current_url'], tier: 'public' },
+    // `browser`/`browser-vision` toolsets removed with the CDP debug Chrome —
+    // the tools no longer register, and interactive browsing belongs to the
+    // default-app provider.
     terminal:  { name: 'terminal',  tools: ['Bash', 'open_app', 'desktop_click', 'desktop_type'], tier: 'public' },
     // Vision capture belongs to VULKAN, not the local seat: the local seat runs
     // a visionless model (granite4.1:8b), so handing it a screenshot tool buys
@@ -61,7 +55,12 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // desktop_click/desktop_type, and a seat that can click and type needs to
     // see the frame (runSubAgent drains captures into the next iteration) —
     // without this include the seat drove native apps blind.
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','browser','terminal','desktop-vision','documents','media','youtube'] },
+    // 'browser'/'browser-vision' (the CDP debug-Chrome tools) are NOT in the
+    // core: the debug Chrome is retired, so interactive browsing has exactly
+    // one provider — the default app (Settings → Default apps, e.g. the
+    // browser-driving bridge on the real Chrome). WebSearch/WebFetch (plain
+    // HTTP, no browser) stay core.
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','terminal','desktop-vision','documents','media','youtube'] },
     // Vulkan — the coding specialist, coding-only. Read/Write/Edit/Glob/Grep
     // to edit source, Bash to run builds/tests/git. NO browser, NO desktop,
     // NO screenshot, NO open_app — vulkan edits code and reports done; seeing
@@ -116,13 +115,19 @@ export function resolveMultipleToolsets(names: string[]): string[] {
 // Listed as explicit tool names rather than a toolset, because a toolset mixes
 // capabilities: `terminal` holds Bash AND the desktop tools, and handing the
 // shell to an MCP server must not take the desktop away with it.
+// Every name here must exist at EVERY layer that provides the capability:
+// the registry names (delegate toolsets: vulkan/artemis carry Read/Write/…)
+// AND the core builtin skill's lowercase wire names (the seat's file hands —
+// atlas-core has no `file` toolset). A real tool missing from this list is a
+// capability the default-app substitution silently fails to withhold
+// (2026-09-19: read_file survived files → mcp:filesystem and kept answering).
 export const CAPABILITY_BUILTINS: Record<string, string[]> = {
     browser: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
               'browser_press_key', 'browser_select_option', 'browser_hover',
               'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
               'browser_tabs', 'browser_back', 'browser_current_url'],
     web:     ['WebSearch', 'WebFetch'],
-    files:   ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+    files:   ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'read_file', 'write_file', 'list_file'],
     shell:   ['Bash'],
     capture: ['desktop_screenshot', 'webcam_capture', 'read_image'],
 };

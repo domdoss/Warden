@@ -917,6 +917,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             text: input.prompt,
             showThinking: input.showThinking,
             defaultApps: input.defaultApps,
+            assistantName: input.assistantName,
             pinnedTools: input.pinnedTools,
             verbose: input.verbose,
             maxOutputTokens: input.maxOutputTokens || '',
@@ -1000,6 +1001,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       memoryContext: input.memoryContext,
       showThinking: input.showThinking,
       defaultApps: input.defaultApps,
+      assistantName: input.assistantName,
       pinnedTools: input.pinnedTools,
       verbose: input.verbose,
     });

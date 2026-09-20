@@ -402,6 +402,13 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<Skill
     }
   }
 
+  // An MCP server owns its name: a user SKILL.md with the same name is stale
+  // and would shadow the server's live tools.
+  const mcpNames = new Set(skills.filter((s) => s.source === 'mcp').map((s) => s.name));
+  const deduped = skills.filter((s) => s.source !== 'user' || !mcpNames.has(s.name));
+  skills.length = 0;
+  skills.push(...deduped);
+
   return skills;
 }
 

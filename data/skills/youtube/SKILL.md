@@ -1,28 +1,27 @@
 ---
 name: youtube
-description: "Play, search, or skip a YouTube video in the Warden Chrome — find the watch URL, start the <video> element, and skip/pause with the browser (never playerctl)."
+description: "Play, search, or control a YouTube video — one call to the youtube tool; it drives the default browser provider itself (never browser_* tools, never playerctl)."
 ---
 
 ## When to use
 
 Any ask to play/search/skip YouTube — "play X on youtube", "put on some lofi", "skip this song", "next track", "search youtube for X".
 
-## Steps
+## Playing something NEW — `youtube`, one call
 
-1. [tool: `WebSearch` — `"<query> site:youtube.com"`] or [tool: `WebFetch`] to find the watch URL — or go straight to the search-results URL for a direct query.
-2. [tool: `browser_navigate` — `"https://www.youtube.com/watch?v=<id>"`] — returns the page TITLE + URL, NOT a snapshot.
-3. To pick from search results: [tool: `browser_evaluate`] ONE call that maps title + link from the result elements. Never snapshot → click → snapshot loops.
-4. If it did not autoplay: [tool: `browser_evaluate` — `document.querySelector('video')?.play()`].
-5. A successful navigate/evaluate IS playback confirmed — no screenshot, no re-checking.
+- "play X" / "put on X" → IMMEDIATELY [tool: `youtube` — `{action:'play', query:'<their words>'}`] — or `url` when they gave a link/id. That one call IS the play: it picks the video, opens it, and starts the audio.
+- NEVER ask which video they want. NEVER run `search` first and wait for a pick. YOU choose the video and commit — a play instruction means play now.
+- Vague ask ("put something on") → same thing: pick something reasonable and play it, then say what you put on.
+- `search` is ONLY when they explicitly asked to search/browse ("search youtube for X") — never as a step toward playing.
+- The tool's result IS the verification — no screenshots, no re-checking, no browser_* calls around it.
+- If it returns an error, say what failed — never fall back to `browser_navigate`/`browser_evaluate` (those tools are retired) and never install playerctl.
 
-## Skip / pause / next / previous (already playing)
+## Already playing — one call
 
-- Next: [tool: `browser_press_key` — `"Shift+n"`] (focus the player first), or click the on-page next button, or evaluate the video element. NOT `media_control`.
-- Pause/resume: [tool: `browser_press_key` — `" "`] or [tool: `browser_evaluate` — `document.querySelector('video')?.pause()` / `.play()`].
-- `media_control` is ONLY for a desktop player already exposed over MPRIS (Spotify, mpv, VLC) — never for YouTube, and NEVER install playerctl or any package for this.
+- [tool: `youtube`] with `pause`, `resume`, `next`, `seek`, `fullscreen`, `now_playing`, or `search`.
+- Each call reuses the open YouTube tab and replaces what was playing.
 
-## Notes
+## Rules
 
-- Never re-navigate to the same URL. If a selector returns empty, `browser_wait_for` a beat, then try a different selector or `browser_snapshot` refs.
-- Drive the `<video>`/`<audio>` element directly, not the site's UI buttons.
-- One video = this skill, no delegation. A playlist build or queue is a flow — delegate that to atlas.
+- One video = one `youtube` call, no delegation. A playlist/queue build is a flow — delegate that to atlas.
+- `media_control` is ONLY for a desktop player exposed over MPRIS (Spotify, mpv, VLC) — never for YouTube.
