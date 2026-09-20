@@ -968,7 +968,7 @@ const SUBAGENTS: SubAgentDef[] = [
         delegate: 'atlas',
         label: 'Atlas',
         background: true,
-        routing: "execution — shell, browser, desktop, files, and anything that touches the internet. Hands-on work, however small.",
+        routing: "shell, browser, desktop, files, anything online — hands-on work, however small",
         maxIterations: 200,
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
         systemPrompt: `# ROLE
@@ -1004,7 +1004,7 @@ ${agentKernel('every deliverable the task asked for actually exists — the file
         delegate: 'vulkan',
         label: 'Vulkan',
         background: true,
-        routing: "coding, scripting, building, heavy bash. Context size routes here too: work that must hold a lot at once (many files, a long document, a big log) is vulkan's even when it isn't strictly code.",
+        routing: "code, scripts, builds, heavy bash; big-context work (many files, long docs, big logs) even when not code",
         maxIterations: 200,
         summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
         systemPrompt: `# ROLE
@@ -1038,7 +1038,7 @@ ${agentKernel('every deliverable exists on disk — the file written, the edit a
         delegate: 'iris',
         label: 'Iris',
         background: false,
-        routing: "email, calendar, reminders, scheduled tasks, digests. Anything whose content lives in the user's mail or calendar — including saving an attachment — is iris's, never a browser. Brief it by BRIEFING IRIS below; it carries no rules of its own.",
+        routing: "email, calendar, reminders, scheduled tasks, digests — anything in the user's mail/calendar, attachments included; brief with TASK: one imperative line, ids inline",
         // Up to 3 tool calls per dispatch (was 1, 2026-09-15): iris is a
         // fine-tuned 3b that held list→id→act flows only across separate
         // orchestrator dispatches — the orchestrator had to re-delegate each
@@ -1107,7 +1107,7 @@ OUTPUT
         delegate: 'artemis',
         label: 'Artemis',
         background: true,
-        routing: "audit, second opinion, and diagnosis of why something Warden did went wrong — a stalled, failed or never-reported job. It reads the logs and databases instead of guessing.",
+        routing: "audit, second opinion, why-a-job-failed diagnosis — reads logs and DBs instead of guessing",
         maxIterations: 200,
         summary: "a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important",
         systemPrompt: `# ROLE
@@ -1144,7 +1144,7 @@ Reference the exact point you are critiquing. Your notes are saved automatically
         delegate: 'sentry',
         label: 'Sentry',
         background: true,
-        routing: "security scans of this PC: listening ports, connections, services, autostart, crontabs. It also scans on its own schedule and speaks up by itself.",
+        routing: "security scans: ports, connections, services, autostart, crontabs",
         maxIterations: 30,
         summary: "security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.",
         systemPrompt: `You are Sentry, Warden's desktop security agent. You run inside the user's account with user-level permissions — that is always enough; sudo, installs, and file writes are outside your job.
@@ -1182,7 +1182,7 @@ One or two sentences. For a scheduled scan the host posts findings itself. For a
         delegate: 'orch',
         label: 'Orch',
         background: true,
-        routing: "big or multi-part work that needs several other specialists coordinated and tracked — decomposes the task, calls vulkan/iris/artemis/sentry as needed, and returns one consolidated result. REQUEST-ONLY: never call this on your own — suggest it to the user and let them decide. Not for a single-specialist job — call that specialist directly.",
+        routing: "multi-specialist chains — decomposes, tracks, returns one result. REQUEST-ONLY: suggest it; the user decides. Single specialist? call them directly",
         maxIterations: 60,
         summary: 'decomposing a large or multi-part task and coordinating vulkan (code), iris (email/calendar/tasks), artemis (audit) and sentry (security) to carry it out',
         systemPrompt: ORCH_MANAGER_SYSTEM,
@@ -1253,8 +1253,8 @@ function crewBlock(): string {
     const lines = SUBAGENTS
         // Atlas is this seat, not a crew member it can hand work to.
         .filter(s => s.routing && s.delegate !== 'atlas')
-        .map(s => `- **${s.delegate}** — ${s.routing}${s.background ? ' Runs in the background: you get a job id, the result lands in your inbox.' : ' Answers in line.'}`);
-    lines.push('- **council** — three seats deliberate in parallel on a costly, hard-to-reverse decision until they agree (see COUNCIL).');
+        .map(s => `${s.delegate}: ${s.routing}${s.background ? ' (background — job id, result lands in inbox)' : ''}`);
+    lines.push('council: 3 seats deliberate in parallel — costly, hard-to-reverse calls only');
     return lines.join('\n');
 }
 
@@ -1273,9 +1273,9 @@ function defaultsSection(): string {
         const connected = skillState.skills.some(s => s.source === 'mcp'
             && s.tools.some(t => String(t?.function?.name || '').startsWith(prefix)));
         if (!connected) continue;
-        lines.push(`- ${cap} → the \`${server}\` skill's MCP tools for all ${cap} work.`);
+        lines.push(`- ${cap} → \`${server}\` MCP tools`);
         if (cap === 'browser') {
-            lines.push(`- music or video playback (play, pause, skip, seek, what's playing) → the \`youtube\` tool: one call does the whole job and its result is the confirmation.`);
+            lines.push(`- music/video (play, pause, skip, seek, now playing) → \`youtube\` tool: one call, its result is the answer`);
         }
     }
     if (lines.length === 0) return '';
@@ -4282,12 +4282,9 @@ const marmRecallSection = marmEnabled
         // This seat always does the work itself — atlas IS the seat, orch is
         // a callable specialist for genuinely big/multi-part work, not a mode
         // the seat switches into. No branch here anymore: one rule set.
-        const modeBlock = '\n\n# ESCALATION\n\nDo the work yourself with your tools — that is the job. Hand off only when the work is genuinely one of these seats\':\n\n'
+        const modeBlock = '\n\n# CREW\n\n'
               + crewBlock()
-              + '\n\nEmail, calendar, reminders and scheduled tasks are ALWAYS iris\'s — never do those yourself.\n'
-              + 'Work too long for a chat turn (minutes of browsing, a multi-step build) → `atlas_background`, then keep talking.\n'
-              + 'A task big enough to need several specialists coordinated and tracked (not just one delegate call) → `orch`, then keep talking.\n'
-              + 'Otherwise do it directly. One call per intent; the tool result is your verification.\n';
+              + '\nemail/calendar/reminders/tasks: always iris. Long work (minutes of browsing, multi-step builds) → atlas_background, keep talking. Multi-specialist chains → orch, keep talking. Else do it yourself — one call per intent.\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is
