@@ -177,6 +177,41 @@ export function extractDelegateToolDefFn(src = runnerSrc()) {
   return extractFunction('delegateToolDef', src);
 }
 
+/** orchDelegateToolDef(): the BLOCKING stubs orch itself calls specialists
+ *  through (vulkan/artemis/sentry — inline result, no inbox). */
+export function extractOrchDelegateToolDefFn(src = runnerSrc()) {
+  return extractFunction('orchDelegateToolDef', src);
+}
+
+/** `const ORCH_MANAGER_SYSTEM = \`...\`;` — orch's own manager prompt, decoded
+ *  with the REAL agentKernel (the template interpolates it, so the plain
+ *  no-interpolation scan used for ORCH_SYSTEM does not apply). Interpolation-
+ *  aware: a backtick inside \${...} would not terminate the template. */
+export function extractOrchManagerSystem(src = runnerSrc()) {
+  const at = src.indexOf('const ORCH_MANAGER_SYSTEM = `');
+  if (at === -1) throw new Error(drift('ORCH_MANAGER_SYSTEM'));
+  let i = at + 'const ORCH_MANAGER_SYSTEM = `'.length, raw = '', depth = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (depth > 0) { // inside ${...} — copy verbatim, track braces
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { raw += ch; i++; continue; } }
+      raw += ch; i++; continue;
+    }
+    if (ch === '\\') { raw += ch + src[i + 1]; i += 2; continue; }
+    if (ch === '`') break;
+    if (ch === '$' && src[i + 1] === '{') { raw += '${'; depth = 1; i += 2; continue; }
+    raw += ch; i++;
+  }
+  if (src[i] !== '`' || src[i + 1] !== ';') throw new Error(drift('ORCH_MANAGER_SYSTEM terminator'));
+  const kernel = extractFunction('agentKernel', src);
+  const out = eval(`(() => { const agentKernel = ${kernel.toString()}; return \`${raw}\`; })()`);
+  if (typeof out !== 'string' || out.length < 1000 || out.includes('undefined')) {
+    throw new Error(drift('ORCH_MANAGER_SYSTEM output'));
+  }
+  return out;
+}
+
 /** crewBlock(): the # THE CREW roster, generated from the extracted SUBAGENTS
  *  fields exactly the way the source generates it from the real array. The
  *  function body reads the module-level SUBAGENTS const, so the roster is

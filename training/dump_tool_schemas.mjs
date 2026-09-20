@@ -132,6 +132,30 @@ if (new Set(names).size !== names.length) {
   throw new Error(`duplicate tool names in merged schema: ${names.filter((n, i) => names.indexOf(n) !== i).join(', ')}`);
 }
 
+// ---- orch (the background chain-manager subagent) --------------------------
+// SUBAGENT_TOOL_DEFS.get('orch') replicated from index.ts: its toolsets
+// (artemis-core + web) + every 'both'-tier registry tool + the four delegate
+// stubs — vulkan/artemis/sentry BLOCKING (inline result) and iris (its
+// dispatch blocks unconditionally, so the ordinary background-styled stub is
+// what production serves). Skill/MCP merges and selectAtlasTools ranking are
+// dynamic per turn; this is the stable base universe orch rows train on.
+import { extractOrchDelegateToolDefFn, extractOrchManagerSystem } from './extract_runner_source.mjs';
+const orchDelegateToolDef = extractOrchDelegateToolDefFn();
+const orchEntry = extractSubagentFields('orch');
+const orchBoth = registry.getDefinitions(registry.getByTier('both').map((t) => t.name)).map(({ tier, ...d }) => d);
+const orchRegistry = registry.getDefinitions(resolveMultipleToolsets(orchEntry.toolsets)).map(({ tier, ...d }) => d);
+const orchPool = [];
+for (const d of [
+  ...orchRegistry,
+  ...orchBoth,
+  ...['vulkan', 'artemis', 'sentry'].map((n) => orchDelegateToolDef(extractSubagentFields(n))),
+  ...['iris'].map((n) => delegateToolDef(extractSubagentFields(n))),
+]) {
+  if (!orchPool.some((t) => t.function.name === d.function.name)) orchPool.push(d);
+}
+const ORCH_MANAGER_PROMPT = extractOrchManagerSystem();
+console.error(`orch pool: ${orchPool.length} tools (${orchPool.map((t) => t.function.name).join(', ')})`);
+
 // ---- iris (the separate 3b toolcall agent) — unchanged --------------------
 const { resolveToolset } = await import(url('toolsets.js'));
 const irisNames = resolveToolset('iris-core');
@@ -154,7 +178,7 @@ console.error(`registry pool: ${visibleNames.length} seat registry tools + ${del
 console.error(`merged (model-visible universe): ${merged.length} = ${visibleNames.length} registry + ${delegateDefs.length} delegates + ${constDefs.length} consts + ${coreDefs.length} core-skill + ${MARM_DEFS.length} marm + ${CHROME.length} default-app browser`);
 console.error(`tools: ${names.join(', ')}`);
 
-const out = { iris, merged };
+const out = { iris, merged, orchPool, orchSystem: ORCH_MANAGER_PROMPT };
 writeFileSync(
   path.resolve(path.dirname(new URL(import.meta.url).pathname), 'tool_schemas.json'),
   JSON.stringify(out, null, 2),
