@@ -589,7 +589,7 @@ if (v) v.currentTime = JSON.parse(__arg);`, secs).catch(() => {});
 
 registry.register({
     name: 'youtube',
-    description: `YouTube tool. A play ask = ONE play call {play, query|url} — search only when asked. Controls: pause/resume/next/seek/fullscreen/now_playing. One tab, reuse it; result confirms. Other players → media_control.`,
+    description: `YouTube. query = what a human types in the search box: artist/genre/song title only; "different"/"not X" is automatic — recently played is skipped for you. A play ask = ONE call. pause/resume/next/seek/now_playing. Other players → media_control.`,
     schema: {
         type: 'object',
         properties: {
