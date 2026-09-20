@@ -5003,11 +5003,20 @@ const marmRecallSection = marmEnabled
                     // nothing". On voice and Steve deployments a spoken recap
                     // ("timestamp updated from 0:00 to 138:11…") talks over the
                     // music and stalls the conversation (2026-09-19).
-                    // ALL youtube actions are mute — but only when the player
-                    // was actually touched (playing/paused/skipped). search and
-                    // now_playing results are NOT terminal: the model must be
-                    // able to speak them or continue to the play call.
-                    const mediaSilent = toolResults.some(r => r.toolName === 'youtube'
+                    // Silence is gated on INTENT, not on the tool: only a turn
+                    // whose ASK was playback goes quiet after a youtube play/
+                    // control lands. A model that spuriously calls youtube on
+                    // "hello" (nemotron latched the pattern, 2026-09-19 22:17)
+                    // must keep its voice — the blanket mute turned every such
+                    // turn into total silence.
+                    const lastAsk = (() => {
+                        for (let i = messages.length - 1; i >= 0; i--) {
+                            const m: any = messages[i];
+                            if (m?.role === 'user') return String(m.content || '');
+                        }
+                        return '';
+                    })();
+                    const mediaSilent = PLAYBACK_ASK_RE.test(lastAsk) && toolResults.some(r => r.toolName === 'youtube'
                         && /^(Playing|Resumed|Paused|Already playing|Still playing|Queued):/.test(String(r.content || '').trim()));
                     if (mediaSilent && !errorOutputWritten) {
                         log('[media] playback confirmed — ending turn silently');
