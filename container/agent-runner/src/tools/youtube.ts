@@ -76,7 +76,16 @@ async function recentPlayed(query: string): Promise<{ ids: Set<string>; titles: 
     try {
         const marm = await marmTool(/marm_smart_recall$/);
         if (!marm) return { ids, titles };
-        const res = await marm.call({ query: `youtube-play ${query}`, limit: 20 });
+        const res = await marm.call({
+            query: `youtube-play ${query}`,
+            limit: 20,
+            // Play history is written via marm_log_entry — it lives in the RAW
+            // LOG store, which recall skips unless include_logs is set. Keyword
+            // mode over semantic: a play logged 30 seconds ago must be found
+            // NOW, before the semantic index catches up.
+            include_logs: true,
+            exact_mode: 'keyword',
+        });
         const text = resultText(res);
         for (const m of text.matchAll(/youtube-play:\s*([^()\n]+)\s*\((https?:\/\/[^\s)]+)\)/g)) {
             titles.add(m[1].trim().toLowerCase());
