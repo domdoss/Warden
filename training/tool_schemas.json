@@ -875,13 +875,13 @@
       "type": "function",
       "function": {
         "name": "iris",
-        "description": "Delegate to Iris for alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email, download email attachments. Use for inbox tasks, alarm and scheduling requests.. You do NOT have these tools directly — send a structured brief and you will receive one short result line.",
+        "description": "Delegate to Iris for alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email, download email attachments. Use for inbox tasks, alarm and scheduling requests.. You do NOT have these tools directly — send one JSON brief and you will receive one JSON result.",
         "parameters": {
           "type": "object",
           "properties": {
             "task": {
               "type": "string",
-              "description": "A structured brief and nothing else — no preamble, no explanation, and no time (the runner prepends the current local time). One line: \"TASK: <one imperative sentence naming the outcome>\". Every id, address, filename and value the sentence needs goes INLINE in that sentence. Example:\nTASK: Download the file invoice-2291.pdf attached to email 18f2c9ab41."
+              "description": "One JSON object and nothing else — no preamble, no time (the runner prepends the current local time). Keys: intent (read|send|download|schedule|list|create|update|delete), plus every id, address, filename, date and value the intent needs inline. Example:\n{\"intent\":\"download\",\"email_id\":\"18f2c9ab41\",\"filename\":\"invoice-2291.pdf\"}"
             }
           },
           "required": [
@@ -918,6 +918,29 @@
       "function": {
         "name": "sentry",
         "description": "Delegate to Sentry for security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.. Sentry ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:\"blocking\".",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order."
+            },
+            "urgent": {
+              "type": "boolean",
+              "description": "Inject the result into your context immediately when it finishes, even mid-task (default false)."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "orch",
+        "description": "Delegate to Orch for decomposing a large or multi-part task and coordinating vulkan (code), iris (email/calendar/tasks), artemis (audit) and sentry (security) to carry it out. Orch ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:\"blocking\".",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2764,5 +2787,376 @@
         }
       }
     }
-  ]
+  ],
+  "orchPool": [
+    {
+      "type": "function",
+      "function": {
+        "name": "Read",
+        "description": "Read a file from the workspace or any local path. Accepts a workspace-relative path (e.g. \"notes.md\", \"attachments/photo.jpg\"), an absolute local path (a path starting with \"/\" or \"~/\"), or a directory (returns a listing of its contents). For image files (png, jpg, jpeg, gif, webp), this gives you vision — you will see the image contents. Always use Read on images instead of Bash/PIL. Use this when the user points you at a local file or directory to look at.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to read: workspace-relative (\"notes.md\", \"attachments/photo.jpg\"), absolute local (starts with \"/\" or \"~/\"), or a directory."
+            },
+            "offset": {
+              "type": "number",
+              "description": "Line number to start from (text files only)"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Number of lines to read (text files only)"
+            }
+          },
+          "required": [
+            "file_path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Grep",
+        "description": "Search for text in files.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Regex to search for"
+            },
+            "path": {
+              "type": "string",
+              "description": "Directory or file to search"
+            },
+            "glob": {
+              "type": "string",
+              "description": "File pattern filter"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Glob",
+        "description": "Find files matching a pattern.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Glob pattern like \"**/*.ts\""
+            },
+            "path": {
+              "type": "string",
+              "description": "Directory to search"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Bash",
+        "description": "Execute a bash command.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Command to execute"
+            },
+            "timeout": {
+              "type": "number",
+              "description": "Timeout in ms"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_chat_history",
+        "description": "Get recent chat history.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "WebSearch",
+        "description": "Search the web and return ranked results. This FINDS a URL — it does not read the page. Read it with WebFetch; SHOW it to the user, or interact with it, via browser_navigate. Prefer one WebFetch on a known URL over a search when you already know where the answer lives.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search query"
+            },
+            "max_results": {
+              "type": "number",
+              "description": "Max results (default 5)"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "WebFetch",
+        "description": "Fetch a web page and return its content as clean Markdown (headings, links, lists, code, tables preserved; nav/footer/ads stripped). This reads the page server-side WITHOUT launching the browser — use it to look up a fact, scrape an article, or get a price/number from a URL. Only fall back to browser_navigate + browser_snapshot when the page needs JavaScript to render or WebFetch returns empty/blocked.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL to fetch"
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "text",
+                "html"
+              ],
+              "description": "Return format: text (default, Markdown) or html (raw)."
+            }
+          },
+          "required": [
+            "url"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Write",
+        "description": "Write content to a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Relative path to file (e.g. \"notes.md\" or \"docs/plan.md\")"
+            },
+            "content": {
+              "type": "string",
+              "description": "Content to write"
+            }
+          },
+          "required": [
+            "file_path",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Edit",
+        "description": "Edit a file by replacing text.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to file"
+            },
+            "old_string": {
+              "type": "string",
+              "description": "Exact text to replace"
+            },
+            "new_string": {
+              "type": "string",
+              "description": "Replacement text"
+            }
+          },
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "attach_file",
+        "description": "Send a file to the chat as a downloadable attachment.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative path to file"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "file",
+                "image"
+              ],
+              "description": "file for download, image for inline"
+            },
+            "message": {
+              "type": "string",
+              "description": "Optional message with file"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fabric_pattern",
+        "description": "Load an expert prompt pattern from the Fabric prompt library by name (e.g. \"summarize\", \"analyze_claims\", \"extract_wisdom\"). Returns the full system prompt for that pattern — follow its instructions to perform the task at expert level. Use when a listed RELEVANT PATTERN fits the current task.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Pattern name, e.g. \"summarize\" or \"analyze_claims\" (snake_case directory name)"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "query_image",
+        "description": "Ask a vision-capable model a question about an image file and get a textual answer. Use this whenever YOU cannot see images (a visionless model): check what a screenshot shows, whether UI looks right, what text a picture contains, etc. Iterate — ask focused follow-up questions until you fully understand the image. Works on any image file path.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to the image: workspace-relative, absolute, or ~."
+            },
+            "question": {
+              "type": "string",
+              "description": "What you want to know about the image. Be specific; ask follow-ups as needed."
+            }
+          },
+          "required": [
+            "file_path",
+            "question"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "vulkan",
+        "description": "Call Vulkan for coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines. Blocking — the result comes back as this call's result, in this same turn.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What this piece of the task needs done: the goal plus every fact the specialist cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Self-contained — the specialist cannot ask a follow-up question."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "artemis",
+        "description": "Call Artemis for a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important. Blocking — the result comes back as this call's result, in this same turn.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What this piece of the task needs done: the goal plus every fact the specialist cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Self-contained — the specialist cannot ask a follow-up question."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "sentry",
+        "description": "Call Sentry for security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.. Blocking — the result comes back as this call's result, in this same turn.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "What this piece of the task needs done: the goal plus every fact the specialist cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Self-contained — the specialist cannot ask a follow-up question."
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "iris",
+        "description": "Delegate to Iris for alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email, download email attachments. Use for inbox tasks, alarm and scheduling requests.. You do NOT have these tools directly — send one JSON brief and you will receive one JSON result.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "One JSON object and nothing else — no preamble, no time (the runner prepends the current local time). Keys: intent (read|send|download|schedule|list|create|update|delete), plus every id, address, filename, date and value the intent needs inline. Example:\n{\"intent\":\"download\",\"email_id\":\"18f2c9ab41\",\"filename\":\"invoice-2291.pdf\"}"
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    }
+  ],
+  "orchSystem": "# ROLE\nYou are Orch: a delegation and verification manager. A task reaches you because it is too big or too varied for one specialist alone. Break it into pieces, hand each piece to the specialist that owns it, VERIFY what comes back, and hand up ONE consolidated result only once every piece checks out. The task states the outcome; the decomposition is yours. Act on the first turn.\n\n# THE CREW\nCall each of these directly — the result comes back inline, in the same turn, never to an inbox:\n- **vulkan** — coding, scripting, building, heavy bash.\n- **iris** — email, calendar, reminders, scheduled tasks, work-item tracking.\n- **artemis** — a read-only audit or sanity-check of the conversation or the codebase.\n- **sentry** — a security scan.\n\nYou have SOME hands of your own, and they are for small steps and verification, not production: Bash for a quick check or a one-line command, the browser and web tools to confirm a specialist's claimed end state on the real page, and Read/Grep to check a claim on disk. Your browser is VISIONLESS — read page state with browser_evaluate, never snapshot or screenshot (you cannot see images). Your strength is decomposition: take the long instruction, break it into little bits, run the small command yourself when that is the fastest check, delegate the next piece, verify, continue. Building, editing source, and driving desktop apps belong to your specialists — a step that would turn into real work is a piece to delegate, not something you do yourself.\n\n# THE LOOP\nEvery piece goes through this, not just a fire-and-forget dispatch:\n1. Decompose the task into pieces, each one a single specialist's job. Name the pieces once before dispatching any of them.\n2. Delegate: call the owning specialist with a clear, self-contained brief — every fact it needs goes inline, since it cannot ask you a follow-up question.\n3. Verify: check the result against what the piece actually asked for — a claim of \"done\" is not proof; read what it changed (Bash/Read/Grep) when the claim is checkable that way.\n4. If it's wrong, incomplete, or the claim doesn't hold up: send it back to the SAME specialist with exactly what was wrong and what's still needed. Don't silently patch a specialist's work yourself and don't move on with a bad result baked in.\n5. Only once a piece verifies clean do you consider it done and move to the next. Chain pieces that depend on each other's output; independent pieces still go one call at a time. Never re-run a piece that already verified.\n\n# READING\n- Read each file the task names once, in full.\n- Keep what you read; work from it.\n- Grep once for a single string you need again.\n\n# ACTING\n- Produce the deliverable in the turn you know what it is.\n- Report in the past tense: what exists now, what you ran.\n- Take one useful step per turn.\n\n# WHEN A CALL FAILS\n- Read the error; change the approach; try again.\n- Three genuinely different approaches, each with a real error, before calling something impossible.\n- A search that returns nothing is an answer. Look for the target by name first — the file, the page, the route.\n- Three empty searches means the premise is wrong. Widen once (`~/Warden` holds the user's own files and deliverables; `/opt/Warden` is the application's source), then say where you looked and ask where it is.\n- If the task says an earlier fix failed: confirm that change is present, trace the data flow end to end, fix the real cause, and say what the earlier attempt got wrong.\n\n# SUDO\n- The user types the password.\n- Run `sudo pacman -S <pkg>` once, say a password prompt is waiting, and wait.\n- One attempt. If it fails, report what is missing and continue with the rest.\n\n# MEMORY\n- Check `mcp__marm__marm_smart_recall` before hunting for a fact, a prior decision, or how something was done.\n- Log a durable fact you established — a confirmed path, a root cause, a decision — with `mcp__marm__marm_log_entry`.\n- Once per fact.\n\n# FINISHING\nYou decide when the work ends. Choose one:\n- DONE — every piece of the task landed AND verified — each specialist's result checked against what it was asked, any bad result sent back and re-verified, and the whole assembled into one report. Write the final report: exactly what you changed. Claim a change when its tool call succeeded this task.\n- BLOCKED — a missing capability, a denied permission, or three distinct approaches that each failed with a concrete error. Say plainly what blocks you.\n- KEEP GOING — anything else. Take the next useful step."
 }
