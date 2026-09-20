@@ -1,5 +1,7 @@
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
+import fs from 'fs';
+import path from 'path';
 
 // YouTube toolchain (2026-09-18, re-wired 2026-09-19). Playing a video used to
 // be hand-driven browser work; it became one merged `youtube` tool. It drove
@@ -48,7 +50,40 @@ function sameVideo(a: string, b: string): boolean {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Recently played video URLs — "change the song" must not re-deal the same
-// one because it ranks first. Oldest entries fall off past 8.
+// one because it ranks first. PERSISTED: the runner process is per-session,
+// so an in-memory set forgot everything between messages and the seat kept
+// re-serving the same couple of songs (2026-09-19). The history file survives
+// sessions; the last 20 entries are excluded from picking.
+const HISTORY_FILE = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'store', 'youtube-history.json');
+
+function loadHistory(): Array<{ url: string; title: string; ts: number }> {
+    try {
+        const h = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+        return Array.isArray(h) ? h : [];
+    } catch {
+        return [];
+    }
+}
+
+function recordPlay(url: string, title: string): void {
+    try {
+        const h = loadHistory();
+        h.push({ url, title, ts: Date.now() });
+        fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+        fs.writeFileSync(HISTORY_FILE, JSON.stringify(h.slice(-100), null, 1));
+    } catch { /* history is advisory — never fail the play over it */ }
+    // MARM too: each play becomes recallable memory, so "what did I play
+    // recently" survives sessions in the memory layer as well.
+    try {
+        const bridge = (globalThis as any).__mcpBridge;
+        const tools = bridge?.listTools?.('marm') || [];
+        const logTool = tools.find((t: any) => /marm_log_entry$/.test(t.name || ''));
+        if (logTool) {
+            void bridge.call('marm', logTool.name, { entry: `youtube-play: ${title} (${url})` }).catch(() => {});
+        }
+    } catch { /* advisory */ }
+}
+
 const recentPicks = new Set<string>();
 
 // ─── The default-app browser bridge ─────────────────────────────────────────
@@ -412,9 +447,13 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
         // carry the query's words (2026-09-19: it kept re-playing the same
         // first result).
         const qWords = new Set(target.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2));
+        const playedRecently = new Set([
+            ...loadHistory().slice(-20).map(h => h.url.split('v=')[1] || h.url),
+            ...[...recentPicks].map(u => u.split('v=')[1] || u),
+        ]);
         const candidates = results
             .map((r, i) => ({ r, i }))
-            .filter(({ r }) => !sameVideo(wasUrl, r.url) && !recentPicks.has(r.url));
+            .filter(({ r }) => !sameVideo(wasUrl, r.url) && !playedRecently.has(r.url));
         const pool = candidates.length > 0 ? candidates : results.map((r, i) => ({ r, i }));
         pool.sort((a, b) => {
             const sa = [...qWords].filter(w => a.r.title.toLowerCase().includes(w)).length - a.i * 0.1;
@@ -429,6 +468,7 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
             if (first) recentPicks.delete(first);
         }
         url = picked.url;
+        recordPlay(picked.url, picked.title);
     }
     if (!alreadyHere) {
         await player.goto(url);
