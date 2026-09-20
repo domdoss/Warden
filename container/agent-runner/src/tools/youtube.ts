@@ -507,7 +507,7 @@ if (v) v.currentTime = JSON.parse(__arg);`, secs).catch(() => {});
 
 registry.register({
     name: 'youtube',
-    description: `YouTube in the user's real Chrome. PLAY: {"action":"play","query":"lofi mix"} or {"action":"play","url":"<video id or link>"}. SEARCH: {"action":"search","query":"lofi mix","limit":5}. CONTROL: now_playing | pause | resume | next | seek {"action":"seek","seconds":30} | fullscreen. RULES: one youtube tab, reuse it; result text confirms, never screenshot; other players or volume → media_control / audio_volume.`,
+    description: `YouTube tool. A play ask = ONE play call {play, query|url} — search only when asked. Controls: pause/resume/next/seek/fullscreen/now_playing. One tab, reuse it; result confirms. Other players → media_control.`,
     schema: {
         type: 'object',
         properties: {

@@ -1224,6 +1224,7 @@ const ORCH_SYSTEM = `{
  },
  "rules": {
   "act": "first turn — pick the tool, call it",
+  "play": "\"play X\" = ONE youtube play call, then silence — search only when they asked to search",
   "read": "once, whole; grep once for one forgotten string",
   "truth": "the tool result is the truth: success = proof, error = did not happen",
   "chain": "state it once (Plan: A→B→C); each step your tool or a brief",
@@ -5001,11 +5002,12 @@ const marmRecallSection = marmEnabled
                     // nothing". On voice and Steve deployments a spoken recap
                     // ("timestamp updated from 0:00 to 138:11…") talks over the
                     // music and stalls the conversation (2026-09-19).
-                    // ALL youtube actions are mute — play, skip, pause, even
-                    // its errors. The tool status line in the Oversight panel
-                    // carries the outcome; spoken/typed recaps only talk over
-                    // the music (2026-09-19).
-                    const mediaSilent = toolResults.some(r => r.toolName === 'youtube');
+                    // ALL youtube actions are mute — but only when the player
+                    // was actually touched (playing/paused/skipped). search and
+                    // now_playing results are NOT terminal: the model must be
+                    // able to speak them or continue to the play call.
+                    const mediaSilent = toolResults.some(r => r.toolName === 'youtube'
+                        && /^(Playing|Resumed|Paused|Already playing|Still playing|Queued):/.test(String(r.content || '').trim()));
                     if (mediaSilent && !errorOutputWritten) {
                         log('[media] playback confirmed — ending turn silently');
                         appendStatus({ phase: 'tool', label: '♫ playback confirmed — no reply needed' });
