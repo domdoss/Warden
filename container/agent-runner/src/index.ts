@@ -1094,7 +1094,8 @@ schedule_value
 - recurring: 5-field cron — 0 9 * * 1-5
 
 OUTPUT
-- Exactly one JSON object, nothing outside it: {"result": "<the outcome in one line>", "items": ["<one line per item, when the result is a list>"]}
+- Exactly one JSON object, nothing outside it: {"result": "<the outcome in one line>", "items": ["<one string per list item>"]}.
+- Every line of a list is its own string in "items". The two characters backslash-n never appear in your output — real structure goes in "items", never an escaped newline.
 - Answer from the values the tools returned.`,
         toolsets: ['iris-core'],
         // IBM Granite tool-calling guidance: temperature 0 for reliable
