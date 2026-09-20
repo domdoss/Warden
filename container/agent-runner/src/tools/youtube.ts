@@ -1,5 +1,10 @@
 import { registry } from '../tool-registry.js';
 import { log } from '../ipc-helpers.js';
+import { createRequire } from 'node:module';
+import os from 'os';
+import path from 'path';
+
+const require_ = createRequire(import.meta.url);
 
 // YouTube toolchain (2026-09-18, re-wired 2026-09-19). Playing a video used to
 // be hand-driven browser work; it became one merged `youtube` tool. It drove
@@ -91,10 +96,40 @@ async function recentPlayed(query: string): Promise<{ ids: Set<string>; titles: 
             titles.add(m[1].trim().toLowerCase());
             ids.add(/v=([\w-]{11})/.exec(m[2])?.[1] || m[2]);
         }
-    } catch { /* recall is advisory — worst case a repeat slips through */ }
+    } catch { /* recall is advisory — the DB read below is the deterministic path */ }
     return { ids, titles };
 }
 
+// The deterministic exclusion path: read marm's log_entries directly. The
+// recall tool's response format and index freshness kept hiding fresh plays
+// (0 exclusions while the entries sat in the DB), so the pick consults the
+// store itself — read-only, best-effort.
+const MARM_DB = path.join(os.homedir(), '.marm', 'marm_memory.db');
+let marmDb: any = null;
+
+function recentPlayedFromDb(): { ids: Set<string>; titles: Set<string> } {
+    const ids = new Set<string>();
+    const titles = new Set<string>();
+    try {
+        if (!marmDb) {
+            const Database = require_('better-sqlite3');
+            marmDb = new Database(MARM_DB, { readonly: true });
+        }
+        const rows = marmDb.prepare(
+            "SELECT summary FROM log_entries WHERE summary LIKE 'youtube-play:%' ORDER BY created_at DESC LIMIT 20"
+        ).all();
+        for (const row of rows) {
+            const m = /youtube-play:\s*(.+?)\s*\((https?:\/\/\S+)\)\s*$/.exec(row.summary);
+            if (!m) continue;
+            titles.add(m[1].trim().toLowerCase());
+            const id = /v=([\w-]{11})/.exec(m[2])?.[1];
+            if (id) ids.add(id);
+        }
+    } catch { /* advisory — worst case a repeat slips through */ }
+    return { ids, titles };
+}
+
+// Same-session backstop on top of the marm history.
 const recentPicks = new Set<string>();
 
 // ─── The default-app browser bridge ─────────────────────────────────────────
@@ -458,7 +493,11 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
         // carry the query's words (2026-09-19: it kept re-playing the same
         // first result).
         const qWords = new Set(target.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2));
-        const recent = await recentPlayed(target);
+        const [marmRecall, dbPlayed] = await Promise.all([recentPlayed(target), Promise.resolve(recentPlayedFromDb())]);
+        const recent = {
+            ids: new Set([...marmRecall.ids, ...dbPlayed.ids]),
+            titles: new Set([...marmRecall.titles, ...dbPlayed.titles]),
+        };
         const normTitle = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         const candidates = results
             .map((r, i) => ({ r, i }))
