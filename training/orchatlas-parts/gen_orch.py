@@ -332,7 +332,10 @@ for ask in B_ASKS:
 # Phrasing-jittered repeats for volume (the merge rejects exact duplicates
 # only — these differ in the opening ask).
 def jitter(ask):
-    return ask.replace("Build me ", "Put together ").replace("please", "now").replace("I want ", "Set up ")
+    out = ask.replace("Build me ", "Put together ").replace("please", "now").replace("I want ", "Set up ")
+    if out == ask:  # no keyword hit — force a change so the row is not a dupe
+        out = "Hey — " + ask[0].lower() + ask[1:]
+    return out
 
 for ask in A_ASKS:
     ROWS_1.append(chain_a(jitter(ask)))

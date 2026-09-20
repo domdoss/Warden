@@ -463,21 +463,25 @@ if (v) { try { v.pause(); } catch (e) {} }`).catch(() => {});
     }
 
     if (action === 'next') {
+        // "Next" = Shift+N (next playlist entry) — or, when that lands nowhere
+        // (a single long mix has no playlist next), the first suggested video
+        // in the sidebar. NEVER a search.
         const before = await playerState(player);
+        const changed = (st: { title: string; url: string } | null) =>
+            !!st && (!!before && (st.title !== before.title || st.url !== before.url));
         const had = await player.pressKey('Shift+N');
-        if (!had) return 'The default browser provider exposes no key-press tool — use action "play" with the next video instead.';
-        await player.waitForTimeout(2500);
-        const st = await playerState(player);
-        if (!st) return 'Pressed next but could not read the player.';
-        // "Next" only counts when the track actually changed — a single long
-        // mix has no next track, and claiming success while the same video
-        // plays taught the model to narrate a skip that never happened
-        // (2026-09-19: same title, position 138:11, reported as "next song").
-        const changed = !before || st.title !== before.title || st.url !== before.url;
-        if (!changed) {
-            return `Still playing: ${st.title} (${st.at}) — this is a single long mix, so there is no next track. Use action "play" with a query to change the music.`;
+        if (had) {
+            await player.waitForTimeout(2500);
+            const st = await playerState(player);
+            if (changed(st)) return `Playing: ${st!.title} (${st!.at})\n${st!.url}`;
         }
-        return `${st.paused ? 'Queued' : 'Playing'}: ${st.title} (${st.at})\n${st.url}`;
+        // Shift+N landed nowhere: click the first suggested item (a mix/radio
+        // first, then a plain suggested video).
+        await player.evaluate(`const s = document.querySelector('ytd-compact-radio-renderer a#video-title, ytd-compact-video-renderer a#video-title'); if (s) s.click(); return !!s;`).catch(() => {});
+        await player.waitForTimeout(2500);
+        const st2 = await playerState(player);
+        if (changed(st2)) return `Playing: ${st2!.title} (${st2!.at})\n${st2!.url}`;
+        return `Could not advance — no playlist next and no suggested video found. ${st2 ? `Still: ${st2.title} (${st2.at})` : ''}`;
     }
 
     if (action === 'seek') {
