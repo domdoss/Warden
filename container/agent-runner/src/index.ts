@@ -968,7 +968,7 @@ function agentKernel(doneLine: string): string {
         },
         memory: {
             check: 'mcp__marm__marm_smart_recall before hunting for a fact, a prior decision, or how something was done',
-            log: 'a durable fact you established (confirmed path, root cause, decision) → mcp__marm__marm_log_entry',
+            log: 'only when the user asked you to remember it — otherwise ask first ("save this to memory?") and wait for a yes, then mcp__marm__marm_log_entry; never auto-log',
             once: 'once per fact',
         },
         finishing: {
@@ -1033,7 +1033,11 @@ const SUBAGENTS: SubAgentDef[] = [
             role: 'Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn. When the task suggests an approach that fits your tools poorly, deliver the outcome your own way.',
             tools: 'each tool description is its instructions — read it and pick by intent; a capability you do not see listed is one call away: `list_skills`, then `activate_skill`',
             machine: {
-                live: 'a real person live computer with their real accounts — what and where this machine is lives in memory; consult MARM when it matters, do not assume',
+                live: {
+                    what: 'a real person live computer with their real accounts',
+                    verify: 'what and where this machine is — check before you claim it',
+                    assume: 'never',
+                },
                 src: '/opt/Warden (capital W): src/ (host), container/agent-runner/ (agent), store/, data/, public/, eyes_ear/; dist/ is build output. Edit source, run `npm run build`, then `systemctl --user restart warden` to deploy',
                 user_files: '~/Warden — the user own files, uploads and deliverables',
                 bash: 'persistent shared shell — `cd` holds across calls, so work from the right directory; absolute paths anywhere on the filesystem are available',
@@ -1281,7 +1285,6 @@ const ORCH_SYSTEM = `{
  "machine": {
   "host": "Arch + KDE + Wayland; browser = captain's signed-in Chrome",
   "src": "/opt/Warden (dist = build output); captain's files in ~/Warden",
-  "mem": "MARM holds machine facts — consult when it matters",
   "sudo": "user types the password: install once, say a prompt is waiting, end turn"
  },
  "rules": {
@@ -3083,6 +3086,14 @@ const SUBAGENT_MSG_BUDGET_CHARS = 24000;        // ~6K tokens — sub-agent tool
 const AGENT_TOOL_RESULT_MAX_CHARS: Record<string, () => number> = {
     sentry: () => Number(process.env.SENTRY_TOOL_RESULT_MAX_CHARS || '32000'),
 };
+// Per-TOOL result budget (checked before the per-agent default). The default
+// 4000-char head-cut is right for Bash/file tools, deadly for page dumps: on a
+// huge page the useful controls (late-DOM modals, composers) are at the END of
+// the tree text and get cut first — the 2026-09-21 reddit failure: read_page
+// succeeded, the title field was in the output, and the model never saw it.
+const TOOL_RESULT_MAX_CHARS: Record<string, number> = {
+    'mcp__browser-driving__chrome_read_page': 24000,
+};
 function toolResultMaxChars(agentName: string): number {
     const raw = Number(AGENT_TOOL_RESULT_MAX_CHARS[agentName]?.() || '');
     return Number.isFinite(raw) && raw > 0 ? raw : SUBAGENT_MAX_TOOL_RESULT_CHARS;
@@ -3110,6 +3121,7 @@ function orchestratorMsgBudgetChars(model: string, headChars: number, toolsChars
 
 function truncateToolResult(toolName: string, result: string, maxChars: number = SUBAGENT_MAX_TOOL_RESULT_CHARS): string {
     if (typeof result !== 'string') result = String(result ?? '');
+    if (TOOL_RESULT_MAX_CHARS[toolName]) maxChars = TOOL_RESULT_MAX_CHARS[toolName];
     if (result.length <= maxChars) return result;
     const head = result.slice(0, maxChars - 400);
     return `${head}\n\n[…truncated ${result.length - maxChars + 400} chars by context budget…]`;
@@ -4288,7 +4300,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n{"long_term_recall":{"core":"MEMORY.md carries the durable core, auto-loaded; older memories relevant to the current ask are auto-recalled below it","deep_dig":"mcp__marm__marm_smart_recall (that exact name) — semantic search over every fact the memory distiller has ever logged","log_new":"a durable fact you just learned → mcp__marm__marm_log_entry, so it is recallable next time"}}\n`
+    ? `\n{"long_term_recall":{"core":"MEMORY.md carries the durable core, auto-loaded; older memories relevant to the current ask are auto-recalled below it","deep_dig":"mcp__marm__marm_smart_recall (that exact name) — semantic search over facts the memory system already holds","log_new":"only when the user asked you to remember it, or you asked first and they agreed → mcp__marm__marm_log_entry; never log a fact automatically"}}\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -4391,7 +4403,22 @@ const marmRecallSection = marmEnabled
               // it can fix with its own tools is its job, not a report to the
               // user (2026-09-21: "it reports easily fixable things instead of
               // fixing them"). Positive shape, one rule + one boundary.
-              + ',"proactive":{"rule":"something broken but fixable with your own tools → fix it first, then say what you did","report":"only what you cannot fix, or that needs the user\'s decision"}}\n';
+              + ',"proactive":{"rule":"something broken but fixable with your own tools → fix it first, then say what you did","report":"only what you cannot fix, or that needs the user\'s decision"}'
+              // Targets: the ask's own words name the destination — a
+              // subreddit, a site, a page, a channel. The fine-tune had too few
+              // distinct destinations, so asks collapsed to whichever one
+              // destination the corpus happened to show (2026-09-21: every
+              // reddit ask went to the single reddit URL the training set ever
+              // displayed). General rule, positive framing — naming any
+              // specific destination here would seed it instead (see
+              // feedback-no-negative-examples).
+              + ',"targets":{"rule":"go to exactly the destination the ask names","url":"build it from the ask\'s own words","source":"the ask, always"}}'
+              // Results: a result that answers the ask is the reply material —
+              // poll it again and the model burns the turn re-asking the same
+              // question (2026-09-21: play chillstep → 15 now_playing calls,
+              // 21 iterations, raw markup leaked as the answer). General
+              // rule, positive shape.
+              + ',"results":{"rule":"the result answers the ask → reply with it now, in your own words","same":"one call per fact — the first result carries the fact"}}\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is
@@ -5156,7 +5183,7 @@ const marmRecallSection = marmEnabled
                         }
                     }));
                     for (const result of toolResults) {
-                        const body = truncateToolResult('orchestrator', result.content);
+                        const body = truncateToolResult(result.toolName || 'orchestrator', result.content);
                         messages.push({ role: 'tool', content: TRUSTED_RESULT_TOOLS.has(result.toolName) ? body : untrustedContextMessage(body) });
                     }
                     // #3 Mid-loop breaker tracking: record each call sig, detect

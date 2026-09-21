@@ -615,6 +615,101 @@
   }
 
   /**
+   * Warden patch (2026-09-21): sweep fallback for the walk's node cap.
+   * The depth-first walk hard-stops at MAX_NODES (4000) in DOM order — on
+   * huge pages (reddit feeds and the like) everything appended late in the
+   * DOM (modals, composers, forms) is never walked, so their fields are
+   * invisible to chrome_read_page and nothing can ever fill them. After the
+   * bounded walk, a native querySelectorAll sweep catches every interactive
+   * element in the light DOM regardless of position, and a bounded pass over
+   * open shadow roots catches controls inside web components (contenteditable
+   * composers). Native selectors keep the sweep cheap; the expensive
+   * per-element work only runs for elements the walk never reached.
+   */
+  const SWEEP_SELECTOR =
+    'input, textarea, select, button, a[href], [contenteditable="true"], [role="button"], [role="link"], [role="textbox"], [role="combobox"], [role="searchbox"], [role="menuitem"], [role="option"], [role="switch"], [role="radio"], [role="checkbox"], [role="tab"], [role="slider"]';
+  const SWEEP_EMIT_LIMIT = 2000; // separate budget — the walk's may be spent
+
+  function sweepEmit(el, out, refMap, state, swept) {
+    try {
+      if (state.visited.has(el)) return false;
+      state.visited.add(el);
+      const cs = window.getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) return false;
+      let refId = null;
+      for (const k in window.__claudeElementMap) {
+        if (window.__claudeElementMap[k].deref && window.__claudeElementMap[k].deref() === el) {
+          refId = k;
+          break;
+        }
+      }
+      if (!refId) {
+        refId = `ref_${++window.__claudeRefCounter}`;
+        window.__claudeElementMap[refId] = new WeakRef(el);
+      }
+      let label = inferLabel(el);
+      let line = `  - ${inferRole(el)}`;
+      if (label) {
+        label = label.replace(/\s+/g, ' ').substring(0, MAX_LINE_LABEL);
+        line += ` "${label.replace(/"/g, '\\"')}"`;
+      }
+      line += ` [ref=${refId}] (x=${Math.round(rect.left + rect.width / 2)},y=${Math.round(rect.top + rect.height / 2)})`;
+      if (el.id) line += ` id="${el.id}"`;
+      const href = el.getAttribute && el.getAttribute('href');
+      if (href) line += ` href="${href}"`;
+      const type = el.getAttribute && el.getAttribute('type');
+      if (type) line += ` type="${type}"`;
+      const placeholder = el.getAttribute && el.getAttribute('placeholder');
+      if (placeholder) line += ` placeholder="${placeholder}"`;
+      out.push(line);
+      state.included++;
+      state.processed++;
+      swept.count++;
+      if (refMap.length < REF_MAP_LIMIT) {
+        refMap.push({
+          ref: refId,
+          selector: generateSelector(el),
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        });
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function sweepInteractiveMissed(out, refMap, state) {
+    try {
+      const swept = { count: 0 };
+      // Light DOM: native sweep, position-independent
+      for (const el of document.querySelectorAll(SWEEP_SELECTOR)) {
+        if (swept.count >= SWEEP_EMIT_LIMIT) break;
+        sweepEmit(el, out, refMap, state, swept);
+      }
+      // Open shadow roots, two levels deep: web components' inner controls
+      for (const host of document.querySelectorAll('*')) {
+        const sr = host.shadowRoot;
+        if (!sr) continue;
+        for (const el of sr.querySelectorAll(SWEEP_SELECTOR)) {
+          if (swept.count >= SWEEP_EMIT_LIMIT) break;
+          sweepEmit(el, out, refMap, state, swept);
+        }
+        for (const inner of sr.querySelectorAll('*')) {
+          if (!inner.shadowRoot) continue;
+          for (const el of inner.shadowRoot.querySelectorAll(SWEEP_SELECTOR)) {
+            if (swept.count >= SWEEP_EMIT_LIMIT) break;
+            sweepEmit(el, out, refMap, state, swept);
+          }
+        }
+      }
+    } catch (_) {
+      /* sweep is best-effort — the walked tree stands on its own */
+    }
+  }
+
+  /**
    * Generate tree and return
    * @param {'all'|'interactive'|null} filter
    * @param {{maxDepth?: number, refId?: string}|undefined} options
@@ -650,6 +745,25 @@
       }
 
       if (root) traverse(root, 0, cfg, out, refMap, state);
+      // Warden patch: on full-page reads (any filter — the default is "all",
+      // the walk caps at MAX_NODES in DOM order), sweep for interactive
+      // elements the walk never reached (late-DOM modals/composers, controls
+      // inside open shadow roots) and PREPEND them to the output — consumers
+      // head-truncate dumps, and the missed controls are the ones that matter
+      // (a form at the end of a huge page is invisible if it can be cut).
+      // Subtree reads (refId) skip this — the walk covers the requested
+      // subtree and a document-wide sweep would flood it with unrelated
+      // elements.
+      if (root === document.body) {
+        const sweepLines = [];
+        sweepInteractiveMissed(sweepLines, refMap, state);
+        if (sweepLines.length) {
+          sweepLines.unshift(
+            '  [interactive elements the tree walk did not reach — past its node cap or inside shadow roots]'
+          );
+          out.unshift(...sweepLines);
+        }
+      }
       for (const k in window.__claudeElementMap) {
         if (!window.__claudeElementMap[k].deref || !window.__claudeElementMap[k].deref())
           delete window.__claudeElementMap[k];

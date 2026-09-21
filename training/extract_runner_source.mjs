@@ -21,6 +21,29 @@ const drift = (what) =>
   `EXTRACTION DRIFT: ${what} no longer matches the runner source (${INDEX_TS} / ${SKILLS_TS}). ` +
   `Update the regex/scan in training/extract_runner_source.mjs — do NOT copy the text by hand.`;
 
+/** Walk a balanced (...) block starting at src[startIdx] (the opening paren).
+ *  Same string/comment awareness as matchBracket. */
+function matchParen(src, startIdx) {
+  if (src[startIdx] !== '(') throw new Error(`matchParen: src[${startIdx}] is not (`);
+  let depth = 0, q = null, lineComment = false, blockComment = false;
+  for (let i = startIdx; i < src.length; i++) {
+    const ch = src[i];
+    if (lineComment) { if (ch === '\n') lineComment = false; continue; }
+    if (blockComment) { if (ch === '*' && src[i + 1] === '/') { blockComment = false; i++; } continue; }
+    if (q) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '/') { lineComment = true; i++; continue; }
+    if (ch === '/' && src[i + 1] === '*') { blockComment = true; i++; continue; }
+    if (ch === "'" || ch === '"' || ch === '`') { q = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
 /** Walk a balanced {...} (or [...]) block starting at src[startIdx] (which must
  *  be the opening brace). String- AND comment-aware: quotes inside comments
  *  (the orchestrator's inbox) would otherwise open a phantom string and
@@ -183,29 +206,47 @@ export function extractOrchDelegateToolDefFn(src = runnerSrc()) {
   return extractFunction('orchDelegateToolDef', src);
 }
 
-/** `const ORCH_MANAGER_SYSTEM = \`...\`;` — orch's own manager prompt, decoded
- *  with the REAL agentKernel (the template interpolates it, so the plain
- *  no-interpolation scan used for ORCH_SYSTEM does not apply). Interpolation-
- *  aware: a backtick inside \${...} would not terminate the template. */
+/** orch's own manager prompt. Two source shapes it has lived as:
+ *  - old: `const ORCH_MANAGER_SYSTEM = \`...\`;` — a backtick template that
+ *    interpolates agentKernel, decoded with the REAL function.
+ *  - current (2026-09-21): `const ORCH_MANAGER_SYSTEM = JSON.stringify({... kernel: JSON.parse(agentKernel('...')) ...});`
+ *    — a dense object literal; eval it with the REAL agentKernel in scope and
+ *    let the source's own JSON.stringify produce the string. Interpolation-
+ *    aware on the old path: a backtick inside \${...} would not terminate
+ *    the template. */
 export function extractOrchManagerSystem(src = runnerSrc()) {
-  const at = src.indexOf('const ORCH_MANAGER_SYSTEM = `');
-  if (at === -1) throw new Error(drift('ORCH_MANAGER_SYSTEM'));
-  let i = at + 'const ORCH_MANAGER_SYSTEM = `'.length, raw = '', depth = 0;
-  while (i < src.length) {
-    const ch = src[i];
-    if (depth > 0) { // inside ${...} — copy verbatim, track braces
-      if (ch === '{') depth++;
-      else if (ch === '}') { depth--; if (depth === 0) { raw += ch; i++; continue; } }
-      raw += ch; i++; continue;
-    }
-    if (ch === '\\') { raw += ch + src[i + 1]; i += 2; continue; }
-    if (ch === '`') break;
-    if (ch === '$' && src[i + 1] === '{') { raw += '${'; depth = 1; i += 2; continue; }
-    raw += ch; i++;
-  }
-  if (src[i] !== '`' || src[i + 1] !== ';') throw new Error(drift('ORCH_MANAGER_SYSTEM terminator'));
   const kernel = extractFunction('agentKernel', src);
-  const out = eval(`(() => { const agentKernel = ${kernel.toString()}; return \`${raw}\`; })()`);
+  const at = src.indexOf('const ORCH_MANAGER_SYSTEM = `');
+  if (at !== -1) {
+    let i = at + 'const ORCH_MANAGER_SYSTEM = `'.length, raw = '', depth = 0;
+    while (i < src.length) {
+      const ch = src[i];
+      if (depth > 0) { // inside ${...} — copy verbatim, track braces
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { raw += ch; i++; continue; } }
+        raw += ch; i++; continue;
+      }
+      if (ch === '\\') { raw += ch + src[i + 1]; i += 2; continue; }
+      if (ch === '`') break;
+      if (ch === '$' && src[i + 1] === '{') { raw += '${'; depth = 1; i += 2; continue; }
+      raw += ch; i++;
+    }
+    if (src[i] !== '`' || src[i + 1] !== ';') throw new Error(drift('ORCH_MANAGER_SYSTEM terminator'));
+    const out = eval(`(() => { const agentKernel = ${kernel.toString()}; return \`${raw}\`; })()`);
+    if (typeof out !== 'string' || out.length < 1000 || out.includes('undefined')) {
+      throw new Error(drift('ORCH_MANAGER_SYSTEM output'));
+    }
+    return out;
+  }
+  // Current shape: JSON.stringify(object literal) — slice the literal by
+  // matching the JSON.stringify( ... ) parens, eval with agentKernel in scope.
+  const jsAt = src.indexOf('const ORCH_MANAGER_SYSTEM = JSON.stringify(');
+  if (jsAt === -1) throw new Error(drift('ORCH_MANAGER_SYSTEM'));
+  const open = jsAt + 'const ORCH_MANAGER_SYSTEM = JSON.stringify('.length - 1; // at the '('
+  const close = matchParen(src, open);
+  if (close === -1 || src[close + 1] !== ';') throw new Error(drift('ORCH_MANAGER_SYSTEM terminator'));
+  const literal = src.slice(open, close + 1); // ( ... )
+  const out = eval(`(() => { const agentKernel = ${kernel.toString()}; return JSON.stringify${literal}; })()`);
   if (typeof out !== 'string' || out.length < 1000 || out.includes('undefined')) {
     throw new Error(drift('ORCH_MANAGER_SYSTEM output'));
   }

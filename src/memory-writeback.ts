@@ -278,11 +278,10 @@ export async function marmLogEntries(facts: string[]): Promise<boolean> {
   }
 }
 
-/** One MCP tools/call against MARM, parsed. Same init pattern as
- *  marmLogEntries (initialize reusing the cached session, the courtesy
- *  notification, then the call). Returns the tool's JSON payload — MARM
- *  prepends banner blocks to the content array on first calls, so take
- *  the newest block that parses. Null on any failure. */
+/** One MCP tools/call against MARM, parsed. Initialize reuses the cached
+ *  session, the courtesy notification, then the call. Returns the tool's
+ *  JSON payload — MARM prepends banner blocks to the content array on first
+ *  calls, so take the newest block that parses. Null on any failure. */
 export async function marmToolCall(name: string, args: Record<string, unknown>): Promise<Record<string, any> | null> {
   try {
     const init = await marmRpc(undefined, {
@@ -502,8 +501,6 @@ Format: Reply with ONLY this JSON object, no prose:
     if (distilled.memory.length > 0) {
       const block = `\n### ${today}\n${distilled.memory.map((m) => `- ${m}`).join('\n')}\n`;
       fs.appendFileSync(memoryPath, block, 'utf-8');
-      // Mirror the same facts into MARM for semantic recall — fire-and-forget.
-      void marmLogEntries(distilled.memory);
       // Galaxy brain-scan feed: distiller writes carry no taxonomy path, so
       // they ride as query-text events the galaxy keyword-maps onto regions.
       distilled.memory.forEach((m) => noteTreeActivity({ kind: 'write', query: m }));

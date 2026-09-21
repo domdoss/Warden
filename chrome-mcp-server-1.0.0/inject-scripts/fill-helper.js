@@ -68,6 +68,27 @@ if (window.__FILL_HELPER_INITIALIZED__) {
         };
       }
 
+      // Warden patch (2026-09-21): contenteditable fields (rich-text
+      // composers inside web components). The INPUT/TEXTAREA/SELECT branches
+      // below would reject them outright. Focus + select-all + insertText
+      // keeps the editor's beforeinput/input listeners in the loop.
+      if (element.isContentEditable) {
+        element.focus();
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('insertText', false, String(value ?? ''));
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return {
+          success: true,
+          message: 'Contenteditable filled successfully',
+          elementInfo: { ...elementInfo, value: element.textContent },
+        };
+      }
+
       // Check if element is an input, textarea, or select
       const validTags = ['INPUT', 'TEXTAREA', 'SELECT'];
       // Keep a permissive list to allow type-specific branches below to handle behavior
@@ -294,6 +315,35 @@ if (window.__FILL_HELPER_INITIALIZED__) {
   }
 
   /**
+   * Warden patch (2026-09-21): document.elementFromPoint does not pierce
+   * shadow DOM — for content inside an open shadow root it returns the HOST,
+   * so the old hit-test rejected every shadow-internal control as "not
+   * visible" even when a ref resolved it perfectly. Descend into open shadow
+   * roots to the innermost element at the point, and compare across the
+   * composed (shadow-inclusive) ancestor chain.
+   */
+  function shadowAwareElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    let guard = 0;
+    while (el && el.shadowRoot && guard++ < 20) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  function composedContains(a, b) {
+    let node = b;
+    let guard = 0;
+    while (node && guard++ < 100) {
+      if (node === a) return true;
+      node = node.parentNode || (node instanceof ShadowRoot ? node.host : null);
+    }
+    return false;
+  }
+
+  /**
    * Check if an element is visible
    * @param {Element} element - The element to check
    * @returns {boolean} - Whether the element is visible
@@ -325,10 +375,14 @@ if (window.__FILL_HELPER_INITIALIZED__) {
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    const elementAtPoint = document.elementFromPoint(centerX, centerY);
+    const elementAtPoint = shadowAwareElementFromPoint(centerX, centerY);
     if (!elementAtPoint) return false;
 
-    return element === elementAtPoint || element.contains(elementAtPoint);
+    return (
+      element === elementAtPoint ||
+      composedContains(element, elementAtPoint) ||
+      composedContains(elementAtPoint, element)
+    );
   }
 
   // Listen for messages from the extension

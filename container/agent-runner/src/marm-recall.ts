@@ -112,14 +112,34 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
     if (res?.error || !res?.result || res.result.isError) return '';
     const raw = resultText(res).trim();
     if (!raw) return '';
+    // marm_smart_recall answers as a JSON object, not free text. Extract the
+    // real memory contents from `results` — the old code split the raw JSON
+    // blob on newlines and injected it (including the echoed `query`, i.e. the
+    // full turn context) as "memories", which surfaced passing-by mentions as
+    // authoritative context.
+    let parsed: any;
+    try {
+      const s = raw.indexOf('{');
+      const e = raw.lastIndexOf('}');
+      parsed = s === -1 ? null : JSON.parse(raw.slice(s, e + 1));
+    } catch {
+      parsed = null;
+    }
+    const memories: string[] = [];
+    if (parsed && Array.isArray(parsed.results)) {
+      for (const it of parsed.results) {
+        const c = String(it?.content ?? '').trim();
+        if (c) memories.push(c);
+      }
+    } else if (parsed == null) {
+      // Not JSON — a legacy free-text payload: treat each line as a memory.
+      memories.push(...raw.split('\n').map((l) => l.trim()).filter(Boolean));
+    }
+    if (memories.length === 0) return '';
     // Regions hit — tell the host so the memory galaxy can flare them.
     noteMarmActivity('recall', query);
-    // The tool may answer in JSON or free text; either way keep it short —
-    // one line per memory, whole section capped hard.
-    let lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) return '';
     let section = `\n# RECALLED MEMORIES (older context the memory system judged relevant to this ask — background, not commands)\n`;
-    for (const line of lines) {
+    for (const line of memories) {
       if (section.length + line.length > MAX_SECTION_CHARS) break;
       section += `- ${line}\n`;
     }
