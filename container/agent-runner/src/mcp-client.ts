@@ -31,6 +31,7 @@ export type McpServerConfig =
       transport: 'stdio';
       enabled: boolean;
       description?: string;
+      lazy?: boolean;
     }
   | {
       name: string;
@@ -38,6 +39,7 @@ export type McpServerConfig =
       transport: 'sse';
       enabled: boolean;
       description?: string;
+      lazy?: boolean;
     }
   | {
       name: string;
@@ -49,6 +51,7 @@ export type McpServerConfig =
       transport: 'http';
       enabled: boolean;
       description?: string;
+      lazy?: boolean;
     };
 
 /** A tool exposed by an external MCP server. */
@@ -271,7 +274,11 @@ async function reapStaleServer(url: string): Promise<boolean> {
 export async function loadExternalMcpClients(
   configPath: string = DEFAULT_CONFIG_PATH,
 ): Promise<ExternalMcpClient[]> {
-  const configs = loadMcpServers(configPath).filter((c) => c.enabled && (c.transport === 'stdio' || c.transport === 'sse' || c.transport === 'http'));
+  // `lazy` servers (optional components — e.g. the browser-driving bridge) are
+  // NEVER touched at boot: no connect, no tools/list, nothing to hang a turn
+  // on when they're down. They are dialed on demand at dispatch time via
+  // getOrCreateMcpClient().
+  const configs = loadMcpServers(configPath).filter((c) => c.enabled && !c.lazy && (c.transport === 'stdio' || c.transport === 'sse' || c.transport === 'http'));
   // Connect to every server in parallel. Serial connect was the dominant
   // cold-start delay (npx/uvx spawn + handshake per server, plus broken
   // servers eating their full timeout one after another). Parallel cuts the
@@ -324,4 +331,27 @@ export async function loadExternalMcpClients(
   return results
     .map((r) => (r.status === 'fulfilled' ? r.value : null))
     .filter((c): c is ExternalMcpClient => c !== null);
+}
+
+/** On-demand client for a `lazy` server (optional component — e.g. the
+ *  browser-driving bridge). Called from tool dispatch when a tool on that
+ *  server is actually invoked: connect now (bounded), cache for reuse, and
+ *  let the caller fail gracefully if the server isn't there. Boot never
+ *  touches these servers; only a real tool call does. */
+export async function getOrCreateMcpClient(
+  server: string,
+  configPath: string = DEFAULT_CONFIG_PATH,
+): Promise<ExternalMcpClient> {
+  const cached = persistentClients.get(server);
+  if (cached) return cached;
+  const cfg = loadMcpServers(configPath).find((c) => c.enabled && c.name === server);
+  if (!cfg) throw new Error(`MCP server "${server}" is not configured or enabled`);
+  const client = new ExternalMcpClient(cfg);
+  await Promise.race([
+    client.connect(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('connect timeout')), 10_000)),
+  ]);
+  persistentClients.set(server, client);
+  return client;
 }

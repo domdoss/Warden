@@ -1,0 +1,338 @@
+{
+  "extensionName": {
+    "message": "Chrome MCPサーバー"
+  },
+  "extensionDescription": {
+    "message": "自身のChromeブラウザの機能を外部に公開します"
+  },
+  "nativeServerConfigLabel": {
+    "message": "ネイティブサーバー設定"
+  },
+  "semanticEngineLabel": {
+    "message": "セマンティックエンジン"
+  },
+  "embeddingModelLabel": {
+    "message": "埋め込みモデル"
+  },
+  "indexDataManagementLabel": {
+    "message": "インデックスデータ管理"
+  },
+  "modelCacheManagementLabel": {
+    "message": "モデルキャッシュ管理"
+  },
+  "statusLabel": {
+    "message": "ステータス"
+  },
+  "runningStatusLabel": {
+    "message": "実行ステータス"
+  },
+  "connectionStatusLabel": {
+    "message": "接続ステータス"
+  },
+  "lastUpdatedLabel": {
+    "message": "最終更新:"
+  },
+  "connectButton": {
+    "message": "接続"
+  },
+  "disconnectButton": {
+    "message": "切断"
+  },
+  "connectingStatus": {
+    "message": "接続中..."
+  },
+  "connectedStatus": {
+    "message": "接続済み"
+  },
+  "disconnectedStatus": {
+    "message": "未接続"
+  },
+  "detectingStatus": {
+    "message": "検出中..."
+  },
+  "serviceRunningStatus": {
+    "message": "サービス実行中 (ポート: $1)",
+    "placeholders": {
+      "port": {
+        "content": "$1",
+        "example": "12306"
+      }
+    }
+  },
+  "serviceNotConnectedStatus": {
+    "message": "サービス未接続"
+  },
+  "connectedServiceNotStartedStatus": {
+    "message": "接続済み、サービス未起動"
+  },
+  "mcpServerConfigLabel": {
+    "message": "MCPサーバー設定"
+  },
+  "connectionPortLabel": {
+    "message": "接続ポート"
+  },
+  "refreshStatusButton": {
+    "message": "ステータス更新"
+  },
+  "copyConfigButton": {
+    "message": "設定をコピー"
+  },
+  "retryButton": {
+    "message": "再試行"
+  },
+  "cancelButton": {
+    "message": "キャンセル"
+  },
+  "confirmButton": {
+    "message": "確認"
+  },
+  "saveButton": {
+    "message": "保存"
+  },
+  "closeButton": {
+    "message": "閉じる"
+  },
+  "resetButton": {
+    "message": "リセット"
+  },
+  "initializingStatus": {
+    "message": "初期化中..."
+  },
+  "processingStatus": {
+    "message": "処理中..."
+  },
+  "loadingStatus": {
+    "message": "読み込み中..."
+  },
+  "clearingStatus": {
+    "message": "クリア中..."
+  },
+  "cleaningStatus": {
+    "message": "クリーンアップ中..."
+  },
+  "downloadingStatus": {
+    "message": "ダウンロード中..."
+  },
+  "semanticEngineReadyStatus": {
+    "message": "セマンティックエンジン準備完了"
+  },
+  "semanticEngineInitializingStatus": {
+    "message": "セマンティックエンジン初期化中..."
+  },
+  "semanticEngineInitFailedStatus": {
+    "message": "セマンティックエンジンの初期化に失敗しました"
+  },
+  "semanticEngineNotInitStatus": {
+    "message": "セマンティックエンジン未初期化"
+  },
+  "initSemanticEngineButton": {
+    "message": "セマンティックエンジンを初期化"
+  },
+  "reinitializeButton": {
+    "message": "再初期化"
+  },
+  "downloadingModelStatus": {
+    "message": "モデルをダウンロード中... $1%",
+    "placeholders": {
+      "progress": {
+        "content": "$1",
+        "example": "50"
+      }
+    }
+  },
+  "switchingModelStatus": {
+    "message": "モデルを切り替え中..."
+  },
+  "modelLoadedStatus": {
+    "message": "モデル読み込み完了"
+  },
+  "modelFailedStatus": {
+    "message": "モデルの読み込みに失敗しました"
+  },
+  "lightweightModelDescription": {
+    "message": "軽量多言語モデル"
+  },
+  "betterThanSmallDescription": {
+    "message": "e5-smallよりわずかに大きいが、性能は向上"
+  },
+  "multilingualModelDescription": {
+    "message": "多言語対応セマンティックモデル"
+  },
+  "fastPerformance": {
+    "message": "高速"
+  },
+  "balancedPerformance": {
+    "message": "バランス"
+  },
+  "accuratePerformance": {
+    "message": "高精度"
+  },
+  "networkErrorMessage": {
+    "message": "ネットワーク接続エラーです。ネットワークを確認して再試行してください"
+  },
+  "modelCorruptedErrorMessage": {
+    "message": "モデルファイルが破損しているか不完全です。再ダウンロードしてください"
+  },
+  "unknownErrorMessage": {
+    "message": "不明なエラーです。ネットワークがHuggingFaceにアクセスできるか確認してください"
+  },
+  "permissionDeniedErrorMessage": {
+    "message": "権限が拒否されました"
+  },
+  "timeoutErrorMessage": {
+    "message": "操作がタイムアウトしました"
+  },
+  "indexedPagesLabel": {
+    "message": "インデックス化されたページ"
+  },
+  "indexSizeLabel": {
+    "message": "インデックスサイズ"
+  },
+  "activeTabsLabel": {
+    "message": "アクティブなタブ"
+  },
+  "vectorDocumentsLabel": {
+    "message": "ベクトルドキュメント"
+  },
+  "cacheSizeLabel": {
+    "message": "キャッシュサイズ"
+  },
+  "cacheEntriesLabel": {
+    "message": "キャッシュエントリ"
+  },
+  "clearAllDataButton": {
+    "message": "全データをクリア"
+  },
+  "clearAllCacheButton": {
+    "message": "全キャッシュをクリア"
+  },
+  "cleanExpiredCacheButton": {
+    "message": "期限切れキャッシュをクリーンアップ"
+  },
+  "exportDataButton": {
+    "message": "データのエクスポート"
+  },
+  "importDataButton": {
+    "message": "データのインポート"
+  },
+  "confirmClearDataTitle": {
+    "message": "データクリアの確認"
+  },
+  "settingsTitle": {
+    "message": "設定"
+  },
+  "aboutTitle": {
+    "message": "情報"
+  },
+  "helpTitle": {
+    "message": "ヘルプ"
+  },
+  "clearDataWarningMessage": {
+    "message": "この操作は、インデックス化されたすべてのウェブページコンテンツとベクトルデータをクリアします。これには以下が含まれます："
+  },
+  "clearDataList1": {
+    "message": "すべてのウェブページテキストコンテンツインデックス"
+  },
+  "clearDataList2": {
+    "message": "ベクトル埋め込みデータ"
+  },
+  "clearDataList3": {
+    "message": "検索履歴とキャッシュ"
+  },
+  "clearDataIrreversibleWarning": {
+    "message": "この操作は元に戻せません！クリア後、再度ウェブページを閲覧してインデックスを再構築する必要があります。"
+  },
+  "confirmClearButton": {
+    "message": "クリアを確認"
+  },
+  "cacheDetailsLabel": {
+    "message": "キャッシュ詳細"
+  },
+  "noCacheDataMessage": {
+    "message": "キャッシュデータがありません"
+  },
+  "loadingCacheInfoStatus": {
+    "message": "キャッシュ情報を読み込み中..."
+  },
+  "processingCacheStatus": {
+    "message": "キャッシュを処理中..."
+  },
+  "expiredLabel": {
+    "message": "期限切れ"
+  },
+  "bookmarksBarLabel": {
+    "message": "ブックマークバー"
+  },
+  "newTabLabel": {
+    "message": "新しいタブ"
+  },
+  "currentPageLabel": {
+    "message": "現在のページ"
+  },
+  "menuLabel": {
+    "message": "メニュー"
+  },
+  "navigationLabel": {
+    "message": "ナビゲーション"
+  },
+  "mainContentLabel": {
+    "message": "メインコンテンツ"
+  },
+  "languageSelectorLabel": {
+    "message": "言語"
+  },
+  "themeLabel": {
+    "message": "テーマ"
+  },
+  "lightTheme": {
+    "message": "ライト"
+  },
+  "darkTheme": {
+    "message": "ダーク"
+  },
+  "autoTheme": {
+    "message": "自動"
+  },
+  "advancedSettingsLabel": {
+    "message": "詳細設定"
+  },
+  "debugModeLabel": {
+    "message": "デバッグモード"
+  },
+  "verboseLoggingLabel": {
+    "message": "詳細ロギング"
+  },
+  "successNotification": {
+    "message": "操作が正常に完了しました"
+  },
+  "warningNotification": {
+    "message": "警告：続行する前に確認してください"
+  },
+  "infoNotification": {
+    "message": "情報"
+  },
+  "configCopiedNotification": {
+    "message": "設定がクリップボードにコピーされました"
+  },
+  "dataClearedNotification": {
+    "message": "データが正常にクリアされました"
+  },
+  "bytesUnit": {
+    "message": "バイト"
+  },
+  "kilobytesUnit": {
+    "message": "KB"
+  },
+  "megabytesUnit": {
+    "message": "MB"
+  },
+  "gigabytesUnit": {
+    "message": "GB"
+  },
+  "itemsUnit": {
+    "message": "項目"
+  },
+  "pagesUnit": {
+    "message": "ページ"
+  }
+}

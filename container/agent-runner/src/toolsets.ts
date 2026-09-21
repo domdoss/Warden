@@ -122,10 +122,11 @@ export function resolveMultipleToolsets(names: string[]): string[] {
 // capability the default-app substitution silently fails to withhold
 // (2026-09-19: read_file survived files → mcp:filesystem and kept answering).
 export const CAPABILITY_BUILTINS: Record<string, string[]> = {
-    browser: ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
-              'browser_press_key', 'browser_select_option', 'browser_hover',
-              'browser_screenshot', 'browser_evaluate', 'browser_wait_for',
-              'browser_tabs', 'browser_back', 'browser_current_url'],
+    // No built-in browser tools exist — the CDP debug-Chrome toolset was
+    // deleted. The capability key STAYS: default-app routing and the
+    // DEFAULT APPS prompt section (music/video → youtube) key off it, and
+    // with no built-ins there is simply nothing to withhold.
+    browser: [],
     web:     ['WebSearch', 'WebFetch'],
     files:   ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'read_file', 'write_file', 'list_file'],
     shell:   ['Bash'],

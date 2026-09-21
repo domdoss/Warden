@@ -143,19 +143,50 @@ interface Bridge {
 
 async function browserBridge(): Promise<Bridge | null> {
     const apps = ((globalThis as any).__wardenDefaultApps?.() || {}) as Record<string, string>;
-    const v = String(apps.browser || '').trim();
+    // Whatever web settings say: the `browser` default owns this, but when
+    // only `web` is set that provider is the pipeline to use — youtube drives
+    // pages through the same default provider everything else does.
+    const v = String(apps.browser || apps.web || '').trim();
     if (!v.startsWith('mcp:')) return null;
     const server = v.slice(4).trim();
     const bridge = (globalThis as any).__mcpBridge;
     if (!bridge) return null;
-    const tools: BridgeToolDef[] = bridge.listTools(server) || [];
+    let tools: BridgeToolDef[] = bridge.listTools(server) || [];
+    if (tools.length === 0) {
+        // Lazy/optional provider (e.g. browser-driving): never loaded at boot.
+        // This call IS the ask — dial it on demand and use its live tools.
+        // Provider absent → tools stay [] and the caller reports cleanly;
+        // the turn is never blocked and never falls back to shelling out.
+        try {
+            const { getOrCreateMcpClient } = await import('../mcp-client.js');
+            const client = await getOrCreateMcpClient(server);
+            const live = await client.listTools();
+            tools = live.map((t) => ({
+                name: `mcp__${server}__${t.name}`,
+                description: t.description || '',
+                params: t.inputSchema as any,
+            }));
+        } catch {
+            tools = [];
+        }
+    }
     if (tools.length === 0) return null;
     return { server, tools, call: bridge.call };
 }
 
 function pickTool(tools: BridgeToolDef[], re: RegExp, avoid: RegExp = /screenshot|content|console/i): BridgeToolDef | null {
-    const scored = tools.filter((t) => re.test(t.name) || re.test(t.description || ''));
-    return scored.find((t) => !avoid.test(t.name)) || scored[0] || null;
+    // NAME matches win. Descriptions are model-facing instructions that get
+    // rewritten often (the gate's TOOL_JSON, 2026-09-21), and matching them
+    // let a description word — "navigate" inside get_windows_and_tabs' tab
+    // guidance — hijack tool selection: the youtube flow called the tab
+    // LISTER as its navigate tool, nothing ever navigated, and every play
+    // timed out (2026-09-21, worked an hour earlier under the old wording).
+    // Description matching stays only as a fallback for providers whose tool
+    // names don't match the regex at all.
+    const byName = tools.filter((t) => re.test(t.name));
+    if (byName.length > 0) return byName.find((t) => !avoid.test(t.name)) || byName[0];
+    const byDesc = tools.filter((t) => re.test(t.description || ''));
+    return byDesc.find((t) => !avoid.test(t.name)) || byDesc[0] || null;
 }
 
 /** Find the parameter of `tool` whose name matches `re`. */
@@ -318,7 +349,11 @@ class McpPage {
 async function openBrowser(): Promise<{ page: McpPage; tabs: Array<{ id?: number; url: string }> | null }> {
     const bridge = await browserBridge();
     if (!bridge) {
-        throw new Error('No default browser provider is connected. Set Settings → Default apps → browser to an MCP server (e.g. browser-driving) and make sure it is running.');
+        // Terminal, user-facing failure. Do NOT phrase this as an instruction
+        // to the model ("set settings", "connect the driver") — the seat
+        // follows such wording by delegating the fix to a random sub-agent or
+        // shelling out to headless chromium. State the fact, stop.
+        throw new Error('The browser driver is offline, so YouTube playback is unavailable right now. Report exactly this to the user and end the turn — do not try to connect it, launch a browser, or delegate this to anyone.');
     }
     // chrome_javascript is the preferred eval tool: its `code` runs inside an
     // async function body, so our body-style snippets work verbatim. inject/
@@ -561,9 +596,53 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
     return `Playing: ${picked?.title || url}\n${url}`;
 }
 
+// This skill's OWN notion of a playback ask. The system exposes only the raw
+// ask (__wardenTurnAsk); deciding what counts as playback intent is youtube's
+// business and lives here, so every other skill stays untouched.
+const PLAYBACK_ASK = /\b(play|playing|played|pause|paused|resume|unpause|skip|skipped|next|previous|another|song|songs|music|video|videos|track|tracks|playlist|playlists|youtube|yt|lofi|chillstep|chill|mix|fullscreen|now playing|put on|listen|queue|volume|mute|seek)\b/i;
+
 async function youtube(args: any): Promise<string> {
     const action = String(args?.action || '').trim();
     const target = String(args?.query || args?.url || '').trim();
+
+    // Playback acts only on turns whose ask asked for it. Left to its own
+    // sense of ambiance the seat re-deals music on unrelated asks — "tell me
+    // a story" also CHANGED the song (2026-09-21). The ask is the ground
+    // truth. Fails open when the ask isn't exposed (no host → no leash).
+    if (action === 'play' || action === 'next') {
+        const ask = (globalThis as any).__wardenTurnAsk?.() || '';
+        if (ask && !PLAYBACK_ASK.test(ask)) {
+            log(`[youtube] refused unasked ${action}${target ? ` ("${target.slice(0, 60)}")` : ''} — no playback intent in the ask`);
+            // JSON refusal — the seat reading it is the 8b granite, and a
+            // prose refusal made it retry the identical call 4 rounds running
+            // (2026-09-21). State the fact, name the ask, name the right path.
+            return JSON.stringify({
+                played: false,
+                reason: 'the ask has no playback intent',
+                ask: ask.slice(0, 200),
+                youtube_is: 'the music/video player only',
+                web_lookups: 'browser tools — get_windows_and_tabs, then chrome_navigate / chrome_get_web_content',
+                song: 'left exactly as it was',
+                next: 'answer the ask with the right tool; a repeat of this call changes nothing',
+            });
+        }
+    }
+
+    // A play call with nothing named is the resume-turn failure mode
+    // (2026-09-21: "resume playback" → play with no query, then the seat
+    // pkilled the user's Chrome trying to "fix" the player). Answered BEFORE
+    // the browser opens — a bridge-down error must not mask it — and in the
+    // shape the seat follows: name the right action.
+    if (action === 'play' && !target) {
+        return JSON.stringify({
+            played: false,
+            reason: 'play names what to play — query or url',
+            resume: 'action "resume" continues the paused player',
+            now_playing: 'action "now_playing" shows what is open',
+            next: 'call resume for a resume ask; a repeat of this call changes nothing',
+        });
+    }
+
     const { page, tabs } = await openBrowser();
 
     if (action === 'search') {
@@ -649,19 +728,22 @@ if (v) v.currentTime = JSON.parse(__arg);`, secs).catch(() => {});
 
 registry.register({
     name: 'youtube',
-    description: `YouTube. query = what a human types in the search box: artist/genre/song title only; "different"/"not X" is automatic — recently played is skipped for you. A play ask = ONE call. pause/resume/next/seek/now_playing. Other players → media_control.`,
+    // JSON one-liner — the orchestrator seat (granite4.1:8b) reads this every
+    // turn, and granite reads structure, not prose. Must stay under 200 chars
+    // (stripTier clamps longer descriptions to the first line).
+    description: `{"what":"play/search YouTube","query":"artist/genre/title as typed; repeats auto-skipped","rule":"a play ask = ONE call","vals":"see the action param","other_players":"media_control"}`,
     schema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['play', 'search', 'now_playing', 'pause', 'resume', 'next', 'seek', 'fullscreen'],
-                description: 'What to do.',
+                description: '{"what":"the operation","vals":"play|search|now_playing|pause|resume|next|seek|fullscreen"}',
             },
-            query: { type: 'string', description: "What to play or search for, in the user's own words (e.g. 'chillstep mix'). Used by play and search." },
-            url: { type: 'string', description: "A YouTube URL or 11-character video id, when you already have the exact video. Used by play." },
-            limit: { type: 'number', description: "How many results to return for action 'search' (1-10, default 5)." },
-            seconds: { type: 'number', description: "Position in seconds for action 'seek'." },
+            query: { type: 'string', description: '{"what":"what to play or search, in the user own words","example":"chillstep mix","used_by":"play, search"}' },
+            url: { type: 'string', description: '{"what":"exact video","format":"YouTube URL or 11-char id","used_by":"play","when":"you already have the exact video"}' },
+            limit: { type: 'number', description: '{"what":"result count for search","range":"1-10","default":5}' },
+            seconds: { type: 'number', description: '{"what":"position for seek","unit":"seconds"}' },
         },
         required: ['action'],
     },

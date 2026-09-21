@@ -1,0 +1,446 @@
+{
+  "extensionName": {
+    "message": "chrome-mcp-server",
+    "description": "擴充功能名稱"
+  },
+  "extensionDescription": {
+    "message": "使用您自己的 Chrome 瀏覽器暴露瀏覽器功能",
+    "description": "擴充功能描述"
+  },
+  "nativeServerConfigLabel": {
+    "message": "原生伺服器設定",
+    "description": "本機伺服器設定的主要區段標題"
+  },
+  "semanticEngineLabel": {
+    "message": "語意引擎",
+    "description": "語意引擎的主要區段標題"
+  },
+  "embeddingModelLabel": {
+    "message": "Embedding 模型",
+    "description": "模型選擇的主要區段標題"
+  },
+  "indexDataManagementLabel": {
+    "message": "索引資料管理",
+    "description": "資料管理主要區段標題"
+  },
+  "modelCacheManagementLabel": {
+    "message": "模型快取管理",
+    "description": "快取管理主要區段標題"
+  },
+  "statusLabel": {
+    "message": "狀態",
+    "description": "通用狀態標籤"
+  },
+  "runningStatusLabel": {
+    "message": "執行狀態",
+    "description": "伺服器執行狀態標籤"
+  },
+  "connectionStatusLabel": {
+    "message": "連線狀態",
+    "description": "連線狀態標籤"
+  },
+  "lastUpdatedLabel": {
+    "message": "最後更新：",
+    "description": "最後更新時間戳標籤"
+  },
+  "connectButton": {
+    "message": "連線",
+    "description": "連線按鈕文字"
+  },
+  "disconnectButton": {
+    "message": "中斷連線",
+    "description": "中斷連線按鈕文字"
+  },
+  "connectingStatus": {
+    "message": "連線中...",
+    "description": "連線狀態訊息"
+  },
+  "connectedStatus": {
+    "message": "已連線",
+    "description": "已連線狀態訊息"
+  },
+  "disconnectedStatus": {
+    "message": "已中斷",
+    "description": "已中斷狀態訊息"
+  },
+  "detectingStatus": {
+    "message": "偵測中...",
+    "description": "偵測狀態訊息"
+  },
+  "serviceRunningStatus": {
+    "message": "服務執行中 (連結埠: $PORT$)",
+    "description": "含連結埠號的服務執行狀態",
+    "placeholders": {
+      "port": {
+        "content": "$1",
+        "example": "12306"
+      }
+    }
+  },
+  "serviceNotConnectedStatus": {
+    "message": "服務未連線",
+    "description": "服務未連線狀態"
+  },
+  "connectedServiceNotStartedStatus": {
+    "message": "已連線，服務未啟動",
+    "description": "已連線但服務未啟動狀態"
+  },
+  "mcpServerConfigLabel": {
+    "message": "MCP 伺服器設定",
+    "description": "MCP 伺服器設定區段標籤"
+  },
+  "connectionPortLabel": {
+    "message": "連結埠",
+    "description": "連結埠輸入標籤"
+  },
+  "refreshStatusButton": {
+    "message": "重新整理狀態",
+    "description": "重新整理狀態按鈕提示"
+  },
+  "copyConfigButton": {
+    "message": "複製設定",
+    "description": "複製設定按鈕文字"
+  },
+  "retryButton": {
+    "message": "重試",
+    "description": "重試按鈕文字"
+  },
+  "cancelButton": {
+    "message": "取消",
+    "description": "取消按鈕文字"
+  },
+  "confirmButton": {
+    "message": "確認",
+    "description": "確認按鈕文字"
+  },
+  "saveButton": {
+    "message": "儲存",
+    "description": "儲存按鈕文字"
+  },
+  "closeButton": {
+    "message": "關閉",
+    "description": "關閉按鈕文字"
+  },
+  "resetButton": {
+    "message": "重設",
+    "description": "重設按鈕文字"
+  },
+  "initializingStatus": {
+    "message": "初始化中...",
+    "description": "初始化進度訊息"
+  },
+  "processingStatus": {
+    "message": "處理中...",
+    "description": "處理進度訊息"
+  },
+  "loadingStatus": {
+    "message": "載入中...",
+    "description": "載入進度訊息"
+  },
+  "clearingStatus": {
+    "message": "清除中...",
+    "description": "清除進度訊息"
+  },
+  "cleaningStatus": {
+    "message": "清理中...",
+    "description": "清理進度訊息"
+  },
+  "downloadingStatus": {
+    "message": "下載中...",
+    "description": "下載進度訊息"
+  },
+  "semanticEngineReadyStatus": {
+    "message": "語意引擎已就緒",
+    "description": "語意引擎就緒狀態"
+  },
+  "semanticEngineInitializingStatus": {
+    "message": "語意引擎初始化中...",
+    "description": "語意引擎初始化狀態"
+  },
+  "semanticEngineInitFailedStatus": {
+    "message": "語意引擎初始化失敗",
+    "description": "語意引擎初始化失敗狀態"
+  },
+  "semanticEngineNotInitStatus": {
+    "message": "語意引擎未初始化",
+    "description": "語意引擎未初始化狀態"
+  },
+  "initSemanticEngineButton": {
+    "message": "初始化語意引擎",
+    "description": "初始化語意引擎按鈕文字"
+  },
+  "reinitializeButton": {
+    "message": "重新初始化",
+    "description": "重新初始化按鈕文字"
+  },
+  "downloadingModelStatus": {
+    "message": "正在下載模型... $PROGRESS$%",
+    "description": "含百分比的模型下載進度",
+    "placeholders": {
+      "progress": {
+        "content": "$1",
+        "example": "50"
+      }
+    }
+  },
+  "switchingModelStatus": {
+    "message": "正在切換模型...",
+    "description": "模型切換進度訊息"
+  },
+  "modelLoadedStatus": {
+    "message": "模型已載入",
+    "description": "模型成功載入狀態"
+  },
+  "modelFailedStatus": {
+    "message": "模型載入失敗",
+    "description": "模型載入失敗狀態"
+  },
+  "lightweightModelDescription": {
+    "message": "輕量級多語言模型",
+    "description": "輕量級模型選項描述"
+  },
+  "betterThanSmallDescription": {
+    "message": "比 e5-small 稍大，但效果更佳",
+    "description": "中等模型選項描述"
+  },
+  "multilingualModelDescription": {
+    "message": "多語言語意模型",
+    "description": "多語言模型選項描述"
+  },
+  "fastPerformance": {
+    "message": "快速",
+    "description": "快速效能指標"
+  },
+  "balancedPerformance": {
+    "message": "平衡",
+    "description": "平衡效能指標"
+  },
+  "accuratePerformance": {
+    "message": "精確",
+    "description": "精確效能指標"
+  },
+  "networkErrorMessage": {
+    "message": "網路連線錯誤，請檢查網路後再試一次",
+    "description": "網路連線錯誤訊息"
+  },
+  "modelCorruptedErrorMessage": {
+    "message": "模型檔案毀損或不完整，請重新下載",
+    "description": "模型毀損錯誤訊息"
+  },
+  "unknownErrorMessage": {
+    "message": "未知錯誤，請檢查您的網路是否可存取 HuggingFace",
+    "description": "未知錯誤回退訊息"
+  },
+  "permissionDeniedErrorMessage": {
+    "message": "權限被拒絕",
+    "description": "權限被拒絕錯誤訊息"
+  },
+  "timeoutErrorMessage": {
+    "message": "操作逾時",
+    "description": "逾時錯誤訊息"
+  },
+  "indexedPagesLabel": {
+    "message": "已索引頁面",
+    "description": "已索引頁面數量標籤"
+  },
+  "indexSizeLabel": {
+    "message": "索引大小",
+    "description": "索引大小標籤"
+  },
+  "activeTabsLabel": {
+    "message": "作用中分頁",
+    "description": "作用中分頁數量標籤"
+  },
+  "vectorDocumentsLabel": {
+    "message": "向量文件",
+    "description": "向量文件數量標籤"
+  },
+  "cacheSizeLabel": {
+    "message": "快取大小",
+    "description": "快取大小標籤"
+  },
+  "cacheEntriesLabel": {
+    "message": "快取項目",
+    "description": "快取項目數量標籤"
+  },
+  "clearAllDataButton": {
+    "message": "清除所有資料",
+    "description": "清除所有資料按鈕文字"
+  },
+  "clearAllCacheButton": {
+    "message": "清除所有快取",
+    "description": "清除所有快取按鈕文字"
+  },
+  "cleanExpiredCacheButton": {
+    "message": "清理過期快取",
+    "description": "清理過期快取按鈕文字"
+  },
+  "exportDataButton": {
+    "message": "匯出資料",
+    "description": "匯出資料按鈕文字"
+  },
+  "importDataButton": {
+    "message": "匯入資料",
+    "description": "匯入資料按鈕文字"
+  },
+  "confirmClearDataTitle": {
+    "message": "確認清除資料",
+    "description": "清除資料確認對話框標題"
+  },
+  "settingsTitle": {
+    "message": "設定",
+    "description": "設定對話框標題"
+  },
+  "aboutTitle": {
+    "message": "關於",
+    "description": "關於對話框標題"
+  },
+  "helpTitle": {
+    "message": "說明",
+    "description": "說明對話框標題"
+  },
+  "clearDataWarningMessage": {
+    "message": "此操作將清除所有已索引的網頁內容與向量資料，包括：",
+    "description": "清除資料警告訊息"
+  },
+  "clearDataList1": {
+    "message": "所有網頁的文字內容索引",
+    "description": "清除資料列表第一項"
+  },
+  "clearDataList2": {
+    "message": "向量嵌入資料",
+    "description": "清除資料列表第二項"
+  },
+  "clearDataList3": {
+    "message": "搜尋歷史與快取",
+    "description": "清除資料列表第三項"
+  },
+  "clearDataIrreversibleWarning": {
+    "message": "此操作無法復原！清除後需重新瀏覽網頁以重建索引。",
+    "description": "不可逆操作警告"
+  },
+  "confirmClearButton": {
+    "message": "確認清除",
+    "description": "確認清除操作按鈕"
+  },
+  "cacheDetailsLabel": {
+    "message": "快取詳細資訊",
+    "description": "快取詳細資訊區段標籤"
+  },
+  "noCacheDataMessage": {
+    "message": "尚無快取資料",
+    "description": "無可用快取資料訊息"
+  },
+  "loadingCacheInfoStatus": {
+    "message": "正在載入快取資訊...",
+    "description": "載入快取資訊狀態"
+  },
+  "processingCacheStatus": {
+    "message": "正在處理快取...",
+    "description": "處理快取狀態"
+  },
+  "expiredLabel": {
+    "message": "已過期",
+    "description": "過期項目標籤"
+  },
+  "bookmarksBarLabel": {
+    "message": "書籤列",
+    "description": "書籤列資料夾名稱"
+  },
+  "newTabLabel": {
+    "message": "新分頁",
+    "description": "新分頁標籤"
+  },
+  "currentPageLabel": {
+    "message": "目前頁面",
+    "description": "目前頁面標籤"
+  },
+  "menuLabel": {
+    "message": "功能表",
+    "description": "功能表無障礙標籤"
+  },
+  "navigationLabel": {
+    "message": "導覽",
+    "description": "導覽無障礙標籤"
+  },
+  "mainContentLabel": {
+    "message": "主要內容",
+    "description": "主要內容無障礙標籤"
+  },
+  "languageSelectorLabel": {
+    "message": "語言",
+    "description": "語言選擇器標籤"
+  },
+  "themeLabel": {
+    "message": "主題",
+    "description": "主題選擇器標籤"
+  },
+  "lightTheme": {
+    "message": "淺色",
+    "description": "淺色主題選項"
+  },
+  "darkTheme": {
+    "message": "深色",
+    "description": "深色主題選項"
+  },
+  "autoTheme": {
+    "message": "自動",
+    "description": "自動主題選項"
+  },
+  "advancedSettingsLabel": {
+    "message": "進階設定",
+    "description": "進階設定區段標籤"
+  },
+  "debugModeLabel": {
+    "message": "偵錯模式",
+    "description": "偵錯模式切換標籤"
+  },
+  "verboseLoggingLabel": {
+    "message": "詳細日誌",
+    "description": "詳細日誌切換標籤"
+  },
+  "successNotification": {
+    "message": "操作已成功完成",
+    "description": "通用成功通知"
+  },
+  "warningNotification": {
+    "message": "警告：請在繼續前檢查",
+    "description": "通用警告通知"
+  },
+  "infoNotification": {
+    "message": "資訊",
+    "description": "通用資訊通知"
+  },
+  "configCopiedNotification": {
+    "message": "設定已複製到剪貼簿",
+    "description": "設定複製成功訊息"
+  },
+  "dataClearedNotification": {
+    "message": "資料清除成功",
+    "description": "資料清除成功訊息"
+  },
+  "bytesUnit": {
+    "message": "bytes",
+    "description": "位元組單位"
+  },
+  "kilobytesUnit": {
+    "message": "KB",
+    "description": "千位元組單位"
+  },
+  "megabytesUnit": {
+    "message": "MB",
+    "description": "百萬位元組單位"
+  },
+  "gigabytesUnit": {
+    "message": "GB",
+    "description": "十億位元組單位"
+  },
+  "itemsUnit": {
+    "message": "項目",
+    "description": "項目計數單位"
+  },
+  "pagesUnit": {
+    "message": "頁面",
+    "description": "頁面計數單位"
+  }
+}
