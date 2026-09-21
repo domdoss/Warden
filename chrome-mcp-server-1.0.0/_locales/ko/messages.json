@@ -1,0 +1,446 @@
+{
+  "extensionName": {
+    "message": "chrome-mcp-server",
+    "description": "확장 프로그램 이름"
+  },
+  "extensionDescription": {
+    "message": "크롬 브라우저와 연동하여 브라우저 기능을 제어하는 MCP 서버입니다.",
+    "description": "확장 프로그램 설명"
+  },
+  "nativeServerConfigLabel": {
+    "message": "네이티브 서버 설정",
+    "description": "네이티브 서버 설정의 주 섹션 제목"
+  },
+  "semanticEngineLabel": {
+    "message": "시맨틱 엔진",
+    "description": "시맨틱 엔진의 주 섹션 제목"
+  },
+  "embeddingModelLabel": {
+    "message": "임베딩 모델",
+    "description": "모델 선택의 주 섹션 제목"
+  },
+  "indexDataManagementLabel": {
+    "message": "인덱스 데이터 관리",
+    "description": "데이터 관리의 주 섹션 제목"
+  },
+  "modelCacheManagementLabel": {
+    "message": "모델 캐시 관리",
+    "description": "캐시 관리의 주 섹션 제목"
+  },
+  "statusLabel": {
+    "message": "상태",
+    "description": "일반 상태 레이블"
+  },
+  "runningStatusLabel": {
+    "message": "실행 상태",
+    "description": "서버 실행 상태 레이블"
+  },
+  "connectionStatusLabel": {
+    "message": "연결 상태",
+    "description": "연결 상태 레이블"
+  },
+  "lastUpdatedLabel": {
+    "message": "마지막 업데이트:",
+    "description": "마지막 업데이트 타임스탬프 레이블"
+  },
+  "connectButton": {
+    "message": "연결",
+    "description": "연결 버튼 텍스트"
+  },
+  "disconnectButton": {
+    "message": "연결 끊기",
+    "description": "연결 끊기 버튼 텍스트"
+  },
+  "connectingStatus": {
+    "message": "연결 중...",
+    "description": "연결 상태 메시지"
+  },
+  "connectedStatus": {
+    "message": "연결됨",
+    "description": "연결된 상태 메시지"
+  },
+  "disconnectedStatus": {
+    "message": "연결 끊김",
+    "description": "연결이 끊긴 상태 메시지"
+  },
+  "detectingStatus": {
+    "message": "감지 중...",
+    "description": "감지 상태 메시지"
+  },
+  "serviceRunningStatus": {
+    "message": "서비스 실행 중 (포트: $PORT$)",
+    "description": "포트 번호와 함께 서비스 실행 중 상태",
+    "placeholders": {
+      "port": {
+        "content": "$1",
+        "example": "12306"
+      }
+    }
+  },
+  "serviceNotConnectedStatus": {
+    "message": "서비스에 연결되지 않음",
+    "description": "서비스가 연결되지 않은 상태"
+  },
+  "connectedServiceNotStartedStatus": {
+    "message": "연결됨, 서비스 시작되지 않음",
+    "description": "연결되었지만 서비스가 시작되지 않은 상태"
+  },
+  "mcpServerConfigLabel": {
+    "message": "MCP 서버 설정",
+    "description": "MCP 서버 설정 섹션 레이블"
+  },
+  "connectionPortLabel": {
+    "message": "연결 포트",
+    "description": "연결 포트 입력 레이블"
+  },
+  "refreshStatusButton": {
+    "message": "상태 새로고침",
+    "description": "상태 새로고침 버튼 툴팁"
+  },
+  "copyConfigButton": {
+    "message": "설정 복사",
+    "description": "설정 복사 버튼 텍스트"
+  },
+  "retryButton": {
+    "message": "재시도",
+    "description": "재시도 버튼 텍스트"
+  },
+  "cancelButton": {
+    "message": "취소",
+    "description": "취소 버튼 텍스트"
+  },
+  "confirmButton": {
+    "message": "확인",
+    "description": "확인 버튼 텍스트"
+  },
+  "saveButton": {
+    "message": "저장",
+    "description": "저장 버튼 텍스트"
+  },
+  "closeButton": {
+    "message": "닫기",
+    "description": "닫기 버튼 텍스트"
+  },
+  "resetButton": {
+    "message": "초기화",
+    "description": "초기화 버튼 텍스트"
+  },
+  "initializingStatus": {
+    "message": "초기화 중...",
+    "description": "초기화 진행 메시지"
+  },
+  "processingStatus": {
+    "message": "처리 중...",
+    "description": "처리 진행 메시지"
+  },
+  "loadingStatus": {
+    "message": "로드 중...",
+    "description": "로드 진행 메시지"
+  },
+  "clearingStatus": {
+    "message": "삭제 중...",
+    "description": "삭제 진행 메시지"
+  },
+  "cleaningStatus": {
+    "message": "정리 중...",
+    "description": "정리 진행 메시지"
+  },
+  "downloadingStatus": {
+    "message": "다운로드 중...",
+    "description": "다운로드 진행 메시지"
+  },
+  "semanticEngineReadyStatus": {
+    "message": "시맨틱 엔진 준비 완료",
+    "description": "시맨틱 엔진 준비 완료 상태"
+  },
+  "semanticEngineInitializingStatus": {
+    "message": "시맨틱 엔진 초기화 중...",
+    "description": "시맨틱 엔진 초기화 상태"
+  },
+  "semanticEngineInitFailedStatus": {
+    "message": "시맨틱 엔진 초기화 실패",
+    "description": "시맨틱 엔진 초기화 실패 상태"
+  },
+  "semanticEngineNotInitStatus": {
+    "message": "시맨틱 엔진이 초기화되지 않음",
+    "description": "시맨틱 엔진이 초기화되지 않은 상태"
+  },
+  "initSemanticEngineButton": {
+    "message": "시맨틱 엔진 초기화",
+    "description": "시맨틱 엔진 초기화 버튼 텍스트"
+  },
+  "reinitializeButton": {
+    "message": "재초기화",
+    "description": "재초기화 버튼 텍스트"
+  },
+  "downloadingModelStatus": {
+    "message": "모델 다운로드 중... $PROGRESS$%",
+    "description": "백분율이 포함된 모델 다운로드 진행 상태",
+    "placeholders": {
+      "progress": {
+        "content": "$1",
+        "example": "50"
+      }
+    }
+  },
+  "switchingModelStatus": {
+    "message": "모델 전환 중...",
+    "description": "모델 전환 진행 메시지"
+  },
+  "modelLoadedStatus": {
+    "message": "모델 로드 완료",
+    "description": "모델 로드 성공 상태"
+  },
+  "modelFailedStatus": {
+    "message": "모델 로드 실패",
+    "description": "모델 로드 실패 상태"
+  },
+  "lightweightModelDescription": {
+    "message": "경량 다국어 모델",
+    "description": "경량 모델 옵션 설명"
+  },
+  "betterThanSmallDescription": {
+    "message": "e5-small보다 약간 크지만 성능이 더 좋습니다",
+    "description": "중간 모델 옵션 설명"
+  },
+  "multilingualModelDescription": {
+    "message": "다국어 시맨틱 모델",
+    "description": "다국어 모델 옵션 설명"
+  },
+  "fastPerformance": {
+    "message": "빠름",
+    "description": "빠른 성능 표시"
+  },
+  "balancedPerformance": {
+    "message": "균형",
+    "description": "균형 잡힌 성능 표시"
+  },
+  "accuratePerformance": {
+    "message": "정확",
+    "description": "정확한 성능 표시"
+  },
+  "networkErrorMessage": {
+    "message": "네트워크 연결 오류, 네트워크를 확인하고 다시 시도하세요",
+    "description": "네트워크 연결 오류 메시지"
+  },
+  "modelCorruptedErrorMessage": {
+    "message": "모델 파일이 손상되었거나 불완전합니다. 다운로드를 다시 시도하세요",
+    "description": "모델 손상 오류 메시지"
+  },
+  "unknownErrorMessage": {
+    "message": "알 수 없는 오류, 네트워크에서 HuggingFace에 접속할 수 있는지 확인하세요",
+    "description": "알 수 없는 오류 대체 메시지"
+  },
+  "permissionDeniedErrorMessage": {
+    "message": "권한이 거부되었습니다",
+    "description": "권한 거부 오류 메시지"
+  },
+  "timeoutErrorMessage": {
+    "message": "작업 시간 초과",
+    "description": "시간 초과 오류 메시지"
+  },
+  "indexedPagesLabel": {
+    "message": "인덱싱된 페이지",
+    "description": "인덱싱된 페이지 수 레이블"
+  },
+  "indexSizeLabel": {
+    "message": "인덱스 크기",
+    "description": "인덱스 크기 레이블"
+  },
+  "activeTabsLabel": {
+    "message": "활성 탭",
+    "description": "활성 탭 수 레이블"
+  },
+  "vectorDocumentsLabel": {
+    "message": "벡터 문서",
+    "description": "벡터 문서 수 레이블"
+  },
+  "cacheSizeLabel": {
+    "message": "캐시 크기",
+    "description": "캐시 크기 레이블"
+  },
+  "cacheEntriesLabel": {
+    "message": "캐시 항목",
+    "description": "캐시 항목 수 레이블"
+  },
+  "clearAllDataButton": {
+    "message": "모든 데이터 지우기",
+    "description": "모든 데이터 지우기 버튼 텍스트"
+  },
+  "clearAllCacheButton": {
+    "message": "모든 캐시 지우기",
+    "description": "모든 캐시 지우기 버튼 텍스트"
+  },
+  "cleanExpiredCacheButton": {
+    "message": "만료된 캐시 정리",
+    "description": "만료된 캐시 정리 버튼 텍스트"
+  },
+  "exportDataButton": {
+    "message": "데이터 내보내기",
+    "description": "데이터 내보내기 버튼 텍스트"
+  },
+  "importDataButton": {
+    "message": "데이터 가져오기",
+    "description": "데이터 가져오기 버튼 텍스트"
+  },
+  "confirmClearDataTitle": {
+    "message": "데이터 지우기 확인",
+    "description": "데이터 지우기 확인 대화상자 제목"
+  },
+  "settingsTitle": {
+    "message": "설정",
+    "description": "설정 대화상자 제목"
+  },
+  "aboutTitle": {
+    "message": "정보",
+    "description": "정보 대화상자 제목"
+  },
+  "helpTitle": {
+    "message": "도움말",
+    "description": "도움말 대화상자 제목"
+  },
+  "clearDataWarningMessage": {
+    "message": "이 작업은 다음을 포함한 모든 인덱싱된 웹페이지 콘텐츠와 벡터 데이터를 지웁니다:",
+    "description": "데이터 지우기 경고 메시지"
+  },
+  "clearDataList1": {
+    "message": "모든 웹페이지 텍스트 콘텐츠 인덱스",
+    "description": "데이터 지우기 목록 첫 번째 항목"
+  },
+  "clearDataList2": {
+    "message": "벡터 임베딩 데이터",
+    "description": "데이터 지우기 목록 두 번째 항목"
+  },
+  "clearDataList3": {
+    "message": "검색 기록 및 캐시",
+    "description": "데이터 지우기 목록 세 번째 항목"
+  },
+  "clearDataIrreversibleWarning": {
+    "message": "이 작업은 되돌릴 수 없습니다! 삭제 후에는 인덱스를 다시 생성하기 위해 웹페이지를 다시 방문해야 합니다.",
+    "description": "되돌릴 수 없는 작업 경고"
+  },
+  "confirmClearButton": {
+    "message": "삭제 확인",
+    "description": "삭제 작업 확인 버튼"
+  },
+  "cacheDetailsLabel": {
+    "message": "캐시 정보",
+    "description": "캐시 정보 섹션 레이블"
+  },
+  "noCacheDataMessage": {
+    "message": "캐시 데이터 없음",
+    "description": "사용 가능한 캐시 데이터 없음 메시지"
+  },
+  "loadingCacheInfoStatus": {
+    "message": "캐시 정보를 불러오는 중...",
+    "description": "캐시 정보 로드 상태"
+  },
+  "processingCacheStatus": {
+    "message": "캐시 처리 중...",
+    "description": "캐시 처리 상태"
+  },
+  "expiredLabel": {
+    "message": "만료됨",
+    "description": "만료된 항목 레이블"
+  },
+  "bookmarksBarLabel": {
+    "message": "북마크바",
+    "description": "북마크바 폴더 이름"
+  },
+  "newTabLabel": {
+    "message": "새 탭",
+    "description": "새 탭 레이블"
+  },
+  "currentPageLabel": {
+    "message": "현재 페이지",
+    "description": "현재 페이지 레이블"
+  },
+  "menuLabel": {
+    "message": "메뉴",
+    "description": "메뉴 접근성 레이블"
+  },
+  "navigationLabel": {
+    "message": "탐색",
+    "description": "탐색 접근성 레이블"
+  },
+  "mainContentLabel": {
+    "message": "주요 콘텐츠",
+    "description": "주요 콘텐츠 접근성 레이블"
+  },
+  "languageSelectorLabel": {
+    "message": "언어",
+    "description": "언어 선택기 레이블"
+  },
+  "themeLabel": {
+    "message": "테마",
+    "description": "테마 선택기 레이블"
+  },
+  "lightTheme": {
+    "message": "라이트",
+    "description": "라이트 테마 옵션"
+  },
+  "darkTheme": {
+    "message": "다크",
+    "description": "다크 테마 옵션"
+  },
+  "autoTheme": {
+    "message": "자동",
+    "description": "자동 테마 옵션"
+  },
+  "advancedSettingsLabel": {
+    "message": "고급 설정",
+    "description": "고급 설정 섹션 레이블"
+  },
+  "debugModeLabel": {
+    "message": "디버그 모드",
+    "description": "디버그 모드 토글 레이블"
+  },
+  "verboseLoggingLabel": {
+    "message": "상세 로깅",
+    "description": "상세 로깅 토글 레이블"
+  },
+  "successNotification": {
+    "message": "작업이 성공적으로 완료되었습니다",
+    "description": "일반 성공 알림"
+  },
+  "warningNotification": {
+    "message": "경고: 계속하기 전에 검토하세요",
+    "description": "일반 경고 알림"
+  },
+  "infoNotification": {
+    "message": "정보",
+    "description": "일반 정보 알림"
+  },
+  "configCopiedNotification": {
+    "message": "설정이 클립보드에 복사되었습니다",
+    "description": "설정 복사 성공 메시지"
+  },
+  "dataClearedNotification": {
+    "message": "데이터가 성공적으로 삭제되었습니다",
+    "description": "데이터 삭제 성공 메시지"
+  },
+  "bytesUnit": {
+    "message": "바이트",
+    "description": "바이트 단위"
+  },
+  "kilobytesUnit": {
+    "message": "KB",
+    "description": "킬로바이트 단위"
+  },
+  "megabytesUnit": {
+    "message": "MB",
+    "description": "메가바이트 단위"
+  },
+  "gigabytesUnit": {
+    "message": "GB",
+    "description": "기가바이트 단위"
+  },
+  "itemsUnit": {
+    "message": "개",
+    "description": "항목 개수 단위"
+  },
+  "pagesUnit": {
+    "message": "페이지",
+    "description": "페이지 수 단위"
+  }
+}

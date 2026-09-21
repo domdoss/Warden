@@ -264,14 +264,10 @@ export function buildRelevantPatternsSection(keywords: string[], topK = 5): stri
     try {
         const patterns = rankFabricPatterns(keywords, topK);
         if (patterns.length === 0) return '';
-        const lines = patterns.map((p) => `- ${p.name} — ${p.description || 'expert prompt pattern'}`);
-        return `## RELEVANT PATTERNS
-
-The following expert prompt patterns may fit this request. Load one with fabric_pattern(name) and follow it — directly, or folded into a {task} brief when delegating (rule in DELEGATING).
-
-${lines.join('\n')}
-
-`;
+        // JSON members — the orchestrator prompt around this section is dense
+        // nested JSON (granite's preferred shape), so the section matches.
+        const items = patterns.map((p) => `${JSON.stringify(p.name)}: ${JSON.stringify(p.description || 'expert prompt pattern')}`);
+        return `{"relevant_patterns":{"load":"fabric_pattern(name), then follow it — directly, or folded into a {task} brief when delegating","items":{${items.join(',')}}}}\n`;
     } catch (err: any) {
         log(`[dynamic-selection] buildRelevantPatternsSection failed: ${err?.message || err}`);
         return '';

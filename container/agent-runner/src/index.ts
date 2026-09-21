@@ -28,7 +28,6 @@ import { CAPABILITY_BUILTINS } from './toolsets.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
-import { ownerALS, releaseOwnerPages } from './browser.js';
 import { marmAutoRecall, noteMarmActivity } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
@@ -174,30 +173,64 @@ function providerFor(capability: string): string {
  *  never hides the browser. */
 const PLAYBACK_ASK_RE = /\b(play|playing|played|pause|paused|resume|skip|skipped|song|songs|music|video|videos|track|tracks|playlist|playlists|youtube|lofi|chillstep|chill|mix|fullscreen|now playing|put on|listen|queue)\b/i;
 
+// Cooldown for the per-turn lazy-dial of the default browser provider (see
+// the dial block in the turn loop): a successful dial attaches for the
+// runner's lifetime; this only spaces out retries while it is unreachable.
+let lazyDialLastAttemptAt = 0;
+
+// The seat's current ask — set by mergeSkillTools each seat iteration (the
+// only path that computes it; subagent tool builds never touch this). Exposed
+// lazily below as __wardenTurnAsk: a GENERIC turn fact for tools/ modules
+// (which cannot import this file — circular). What the ask MEANS is each
+// skill's own business; nothing ask-specific lives in this file.
+let CURRENT_ASK = '';
+
 /** Apply the default-app choices to one seat's tool list.
  *  For a capability handed to an MCP server: drop that capability's BUILT-IN
  *  tools and let the server's tools stand in. Substitution, not addition —
  *  two tools that both plausibly do the job is how a small model ends up
- *  hand-driving instead of calling the tool that owns the task. */
+ *  hand-driving instead of calling the tool that owns the task.
+ *  Exception: a LAZY provider (optional component, e.g. the browser-driving
+ *  bridge) only substitutes while its tools are actually loaded. When it is
+ *  absent, the capability FAILS TO DEFAULT — the built-ins stay and the model
+ *  keeps working. An optional component must never remove the default. */
 function applyDefaultApps(builtins: any[], mcpDefs: any[]): any[] {
     const drop = new Set<string>();
     for (const [cap, names] of Object.entries(CAPABILITY_BUILTINS)) {
         const server = providerFor(cap);
         if (!server) continue;
-        // Unconditional: naming a default app for a capability withholds that
-        // capability's built-in tools, whether or not the chosen server is
-        // currently connected. This used to keep the built-in as a fallback
-        // when the replacement had no tools loaded — but the whole point of
+        const prefix = `mcp__${server}__`;
+        const loaded = mcpDefs.some(t => String(t?.function?.name || '').startsWith(prefix));
+        if (!loaded && isLazyMcpServer(server)) {
+            // Optional provider not connected: keep the built-in default. When
+            // the provider comes up and its tools enter the pool, it takes over.
+            log(`[default-apps] ${cap} -> mcp:${server} not loaded (optional) — built-in ${cap} tools stay as default`);
+            continue;
+        }
+        // Unconditional for non-lazy servers: naming a default app for a
+        // capability withholds that capability's built-in tools, whether or
+        // not the chosen server is currently connected. The whole point of
         // choosing a default is that the model should never see the built-in
         // as an option at all; a broken default should surface as "no tool
         // for this," not a silent swap back to the thing the user turned off.
-        const prefix = `mcp__${server}__`;
-        const loaded = mcpDefs.some(t => String(t?.function?.name || '').startsWith(prefix));
         for (const n of names) drop.add(n);
         log(`[default-apps] ${cap} -> mcp:${server} (built-in ${cap} tools withheld${loaded ? '' : ' — WARNING: server has no tools loaded right now, capability is unavailable until it connects'})`);
     }
     if (drop.size === 0) return builtins;
     return builtins.filter(t => !drop.has(String(t?.function?.name || '')));
+}
+
+/** Is this MCP server configured as lazy (optional, on-demand only)? */
+function isLazyMcpServer(server: string): boolean {
+    try {
+        const cfgPath = process.env.MCP_SERVERS_CONFIG || path.join(process.cwd(), 'data', 'mcp-servers.json');
+        // Small config, read per seat-build — no caching needed.
+        const raw = fs.readFileSync(cfgPath, 'utf-8');
+        const list = JSON.parse(raw);
+        return Array.isArray(list) && list.some((s: any) => s && s.name === server && s.enabled !== false && s.lazy === true);
+    } catch {
+        return false;
+    }
 }
 
 /** MCP tool defs for a sub-agent's allow-listed servers (mcp__<server>__*).
@@ -279,6 +312,8 @@ async function disconnectMcpClients(force = false): Promise<void> {
 // here. Lazy readers — skillState and DEFAULT_APPS are reassigned as turns
 // reload — so these are functions and live lookups, never snapshots.
 (globalThis as any).__wardenDefaultApps = () => DEFAULT_APPS;
+/** The user's ask for the current seat turn ('' when unknown). */
+(globalThis as any).__wardenTurnAsk = () => CURRENT_ASK;
 (globalThis as any).__mcpBridge = {
     /** Connected tool defs for one server: [{ name ('mcp__srv__tool'), description, params }] */
     listTools: (server: string) => {
@@ -296,11 +331,17 @@ async function disconnectMcpClients(force = false): Promise<void> {
         }
         return out;
     },
-    /** Call one tool on one server. Throws when the server is not connected. */
+    /** Call one tool on one server. Lazy servers (optional components, e.g.
+     *  browser-driving) are dialed on demand here — this call IS the ask.
+     *  Throws when the server cannot be reached; the caller fails gracefully. */
     call: async (server: string, tool: string, args: any) => {
         const short = tool.startsWith(`mcp__${server}__`) ? tool.slice(`mcp__${server}__`.length) : tool;
-        const client = skillState?.clients.get(server);
-        if (!client) throw new Error(`MCP server "${server}" is not connected`);
+        let client = skillState?.clients.get(server);
+        if (!client) {
+            const { getOrCreateMcpClient } = await import('./mcp-client.js');
+            client = await getOrCreateMcpClient(server);
+            await attachLazyServer(server, client);
+        }
         return await client.callTool(short, args ?? {});
     },
 };
@@ -487,6 +528,7 @@ const CIRCLING_USELESS_LIMIT = 4;
 const RUNAWAY_CALL_LIMIT = 15;
 const RECENT_CALL_SIG_DEPTH = 6;
 const FORCED_NO_TOOL_MAX = 3;   // #3b: cap on retrying a tool-free round that keeps returning phantom tool_calls
+const DUP_TOOL_ABORT = 3;       // consecutive IDENTICAL tool calls before the stream is aborted (repetition-loop guard)
 
 
 // Build a one-line signature of a tool call for the runaway / circling detectors.
@@ -899,38 +941,43 @@ interface SubAgentDef {
  *  what "the deliverable exists" means differs between a file on disk and a
  *  page in front of the user. */
 function agentKernel(doneLine: string): string {
-    return `# READING
-- Read each file the task names once, in full.
-- Keep what you read; work from it.
-- Grep once for a single string you need again.
-
-# ACTING
-- Produce the deliverable in the turn you know what it is.
-- Report in the past tense: what exists now, what you ran.
-- Take one useful step per turn.
-
-# WHEN A CALL FAILS
-- Read the error; change the approach; try again.
-- Three genuinely different approaches, each with a real error, before calling something impossible.
-- A search that returns nothing is an answer. Look for the target by name first — the file, the page, the route.
-- Three empty searches means the premise is wrong. Widen once (\`~/Warden\` holds the user's own files and deliverables; \`/opt/Warden\` is the application's source), then say where you looked and ask where it is.
-- If the task says an earlier fix failed: confirm that change is present, trace the data flow end to end, fix the real cause, and say what the earlier attempt got wrong.
-
-# SUDO
-- The user types the password.
-- Run \`sudo pacman -S <pkg>\` once, say a password prompt is waiting, and wait.
-- One attempt. If it fails, report what is missing and continue with the rest.
-
-# MEMORY
-- Check \`mcp__marm__marm_smart_recall\` before hunting for a fact, a prior decision, or how something was done.
-- Log a durable fact you established — a confirmed path, a root cause, a decision — with \`mcp__marm__marm_log_entry\`.
-- Once per fact.
-
-# FINISHING
-You decide when the work ends. Choose one:
-- DONE — ${doneLine} Write the final report: exactly what you changed. Claim a change when its tool call succeeded this task.
-- BLOCKED — a missing capability, a denied permission, or three distinct approaches that each failed with a concrete error. Say plainly what blocks you.
-- KEEP GOING — anything else. Take the next useful step.`;
+    // Dense nested JSON — the seats that consume this include granite4.1:8b
+    // (atlas background jobs), and granite reads structure, not prose. Same
+    // facts as the old # READING/# ACTING/… blocks, keyed.
+    return JSON.stringify({
+        reading: {
+            files: 'each file the task names once, in full; keep what you read and work from it',
+            grep: 'once, for a single string you need again',
+        },
+        acting: {
+            deliver: 'produce the deliverable in the turn you know what it is',
+            report: 'past tense: what exists now, what you ran',
+            pace: 'one useful step per turn',
+        },
+        on_failure: {
+            retry: 'read the error; change the approach; try again',
+            give_up_after: '3 genuinely different approaches, each with a real error',
+            empty_search: 'an empty result is an answer — look for the target by name first (the file, the page, the route)',
+            three_empty: 'premise is wrong: widen once (user files/deliverables ~/Warden, application source /opt/Warden), then say where you looked and ask where it is',
+            earlier_fix_failed: 'confirm the change is present, trace the data flow end to end, fix the real cause, say what the earlier attempt got wrong',
+        },
+        sudo: {
+            who: 'the user types the password',
+            run: 'sudo pacman -S <pkg> once, say a password prompt is waiting, and wait',
+            fail: 'one attempt — report what is missing, continue with the rest',
+        },
+        memory: {
+            check: 'mcp__marm__marm_smart_recall before hunting for a fact, a prior decision, or how something was done',
+            log: 'a durable fact you established (confirmed path, root cause, decision) → mcp__marm__marm_log_entry',
+            once: 'once per fact',
+        },
+        finishing: {
+            you_decide: 'when the work ends — choose one',
+            done: `${doneLine} Write the final report: exactly what you changed. Claim a change when its tool call succeeded this task.`,
+            blocked: 'missing capability, denied permission, or three distinct approaches each failed with a concrete error — say plainly what blocks you',
+            keep_going: 'anything else — take the next useful step',
+        },
+    });
 }
 
 // The manager specialist. Called when a task needs several OTHER specialists
@@ -939,27 +986,35 @@ You decide when the work ends. Choose one:
 // spawn: the recursion guard is structural, not a prompt rule — it physically
 // cannot call back into the seat that called it. Declared before SUBAGENTS
 // because the orch entry below references it.
-const ORCH_MANAGER_SYSTEM = `# ROLE
-You are Orch: a delegation and verification manager. A task reaches you because it is too big or too varied for one specialist alone. Break it into pieces, hand each piece to the specialist that owns it, VERIFY what comes back, and hand up ONE consolidated result only once every piece checks out. The task states the outcome; the decomposition is yours. Act on the first turn.
-
-# THE CREW
-Call each of these directly — the result comes back inline, in the same turn, never to an inbox:
-- **vulkan** — coding, scripting, building, heavy bash.
-- **iris** — email, calendar, reminders, scheduled tasks, work-item tracking.
-- **artemis** — a read-only audit or sanity-check of the conversation or the codebase.
-- **sentry** — a security scan.
-
-You have SOME hands of your own, and they are for small steps and verification, not production: Bash for a quick check or a one-line command, the browser and web tools to confirm a specialist's claimed end state on the real page, and Read/Grep to check a claim on disk. Your browser is VISIONLESS — read page state with browser_evaluate, never snapshot or screenshot (you cannot see images). Your strength is decomposition: take the long instruction, break it into little bits, run the small command yourself when that is the fastest check, delegate the next piece, verify, continue. Building, editing source, and driving desktop apps belong to your specialists — a step that would turn into real work is a piece to delegate, not something you do yourself.
-
-# THE LOOP
-Every piece goes through this, not just a fire-and-forget dispatch:
-1. Decompose the task into pieces, each one a single specialist's job. Name the pieces once before dispatching any of them.
-2. Delegate: call the owning specialist with a clear, self-contained brief — every fact it needs goes inline, since it cannot ask you a follow-up question.
-3. Verify: check the result against what the piece actually asked for — a claim of "done" is not proof; read what it changed (Bash/Read/Grep) when the claim is checkable that way.
-4. If it's wrong, incomplete, or the claim doesn't hold up: send it back to the SAME specialist with exactly what was wrong and what's still needed. Don't silently patch a specialist's work yourself and don't move on with a bad result baked in.
-5. Only once a piece verifies clean do you consider it done and move to the next. Chain pieces that depend on each other's output; independent pieces still go one call at a time. Never re-run a piece that already verified.
-
-${agentKernel("every piece of the task landed AND verified — each specialist's result checked against what it was asked, any bad result sent back and re-verified, and the whole assembled into one report.")}`;
+// Dense nested JSON — orch runs on the orchestrator's model (granite4.1:8b on
+// this box), and granite reads structure, not prose. Same facts as the old
+// # ROLE/# THE CREW/# THE LOOP sections, keyed (kernel rides inside).
+const ORCH_MANAGER_SYSTEM = JSON.stringify({
+    role: 'Orch: delegation and verification manager. A task reaches you because it is too big or too varied for one specialist alone. Break it into pieces, hand each piece to the specialist that owns it, VERIFY what comes back, hand up ONE consolidated result only once every piece checks out. The task states the outcome; the decomposition is yours. Act on the first turn.',
+    crew: {
+        call: 'directly — the result comes back inline, in the same turn, never to an inbox',
+        vulkan: 'coding, scripting, building, heavy bash',
+        iris: 'email, calendar, reminders, scheduled tasks, work-item tracking',
+        artemis: 'read-only audit or sanity-check of the conversation or the codebase',
+        sentry: 'a security scan',
+    },
+    own_hands: {
+        scope: 'small steps and verification, not production',
+        bash: 'a quick check or a one-line command',
+        browser_web: 'confirm a specialist claimed end state on the real page',
+        read_grep: 'check a claim on disk',
+        vision: 'your browser is VISIONLESS — read page state with browser_evaluate, never snapshot or screenshot (you cannot see images)',
+        rule: 'a step that would turn into real work (building, editing source, driving desktop apps) is a piece to delegate, not something you do yourself',
+    },
+    loop: {
+        1: 'decompose the task into pieces, each one a single specialist job — name the pieces once before dispatching any of them',
+        2: 'delegate: call the owning specialist with a clear, self-contained brief — every fact it needs inline, it cannot ask a follow-up',
+        3: 'verify: check the result against what the piece asked for — a claim of "done" is not proof; read what it changed (Bash/Read/Grep) when checkable',
+        4: 'wrong/incomplete/claim does not hold: send it back to the SAME specialist with exactly what was wrong and what is still needed — never silently patch a specialist work, never move on with a bad result baked in',
+        5: 'a piece is done only once it verifies clean; chain dependent pieces, one call at a time; never re-run a piece that already verified',
+    },
+    kernel: JSON.parse(agentKernel('every piece of the task landed AND verified — each specialist result checked against what it was asked, any bad result sent back and re-verified, and the whole assembled into one report.')),
+});
 
 const SUBAGENTS: SubAgentDef[] = [
     // Byte was merged into iris (2026-09-05): one toolcall agent / one
@@ -971,32 +1026,32 @@ const SUBAGENTS: SubAgentDef[] = [
         routing: "shell, browser, desktop, files, anything online — hands-on work, however small",
         maxIterations: 200,
         summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
-        systemPrompt: `# ROLE
-You are Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn. When the task suggests an approach that fits your tools poorly, deliver the outcome your own way.
-
-# TOOLS
-Each tool's description is its instructions — read it and pick by intent. A capability you do not see listed is one call away: \`list_skills\`, then \`activate_skill\`.
-
-# THE MACHINE
-You act on a real person's live computer with their real accounts. What and where this machine is lives in memory — consult MARM when it matters, don't assume.
-- Warden's source: \`/opt/Warden\` (capital W) — \`src/\` (host), \`container/agent-runner/\` (agent), \`store/\`, \`data/\`, \`public/\`, \`eyes_ears/\`. \`dist/\` is built output. Edit source, run \`npm run build\`, then \`systemctl --user restart warden\` to deploy.
-- The user's own files, uploads and deliverables: \`~/Warden\`.
-- Bash is a persistent shared shell — \`cd\` holds across calls, so work from the right directory. Absolute paths anywhere on the filesystem are available.
-- Scheduling belongs to the parent scheduler. For a task that says remind or schedule: gather the values and return them.
-
-# EMAIL
-Mail content belongs to the email specialist. A task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist.
-A file offered by a mail page is a download: save it and report the path.
-
-# VERIFYING
-Match the check to the work.
-- A successful Edit, Write, Bash or browser call is the proof.
-- A page state you changed: confirm the end state once.
-- Something the user watches or hears: the tool's confirmation is the proof, and they can see it — no screenshot, no report.
-- A lookup: the content you extracted is the verification.
-- Code referencing a route, a field or an export defined elsewhere: Grep that contract once.
-
-${agentKernel('every deliverable the task asked for actually exists — the file written, the edit applied, the command clean, the expected state visible on screen. Generated files: write them, then \`attach_file\` so the user gets them.')}`,
+        // Dense nested JSON — atlas background jobs run on granite4.1:8b on
+        // this box, and granite reads structure, not prose. Same facts as the
+        // old # ROLE/# THE MACHINE/… sections, keyed (kernel rides inside).
+        systemPrompt: JSON.stringify({
+            role: 'Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn. When the task suggests an approach that fits your tools poorly, deliver the outcome your own way.',
+            tools: 'each tool description is its instructions — read it and pick by intent; a capability you do not see listed is one call away: `list_skills`, then `activate_skill`',
+            machine: {
+                live: 'a real person live computer with their real accounts — what and where this machine is lives in memory; consult MARM when it matters, do not assume',
+                src: '/opt/Warden (capital W): src/ (host), container/agent-runner/ (agent), store/, data/, public/, eyes_ear/; dist/ is build output. Edit source, run `npm run build`, then `systemctl --user restart warden` to deploy',
+                user_files: '~/Warden — the user own files, uploads and deliverables',
+                bash: 'persistent shared shell — `cd` holds across calls, so work from the right directory; absolute paths anywhere on the filesystem are available',
+                scheduling: 'belongs to the parent scheduler — a task that says remind or schedule: gather the values and return them',
+            },
+            email: {
+                rule: 'mail content belongs to the email specialist — a task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist',
+                download: 'a file offered by a mail page is a download: save it and report the path',
+            },
+            verifying: {
+                tool_success: 'a successful Edit, Write, Bash or browser call is the proof',
+                page_state: 'a page state you changed: confirm the end state once',
+                user_watches: 'something the user watches or hears: the tool confirmation is the proof — no screenshot, no report',
+                lookup: 'the content you extracted is the verification',
+                code_contract: 'code referencing a route, field or export defined elsewhere: Grep that contract once',
+            },
+            kernel: JSON.parse(agentKernel('every deliverable the task asked for actually exists — the file written, the edit applied, the command clean, the expected state visible on screen. Generated files: write them, then `attach_file` so the user gets them.')),
+        }),
         mcpServers: ['*'], // every MCP server the user has installed
         toolsets: ['atlas-core'],
     },
@@ -1110,31 +1165,38 @@ OUTPUT
         routing: "audit, second opinion, why-a-job-failed diagnosis — reads logs and DBs instead of guessing",
         maxIterations: 200,
         summary: "a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important",
-        systemPrompt: `# ROLE
-You are Artemis, the critical reviewer inside Warden. You receive a transcript of the user and the assistant. Audit it: what the user asked, what the assistant said and did, and where it went wrong.
-
-# TOOLS — inspection
-Read, Grep, Glob, get_chat_history, and Bash for read-only inspection. Use them to check claims against the real files, messages, databases and logs the conversation refers to. Auditing is the whole job; the system stays as you found it.
-
-# LOG MINING
-Asked to mine the logs for failures, or to turn them into training data: Read \`data/skills/log-mining/SKILL.md\` first and follow it. It is the one job where you write, and you write exactly two things: your findings, and the training data under \`training/\`. Nothing else on the system changes.
-
-# WHERE THE EVIDENCE LIVES
-- Database: /opt/Warden/store/messages.db, opened read-only — \`sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."\`. It holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more. Run .tables first, then .schema <table>. This file is the live one; the .db files under data/ are empty stubs.
-- Logs: /opt/Warden/logs/warden.log (stdout) and /opt/Warden/logs/warden.error.log (stderr). Tail and grep them for what the system did and when.
-- Your Bash vocabulary: SELECT queries, .tables, .schema, tail, grep, cat, ls, date.
-
-# WHAT TO FIND
-- Factual or logical errors in the assistant's replies.
-- Places it misread the user, or answered a different question.
-- Oversights: what the user needed and did not get, unstated assumptions, edge cases, risks, better approaches available at the time.
-- Claims the conversation does not support.
-
-# FORMAT
-- Line 1: \`What was asked: <the user's request, in your own words>\`
-- Then the audit, most important first. Each item names the specific message or claim, one line on why it is wrong or risky, and the concrete correction.
-- A sound exchange gets one or two sentences saying so, plus anything worth double-checking.
-Reference the exact point you are critiquing. Your notes are saved automatically — write them as a standalone record.`,
+        // Dense nested JSON — artemis runs on a local granite seat; granite
+        // reads structure, not prose. Same facts as the old # sections, keyed.
+        systemPrompt: JSON.stringify({
+            role: 'Artemis, the critical reviewer inside Warden. You receive a transcript of the user and the assistant. Audit it: what the user asked, what the assistant said and did, and where it went wrong.',
+            tools: {
+                set: 'Read, Grep, Glob, get_chat_history, Bash — read-only inspection only',
+                use: 'check claims against the real files, messages, databases and logs the conversation refers to',
+                invariant: 'auditing is the whole job; the system stays as you found it',
+            },
+            log_mining: {
+                when: 'asked to mine the logs for failures, or turn them into training data',
+                first: 'Read `data/skills/log-mining/SKILL.md` and follow it',
+                writes: 'exactly two things: your findings, and the training data under `training/` — nothing else on the system changes',
+            },
+            evidence: {
+                db: '/opt/Warden/store/messages.db, read-only — sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."; holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more; run .tables first, then .schema <table>; this file is the live one — the .db files under data/ are empty stubs',
+                logs: '/opt/Warden/logs/warden.log (stdout), /opt/Warden/logs/warden.error.log (stderr) — tail and grep for what the system did and when',
+                bash_vocab: 'SELECT queries, .tables, .schema, tail, grep, cat, ls, date',
+            },
+            find: [
+                'factual or logical errors in the assistant replies',
+                'places it misread the user, or answered a different question',
+                'oversights: what the user needed and did not get, unstated assumptions, edge cases, risks, better approaches available at the time',
+                'claims the conversation does not support',
+            ],
+            format: {
+                line1: 'What was asked: <the user request, in your own words>',
+                then: 'the audit, most important first — each item names the specific message or claim, one line on why it is wrong or risky, and the concrete correction',
+                sound: 'a sound exchange gets one or two sentences saying so, plus anything worth double-checking',
+                note: 'reference the exact point you are critiquing; your notes are saved automatically — write them as a standalone record',
+            },
+        }),
         toolsets: [],
     },
     {
@@ -1147,34 +1209,33 @@ Reference the exact point you are critiquing. Your notes are saved automatically
         routing: "security scans: ports, connections, services, autostart, crontabs",
         maxIterations: 30,
         summary: "security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.",
-        systemPrompt: `You are Sentry, Warden's desktop security agent. You run inside the user's account with user-level permissions — that is always enough; sudo, installs, and file writes are outside your job.
-
-You are scanning the machine Warden itself lives on. Warden and its parts are known-good: the Warden orchestrator (node) with its dashboard on port 3200, the agent-runner (node), the Chrome window Warden drives (CDP port 9222), the voice app (port 8767), the MARM memory server (port 8001), and Ollama (port 11434). A process, service, or port on that list is normal for this machine.
-
-# TOOLS
-- Bash for running commands.
-- sentry_report, once, at the end. Its schema describes everything it accepts.
-
-# SCOPE
-Your task names a mode.
-- PEEK: network and running services.
-- DEEP: adds the persistence and startup paths — autostart entries, user crontab, enabled user units, shell rc files, and a process audit.
-
-# METHOD
-You are the analyst. Judge what you see against a normal Linux desktop.
-
-When something is unfamiliar — a non-standard port, an unknown process, an outbound connection you cannot place — investigate it. Bash and your iterations exist for this:
-- Owner of a process or service: \`ps -p PID\`, \`systemctl status UNIT\`, \`ls -l /proc/PID/exe\`
-- Package that owns a binary: \`pacman -Qo PATH\`
-- What a port serves: vendor software uses its own registered ports (TeamViewer 5938/5939, Steam 27036, KDE Connect 1716)
-- Root-owned sockets read as "unknown" at user level: resolve them through the service list.
-
-Report what stays unexplained after you check, saying what you checked and what it turned out to be. Something you resolved is understood, whatever it looked like at first. Write each genuine finding as "what — why". An empty suspicious list means the machine is clean.
-
-Submit one sentry_report, then give the verdict — CLEAN or FINDINGS — as your final answer.
-
-# FORMAT
-One or two sentences. For a scheduled scan the host posts findings itself. For an orchestrator delegation your verdict text is the report it relays, so give each finding its own line there.`,
+        // Dense nested JSON — sentry runs on a local granite seat at
+        // temperature 0; granite reads structure, not prose.
+        systemPrompt: JSON.stringify({
+            role: "Sentry, Warden's desktop security agent. You run inside the user's account with user-level permissions — that is always enough; sudo, installs, and file writes are outside your job.",
+            known_good: 'you scan the machine Warden itself lives on; Warden and its parts are normal here: the Warden orchestrator (node) with its dashboard on port 3200, the agent-runner (node), the voice app (port 8767), the MARM memory server (port 8001), and Ollama (port 11434)',
+            tools: {
+                bash: 'running commands',
+                sentry_report: 'once, at the end — its schema describes everything it accepts',
+            },
+            scope: {
+                peek: 'network and running services',
+                deep: 'adds persistence and startup paths: autostart entries, user crontab, enabled user units, shell rc files, and a process audit',
+            },
+            method: {
+                you: 'the analyst — judge what you see against a normal Linux desktop',
+                investigate: 'a non-standard port, an unknown process, an outbound connection you cannot place: investigate it, Bash and your iterations exist for this',
+                owner: 'ps -p PID, systemctl status UNIT, ls -l /proc/PID/exe',
+                package: 'pacman -Qo PATH',
+                ports: 'vendor software uses registered ports (TeamViewer 5938/5939, Steam 27036, KDE Connect 1716)',
+                root_sockets: 'root-owned sockets read as "unknown" at user level — resolve them through the service list',
+            },
+            report: {
+                content: 'what stays unexplained after you checked, saying what you checked and what it turned out to be; something you resolved is understood, whatever it looked like at first; each genuine finding as "what — why"; an empty suspicious list means the machine is clean',
+                submit: 'one sentry_report, then the verdict — CLEAN or FINDINGS — as your final answer',
+                format: 'one or two sentences; for a scheduled scan the host posts findings itself; for an orchestrator delegation your verdict text is the report it relays — give each finding its own line there',
+            },
+        }),
         toolsets: ['sentry-core'],
         temperature: 0,
     },
@@ -1251,12 +1312,14 @@ const ORCH_SYSTEM = `{
 // best on the 8b — positive rules, no rumination tails.
 
 function crewBlock(): string {
+    // JSON members ("seat": "routing") — the orchestrator prompt is dense
+    // nested JSON (granite's preferred shape), so the roster must be too.
     const lines = SUBAGENTS
         // Atlas is this seat, not a crew member it can hand work to.
         .filter(s => s.routing && s.delegate !== 'atlas')
-        .map(s => `${s.delegate}: ${s.routing}${s.background ? ' (background — job id, result lands in inbox)' : ''}`);
-    lines.push('council: 3 seats deliberate in parallel — costly, hard-to-reverse calls only');
-    return lines.join('\n');
+        .map(s => `  ${JSON.stringify(s.delegate)}: ${JSON.stringify(s.routing + (s.background ? ' (background — job id, result lands in inbox)' : ''))}`);
+    lines.push(`  ${JSON.stringify('council')}: ${JSON.stringify('3 seats deliberate in parallel — costly, hard-to-reverse calls only')}`);
+    return lines.join(',\n');
 }
 
 /** `# DEFAULT APPS` — GENERATED from DEFAULT_APPS + the live skill layer, the
@@ -1266,7 +1329,8 @@ function crewBlock(): string {
  *  applyDefaultApps keeps the built-in and the section must not say otherwise. */
 function defaultsSection(): string {
     if (!skillState) return '';
-    const lines: string[] = [];
+    // JSON members, same shape as the orchestrator prompt around it.
+    const entries: string[] = [];
     for (const cap of Object.keys(CAPABILITY_BUILTINS)) {
         const server = providerFor(cap);
         if (!server) continue;
@@ -1274,13 +1338,13 @@ function defaultsSection(): string {
         const connected = skillState.skills.some(s => s.source === 'mcp'
             && s.tools.some(t => String(t?.function?.name || '').startsWith(prefix)));
         if (!connected) continue;
-        lines.push(`- ${cap} → \`${server}\` MCP tools`);
+        entries.push(`${JSON.stringify(cap)}: ${JSON.stringify(`${server} MCP tools`)}`);
         if (cap === 'browser') {
-            lines.push(`- music/video (play, pause, skip, seek, now playing) → \`youtube\` tool: one call, its result is the answer`);
+            entries.push(`${JSON.stringify('media')}: ${JSON.stringify('music/video (play, pause, skip, seek, now playing) → `youtube` tool: one call, its result is the answer')}`);
         }
     }
-    if (lines.length === 0) return '';
-    return `\n\n# DEFAULT APPS\n\nThe captain chose these providers in Settings. Always use them for their capability:\n\n${lines.join('\n')}\n`;
+    if (entries.length === 0) return '';
+    return `\n\n{"default_apps":{"note":"the captain chose these providers in Settings — always use them for their capability",${entries.join(',')}}}\n`;
 }
 
 const SUBAGENT_OWNED = new Set<string>(SUBAGENTS.flatMap(s => getSubAgentToolNames(s)));
@@ -1835,6 +1899,31 @@ let turnWasInboxDigest = false;
 // its verdict judges against the real request — never against an injected
 // [Inbox] digest or urgent push.
 let lastUserAsk = '';
+
+/** The seat's CURRENT ask, parsed out of the host's turn prompt. The new
+ *  asks are the <message> lines inside the trailing <messages> block
+ *  (router.ts formatMessages); everything before it is re-injected context
+ *  (mercury blocks, chat history) and must NOT reach the ask. A plain
+ *  tag-strip regex on the whole prompt pairs orphan closing tags across
+ *  block boundaries and eats the ask entirely — lastUserAsk came out as
+ *  the literal string "</messages>", the playback leash refused every
+ *  song request, and the lazy browser dial never fired (2026-09-21). */
+function extractAsk(prompt: unknown): string {
+    const raw = String(prompt || '');
+    // Last <messages> block = this turn's new asks. History/mercury lines
+    // use <message> too, but only inside their own wrapper tags, which this
+    // match never enters.
+    const blocks = [...raw.matchAll(/<messages[^>]*>([\s\S]*?)<\/messages>/g)];
+    const block = blocks.length > 0 ? blocks[blocks.length - 1][1] : raw;
+    const lines = [...block.matchAll(/<message\b[^>]*>([\s\S]*?)<\/message>/g)].map(m => m[1]);
+    // Un-escape the XML entities router.ts escaped, then strip any residue.
+    const text = (lines.length > 0 ? lines.join('\n') : block)
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return text.slice(0, 400);
+}
 // Orch is request-only: a call spawns once lastUserAsk changed after a
 // proposal (the user spoke again). Same-turn retries keep the same ask.
 let orchProposalAsk: string | null = null;
@@ -2126,9 +2215,9 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // Parallel atlas/vulkan jobs are allowed (cloud seats and local toolcall
     // seats both run concurrent; same local model = one loaded copy, Ollama
     // parallelism). The old one-atlas-at-a-time gate existed to stop two jobs
-    // racing the browser's single activePage global; browser pages are now
-    // owner-scoped (ownerALS in browser.ts — each job drives its own claimed
-    // tab), so the race is structurally gone. File races are still covered by
+    // racing the browser's single activePage global; that browser is gone
+    // (browser work goes through the default-app MCP provider), so the race
+    // is structurally gone. File races are still covered by
     // the same-file backstop below and duplicate dispatches by the dedup above.
     // Same-file backstop: a differently-worded task on the SAME file(s) as a
     // running writer job would clobber it. Don't spawn now and don't disturb
@@ -2193,10 +2282,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
     // abort — the orchestrator alone decides stops.
     let churnStreak = 0;
     let churnNudges = 0;
-    // Owner-scope the whole job (model turns + tool execution) so its browser
-    // calls resolve to THIS job's tab — parallel jobs each drive their own
-    // page instead of racing the process-global activePage.
-    const job = ownerALS.run({ owner: jobId }, () => runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
+    const job = runSubAgent(delegate, model, def.systemPrompt, tools, task, context, def.maxIterations, abortFlag, (toolName, argsSummary, resultPreview) => {
         jobRecord.toolCallCount++;
         jobRecord.lastAction = `${toolName}(${argsSummary})`;
         jobRecord.lastActionAt = Date.now();
@@ -2249,16 +2335,13 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         })
         .finally(() => {
             if (jobRecord.status === 'running') jobRecord.status = 'done';
-            // Drop this job's browser-owner state (its tab stays open — the
-            // result often lives in it) so the map doesn't grow per job.
-            releaseOwnerPages(jobId);
             // Refresh the jobs indicator: shows remaining running jobs, or
             // emits the zero-count clearing line when this was the last job
             // (emitJobsStatus handles the transition-to-zero itself).
             emitJobsStatus();
             persistJobRoster();
             setTimeout(() => { backgroundJobs.delete(jobId); }, 60000).unref?.();
-        }));
+        });
     jobRecord.promise = job;
     backgroundJobs.set(jobId, jobRecord);
     emitJobsStatus();
@@ -4041,12 +4124,22 @@ async function runNativeOllama(input: ContainerInput) {
         // default browser provider's raw page tools stand down for that turn
         // from BOTH pools. Given both, the model hand-drives chrome_* into
         // snapshot-click churn and never picks a video (2026-09-19).
-        const lastUserText = (() => {
-            for (let i = messages.length - 1; i >= 0; i--) {
-                if (messages[i]?.role === 'user') return String(messages[i].content || '');
-            }
-            return '';
-        })();
+        // The CURRENT ask, not a messages scan. This runs BEFORE this turn's
+        // user message is pushed, so the scan picked up an EARLIER user turn —
+        // and on a fresh runner the permanent first-ask slot still embeds the
+        // whole <chat_history>, so ANY old playback word ("song" in a history
+        // line) stood the browser tools down for pure web asks (2026-09-21:
+        // "open wikipedia" and "close the wikipedia tabs" both stood down, and
+        // the seat pkilled the user's Chrome to close tabs). lastUserAsk is
+        // this turn's ask with the host-injected tag blocks stripped.
+        const lastUserText = lastUserAsk
+            || (() => {
+                for (let i = messages.length - 1; i >= 0; i--) {
+                    if (messages[i]?.role === 'user') return String(messages[i].content || '');
+                }
+                return '';
+            })();
+        CURRENT_ASK = lastUserText;
         const browserProvider = providerFor('browser');
         const providerPrefix = browserProvider && PLAYBACK_ASK_RE.test(lastUserText)
             ? `mcp__${browserProvider}__`
@@ -4169,7 +4262,7 @@ try {
         const journalText = fs.readFileSync(journalPath, 'utf-8');
         const tail = journalText.slice(-2000).trim();
         if (tail) {
-            journalSection = `\n\n# PROJECT JOURNAL (recent entries)\n\n${tail}\n\nUse these learned facts and standing instructions when making decisions.`;
+            journalSection = `\n\n{"project_journal":{"note":"recent entries — learned facts and standing instructions; use them when deciding","tail":${JSON.stringify(tail)}}}`;
         }
     }
 } catch (err: any) {
@@ -4195,7 +4288,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n# LONG-TERM RECALL (MARM)\n\nMEMORY.md carries the durable core and is auto-loaded, and older memories relevant to the current ask are auto-recalled below it. For a DEEPER dig — older topics, technical subjects, how separate ideas connect — call \`mcp__marm__marm_smart_recall\` (that exact name — semantic search over every fact the memory distiller has ever logged). If a durable fact is missing from MARM and you just learned it, log it with \`mcp__marm__marm_log_entry\` so it is recallable next time.\n`
+    ? `\n{"long_term_recall":{"core":"MEMORY.md carries the durable core, auto-loaded; older memories relevant to the current ask are auto-recalled below it","deep_dig":"mcp__marm__marm_smart_recall (that exact name) — semantic search over every fact the memory distiller has ever logged","log_new":"a durable fact you just learned → mcp__marm__marm_log_entry, so it is recallable next time"}}\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -4232,7 +4325,7 @@ const marmRecallSection = marmEnabled
         // refreshActiveToolDefs, so a one-line pointer to list_skills() carries
         // discovery without the fixed cost. list_skills() still returns the full
         // list when called.
-        skillIndexSection = `\n\n# SKILLS\n\nSkills load on demand. Call \`list_skills()\` to see names+descriptions, then \`activate_skill(name)\` to load that skill's tools for this turn. The "core" skill is already active.`;
+        skillIndexSection = `\n\n{"skills":{"discover":"list_skills() → names+descriptions","load":"activate_skill(name) — this turn","core":"already active"}}`;
     }
     // Inject the current local time so the orchestrator knows it without calling
     // any tool. mcp-server-time's get_current_time REQUIRES a timezone argument
@@ -4243,7 +4336,7 @@ const marmRecallSection = marmEnabled
         const p = (n: number) => String(n).padStart(2, '0');
         const localIso = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        return `\n\n# CURRENT TIME\nIt is ${localIso} (${tz}), right now. Use this when the user asks the time or a date. Do not guess; if more than a minute has passed, run \`date\` via Bash to refresh.`;
+        return `\n\n{"now":{"local":"${localIso} (${tz})","rule":"use this for time and date asks; if more than a minute has passed, run \`date\` via Bash to refresh"}}`;
     })();
     // Compose the orchestrator system prompt from the selected driving-force
     // preamble (or the default) + the fixed routing core + the per-turn
@@ -4291,9 +4384,14 @@ const marmRecallSection = marmEnabled
         // This seat always does the work itself — atlas IS the seat, orch is
         // a callable specialist for genuinely big/multi-part work, not a mode
         // the seat switches into. No branch here anymore: one rule set.
-        const modeBlock = '\n\n# CREW\n\n'
+        const modeBlock = '\n\n{"crew":{\n'
               + crewBlock()
-              + '\nemail/calendar/reminders/tasks: always iris. Long work (minutes of browsing, multi-step builds) → atlas_background, keep talking. Multi-specialist chains → orch, keep talking. Else do it yourself — one call per intent.\n';
+              + '\n},"routing":{"mail":"email/calendar/reminders/tasks → always iris","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → orch, keep talking","else":"do it yourself — one call per intent"}'
+              // Proactive: the seat owns the machine it sits on — a broken thing
+              // it can fix with its own tools is its job, not a report to the
+              // user (2026-09-21: "it reports easily fixable things instead of
+              // fixing them"). Positive shape, one rule + one boundary.
+              + ',"proactive":{"rule":"something broken but fixable with your own tools → fix it first, then say what you did","report":"only what you cannot fix, or that needs the user\'s decision"}}\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is
@@ -4370,7 +4468,7 @@ const marmRecallSection = marmEnabled
         log(`System prompt: ${_sp.length} chars — "${_first.slice(0, 90)}"`);
     }
     let prompt = input.prompt;
-    lastUserAsk = String(input.prompt || '').replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400);
+    lastUserAsk = extractAsk(input.prompt) || lastUserAsk;
 
     if (input.activeIdea) {
         const ideaDir = path.join(process.cwd(), 'ideas', input.activeIdea);
@@ -4515,6 +4613,28 @@ const marmRecallSection = marmEnabled
                 if (recalled.trim()) recallBlock = `<recalled_memories>${recalled}</recalled_memories>\n\n`;
             } catch { /* fail-open — recall never blocks a turn */ }
         }
+        // The LAZY default browser provider: dial it EVERY turn, before the
+        // tool list is built — the default app IS the pipeline, and the only
+        // alternative is the stock built-in fallback, which must never
+        // happen (2026-09-21: undialed = stock tools or none = the open_app /
+        // pkill flail). A successful dial attaches into skillState for the
+        // runner's lifetime, so this costs nothing after the first turn; a
+        // failed dial is bounded by getOrCreateMcpClient's 10s and the gate's
+        // 5s fast-fail, and a 60s cooldown keeps a bridge-down day from
+        // paying that on every turn. The turn is never blocked either way.
+        const lazyBrowserServer = providerFor('browser') || providerFor('web');
+        if (lazyBrowserServer && isLazyMcpServer(lazyBrowserServer)
+            && !skillState?.skills.some(s => s.source === 'mcp' && s.name === lazyBrowserServer)
+            && Date.now() - lazyDialLastAttemptAt > 60_000) {
+            lazyDialLastAttemptAt = Date.now();
+            try {
+                const { getOrCreateMcpClient } = await import('./mcp-client.js');
+                await attachLazyServer(lazyBrowserServer, await getOrCreateMcpClient(lazyBrowserServer));
+                log(`[lazy-dial] ${lazyBrowserServer} dialed — the default browser provider owns the pipeline from turn one`);
+            } catch (err: any) {
+                log(`[lazy-dial] ${lazyBrowserServer} unreachable (${err?.message || err}) — retrying next turn`);
+            }
+        }
         const userMsg: any = { role: 'user', content: recallBlock + cleanedPrompt.trim() };
         // Attach any pending images from Read tool (vision) — but only when the
         // orchestrator's context can hold them; an over-limit attach 400s the
@@ -4549,6 +4669,7 @@ const marmRecallSection = marmEnabled
         let errorOutputWritten = false;  // set when the retryable-error path already wrote output — prevents double writeOutput and keeps the persistent child alive (was: `return`, which killed the child)
         // === Per-turn state for defensive loop patterns ============================
         let intentNudgesUsed = 0;          // #2: intent-without-action nudge cap
+        let pastedCallRuns = 0;            // #2b: pasted <function=…> blocks recovered as real calls
         let delegatedThisTurn = false;     // #2: a delegate ran this turn — closing prose after a hand-off is a completion announcement, not unfulfilled intent (nudging it re-dispatches the same job)
         // Names of delegates actually invoked via a tool_call this turn. Used by
         // the narrated-delegation guard to distinguish a genuine "Atlas is doing
@@ -4616,6 +4737,16 @@ const marmRecallSection = marmEnabled
             let wroteRespondingStatus = false;
             let doneReason = '';
             const collectedToolCalls = [];
+            // Repetition-loop guard (2026-09-21 11:57: a temp-0 youtube play
+            // looped 91× in one stream — 112s to the num_predict cap, then all
+            // 91 executed in the same second and their identical results fed
+            // the next round's degeneration). Track consecutive identical tool
+            // calls; at DUP_TOOL_ABORT copies, abort the stream — the call
+            // itself is real, only the repetition is noise.
+            const toolSig = (tc: any) => `${tc.function?.name || ''}|${JSON.stringify(tc.function?.arguments ?? {})}`;
+            let lastToolSig = '';
+            let dupToolStreak = 0;
+            let dupToolAborted = false;
             // Write thinking status — include what just happened so the user sees progress
             const thinkLabel = lastToolSummary
                 ? `${lastToolSummary} — planning next...`
@@ -4662,15 +4793,12 @@ const marmRecallSection = marmEnabled
                     // classifier) skips the planning pass entirely: 4.4k think
                     // tokens before a single youtube call was ten seconds of
                     // silence for nothing (2026-09-19).
-                    const lastAsk = (() => {
-                        for (let i = messages.length - 1; i >= 0; i--) {
-                            const m: any = messages[i];
-                            if (m?.role === 'user') return String(m.content || '');
-                        }
-                        return '';
-                    })();
+                    // lastUserAsk, not a messages scan — the current user slot on a
+                    // fresh runner embeds <chat_history>, and any old playback word
+                    // in it mis-flagged the turn (same defect as the stand-down
+                    // classifier, 2026-09-21).
                     requestBody.think = thinkingAlways || modelRequiresThink(model)
-                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastAsk));
+                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk));
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
@@ -4829,6 +4957,17 @@ const marmRecallSection = marmEnabled
                                         appendStatus({ phase: 'tool', label: `Calling ${tc.function?.name || 'tool'}...` });
                                     }
                                     collectedToolCalls.push(tc);
+                                    const sig = toolSig(tc);
+                                    dupToolStreak = sig === lastToolSig ? dupToolStreak + 1 : 1;
+                                    lastToolSig = sig;
+                                    if (dupToolStreak >= DUP_TOOL_ABORT) {
+                                        dupToolAborted = true;
+                                        log(`Tool-call repetition loop: ${tc.function?.name} ×${dupToolStreak} identical — aborting stream, collapsing to one call`);
+                                        appendStatus({ phase: 'tool', label: `Loop guard: repeated ${tc.function?.name || 'tool'} call collapsed to one` });
+                                        try { streamController.abort(); } catch { /* already aborted */ }
+                                        reader.cancel().catch(() => {});
+                                        break;
+                                    }
                                 }
                             }
                             // Periodic progress log for long streams
@@ -4841,7 +4980,9 @@ const marmRecallSection = marmEnabled
                             // Buffer it so it gets prepended to the next chunk.
                             parseBuffer += line;
                         }
+                        if (dupToolAborted) break;
                     }
+                    if (dupToolAborted) break;
                 }
                 log(`Stream done: doneReason=${doneReason || 'none'}, contentLen=${fullContent.length}, thinkingLen=${fullThinking.length}, toolCalls=${collectedToolCalls.length}`);
                 if (doneReason === 'length') {
@@ -4870,6 +5011,27 @@ const marmRecallSection = marmEnabled
                     }
                     if (collectedToolCalls.length > 0) {
                         log(`Found ${collectedToolCalls.length} DSML tool calls in thinking`);
+                    }
+                }
+                // Collapse runs of consecutive IDENTICAL tool calls to their
+                // first instance. Applies to both collection paths (native
+                // tool_calls and DSML text): a degenerate stream that was
+                // aborted mid-run ends with the duplicate tail, and the 91
+                // copies must never reach history/execution either way —
+                // identical results fed back are what seeded the next round's
+                // repetition.
+                {
+                    let prevSig = '';
+                    let write = 0;
+                    for (let i = 0; i < collectedToolCalls.length; i++) {
+                        const sig = toolSig(collectedToolCalls[i]);
+                        if (sig === prevSig) continue;
+                        prevSig = sig;
+                        collectedToolCalls[write++] = collectedToolCalls[i];
+                    }
+                    if (write < collectedToolCalls.length) {
+                        log(`Collapsed ${collectedToolCalls.length - write} consecutive duplicate tool call(s) → ${write}`);
+                        collectedToolCalls.length = write;
                     }
                 }
                 // A duration-cap abort with no tool calls produced no usable answer —
@@ -4996,33 +5158,6 @@ const marmRecallSection = marmEnabled
                     for (const result of toolResults) {
                         const body = truncateToolResult('orchestrator', result.content);
                         messages.push({ role: 'tool', content: TRUSTED_RESULT_TOOLS.has(result.toolName) ? body : untrustedContextMessage(body) });
-                    }
-                    // Playback IS the answer. When a youtube action lands
-                    // (playing / resumed / already playing), end the turn with
-                    // an empty reply — the host treats that as "chose to say
-                    // nothing". On voice and Steve deployments a spoken recap
-                    // ("timestamp updated from 0:00 to 138:11…") talks over the
-                    // music and stalls the conversation (2026-09-19).
-                    // Silence is gated on INTENT, not on the tool: only a turn
-                    // whose ASK was playback goes quiet after a youtube play/
-                    // control lands. A model that spuriously calls youtube on
-                    // "hello" (nemotron latched the pattern, 2026-09-19 22:17)
-                    // must keep its voice — the blanket mute turned every such
-                    // turn into total silence.
-                    const lastAsk = (() => {
-                        for (let i = messages.length - 1; i >= 0; i--) {
-                            const m: any = messages[i];
-                            if (m?.role === 'user') return String(m.content || '');
-                        }
-                        return '';
-                    })();
-                    const mediaSilent = PLAYBACK_ASK_RE.test(lastAsk) && toolResults.some(r => r.toolName === 'youtube'
-                        && /^(Playing|Resumed|Paused|Already playing|Still playing|Queued):/.test(String(r.content || '').trim()));
-                    if (mediaSilent && !errorOutputWritten) {
-                        log('[media] playback confirmed — ending turn silently');
-                        appendStatus({ phase: 'tool', label: '♫ playback confirmed — no reply needed' });
-                        writeOutput({ status: 'success', result: null, spontaneous: turnWasInboxDigest });
-                        return;
                     }
                     // #3 Mid-loop breaker tracking: record each call sig, detect
                     // runaway (same sig >= RUNAWAY_CALL_LIMIT) and circling
@@ -5179,6 +5314,37 @@ const marmRecallSection = marmEnabled
                             nudgeMsg = `You wrote "${announcement}" but emitted no tool call. Act now: do it yourself with your own tools, or hand it to the specialist that owns it (${delegateList}) with a {task}.`;
                         }
                         messages.push({ role: 'user', content: nudgeMsg });
+                        continue;
+                    }
+                }
+                // ─── Pasted tool-call guard ───────────────────────────────
+                // A cornered small model (loop breaker fired, tools yanked)
+                // emits the tool call AS CONTENT — "<function=x>…</function>"
+                // — which used to become the chat reply verbatim (2026-09-21
+                // "look up cats": four refused youtube calls, then the raw
+                // <function=youtube> block pasted as the final answer). Parse
+                // the block, run the call it names, and continue with the
+                // result + a demand for plain text. Capped: a model that keeps
+                // pasting gets its text accepted as the answer instead.
+                if (pastedCallRuns < 2 && /<function=[\w.-]+>/i.test(historyContent)) {
+                    // Truncated blocks are the common case (2026-09-21 "lofi
+                    // study mix": stream stopped before </function>), so the
+                    // close tags are optional — an unclosed block matches to
+                    // end-of-content instead of leaking to the chat reply.
+                    const fnMatch = historyContent.match(/<function=([\w.-]+)>([\s\S]*?)(?:<\/function>|$)/i);
+                    if (fnMatch) {
+                        const fnName = fnMatch[1];
+                        const fnArgs: Record<string, string> = {};
+                        for (const pm of fnMatch[2].matchAll(/<parameter=([\w.-]+)>\s*([\s\S]*?)\s*(?:<\/parameter>|$)/g)) {
+                            fnArgs[pm[1]] = pm[2];
+                        }
+                        pastedCallRuns++;
+                        log(`[pasted-call] model emitted <function=${fnName}> as content — recovering it as a real tool call`);
+                        appendStatus({ phase: 'tool', label: `Recovered pasted tool call: ${fnName}` });
+                        const fnResult = await executeXmlTool(fnName, fnArgs, toolContext, modifiedFiles, { orchestrator: true });
+                        // The assistant turn (with the pasted XML) was already
+                        // pushed above — only the tool result rides in now.
+                        messages.push({ role: 'user', content: `The ${fnName} call you wrote out just ran. Result:\n${truncateToolResult('orchestrator', String(fnResult))}\n\nReply to the user now in plain text — no tool calls.` });
                         continue;
                     }
                 }
@@ -5621,7 +5787,7 @@ const marmRecallSection = marmEnabled
         // Capture the genuine user ask for the completion verdict (Step 2).
         // Tag-stripped, never set from digest
         // compositions or urgent injections — those would poison the verdict.
-        lastUserAsk = String(nextInput).replace(/<[^>]+>[\s\S]*?<\/[^>]+>\s*/g, '').trim().slice(0, 400) || lastUserAsk;
+        lastUserAsk = extractAsk(nextInput) || lastUserAsk;
     }
 }
 /**
@@ -5706,9 +5872,52 @@ function handleBasicFileOp(name: string, args: any): string {
     return `Error: unknown file op ${name}`;
 }
 
+/** Register a lazily-connected optional server into the live skill state:
+ *  its tools join listTools and the schema from the next turn onward, so a
+ *  provider that IS running gets used, not just tolerated. */
+async function attachLazyServer(server: string, client: import('./mcp-client.js').ExternalMcpClient): Promise<void> {
+    if (!skillState) return;
+    skillState.clients.set(server, client);
+    if (skillState.skills.some(s => s.source === 'mcp' && s.name === server)) return;
+    try {
+        const live = await client.listTools();
+        if (!live.length) return;
+        skillState.skills.push({
+            name: server,
+            description: `MCP server ${server} (on-demand)`,
+            source: 'mcp',
+            tools: live.map(t => ({
+                type: 'function' as const,
+                function: {
+                    name: `mcp__${server}__${t.name}`,
+                    description: t.description ?? `MCP tool ${t.name} from ${server}`,
+                    parameters: (t.inputSchema ?? { type: 'object', properties: {} }) as Record<string, any>,
+                },
+            })),
+        } as any);
+        skillState.active.add(server);
+    } catch { /* advisory — the client itself still works for calls */ }
+}
+
 /** Dispatch an mcp__<server>__<tool> call to the owning ExternalMcpClient. */
 async function handleMcpToolCall(fullName: string, args: any): Promise<string> {
-    const resolved = resolveMcpTool(fullName);
+    let resolved = resolveMcpTool(fullName);
+    if (!resolved) {
+        // Lazy server (optional component, e.g. browser-driving): not connected
+        // at boot by design. Dial it NOW — this call IS the ask. A server that
+        // isn't there fails this one tool, never the turn.
+        const parts = fullName.split('__');
+        if (parts.length >= 3) {
+            try {
+                const { getOrCreateMcpClient } = await import('./mcp-client.js');
+                const client = await getOrCreateMcpClient(parts[1]);
+                await attachLazyServer(parts[1], client);
+                resolved = resolveMcpTool(fullName);
+            } catch (err: any) {
+                return `Error: optional MCP server "${parts[1]}" unavailable (${err?.message || err}) — tool "${fullName}" not run.`;
+            }
+        }
+    }
     if (!resolved) return `Error: no MCP client owns tool "${fullName}"`;
     // MARM activity → the host's brain-scan ring, so the memory galaxy lights
     // up the regions being read from (smart/concept recall) or written to

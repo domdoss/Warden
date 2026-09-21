@@ -1,0 +1,836 @@
+/**
+ * AgentChat Theme System
+ *
+ * This file defines the CSS variable tokens for the AgentChat component.
+ * All components must only use these tokens - never hardcode colors.
+ *
+ * Themes:
+ * - warm-editorial (default): Warm, editorial style from agent-ux.html
+ * - blueprint-architect: Blueprint grid with technical aesthetic
+ * - zen-journal: Calm journal / graphite accent (Muji style)
+ * - neo-pop: Thick borders + hard shadow (Brutalist)
+ * - dark-console: Dark terminal/console style
+ * - swiss-grid: High-contrast brutalist/swiss style
+ */
+
+@layer base {
+  .agent-theme {
+    /* ========================================
+       Font Stacks (system font fallbacks)
+       ======================================== */
+    --ac-font-sans:
+      'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+      'Apple Color Emoji', 'Segoe UI Emoji';
+    --ac-font-serif: 'Newsreader', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif;
+    --ac-font-mono:
+      'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+      'Courier New', monospace;
+    --ac-font-grotesk:
+      'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial;
+
+    /* Semantic font tokens */
+    --ac-font-body: var(--ac-font-sans);
+    --ac-font-heading: var(--ac-font-serif);
+    --ac-font-code: var(--ac-font-mono);
+
+    /* ========================================
+       Geometry (Shape & Spacing)
+       ======================================== */
+    --ac-border-width: 1px;
+    --ac-border-width-strong: 2px;
+    --ac-radius-container: 0px;
+    --ac-radius-card: 12px;
+    --ac-radius-inner: 8px;
+    --ac-radius-button: 8px;
+
+    /* Motion */
+    --ac-motion-fast: 120ms;
+    --ac-motion-normal: 180ms;
+
+    /* Timeline sizing */
+    --ac-timeline-line-width: 1px;
+    --ac-timeline-node-size: 8px;
+    --ac-timeline-indent: 24px;
+
+    /* Scrollbar sizing */
+    --ac-scrollbar-size: 4px;
+
+    /* ========================================
+       WARM EDITORIAL (Default Theme)
+       ======================================== */
+
+    /* Background */
+    --ac-bg: #fdfcf8;
+    --ac-bg-pattern: none;
+    --ac-bg-pattern-size: 16px 16px;
+
+    /* Header */
+    --ac-header-bg: rgba(253, 252, 248, 0.95);
+    --ac-header-border: rgba(245, 245, 244, 0.5);
+
+    /* Surfaces */
+    --ac-surface: #ffffff;
+    --ac-surface-muted: #f2f0eb;
+    --ac-surface-inset: #f2f0eb;
+
+    /* Text */
+    --ac-text: #1a1a1a;
+    --ac-text-muted: #6e6e6e;
+    --ac-text-subtle: #a8a29e;
+    --ac-text-inverse: #ffffff;
+    --ac-text-placeholder: #a8a29e;
+
+    /* Borders */
+    --ac-border: #e7e5e4;
+    --ac-border-strong: #d6d3d1;
+
+    /* Hover states */
+    --ac-hover-bg: #f5f5f4;
+    --ac-hover-bg-subtle: #fafaf9;
+
+    /* Accent (terracotta) */
+    --ac-accent: #d97757;
+    --ac-accent-hover: #c4664a;
+    --ac-accent-subtle: rgba(217, 119, 87, 0.12);
+    --ac-accent-contrast: #ffffff;
+    --ac-accent-2: var(--ac-accent);
+
+    /* Links */
+    --ac-link: var(--ac-accent);
+    --ac-link-hover: var(--ac-accent-hover);
+
+    /* Selection */
+    --ac-selection-bg: #ffedd5;
+    --ac-selection-text: #7c2d12;
+
+    /* Shadows */
+    --ac-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --ac-shadow-float: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+
+    /* Focus */
+    --ac-focus-ring: rgba(214, 211, 209, 0.9);
+
+    /* Timeline */
+    --ac-timeline-line: #e7e5e4;
+    --ac-timeline-node: #d6d3d1;
+    --ac-timeline-node-hover: #a8a29e;
+    --ac-timeline-node-active: var(--ac-accent);
+    --ac-timeline-node-active-border: var(--ac-accent);
+    --ac-timeline-node-tool: #94a3b8;
+    --ac-timeline-node-pulse-shadow:
+      0 0 0 2px rgba(217, 119, 87, 0.25), 0 0 12px rgba(217, 119, 87, 0.2);
+
+    /* Chips/Pills */
+    --ac-chip-bg: #f2f0eb;
+    --ac-chip-text: #1a1a1a;
+    --ac-chip-border: #e7e5e4;
+
+    /* Code blocks */
+    --ac-code-bg: #ffffff;
+    --ac-code-text: #1a1a1a;
+    --ac-code-border: #e7e5e4;
+
+    /* Diff colors */
+    --ac-diff-add-bg: rgba(240, 253, 244, 0.6);
+    --ac-diff-add-text: #15803d;
+    --ac-diff-add-border: #4ade80;
+    --ac-diff-del-bg: rgba(254, 242, 242, 0.6);
+    --ac-diff-del-text: #b91c1c;
+    --ac-diff-del-border: #fca5a5;
+
+    /* Status colors */
+    --ac-success: #22c55e;
+    --ac-warning: #f59e0b;
+    --ac-danger: #ef4444;
+
+    /* Scrollbar */
+    --ac-scrollbar-thumb: #e5e5e5;
+    --ac-scrollbar-thumb-hover: #d4d4d4;
+  }
+
+  /* ========================================
+     WARM EDITORIAL (Explicit for clarity)
+     ======================================== */
+  .agent-theme[data-agent-theme='warm-editorial'] {
+    --ac-font-body: var(--ac-font-sans);
+    --ac-font-heading: var(--ac-font-serif);
+    --ac-font-code: var(--ac-font-mono);
+
+    --ac-bg: #fdfcf8;
+    --ac-bg-pattern: none;
+    --ac-header-bg: rgba(253, 252, 248, 0.95);
+    --ac-header-border: rgba(245, 245, 244, 0.5);
+    --ac-surface: #ffffff;
+    --ac-surface-muted: #f2f0eb;
+    --ac-text: #1a1a1a;
+    --ac-text-muted: #6e6e6e;
+    --ac-text-subtle: #a8a29e;
+    --ac-border: #e7e5e4;
+    --ac-accent: #d97757;
+    --ac-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --ac-radius-card: 12px;
+    --ac-border-width: 1px;
+  }
+
+  /* ========================================
+     BLUEPRINT ARCHITECT
+     ======================================== */
+  .agent-theme[data-agent-theme='blueprint-architect'] {
+    --ac-font-body: var(--ac-font-grotesk);
+    --ac-font-heading: var(--ac-font-grotesk);
+    --ac-font-code: var(--ac-font-mono);
+
+    --ac-bg: #f7fbff;
+    --ac-bg-pattern:
+      linear-gradient(to right, rgba(37, 99, 235, 0.14) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(37, 99, 235, 0.14) 1px, transparent 1px);
+    --ac-bg-pattern-size: 24px 24px;
+
+    --ac-header-bg: rgba(247, 251, 255, 0.86);
+    --ac-header-border: rgba(37, 99, 235, 0.25);
+
+    --ac-surface: rgba(255, 255, 255, 0.92);
+    --ac-surface-muted: rgba(239, 246, 255, 0.9);
+    --ac-surface-inset: rgba(239, 246, 255, 0.9);
+
+    --ac-text: #0b1220;
+    --ac-text-muted: #1f2a44;
+    --ac-text-subtle: #475569;
+    --ac-text-inverse: #ffffff;
+    --ac-text-placeholder: #64748b;
+
+    --ac-border: rgba(37, 99, 235, 0.25);
+    --ac-border-strong: rgba(37, 99, 235, 0.45);
+
+    --ac-hover-bg: rgba(37, 99, 235, 0.08);
+    --ac-hover-bg-subtle: rgba(37, 99, 235, 0.05);
+
+    --ac-accent: #2563eb;
+    --ac-accent-hover: #1d4ed8;
+    --ac-accent-subtle: rgba(37, 99, 235, 0.12);
+    --ac-accent-contrast: #ffffff;
+
+    --ac-accent-2: #0ea5e9;
+    --ac-link: var(--ac-accent);
+    --ac-link-hover: var(--ac-accent-hover);
+
+    --ac-selection-bg: rgba(37, 99, 235, 0.16);
+    --ac-selection-text: #0b1220;
+
+    --ac-shadow-card: 0 1px 3px rgba(2, 6, 23, 0.12);
+    --ac-shadow-float: 0 10px 28px -10px rgba(2, 6, 23, 0.22);
+    --ac-focus-ring: rgba(37, 99, 235, 0.4);
+
+    --ac-timeline-line: rgba(37, 99, 235, 0.35);
+    --ac-timeline-node: rgba(37, 99, 235, 0.35);
+    --ac-timeline-node-hover: rgba(37, 99, 235, 0.55);
+    --ac-timeline-node-active: var(--ac-accent);
+    --ac-timeline-node-active-border: var(--ac-accent);
+    --ac-timeline-node-tool: rgba(37, 99, 235, 0.5);
+    --ac-timeline-node-pulse-shadow:
+      0 0 0 2px rgba(37, 99, 235, 0.25), 0 0 12px rgba(37, 99, 235, 0.2);
+
+    --ac-chip-bg: rgba(239, 246, 255, 0.9);
+    --ac-chip-text: #0b1220;
+    --ac-chip-border: rgba(37, 99, 235, 0.25);
+
+    --ac-code-bg: rgba(255, 255, 255, 0.92);
+    --ac-code-text: #0b1220;
+    --ac-code-border: rgba(37, 99, 235, 0.25);
+
+    --ac-diff-add-bg: rgba(34, 197, 94, 0.12);
+    --ac-diff-add-text: #15803d;
+    --ac-diff-add-border: rgba(34, 197, 94, 0.4);
+    --ac-diff-del-bg: rgba(239, 68, 68, 0.12);
+    --ac-diff-del-text: #b91c1c;
+    --ac-diff-del-border: rgba(239, 68, 68, 0.4);
+
+    --ac-scrollbar-thumb: rgba(37, 99, 235, 0.2);
+    --ac-scrollbar-thumb-hover: rgba(37, 99, 235, 0.35);
+  }
+
+  /* ========================================
+     ZEN JOURNAL
+     ======================================== */
+  .agent-theme[data-agent-theme='zen-journal'] {
+    --ac-font-body: var(--ac-font-serif);
+    --ac-font-heading: var(--ac-font-serif);
+    --ac-font-code: var(--ac-font-mono);
+
+    --ac-bg: #fafaf9;
+    --ac-bg-pattern: linear-gradient(to bottom, rgba(120, 113, 108, 0.07) 1px, transparent 1px);
+    --ac-bg-pattern-size: 100% 28px;
+
+    --ac-header-bg: rgba(250, 250, 249, 0.92);
+    --ac-header-border: rgba(231, 229, 228, 0.9);
+
+    --ac-surface: rgba(255, 255, 255, 0.92);
+    --ac-surface-muted: rgba(245, 245, 244, 0.92);
+    --ac-surface-inset: rgba(245, 245, 244, 0.92);
+
+    --ac-text: #1c1917;
+    --ac-text-muted: #44403c;
+    --ac-text-subtle: #78716c;
+    --ac-text-inverse: #ffffff;
+    --ac-text-placeholder: #a8a29e;
+
+    --ac-border: #e7e5e4;
+    --ac-border-strong: #d6d3d1;
+
+    --ac-hover-bg: rgba(120, 113, 108, 0.08);
+    --ac-hover-bg-subtle: rgba(120, 113, 108, 0.05);
+
+    --ac-accent: #57534e;
+    --ac-accent-hover: #44403c;
+    --ac-accent-subtle: rgba(87, 83, 78, 0.12);
+    --ac-accent-contrast: #ffffff;
+    --ac-accent-2: var(--ac-accent);
+
+    --ac-link: var(--ac-accent);
+    --ac-link-hover: var(--ac-accent-hover);
+
+    --ac-selection-bg: rgba(87, 83, 78, 0.18);
+    --ac-selection-text: #1c1917;
+
+    --ac-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06);
+    --ac-shadow-float: 0 14px 34px -18px rgba(0, 0, 0, 0.18);
+    --ac-focus-ring: rgba(87, 83, 78, 0.35);
+
+    --ac-timeline-line: #e7e5e4;
+    --ac-timeline-node: #d6d3d1;
+    --ac-timeline-node-hover: #a8a29e;
+    --ac-timeline-node-active: var(--ac-accent);
+    --ac-timeline-node-active-border: var(--ac-accent);
+    --ac-timeline-node-tool: #94a3b8;
+    --ac-timeline-node-pulse-shadow:
+      0 0 0 2px rgba(87, 83, 78, 0.25), 0 0 12px rgba(87, 83, 78, 0.2);
+
+    --ac-chip-bg: rgba(245, 245, 244, 0.92);
+    --ac-chip-text: #1c1917;
+    --ac-chip-border: #e7e5e4;
+
+    --ac-code-bg: rgba(255, 255, 255, 0.92);
+    --ac-code-text: #1c1917;
+    --ac-code-border: #e7e5e4;
+
+    --ac-diff-add-bg: rgba(34, 197, 94, 0.1);
+    --ac-diff-add-text: #15803d;
+    --ac-diff-add-border: rgba(34, 197, 94, 0.35);
+    --ac-diff-del-bg: rgba(239, 68, 68, 0.1);
+    --ac-diff-del-text: #b91c1c;
+    --ac-diff-del-border: rgba(239, 68, 68, 0.35);
+
+    --ac-scrollbar-thumb: rgba(120, 113, 108, 0.15);
+    --ac-scrollbar-thumb-hover: rgba(120, 113, 108, 0.25);
+  }
+
+  /* ========================================
+     NEO POP
+     ======================================== */
+  .agent-theme[data-agent-theme='neo-pop'] {
+    --ac-font-body: var(--ac-font-sans);
+    --ac-font-heading: var(--ac-font-grotesk);
+    --ac-font-code: var(--ac-font-mono);
+
+    --ac-border-width: 4px;
+    --ac-border-width-strong: 4px;
+    --ac-radius-card: 0px;
+    --ac-radius-inner: 0px;
+    --ac-radius-button: 0px;
+
+    --ac-bg: #fff7ed;
+    --ac-bg-pattern: radial-gradient(rgba(17, 24, 39, 0.12) 1px, transparent 1px);
+    --ac-bg-pattern-size: 18px 18px;
+
+    --ac-header-bg: rgba(255, 247, 237, 0.92);
+    --ac-header-border: #111827;
+
+    --ac-surface: #ffffff;
+    --ac-surface-muted: #ffedd5;
+    --ac-surface-inset: #ffffff;
+
+    --ac-text: #111827;
+    --ac-text-muted: #374151;
+    --ac-text-subtle: #6b7280;
+    --ac-text-inverse: #ffffff;
+    --ac-text-placeholder: #9ca3af;
+
+    --ac-border: #111827;
+    --ac-border-strong: #111827;
+
+    --ac-hover-bg: rgba(17, 24, 39, 0.06);
+    --ac-hover-bg-subtle: rgba(17, 24, 39, 0.04);
+
+    --ac-accent: #ff3d7f;
+    --ac-accent-hover: #ff1f6a;
+    --ac-accent-subtle: rgba(255, 61, 127, 0.14);
+    --ac-accent-contrast: #ffffff;
+
+    --ac-accent-2: #22d3ee;
+    --ac-link: var(--ac-accent-2);
+    --ac-link-hover: #06b6d4;
+
+    --ac-selection-bg: rgba(255, 61, 127, 0.25);
+    --ac-selection-text: #111827;
+
+    --ac-shadow-card: 6px 6px 0 0 var(--ac-border);
+    --ac-shadow-float: 8px 8px 0 0 var(--ac-border);
+    --ac-focus-ring: rgba(17, 24, 39, 0.35);
+
+    --ac-timeline-line-width: 4px;
+    --ac-timeline-line: #111827;
+    --ac-timeline-node: #111827;
+    --ac-timeline-node-hover: #374151;
+    --ac-timeline-node-active: var(--ac-accent);
+    --ac-timeline-node-active-border: #111827;
+    --ac-timeline-node-tool: #6b7280;
+    --ac-timeline-node-pulse-shadow: 0 0 0 2px rgba(17, 24, 39, 1);
+
+    --ac-chip-bg: #ffffff;
+    --ac-chip-text: #111827;
+    --ac-chip-border: #111827;
+
+    --ac-code-bg: #ffffff;
+    --ac-code-text: #111827;
+    --ac-code-border: #111827;
+
+    --ac-diff-add-bg: rgba(34, 197, 94, 0.18);
+    --ac-diff-add-text: #15803d;
+    --ac-diff-add-border: #111827;
+    --ac-diff-del-bg: rgba(239, 68, 68, 0.18);
+    --ac-diff-del-text: #b91c1c;
+    --ac-diff-del-border: #111827;
+
+    --ac-scrollbar-thumb: rgba(17, 24, 39, 0.25);
+    --ac-scrollbar-thumb-hover: rgba(17, 24, 39, 0.4);
+  }
+
+  /* ========================================
+     DARK CONSOLE
+     ======================================== */
+  .agent-theme[data-agent-theme='dark-console'] {
+    --ac-font-body: var(--ac-font-mono);
+    --ac-font-heading: var(--ac-font-mono);
+    --ac-font-code: var(--ac-font-mono);
+
+    --ac-bg: #0f1117;
+    --ac-bg-pattern: none;
+    --ac-bg-pattern-size: 16px 16px;
+
+    --ac-header-bg: #0f1117;
+    --ac-header-border: #1f2937;
+
+    --ac-surface: #0f1117;
+    --ac-surface-muted: #0a0c10;
+    --ac-surface-inset: #1a1d26;
+
+    --ac-text: #e5e7eb;
+    --ac-text-muted: #9ca3af;
+    --ac-text-subtle: #6b7280;
+    --ac-text-inverse: #0a0c10;
+    --ac-text-placeholder: #4b5563;
+
+    --ac-border: #1f2937;
+    --ac-border-strong: #374151;
+
+    --ac-hover-bg: rgba(255, 255, 255, 0.06);
+    --ac-hover-bg-subtle: rgba(255, 255, 255, 0.04);
+
+    --ac-accent: #c084fc;
+    --ac-accent-hover: #d8b4fe;
+    --ac-accent-subtle: rgba(192, 132, 252, 0.14);
+    --ac-accent-contrast: #0a0c10;
+
+    --ac-accent-2: #60a5fa;
+    --ac-link: var(--ac-accent-2);
+    --ac-link-hover: #93c5fd;
+
+    --ac-selection-bg: rgba(192, 132, 252, 0.25);
+    --ac-selection-text: #ffffff;
+
+    --ac-shadow-card: none;
+    --ac-shadow-float: none;
+    --ac-focus-ring: rgba(192, 132, 252, 0.35);
+
+    --ac-timeline-line-width: 2px;
+    --ac-timeline-line: #1f2937;
+    --ac-timeline-node: #374151;
+    --ac-timeline-node-hover: #6b7280;
+    --ac-timeline-node-active: var(--ac-accent);
+    --ac-timeline-node-active-border: var(--ac-accent);
+    --ac-timeline-node-tool: #64748b;
+    --ac-timeline-node-pulse-shadow:
+      0 0 0 2px rgba(192, 132, 252, 0.35), 0 0 14px rgba(192, 132, 252, 0.25);
+
+    --ac-chip-bg: rgba(255, 255, 255, 0.06);
+    --ac-chip-text: #e5e7eb;
+    --ac-chip-border: rgba(255, 255, 255, 0.1);
+
+    --ac-code-bg: #0a0c10;
+    --ac-code-text: #e5e7eb;
+    --ac-code-border: #1f2937;
+
+    --ac-diff-add-bg: rgba(74, 222, 128, 0.1);
+    --ac-diff-add-text: #4ade80;
+    --ac-diff-add-border: rgba(74, 222, 128, 0.35);
+
+    --ac-diff-del-bg: rgba(248, 113, 113, 0.1);
+    --ac-diff-del-text: #f87171;
+    --ac-diff-del-border: rgba(248, 113, 113, 0.35);
+
+    --ac-scrollbar-thumb: rgba(255, 255, 255, 0.12);
+    --ac-scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+  }
+
+  /* ========================================
+     SWISS GRID
+     ======================================== */
+  .agent-theme[data-agent-theme='swiss-grid'] {
+    --ac-font-body: var(--ac-font-grotesk);
+    --ac-font-heading: var(--ac-font-grotesk);
+    --ac-font-code: var(--ac-font-mono);
+
+    --ac-bg: #ffffff;
+    --ac-bg-pattern: radial-gradient(#e5e7eb 1px, transparent 1px);
+    --ac-bg-pattern-size: 16px 16px;
+
+    --ac-header-bg: #ffffff;
+    --ac-header-border: #000000;
+
+    --ac-surface: #ffffff;
+    --ac-surface-muted: #f3f4f6;
+    --ac-surface-inset: #ffffff;
+
+    --ac-text: #000000;
+    --ac-text-muted: #374151;
+    --ac-text-subtle: #6b7280;
+    --ac-text-inverse: #ffffff;
+    --ac-text-placeholder: #9ca3af;
+
+    --ac-border: #000000;
+    --ac-border-strong: #000000;
+
+    --ac-hover-bg: #f3f4f6;
+    --ac-hover-bg-subtle: #f9fafb;
+
+    --ac-accent: #000000;
+    --ac-accent-hover: #111827;
+    --ac-accent-subtle: rgba(0, 0, 0, 0.06);
+    --ac-accent-contrast: #ffffff;
+    --ac-accent-2: #000000;
+
+    --ac-link: #000000;
+    --ac-link-hover: #111827;
+
+    --ac-selection-bg: #000000;
+    --ac-selection-text: #ffffff;
+
+    --ac-border-width: 2px;
+    --ac-border-width-strong: 2px;
+    --ac-radius-card: 0px;
+    --ac-radius-inner: 0px;
+    --ac-radius-button: 0px;
+
+    --ac-shadow-card: 4px 4px 0 0 rgba(0, 0, 0, 1);
+    --ac-shadow-float: 4px 4px 0 0 rgba(0, 0, 0, 1);
+    --ac-focus-ring: rgba(0, 0, 0, 0.5);
+
+    --ac-timeline-line-width: 2px;
+    --ac-timeline-line: #000000;
+    --ac-timeline-node: #000000;
+    --ac-timeline-node-hover: #111827;
+    --ac-timeline-node-active: #000000;
+    --ac-timeline-node-active-border: #000000;
+    --ac-timeline-node-tool: #4b5563;
+    --ac-timeline-node-pulse-shadow: 0 0 0 2px rgba(0, 0, 0, 1);
+
+    --ac-chip-bg: #ffffff;
+    --ac-chip-text: #000000;
+    --ac-chip-border: #000000;
+
+    --ac-code-bg: #ffffff;
+    --ac-code-text: #000000;
+    --ac-code-border: #000000;
+
+    --ac-diff-add-bg: #000000;
+    --ac-diff-add-text: #ffffff;
+    --ac-diff-add-border: #000000;
+
+    --ac-diff-del-bg: #f3f4f6;
+    --ac-diff-del-text: #6b7280;
+    --ac-diff-del-border: #000000;
+
+    --ac-scrollbar-thumb: rgba(0, 0, 0, 0.25);
+    --ac-scrollbar-thumb-hover: rgba(0, 0, 0, 0.4);
+  }
+
+  /* ========================================
+     Base Styles (apply to .agent-theme)
+     ======================================== */
+  .agent-theme {
+    color: var(--ac-text);
+    background: var(--ac-bg);
+    background-image: var(--ac-bg-pattern);
+    background-size: var(--ac-bg-pattern-size);
+    font-family: var(--ac-font-body);
+  }
+
+  .agent-theme ::selection {
+    background: var(--ac-selection-bg);
+    color: var(--ac-selection-text);
+  }
+
+  /* ========================================
+     Scrollbar Styles
+     ======================================== */
+  .agent-theme .ac-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ac-scrollbar-thumb) transparent;
+  }
+
+  .agent-theme .ac-scroll::-webkit-scrollbar {
+    width: var(--ac-scrollbar-size);
+    height: var(--ac-scrollbar-size);
+  }
+
+  .agent-theme .ac-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .agent-theme .ac-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--ac-scrollbar-thumb);
+    border-radius: 999px;
+  }
+
+  .agent-theme .ac-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ac-scrollbar-thumb-hover);
+  }
+
+  /* Hide scrollbar but keep functionality */
+  .agent-theme .ac-scroll-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .agent-theme .ac-scroll-hidden::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ========================================
+     Utility Classes
+     ======================================== */
+
+  /* Focus ring */
+  .agent-theme .ac-focus-ring:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ac-focus-ring);
+  }
+
+  /* Hover utilities */
+  .agent-theme .ac-hover-bg:hover {
+    background-color: var(--ac-hover-bg);
+  }
+
+  .agent-theme .ac-hover-text:hover {
+    color: var(--ac-text);
+  }
+
+  .agent-theme .ac-hover-link:hover {
+    color: var(--ac-link);
+  }
+
+  .agent-theme .ac-hover-accent:hover {
+    color: var(--ac-accent);
+  }
+
+  /* Button/interactive element base */
+  .agent-theme .ac-btn {
+    cursor: pointer;
+    transition:
+      background-color var(--ac-motion-fast),
+      color var(--ac-motion-fast);
+  }
+
+  .agent-theme .ac-btn:hover {
+    background-color: var(--ac-hover-bg);
+  }
+
+  /* Menu item */
+  .agent-theme .ac-menu-item {
+    cursor: pointer;
+    transition: background-color var(--ac-motion-fast);
+  }
+
+  .agent-theme .ac-menu-item:hover {
+    background-color: var(--ac-hover-bg);
+  }
+
+  /* Chip/pill hover */
+  .agent-theme .ac-chip-hover:hover {
+    color: var(--ac-link);
+  }
+
+  /* Pulse animation for streaming indicator */
+  @keyframes ac-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  .agent-theme .ac-pulse {
+    animation: ac-pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* Respect reduced motion preference */
+  @media (prefers-reduced-motion: reduce) {
+    .agent-theme .ac-pulse {
+      animation: none;
+    }
+  }
+
+  /* ============================================================
+     Loading Animation - Shimmer Text & Scribble Icon
+     ============================================================ */
+
+  /* 文案 shimmer 渐变动画 - 光从左到右扫过效果 */
+  .agent-theme .text-shimmer {
+    display: inline-block;
+    background: linear-gradient(
+      90deg,
+      var(--ac-accent, #d97757) 0%,
+      var(--ac-accent, #d97757) 40%,
+      #ffe0d0 50%,
+      var(--ac-accent, #d97757) 60%,
+      var(--ac-accent, #d97757) 100%
+    );
+    background-size: 250% 100%;
+    background-repeat: no-repeat;
+    color: transparent;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: ac-shimmer 1.8s ease-in-out infinite;
+  }
+
+  @keyframes ac-shimmer {
+    0% {
+      background-position: 100% 50%;
+    }
+    100% {
+      background-position: 0% 50%;
+    }
+  }
+
+  /* 螺旋图标 - 笔迹重绘动画 */
+  .agent-theme .loading-scribble path {
+    stroke-dasharray: 300;
+    stroke-dashoffset: 300;
+    animation: ac-scribble-draw 2s ease-in-out infinite;
+  }
+
+  .agent-theme .loading-scribble {
+    animation: ac-slight-rotate 8s linear infinite;
+  }
+
+  @keyframes ac-scribble-draw {
+    0% {
+      stroke-dashoffset: 300;
+    }
+    50% {
+      stroke-dashoffset: 0;
+    }
+    100% {
+      stroke-dashoffset: -300;
+    }
+  }
+
+  @keyframes ac-slight-rotate {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* Respect reduced motion preference for loading animations */
+  @media (prefers-reduced-motion: reduce) {
+    .agent-theme .text-shimmer {
+      animation: none;
+      background: none;
+      color: var(--ac-accent);
+    }
+
+    .agent-theme .loading-scribble,
+    .agent-theme .loading-scribble path {
+      animation: none;
+    }
+
+    .agent-theme .loading-scribble path {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* ============================================================
+     Tooltip System - CSS-only tooltips using data-tooltip attribute
+     ============================================================ */
+  .agent-theme [data-tooltip] {
+    position: relative;
+  }
+
+  .agent-theme [data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: var(--ac-font-sans);
+    font-weight: 400;
+    line-height: 1.3;
+    white-space: nowrap;
+    color: var(--ac-text-inverse);
+    background-color: var(--ac-text);
+    border-radius: var(--ac-radius-button);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 150ms ease,
+      visibility 150ms ease;
+    pointer-events: none;
+    z-index: 99999;
+  }
+
+  .agent-theme [data-tooltip]:hover::after {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  /* Tooltip arrow */
+  .agent-theme [data-tooltip]::before {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top-color: var(--ac-text);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 150ms ease,
+      visibility 150ms ease;
+    pointer-events: none;
+    z-index: 99999;
+  }
+
+  .agent-theme [data-tooltip]:hover::before {
+    opacity: 1;
+    visibility: visible;
+  }
+}

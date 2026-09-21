@@ -1,7 +1,5 @@
 import fs from 'fs';
-import http from 'node:http';
 import path from 'path';
-import { spawn, execSync } from 'node:child_process';
 
 import {
   AGENT_TIMEOUT,
@@ -96,23 +94,6 @@ import { captureScreenshotFromSecurityApp, captureWebcamFromSecurityApp, readHos
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
-
-// ---------------------------------------------------------------------------
-// BROWSER-AUTOMATION GUIDANCE (permanent instruction for the Warden agent)
-// ---------------------------------------------------------------------------
-// For any browser, media, screenshot, YouTube, or other web-content task,
-// ALWAYS drive the already-running Chrome browser via Playwright, which is
-// connected to the user's real Chrome profile on CDP port 9222
-// (127.0.0.1:9222 — sessions, cookies, and sign-ins are all intact).
-// Do NOT fall back to direct desktop automation tools such as xdotool or
-// wtype for these tasks: they frequently fail on this host due to input
-// group mismatch or timeout issues under the Wayland/KDE session.
-// Preferred entry points are the Playwright MCP tools (browser_navigate,
-// browser_click, browser_type, browser_snapshot, browser_take_screenshot,
-// browser_evaluate, etc.). If a Playwright action fails, retry with an
-// alternative Playwright approach (keyboard shortcut, browser_eval click,
-// direct URL) rather than switching to xdotool/wtype.
-// ---------------------------------------------------------------------------
 
 /**
  * Single-chat orchestrator (Warden).
@@ -1295,6 +1276,15 @@ export function buildAgentCallbacks(): CallbackMap {
           env: hostEnv,
           detached: true,
           stdio: 'ignore',
+        });
+        // Spawn errors (ENOENT etc.) arrive ASYNC on the child — the try/catch
+        // around spawn never sees them, and an unhandled 'error' event is a
+        // fatal process crash: `open_app chrome` (no such binary on this box)
+        // took the whole Warden host down twice on 2026-09-21, mid-turn, and
+        // the wreckage is what sent the seat into pkill. Log it instead; the
+        // seat already got its fire-and-forget launch reply.
+        child.on('error', (err) => {
+          logger.error({ app, err: String((err as Error)?.message || err) }, 'open_app: launch failed');
         });
         child.unref();
         logger.info({ app, args: extraArgs }, 'open_app: launched host application');
@@ -2918,273 +2908,6 @@ function recoverPendingMessages(): void {
   }
 }
 
-// Dedicated persistent Chrome profile for Warden automation.
-// Chrome runs as a standalone process with --remote-debugging-port. The
-// agent-runner's native browser_* tools attach to it over CDP (playwright-core
-// connectOverCDP); when an agent session ends the CDP connection drops but
-// Chrome (and every open tab) stays alive.
-// Sign into Google once; the profile persists across restarts.
-const CHROME_CDP_PORT = 9222;
-const WARDEN_CHROME_PROFILE = path.join(process.env.HOME ?? '/root', '.config', 'playwright-jarvis');
-const CHROME_BIN = '/usr/bin/google-chrome-stable';
-// Tracks whether the currently-running Chrome was launched headless (no
-// graphical session existed at launch time). The watchdog watches this so it
-// can relaunch Chrome headed once a session appears.
-let chromeHeadless = false;
-
-// dockbox runs as a systemd user unit without DISPLAY/XAUTHORITY in its env,
-// so Chrome can't reach the X server and dies on launch. Discover the active
-// session's display env from a running user process (plasmashell, kded, or
-// anything with DISPLAY set) so Chrome can attach to the visible session.
-function discoverDisplayEnv(): { DISPLAY?: string; XAUTHORITY?: string; WAYLAND_DISPLAY?: string; XDG_RUNTIME_DIR?: string } {
-  const uid = process.getuid?.() ?? 0;
-  // Prefer processes likely to own the user's graphical session.
-  const candidates = ['plasmashell', 'kded', 'gnome-shell', 'Xwayland', 'Xorg', 'sway', 'i3'];
-  const readEnv = (pid: string) => {
-    const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
-    const get = (prefix: string) => env.find((e) => e.startsWith(prefix))?.slice(prefix.length);
-    return {
-      DISPLAY: get('DISPLAY='),
-      XAUTHORITY: get('XAUTHORITY='),
-      WAYLAND_DISPLAY: get('WAYLAND_DISPLAY='),
-      XDG_RUNTIME_DIR: get('XDG_RUNTIME_DIR='),
-    };
-  };
-  for (const name of candidates) {
-    try {
-      const pids = execSync(`pgrep -u ${uid} -x ${name} 2>/dev/null`, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
-      for (const pid of pids) {
-        const e = readEnv(pid);
-        if (e.DISPLAY || e.WAYLAND_DISPLAY) return e;
-      }
-    } catch { /* try next candidate */ }
-  }
-  // Fallback: scan any user process for a display (X or Wayland).
-  try {
-    const pids = fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p));
-    for (const pid of pids) {
-      try {
-        const stat = fs.statSync(`/proc/${pid}`);
-        if (stat.uid !== uid) continue;
-        const e = readEnv(pid);
-        if (e.DISPLAY || e.WAYLAND_DISPLAY) return e;
-      } catch { /* process died */ }
-    }
-  } catch { /* /proc unreadable */ }
-  return {};
-}
-
-function spawnChrome(): void {
-  // Clear stale profile locks so Chrome doesn't refuse to start after a crash.
-  try {
-    fs.rmSync(path.join(WARDEN_CHROME_PROFILE, 'SingletonLock'), { force: true });
-    fs.rmSync(path.join(WARDEN_CHROME_PROFILE, 'SingletonSocket'), { force: true });
-  } catch { /* ignore */ }
-  const displayEnv = discoverDisplayEnv();
-  // Run headed on the user's live graphical session so the agent-driven browser
-  // is a real, visible window. Wayland is preferred (native window, no X-auth
-  // dependency); XWayland is the fallback. Headless is only a safety net for a
-  // session-less host — this desktop always has a Wayland session, so in
-  // practice Chrome always launches headed. --disable-gpu skips EGL noise
-  // headless.
-  const hasWayland = !!(displayEnv.WAYLAND_DISPLAY && displayEnv.XDG_RUNTIME_DIR);
-  const hasX = !!displayEnv.DISPLAY;
-  const headless = !hasWayland && !hasX;
-  const chromeArgs = [
-    `--remote-debugging-port=${CHROME_CDP_PORT}`,
-    `--user-data-dir=${WARDEN_CHROME_PROFILE}`,
-    '--no-sandbox',
-    // Chrome stores its cookie/credential encryption key in the system keyring
-    // (kwallet here). This service starts Chrome before the graphical session has
-    // unlocked kwallet, so Chrome cannot decrypt its own store and falls back to
-    // asking Google to "verify it's you" — every reboot, in a blue window.
-    // `basic` uses Chrome's own file-backed store instead, removing the keyring
-    // dependency entirely. Site logins persist; only the keyring handoff changes.
-    '--password-store=basic',
-    '--no-first-run',
-    '--no-default-browser-check',
-    // Suppress the recurring "Verify it's you" Google-account sync re-auth
-    // prompt: disable Chrome Sync entirely (site login cookies persist, so
-    // signed-in sessions like YouTube keep working) and block the sync
-    // sign-in/consent dialogs. NB: Chrome only honors the LAST --disable-features
-    // flag, so all disabled features go in ONE comma-separated list.
-    '--disable-sync',
-    '--disable-features=Translate,LockProfileCookieDatabase,SyncSignin,SyncConsentDialog',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-  ];
-  if (headless) {
-    chromeArgs.push('--headless=new', '--disable-gpu');
-  } else if (hasWayland) {
-    // Native Wayland window on the user's Plasma desktop.
-    chromeArgs.push('--ozone-platform=wayland');
-  }
-  // Launch inside a transient scope unit so Chrome lives OUTSIDE warden's
-  // cgroup — a service restart kills everything in the cgroup (observed:
-  // the user's window died on every restart despite the adopt-on-start
-  // watchdog, because Chrome was already dead before the probe ran). With
-  // Chrome in its own scope it survives restarts and the watchdog ADOPTS
-  // the live instance (see startChromeWatchdog). Direct spawn is the
-  // fallback when systemd-run isn't available.
-  const systemdRun = '/usr/bin/systemd-run';
-  const scopeLaunch = fs.existsSync(systemdRun);
-  const launchBin = scopeLaunch ? systemdRun : CHROME_BIN;
-  const launchArgs = scopeLaunch ? ['--user', '--scope', CHROME_BIN, ...chromeArgs] : chromeArgs;
-  const child = spawn(launchBin, launchArgs, {
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...displayEnv },
-  });
-  child.on('error', (err) => logger.warn({ err }, 'Chrome spawn failed'));
-  child.stdout?.on('data', () => {});
-  child.stderr?.on('data', (chunk: Buffer) => {
-    const line = chunk.toString('utf8').trim();
-    if (line) logger.debug({ chrome: line }, 'chrome stderr');
-  });
-  child.on('exit', (code, signal) => {
-    logger.warn({ code, signal }, 'Chrome process exited');
-  });
-  child.unref();
-  chromeHeadless = headless;
-  logger.info({ cdpPort: CHROME_CDP_PORT, headless, wayland: hasWayland, ...displayEnv }, 'Launched persistent Chrome');
-}
-
-function startChromeWatchdog(): void {
-  let chromeLaunchTime = Date.now();
-  let chromeFailures = 0;
-  let chromeLaunched = false;
-
-  // The debug Chrome serves the stock CDP browser tools. When a default-app
-  // MCP provider owns the browser or web capability, EVERY consumer — the
-  // built-in browser tools AND the youtube tool — routes to that provider
-  // instead, so the debug browser has nothing to serve: the watchdog neither
-  // launches nor relaunches it (a live one is adopted, never killed).
-  // Flipping the default back to builtin resumes launching on the next tick.
-  const browserDefaultIsMcp = (): boolean => {
-    const b = (getRouterState('default_app:browser') || '').trim();
-    const w = (getRouterState('default_app:web') || '').trim();
-    return b.startsWith('mcp:') || w.startsWith('mcp:');
-  };
-  let chromeSkippedForMcpDefault = false;
-
-  const httpOk = (url: string, timeoutMs = 3000) =>
-    new Promise<boolean>((resolve) => {
-      const req = http.get(url, { timeout: timeoutMs }, (res) => {
-        res.resume();
-        resolve(res.statusCode != null && res.statusCode >= 200 && res.statusCode < 500);
-      });
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      setTimeout(() => { req.destroy(); resolve(false); }, timeoutMs);
-    });
-
-  function restartChrome(reason: string): void {
-    logger.warn({ reason, chromeFailures }, 'Relaunching Chrome');
-    try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
-    chromeFailures = 0;
-    chromeLaunchTime = Date.now();
-    spawnChrome();
-    chromeLaunched = true;
-  }
-
-  // Initial launch: ADOPT a live Warden Chrome if one is already running — a
-  // service restart must NOT throw away the user's browser window and tabs. If
-  // CDP answers on the watchdog port, that Chrome IS the persistent Warden
-  // profile browser, so skip the pkill+respawn entirely and let it keep
-  // running; the 15s health loop below takes over from there. Only when CDP
-  // is down do we kill a stale/zombie instance and wait for the graphical
-  // session to launch fresh (headed once a session exists, headless only as a
-  // session-less fallback). This does not block the rest of startup.
-  void (async () => {
-    if (await httpOk(`http://localhost:${CHROME_CDP_PORT}/json/version`, 2000)) {
-      chromeLaunched = true;
-      chromeLaunchTime = Date.now();
-      // Detect adopted headless instances so the health loop still flips them
-      // headed once a graphical session appears.
-      try {
-        const body = await new Promise<string>((resolve, reject) => {
-          const req = http.get(`http://localhost:${CHROME_CDP_PORT}/json/version`, { timeout: 2000 }, (res) => {
-            let buf = '';
-            res.on('data', (c: Buffer) => { buf += c.toString('utf8'); });
-            res.on('end', () => resolve(buf));
-          });
-          req.on('error', reject);
-          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
-        });
-        chromeHeadless = /Headless/i.test(body);
-      } catch { chromeHeadless = false; }
-      logger.info({ cdpPort: CHROME_CDP_PORT, headless: chromeHeadless }, 'Adopted already-running Warden Chrome — no relaunch');
-      return;
-    }
-    // CDP unreachable: a hung Warden-profile Chrome may still hold the port or
-    // profile lock — kill it before starting fresh. But first: if an MCP
-    // provider owns the browser/web capability, don't launch at all.
-    if (browserDefaultIsMcp()) {
-      chromeSkippedForMcpDefault = true;
-      logger.info({ cdpPort: CHROME_CDP_PORT }, 'Browser/web default is an MCP provider — not launching debug Chrome');
-      return;
-    }
-    try { execSync(`pkill -f "remote-debugging-port=${CHROME_CDP_PORT}" 2>/dev/null`); } catch {}
-    for (let i = 0; i < 15; i++) {
-      const e = discoverDisplayEnv();
-      if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) break;
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    spawnChrome();
-    chromeLaunched = true;
-    chromeLaunchTime = Date.now();
-  })();
-
-  // Re-check every 15 seconds; restart Chrome only after repeated failures
-  // and never within a 10 s grace period after a fresh launch.
-  setInterval(async () => {
-    const now = Date.now();
-    if (now - chromeLaunchTime < 10000) return;
-    if (!chromeLaunched) {
-      if (!chromeSkippedForMcpDefault) return; // boot still waiting for the session
-      if (browserDefaultIsMcp()) return; // still wanted-off
-      // Default flipped back to builtin: launch once a graphical session exists.
-      const e0 = discoverDisplayEnv();
-      if ((e0.WAYLAND_DISPLAY && e0.XDG_RUNTIME_DIR) || e0.DISPLAY) {
-        chromeSkippedForMcpDefault = false;
-        spawnChrome();
-        chromeLaunched = true;
-        chromeLaunchTime = Date.now();
-        logger.info('Browser default back on builtin — launching debug Chrome');
-      }
-      return;
-    }
-
-    // If Chrome started headless (no session yet) but one has since appeared,
-    // relaunch it headed — visible window, and plasma-browser-integration-host
-    // stops crashing (the Qt6 helper gets a real display instead of aborting).
-    if (chromeHeadless) {
-      if (browserDefaultIsMcp()) return; // nobody is using the CDP browser
-      const e = discoverDisplayEnv();
-      if ((e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) || e.DISPLAY) {
-        restartChrome('graphical session appeared — switching to headed');
-        return;
-      }
-    }
-
-    const chromeUp = await httpOk(`http://localhost:${CHROME_CDP_PORT}/json/version`, 3000);
-    if (!chromeUp) {
-      if (browserDefaultIsMcp()) {
-        chromeLaunched = false;
-        chromeSkippedForMcpDefault = true;
-        logger.info('Browser/web default is an MCP provider — not relaunching debug Chrome');
-        return;
-      }
-      chromeFailures++;
-      if (chromeFailures >= 3) {
-        restartChrome('Chrome CDP unreachable');
-      }
-      return;
-    }
-    chromeFailures = 0;
-  }, 15000).unref();
-}
-
 
 /**
  * One-time migration: materialize a concrete per-agent model + ctx for every
@@ -3395,17 +3118,6 @@ async function warmResidentOllamaModels(): Promise<void> {
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
-  // The dedicated debug Chrome (CDP :9222, playwright-jarvis profile) is
-  // RETIRED (2026-09-19): it confused the model twice over — built-in browser
-  // tools withheld by a default app while their CDP browser still spawned,
-  // then browser-driving's bridge offering 0 tools and the model reciting
-  // tool names nothing served. Browser capability now has exactly ONE
-  // provider: the default app (Settings → Default apps, e.g. the
-  // browser-driving MCP bridge on the user's real Chrome). Interactive
-  // browsing without a default provider is honestly unavailable — no silent
-  // fallback to a hidden debug browser. startChromeWatchdog stays in the
-  // source, dormant, for a deliberate re-enable.
-  // startChromeWatchdog();
   loadState();
   // Seed the three Iris digest automations (hourly/daily/weekly) as
   // scheduled_tasks rows so they show in the Sched tab and the host poll loop

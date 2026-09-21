@@ -1,0 +1,492 @@
+{
+  "extensionName": {
+    "message": "chrome-mcp-server",
+    "description": "扩展名称"
+  },
+  "extensionDescription": {
+    "message": "使用你自己的 Chrome 浏览器暴露浏览器功能",
+    "description": "扩展描述"
+  },
+  "nativeServerConfigLabel": {
+    "message": "Native Server 配置",
+    "description": "本地服务器设置的主要节标题"
+  },
+  "semanticEngineLabel": {
+    "message": "语义引擎",
+    "description": "语义引擎的主要节标题"
+  },
+  "embeddingModelLabel": {
+    "message": "Embedding模型",
+    "description": "模型选择的主要节标题"
+  },
+  "indexDataManagementLabel": {
+    "message": "索引数据管理",
+    "description": "数据管理的主要节标题"
+  },
+  "modelCacheManagementLabel": {
+    "message": "模型缓存管理",
+    "description": "缓存管理的主要节标题"
+  },
+  "statusLabel": {
+    "message": "状态",
+    "description": "通用状态标签"
+  },
+  "runningStatusLabel": {
+    "message": "运行状态",
+    "description": "服务器运行状态标签"
+  },
+  "connectionStatusLabel": {
+    "message": "连接状态",
+    "description": "连接状态标签"
+  },
+  "lastUpdatedLabel": {
+    "message": "最后更新:",
+    "description": "最后更新时间戳标签"
+  },
+  "connectButton": {
+    "message": "连接",
+    "description": "连接按钮文本"
+  },
+  "disconnectButton": {
+    "message": "断开",
+    "description": "断开连接按钮文本"
+  },
+  "connectingStatus": {
+    "message": "连接中...",
+    "description": "连接状态消息"
+  },
+  "connectedStatus": {
+    "message": "已连接",
+    "description": "已连接状态消息"
+  },
+  "disconnectedStatus": {
+    "message": "已断开",
+    "description": "已断开状态消息"
+  },
+  "detectingStatus": {
+    "message": "检测中...",
+    "description": "检测状态消息"
+  },
+  "serviceRunningStatus": {
+    "message": "服务运行中 (端口: $PORT$)",
+    "description": "带端口号的服务运行状态",
+    "placeholders": {
+      "port": {
+        "content": "$1",
+        "example": "12306"
+      }
+    }
+  },
+  "serviceNotConnectedStatus": {
+    "message": "服务未连接",
+    "description": "服务未连接状态"
+  },
+  "connectedServiceNotStartedStatus": {
+    "message": "已连接，服务未启动",
+    "description": "已连接但服务未启动状态"
+  },
+  "mcpServerConfigLabel": {
+    "message": "MCP 服务器配置",
+    "description": "MCP 服务器配置节标签"
+  },
+  "connectionPortLabel": {
+    "message": "连接端口",
+    "description": "连接端口输入标签"
+  },
+  "refreshStatusButton": {
+    "message": "刷新状态",
+    "description": "刷新状态按钮提示"
+  },
+  "copyConfigButton": {
+    "message": "复制配置",
+    "description": "复制配置按钮文本"
+  },
+  "retryButton": {
+    "message": "重试",
+    "description": "重试按钮文本"
+  },
+  "cancelButton": {
+    "message": "取消",
+    "description": "取消按钮文本"
+  },
+  "confirmButton": {
+    "message": "确认",
+    "description": "确认按钮文本"
+  },
+  "saveButton": {
+    "message": "保存",
+    "description": "保存按钮文本"
+  },
+  "closeButton": {
+    "message": "关闭",
+    "description": "关闭按钮文本"
+  },
+  "resetButton": {
+    "message": "重置",
+    "description": "重置按钮文本"
+  },
+  "initializingStatus": {
+    "message": "初始化中...",
+    "description": "初始化进度消息"
+  },
+  "processingStatus": {
+    "message": "处理中...",
+    "description": "处理进度消息"
+  },
+  "loadingStatus": {
+    "message": "加载中...",
+    "description": "加载进度消息"
+  },
+  "clearingStatus": {
+    "message": "清空中...",
+    "description": "清空进度消息"
+  },
+  "cleaningStatus": {
+    "message": "清理中...",
+    "description": "清理进度消息"
+  },
+  "downloadingStatus": {
+    "message": "下载中...",
+    "description": "下载进度消息"
+  },
+  "semanticEngineReadyStatus": {
+    "message": "语义引擎已就绪",
+    "description": "语义引擎就绪状态"
+  },
+  "semanticEngineInitializingStatus": {
+    "message": "语义引擎初始化中...",
+    "description": "语义引擎初始化状态"
+  },
+  "semanticEngineInitFailedStatus": {
+    "message": "语义引擎初始化失败",
+    "description": "语义引擎初始化失败状态"
+  },
+  "semanticEngineNotInitStatus": {
+    "message": "语义引擎未初始化",
+    "description": "语义引擎未初始化状态"
+  },
+  "initSemanticEngineButton": {
+    "message": "初始化语义引擎",
+    "description": "初始化语义引擎按钮文本"
+  },
+  "reinitializeButton": {
+    "message": "重新初始化",
+    "description": "重新初始化按钮文本"
+  },
+  "downloadingModelStatus": {
+    "message": "下载模型中... $PROGRESS$%",
+    "description": "带百分比的模型下载进度",
+    "placeholders": {
+      "progress": {
+        "content": "$1",
+        "example": "50"
+      }
+    }
+  },
+  "switchingModelStatus": {
+    "message": "切换模型中...",
+    "description": "模型切换进度消息"
+  },
+  "modelLoadedStatus": {
+    "message": "模型已加载",
+    "description": "模型成功加载状态"
+  },
+  "modelFailedStatus": {
+    "message": "模型加载失败",
+    "description": "模型加载失败状态"
+  },
+  "lightweightModelDescription": {
+    "message": "轻量级多语言模型",
+    "description": "轻量级模型选项的描述"
+  },
+  "betterThanSmallDescription": {
+    "message": "比e5-small稍大，但效果更好",
+    "description": "中等模型选项的描述"
+  },
+  "multilingualModelDescription": {
+    "message": "多语言语义模型",
+    "description": "多语言模型选项的描述"
+  },
+  "fastPerformance": {
+    "message": "快速",
+    "description": "快速性能指示器"
+  },
+  "balancedPerformance": {
+    "message": "平衡",
+    "description": "平衡性能指示器"
+  },
+  "accuratePerformance": {
+    "message": "精确",
+    "description": "精确性能指示器"
+  },
+  "networkErrorMessage": {
+    "message": "网络连接错误，请检查网络连接后重试",
+    "description": "网络连接错误消息"
+  },
+  "modelCorruptedErrorMessage": {
+    "message": "模型文件损坏或不完整，请重试下载",
+    "description": "模型损坏错误消息"
+  },
+  "unknownErrorMessage": {
+    "message": "未知错误，请检查你的网络是否可以访问HuggingFace",
+    "description": "未知错误回退消息"
+  },
+  "permissionDeniedErrorMessage": {
+    "message": "权限被拒绝",
+    "description": "权限被拒绝错误消息"
+  },
+  "timeoutErrorMessage": {
+    "message": "操作超时",
+    "description": "超时错误消息"
+  },
+  "indexedPagesLabel": {
+    "message": "已索引页面",
+    "description": "已索引页面数量标签"
+  },
+  "indexSizeLabel": {
+    "message": "索引大小",
+    "description": "索引大小标签"
+  },
+  "activeTabsLabel": {
+    "message": "活跃标签页",
+    "description": "活跃标签页数量标签"
+  },
+  "vectorDocumentsLabel": {
+    "message": "向量文档",
+    "description": "向量文档数量标签"
+  },
+  "cacheSizeLabel": {
+    "message": "缓存大小",
+    "description": "缓存大小标签"
+  },
+  "cacheEntriesLabel": {
+    "message": "缓存条目",
+    "description": "缓存条目数量标签"
+  },
+  "clearAllDataButton": {
+    "message": "清空所有数据",
+    "description": "清空所有数据按钮文本"
+  },
+  "clearAllCacheButton": {
+    "message": "清空所有缓存",
+    "description": "清空所有缓存按钮文本"
+  },
+  "cleanExpiredCacheButton": {
+    "message": "清理过期缓存",
+    "description": "清理过期缓存按钮文本"
+  },
+  "exportDataButton": {
+    "message": "导出数据",
+    "description": "导出数据按钮文本"
+  },
+  "importDataButton": {
+    "message": "导入数据",
+    "description": "导入数据按钮文本"
+  },
+  "confirmClearDataTitle": {
+    "message": "确认清空数据",
+    "description": "清空数据确认对话框标题"
+  },
+  "settingsTitle": {
+    "message": "设置",
+    "description": "设置对话框标题"
+  },
+  "aboutTitle": {
+    "message": "关于",
+    "description": "关于对话框标题"
+  },
+  "helpTitle": {
+    "message": "帮助",
+    "description": "帮助对话框标题"
+  },
+  "clearDataWarningMessage": {
+    "message": "此操作将清空所有已索引的网页内容和向量数据，包括：",
+    "description": "清空数据警告消息"
+  },
+  "clearDataList1": {
+    "message": "所有网页的文本内容索引",
+    "description": "清空数据列表第一项"
+  },
+  "clearDataList2": {
+    "message": "向量嵌入数据",
+    "description": "清空数据列表第二项"
+  },
+  "clearDataList3": {
+    "message": "搜索历史和缓存",
+    "description": "清空数据列表第三项"
+  },
+  "clearDataIrreversibleWarning": {
+    "message": "此操作不可撤销！清空后需要重新浏览网页来重建索引。",
+    "description": "不可逆操作警告"
+  },
+  "confirmClearButton": {
+    "message": "确认清空",
+    "description": "确认清空操作按钮"
+  },
+  "cacheDetailsLabel": {
+    "message": "缓存详情",
+    "description": "缓存详情节标签"
+  },
+  "noCacheDataMessage": {
+    "message": "暂无缓存数据",
+    "description": "无缓存数据可用消息"
+  },
+  "loadingCacheInfoStatus": {
+    "message": "正在加载缓存信息...",
+    "description": "加载缓存信息状态"
+  },
+  "processingCacheStatus": {
+    "message": "处理缓存中...",
+    "description": "处理缓存状态"
+  },
+  "expiredLabel": {
+    "message": "已过期",
+    "description": "过期项标签"
+  },
+  "bookmarksBarLabel": {
+    "message": "书签栏",
+    "description": "书签栏文件夹名称"
+  },
+  "newTabLabel": {
+    "message": "新标签页",
+    "description": "新标签页标签"
+  },
+  "currentPageLabel": {
+    "message": "当前页面",
+    "description": "当前页面标签"
+  },
+  "menuLabel": {
+    "message": "菜单",
+    "description": "菜单辅助功能标签"
+  },
+  "navigationLabel": {
+    "message": "导航",
+    "description": "导航辅助功能标签"
+  },
+  "mainContentLabel": {
+    "message": "主要内容",
+    "description": "主要内容辅助功能标签"
+  },
+  "languageSelectorLabel": {
+    "message": "语言",
+    "description": "语言选择器标签"
+  },
+  "themeLabel": {
+    "message": "主题",
+    "description": "主题选择器标签"
+  },
+  "lightTheme": {
+    "message": "浅色",
+    "description": "浅色主题选项"
+  },
+  "darkTheme": {
+    "message": "深色",
+    "description": "深色主题选项"
+  },
+  "autoTheme": {
+    "message": "自动",
+    "description": "自动主题选项"
+  },
+  "advancedSettingsLabel": {
+    "message": "高级设置",
+    "description": "高级设置节标签"
+  },
+  "debugModeLabel": {
+    "message": "调试模式",
+    "description": "调试模式切换标签"
+  },
+  "verboseLoggingLabel": {
+    "message": "详细日志",
+    "description": "详细日志切换标签"
+  },
+  "successNotification": {
+    "message": "操作成功完成",
+    "description": "通用成功通知"
+  },
+  "warningNotification": {
+    "message": "警告：请在继续之前检查",
+    "description": "通用警告通知"
+  },
+  "infoNotification": {
+    "message": "信息",
+    "description": "通用信息通知"
+  },
+  "configCopiedNotification": {
+    "message": "配置已复制到剪贴板",
+    "description": "配置复制成功消息"
+  },
+  "dataClearedNotification": {
+    "message": "数据清空成功",
+    "description": "数据清空成功消息"
+  },
+  "bytesUnit": {
+    "message": "字节",
+    "description": "字节单位"
+  },
+  "kilobytesUnit": {
+    "message": "KB",
+    "description": "千字节单位"
+  },
+  "megabytesUnit": {
+    "message": "MB",
+    "description": "兆字节单位"
+  },
+  "gigabytesUnit": {
+    "message": "GB",
+    "description": "吉字节单位"
+  },
+  "itemsUnit": {
+    "message": "项",
+    "description": "项目计数单位"
+  },
+  "pagesUnit": {
+    "message": "页",
+    "description": "页面计数单位"
+  },
+  "userscriptsManagerTitle": { "message": "脚本管理器", "description": "Options 页标题" },
+  "emergencySwitchLabel": { "message": "紧急开关", "description": "紧急关闭开关" },
+  "createRunSectionTitle": { "message": "创建 / 运行", "description": "创建与运行分区标题" },
+  "nameLabel": { "message": "名称", "description": "名称输入标签" },
+  "runAtLabel": { "message": "运行时机", "description": "runAt 选择标签" },
+  "runAtAuto": { "message": "自动", "description": "runAt auto" },
+  "runAtDocumentStart": { "message": "document_start", "description": "runAt document_start" },
+  "runAtDocumentEnd": { "message": "document_end", "description": "runAt document_end" },
+  "runAtDocumentIdle": { "message": "document_idle", "description": "runAt document_idle" },
+  "worldLabel": { "message": "执行上下文", "description": "world 选择标签" },
+  "worldAuto": { "message": "自动", "description": "world auto" },
+  "worldIsolated": { "message": "隔离 (ISOLATED)", "description": "ISOLATED world" },
+  "worldMain": { "message": "页面 (MAIN)", "description": "MAIN world" },
+  "modeLabel": { "message": "模式", "description": "模式选择标签" },
+  "modeAuto": { "message": "自动", "description": "mode auto" },
+  "modePersistent": { "message": "持久", "description": "mode persistent" },
+  "modeCss": { "message": "仅样式 (CSS)", "description": "mode css" },
+  "modeOnce": { "message": "一次运行 (CDP)", "description": "mode once" },
+  "allFramesLabel": { "message": "全部 frame", "description": "allFrames 复选框" },
+  "persistLabel": { "message": "持久化", "description": "persist 复选框" },
+  "dnrFallbackLabel": { "message": "DNR 回退", "description": "DNR fallback 复选框" },
+  "matchesInputLabel": { "message": "匹配（逗号分隔）", "description": "matches 输入" },
+  "excludesInputLabel": { "message": "排除（逗号分隔）", "description": "excludes 输入" },
+  "tagsInputLabel": { "message": "标签（逗号分隔）", "description": "tags 输入" },
+  "scriptLabel": { "message": "脚本", "description": "脚本文本标签" },
+  "applyButton": { "message": "应用", "description": "应用按钮" },
+  "runOnceButton": { "message": "一次运行（CDP）", "description": "一次运行按钮" },
+  "listSectionTitle": { "message": "脚本列表", "description": "列表分区标题" },
+  "queryLabel": { "message": "搜索", "description": "查询输入标签" },
+  "statusAll": { "message": "全部", "description": "状态-全部" },
+  "statusEnabled": { "message": "启用", "description": "状态-启用" },
+  "statusDisabled": { "message": "禁用", "description": "状态-禁用" },
+  "domainLabel": { "message": "域名", "description": "域名过滤标签" },
+  "exportAllButton": { "message": "导出全部", "description": "导出按钮" },
+  "tableHeaderName": { "message": "名称", "description": "表头-名称" },
+  "tableHeaderWorld": { "message": "执行上下文", "description": "表头-World" },
+  "tableHeaderRunAt": { "message": "运行时机", "description": "表头-RunAt" },
+  "tableHeaderUpdated": { "message": "更新时间", "description": "表头-更新时间" },
+  "deleteButton": { "message": "删除", "description": "删除按钮" },
+  "placeholderOptional": { "message": "可选", "description": "通用可选占位符" },
+  "placeholderMatchesExample": {
+    "message": "例如：https://*.example.com/*",
+    "description": "匹配示例占位符"
+  },
+  "placeholderScriptHint": { "message": "在此粘贴 JS/CSS/TM", "description": "脚本文本域占位符" },
+  "placeholderDomainHint": { "message": "example.com", "description": "域名筛选占位符" }
+}

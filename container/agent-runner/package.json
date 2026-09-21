@@ -15,7 +15,6 @@
     "cron-parser": "^5.0.0",
     "glob": "^10.0.0",
     "linkedom": "^0.18.13",
-    "playwright-core": "1.61.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {

@@ -15,6 +15,9 @@ export interface McpServerConfig {
   url?: string;
   transport: 'stdio' | 'sse' | 'http';
   enabled: boolean;
+  /** Optional component: never connected at boot — the agent-runner dials it
+   * on demand only when a tool on this server is actually invoked. */
+  lazy?: boolean;
   /** Optional human-readable description shown to the agent in the skill index.
    * When omitted, a generic "MCP server <name> (<command> <args>)" line is used. */
   description?: string;

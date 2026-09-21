@@ -473,10 +473,14 @@
     div.className = 'msg ' + (isBot ? 'bot' : 'user');
     const sender = isBot ? (m.sender_name || STATE.assistantName) : (m.sender_name || m.sender || 'You');
     const ts = fmtTime(m.timestamp);
+    // Meta goes ABOVE the text. With meta below (old order), each message's
+    // name/time sat directly on top of the NEXT message's bubble — the chat
+    // read as if every reply carried the previous sender's name (2026-09-21).
+    // .msg-meta's margin-bottom was authored for this header position.
     div.innerHTML =
-      '<div class="msg-text">' + renderMarkdown(m.content || '') + '</div>' +
       '<div class="msg-meta"><span class="sender ' + (isBot ? 'bot' : '') + '">' + esc(sender) + '</span>' +
-      '<span class="ts">' + esc(ts) + '</span></div>';
+      '<span class="ts">' + esc(ts) + '</span></div>' +
+      '<div class="msg-text">' + renderMarkdown(m.content || '') + '</div>';
     el.appendChild(div);
     el.scrollTop = el.scrollHeight;
     return div;
@@ -489,8 +493,8 @@
     const div = document.createElement('div');
     div.className = 'msg user pending';
     div.innerHTML =
-      '<div class="msg-text">' + renderMarkdown(text) + '</div>' +
-      '<div class="msg-meta"><span class="sender">You</span><span class="ts">sending…</span></div>';
+      '<div class="msg-meta"><span class="sender">You</span><span class="ts">sending…</span></div>' +
+      '<div class="msg-text">' + renderMarkdown(text) + '</div>';
     el.appendChild(div);
     el.scrollTop = el.scrollHeight;
     return div;
