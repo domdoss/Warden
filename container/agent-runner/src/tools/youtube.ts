@@ -72,7 +72,11 @@ async function marmTool(re: RegExp): Promise<{ call: (args: any) => Promise<any>
 async function logPlay(url: string, title: string): Promise<void> {
     const marm = await marmTool(/marm_log_entry$/);
     if (!marm) return;
-    await marm.call({ entry: `youtube-play: ${title} (${url})` }).catch(() => { /* advisory */ });
+    // remember:false → raw log only. marm's log tool dual-writes every entry
+    // into the semantic memory store; a play is machine history, not a fact
+    // to recall — 108 plays ended up as "memories" and polluted auto-recall
+    // (2026-09-21). The picker reads log_entries directly, which still works.
+    await marm.call({ entry: `youtube-play: ${title} (${url})`, remember: false }).catch(() => { /* advisory */ });
 }
 
 async function recentPlayed(query: string): Promise<{ ids: Set<string>; titles: Set<string> }> {
@@ -668,7 +672,7 @@ async function youtube(args: any): Promise<string> {
     if (action === 'now_playing') {
         const st = await playerState(player);
         if (!st) return 'A YouTube tab is open but has no video element.';
-        return `${st.paused ? 'Paused' : 'Playing'}: ${st.title} (${st.at})\n${st.url}`;
+        return `${st.paused ? 'Paused' : 'Playing'}: ${st.title} (${st.at})\n${st.url}\nThis is the answer to the ask — reply with it now.`;
     }
 
     if (action === 'pause' || action === 'resume') {

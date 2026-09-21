@@ -216,7 +216,8 @@ async function curateFacts(facts: Fact[]): Promise<Fact[] | null> {
     'Input: numbered candidate facts.\n\n' +
     'Rules:\n' +
     '- KEEP only what remains true a month from now\n' +
-    '- A fact IS: accounts, people, projects (what, where, goal), preferences, environment, wiring\n' +
+    '- A fact IS: a pattern, a preference, a workflow, a standing decision, identity, environment, wiring, or an account/person/project that will still matter\n' +
+    '- NEVER a single social post (reddit/tweet/comment), a one-off request or message, something said once in passing, or browsing/playback history\n' +
     '- Everything else is a moment of work — plans, progress, tool runs, agent actions, future tense — not memory\n' +
     '- Doubt = DROP\n\n' +
     'Output: the numbers to KEEP.';
@@ -632,7 +633,8 @@ async function classifyBatch(lines: string[], onFile: string[]): Promise<Fact[] 
     'You curate the permanent memory of Warden (an assistant) and its user, built from activity-log lines.\n\n' +
     'Taxonomy paths (use EXACTLY one, verbatim, deepest that fits):\n' +
     paths.join('\n') + '\n\n' +
-    'A line can be transient activity yet reveal a durable fact — file what the activity reveals about the user and their world (accounts, calendars, people, projects, preferences, environment), never the activity itself.\n' +
+    'File ONLY what stays true and useful months from now: patterns, preferences, workflows, standing decisions, identity, environment, wiring, how things are done. Never a one-off.\n' +
+    'NEVER file: a single social post (reddit/tweet/comment), a one-off request or message, something said once in passing, browsing or playback history, or raw conversation. Those are transient, not memory.\n' +
     'A project or system earns durable facts — what it is, how it works, how it is wired, where it lives — never a progress narrative (attempts, iterations, pending, failed, edited, generated, screenshots).\n' +
     'Warden editing itself is normal: file what its components ARE, never the dev session that did the editing.\n' +
     'Pure status with nothing behind it (builds, restarts, timings, retries) is skipped. Doubt = skip. Prefer a shallow correct path over a deep wrong one.\n' +

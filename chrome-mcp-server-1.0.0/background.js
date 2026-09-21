@@ -31918,6 +31918,30 @@ ${sanitizedStack}` : message2
       });
     }
     buildSuccessResponse(tabId, result2, startTime, warnings) {
+      // Warden patch (2026-09-21): a script that returns no value is NOT a
+      // success. Reporting `success:true, result:"undefined"` let the model
+      // treat a silent no-op (guessed selector, nothing found, nothing done)
+      // as "task complete" and then hallucinate the whole reddit post. Surface
+      // it as the fact it is so the model re-runs with a real return value.
+      if (result2.output === undefined || result2.output === null) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              tabId,
+              engine: result2.engine,
+              error: {
+                kind: "no_return_value",
+                message: "the script ran and returned no value (undefined) — nothing was observed"
+              },
+              warnings: (warnings == null ? void 0 : warnings.length) ? warnings : void 0,
+              metrics: { elapsedMs: Math.round(performance.now() - startTime) }
+            })
+          }],
+          isError: true
+        };
+      }
       const payload = {
         success: true,
         tabId,
@@ -45723,7 +45747,7 @@ ${sanitizedStack}` : message2
         try {
           yield chrome.contextMenus.create({
             id,
-            title: t.title || "运行工作流",
+            title: t.title || "Run Workflow",
             contexts: t.contexts || ["all"]
           });
           rrContextMenuIds.add(id);
@@ -45858,7 +45882,7 @@ ${sanitizedStack}` : message2
         }
         yield chrome.contextMenus.create({
           id: CONTEXT_MENU_ID$1,
-          title: "标注元素",
+          title: "Mark Element",
           contexts: ["all"]
         });
       } catch (e) {
@@ -46638,7 +46662,7 @@ ${sanitizedStack}` : message2
         }
         yield chrome.contextMenus.create({
           id: CONTEXT_MENU_ID,
-          title: "切换网页编辑模式",
+          title: "Toggle Web Edit Mode",
           contexts: ["all"]
         });
       } catch (error) {

@@ -1688,100 +1688,6 @@ function maybeScheduleMercury(): void {
     });
 }
 
-/**
- * File each mercury summary into MARM (session "mercury") so the rolling
- * conversation state stays recallable via marm_smart_recall even after the
- * 120-message RAG horizon passes — the first step toward MARM-first recall.
- * Fire-and-forget: MARM being down or slow must never block compaction.
- * Dedup on the summary body: compaction rewrites the whole file each run and
- * consecutive summaries overlap heavily, so only file when the text changed.
- */
-let marmHostSessionId: string | undefined;
-
-async function marmRpc(sessionId: string | undefined, body: Record<string, unknown>): Promise<Record<string, any> | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5_000);
-  try {
-    const res = await fetch(process.env.MARM_URL || 'http://127.0.0.1:8001/mcp', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    const newSession = res.headers.get('mcp-session-id');
-    if (newSession) marmHostSessionId = newSession;
-    const ctype = res.headers.get('content-type') || '';
-    let text = await res.text();
-    if (ctype.includes('text/event-stream')) {
-      const line = text.split('\n').find((l) => l.startsWith('data:'));
-      text = line ? line.slice(5).trim() : '';
-    }
-    const start = text.indexOf('{');
-    if (start === -1) return null;
-    return JSON.parse(text.slice(start, text.lastIndexOf('}') + 1));
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function fileMercurySummaryToMarm(newItems: string[]): void {
-  // File only the DELTA — the items this compaction added that the previous
-  // state didn't hold — one entry per item, into the "mercury" session. The
-  // old shape filed the whole rendered summary on every compaction; since the
-  // summary is a rolling superset it never repeated byte-for-byte, so the
-  // last-file guard never skipped and a day of compactions left dozens of
-  // overlapping documents in MARM — which auto-recall then injected into every
-  // turn, crowding out distinct facts. Discrete delta items also recall
-  // better than blobs. Dedupe is by comparison against the previous state at
-  // the call site, not by string equality here.
-  if (!newItems.length) return;
-  void (async () => {
-    const init = await marmRpc(undefined, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-03-26',
-        capabilities: {},
-        clientInfo: { name: 'warden-mercury-filing', version: '1.0.0' },
-      },
-    });
-    if (!init) {
-      logger.warn('Mercury→MARM filing skipped: MARM unreachable');
-      return;
-    }
-    await marmRpc(marmHostSessionId, { jsonrpc: '2.0', method: 'notifications/initialized' });
-    let filed = 0;
-    for (const item of newItems) {
-      if (!item.trim()) continue;
-      const res = await marmRpc(marmHostSessionId, {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: {
-          name: 'marm_log_entry',
-          arguments: {
-            session_name: 'mercury',
-            entry: `${new Date().toISOString().slice(0, 10)} - ${item}`,
-          },
-        },
-      });
-      if (res?.error || res?.result?.isError) {
-        logger.warn({ err: res?.error?.message ?? 'tool error', item: item.slice(0, 80) }, 'Mercury→MARM filing failed');
-        return;
-      }
-      filed++;
-    }
-    if (filed > 0) logger.info({ count: filed }, 'Mercury delta items filed to MARM (session: mercury)');
-  })().catch((err) => logger.warn({ err: err?.message ?? err }, 'Mercury→MARM filing failed'));
-}
 
 /**
  * Mercury — automatic rolling conversation compaction.
@@ -1916,11 +1822,6 @@ async function updateMercurySummary(): Promise<void> {
       { facts: merged.facts.length, decisions: merged.decisions.length, open: merged.open.length, refs: merged.refs.length },
       'Mercury state updated',
     );
-    // Delta for MARM: items the previous state didn't already hold. Filed
-    // discretely; nothing is filed when the compaction added nothing.
-    const prevItems = new Set<string>(MERCURY_FIELDS.flatMap((f) => state[f]));
-    const delta = MERCURY_FIELDS.flatMap((f) => merged[f]).filter((i) => !prevItems.has(i));
-    fileMercurySummaryToMarm(delta);
   } catch (err: any) {
     logger.warn({ err: err?.message ?? err }, 'Mercury summary update failed');
   }

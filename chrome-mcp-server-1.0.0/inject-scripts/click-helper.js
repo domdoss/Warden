@@ -83,7 +83,7 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
         clickX = coordinates.x;
         clickY = coordinates.y;
 
-        element = document.elementFromPoint(clickX, clickY);
+        element = shadowAwareElementFromPoint(clickX, clickY);
 
         if (element) {
           const rect = element.getBoundingClientRect();
@@ -216,7 +216,7 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
    * @param {number} y - Y coordinate relative to the viewport
    */
   function simulateClick(x, y, options = {}) {
-    const element = document.elementFromPoint(x, y);
+    const element = shadowAwareElementFromPoint(x, y);
     if (!element) return;
     dispatchClickSequence(element, x, y, options, false);
   }
@@ -225,7 +225,7 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
    * Simulate a double click sequence at specific coordinates
    */
   function simulateDoubleClick(x, y, options = {}) {
-    const element = document.elementFromPoint(x, y);
+    const element = shadowAwareElementFromPoint(x, y);
     if (!element) return;
     dispatchClickSequence(element, x, y, options, true);
   }
@@ -307,6 +307,35 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
    * @param {Element} element - The element to check
    * @returns {boolean} - Whether the element is visible
    */
+  /**
+   * Warden patch (2026-09-21): document.elementFromPoint does not pierce
+   * shadow DOM — for content inside an open shadow root it returns the HOST,
+   * so the old hit-test rejected every shadow-internal control as "not
+   * visible" even when a ref resolved it perfectly. Descend into open shadow
+   * roots to the innermost element at the point, and compare across the
+   * composed (shadow-inclusive) ancestor chain.
+   */
+  function shadowAwareElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    let guard = 0;
+    while (el && el.shadowRoot && guard++ < 20) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  function composedContains(a, b) {
+    let node = b;
+    let guard = 0;
+    while (node && guard++ < 100) {
+      if (node === a) return true;
+      node = node.parentNode || (node instanceof ShadowRoot ? node.host : null);
+    }
+    return false;
+  }
+
   function isElementVisible(element) {
     if (!element) return false;
 
@@ -332,10 +361,14 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    const elementAtPoint = document.elementFromPoint(centerX, centerY);
+    const elementAtPoint = shadowAwareElementFromPoint(centerX, centerY);
     if (!elementAtPoint) return false;
 
-    return element === elementAtPoint || element.contains(elementAtPoint);
+    return (
+      element === elementAtPoint ||
+      composedContains(element, elementAtPoint) ||
+      composedContains(elementAtPoint, element)
+    );
   }
 
   // Listen for messages from the extension
