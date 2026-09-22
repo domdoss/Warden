@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://warden.invalid/schemas/anthesis-write-evidence-v1.json",
+  "title": "Warden Anthesis governed write evidence",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "version",
+    "adapter_version",
+    "recorded_at",
+    "outcome",
+    "target",
+    "attempt_id",
+    "request_binding",
+    "decision"
+  ],
+  "properties": {
+    "version": {
+      "const": "warden.anthesis-write-evidence/v1"
+    },
+    "adapter_version": {
+      "const": "warden-anthesis-adapter/v1"
+    },
+    "warden_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "outcome": {
+      "enum": [
+        "success",
+        "failure",
+        "denied-before-effect"
+      ]
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_binding": {
+      "type": "object",
+      "required": ["action", "target", "payload_digest"],
+      "additionalProperties": true,
+      "properties": {
+        "action": { "const": "file.write" },
+        "target": { "type": "string", "minLength": 1 },
+        "payload_digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["decision", "source", "reason", "request_binding", "effect"],
+      "additionalProperties": true
+    },
+    "evaluator": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "anthesis-lab" },
+        "version": { "type": "string", "minLength": 1 },
+        "binary_digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "pre_state_digest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "post_state_digest": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

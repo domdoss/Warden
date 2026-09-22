@@ -69,7 +69,7 @@ The evaluator-backed tests cover:
 
 ## Independent evidence checks
 
-The evidence file is JSONL. Inspect it independently of model output:
+The evidence contract is documented in `docs/anthesis-trial/write-evidence.schema.json`. Validate each JSONL record with a JSON Schema validator before treating the receipt as trial evidence.
 
 ```bash
 jq -c . "$ANTHESIS_TRIAL_EVIDENCE_FILE"
