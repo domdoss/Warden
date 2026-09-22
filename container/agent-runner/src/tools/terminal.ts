@@ -16,6 +16,9 @@ registry.register({
         required: ['command'],
     },
     handler: async (args, _context) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects Bash.';
+        }
         const cmd = args.command;
         if (/\brm\b.*-[a-zA-Z]*[rf].*(\s+\*|\s+\.\/\*|\s+\/\s*$)/.test(cmd)) {
             return 'Error: Cannot rm -rf the entire filesystem root. Delete specific files by name.';

@@ -30,8 +30,18 @@ class ToolRegistry {
         this.tools.set(def.name, def);
     }
 
+    private isTrialToolAllowed(name: string): boolean {
+        if (process.env.ANTHESIS_TRIAL_RESTRICT_TOOLS !== 'true') return true;
+        const configured = process.env.ANTHESIS_TRIAL_ALLOWED_TOOLS;
+        const allowed = configured
+            ? configured.split(',').map((tool) => tool.trim()).filter(Boolean)
+            : ['Write'];
+        return allowed.includes(name);
+    }
+
     getDefinitions(names: string[]): any[] {
         return names
+            .filter((name) => this.isTrialToolAllowed(name))
             .map((n) => this.tools.get(n))
             .filter((t): t is ToolDef => !!t)
             .map((t) => ({
@@ -50,6 +60,9 @@ class ToolRegistry {
         args: Record<string, any>,
         context: ToolContext
     ): Promise<string> {
+        if (!this.isTrialToolAllowed(name)) {
+            return `Error: Anthesis trial tool denied ${name}`;
+        }
         const tool = this.tools.get(name);
         if (!tool) return `Error: Unknown tool ${name}`;
         try {

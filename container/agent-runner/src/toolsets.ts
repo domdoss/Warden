@@ -86,6 +86,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // multi-step flow by calling iris once per step.
     'iris-core':     { name: 'iris-core',     tools: ['email','task','calendar','alarm'] },
     'file-core':     { name: 'file-core',     includes: ['file','chat'] },
+    'anthesis-trial': { name: 'anthesis-trial', tools: ['Write'], tier: 'both' },
 };
 
 // Register all toolsets

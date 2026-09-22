@@ -16,6 +16,9 @@ registry.register({
         required: ['file_path', 'old_string', 'new_string'],
     },
     handler: async (args, _context) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects Edit; use the governed Write path.';
+        }
         const cleaned = cleanFilePath(args.file_path);
         if (cleaned.startsWith('attachments/') || cleaned === 'attachments') {
             return `Error: attachments/ is read-only input. Copy the file first: Bash("cp attachments/${path.basename(cleaned)} myproject/")`;

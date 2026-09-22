@@ -156,7 +156,9 @@ registry.register({
         },
         required: ['action'],
     },
-    handler: async (args) => { try { return await setOutput(args.action, args.level); } catch (e: any) { log(`audio_volume error: ${e.message}`); return `Error: ${e.message}`; } },
+    handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') return 'Error: Anthesis governed mode rejects media tools.';
+        try { return await setOutput(args.action, args.level); } catch (e: any) { log(`audio_volume error: ${e.message}`); return `Error: ${e.message}`; } },
     toolset: 'media',
     tier: 'public',
 });
@@ -172,7 +174,9 @@ registry.register({
         },
         required: ['action'],
     },
-    handler: async (args) => { try { return await setInput(args.action, args.level); } catch (e: any) { log(`mic_volume error: ${e.message}`); return `Error: ${e.message}`; } },
+    handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') return 'Error: Anthesis governed mode rejects media tools.';
+        try { return await setInput(args.action, args.level); } catch (e: any) { log(`mic_volume error: ${e.message}`); return `Error: ${e.message}`; } },
     toolset: 'media',
     tier: 'public',
 });
@@ -187,7 +191,9 @@ registry.register({
         },
         required: ['action'],
     },
-    handler: async (args) => { try { return await mediaControl(args.action); } catch (e: any) { log(`media_control error: ${e.message}`); return `Error: ${e.message}`; } },
+    handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') return 'Error: Anthesis governed mode rejects media tools.';
+        try { return await mediaControl(args.action); } catch (e: any) { log(`media_control error: ${e.message}`); return `Error: ${e.message}`; } },
     toolset: 'media',
     tier: 'public',
 });
