@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Start the alpha-stack webapp (trading/webapp — the stack's own UI on
-# 127.0.0.1:8765) on every Warden (re)start.
+# 127.0.0.1:8765, TradingAgents runs, Liquid NN) on every Warden (re)start.
 #
-#   1. If 8765 is already serving, nothing to do.
-#   2. Kill any stale copy holding the port without serving (wedged), then
-#      spawn a fresh one detached. All state lives on disk
-#      (trading/.alpha-stack, trading/.tradingagents), so a restart loses
-#      nothing.
+# The webapp is part of warden.service: spawned from ExecStartPost it lives
+# in Warden's cgroup, so stopping/restarting Warden takes it down with
+# everything else. Any copy started outside Warden (a terminal) is killed
+# first so the one serving 8765 is always Warden's. An interrupted run stays
+# resumable — progress and TradingAgents checkpoints live on disk.
 #
 # Called from warden.service ExecStartPost (see the alpha-webapp drop-in).
 # Failure is reported, never fatal — the dashboard's Alpha Stack view also
@@ -20,10 +20,9 @@ LOG="$ROOT/logs/webapp.log"
 
 webapp_up() { curl -s -m 2 -o /dev/null http://127.0.0.1:8765/api/status; }
 
-webapp_up && { echo "alpha webapp up: 8765 serving"; exit 0; }
-
 # [.] bracket keeps this pattern from matching its own cmdline.
 pkill -f 'webapp/app[.]py' 2>/dev/null
+for _ in $(seq 1 10); do pgrep -f 'webapp/app[.]py' >/dev/null || break; sleep 0.5; done
 
 mkdir -p "$ROOT/logs"
 nohup "$PY" "$APP" >>"$LOG" 2>&1 &
