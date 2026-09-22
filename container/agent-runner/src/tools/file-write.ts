@@ -1,39 +1,63 @@
-import fs from 'fs';
-import path from 'path';
-import { registry } from '../tool-registry.js';
-import { cleanFilePath, resolveUserPath } from '../ipc-helpers.js';
+import fs from "fs";
+import path from "path";
+import { registry } from "../tool-registry.js";
+import { cleanFilePath, resolveUserPath } from "../ipc-helpers.js";
+import { authorizeFileWrite } from "../anthesis-authorization.js";
 
 registry.register({
-    name: 'Write',
-    description: 'Write content to a file.',
-    schema: {
-        type: 'object',
-        properties: {
-            file_path: { type: 'string', description: 'Relative path to file (e.g. "notes.md" or "docs/plan.md")' },
-            content: { type: 'string', description: 'Content to write' },
-        },
-        required: ['file_path', 'content'],
+  name: "Write",
+  description: "Write content to a file.",
+  schema: {
+    type: "object",
+    properties: {
+      file_path: {
+        type: "string",
+        description:
+          'Relative path to file (e.g. "notes.md" or "docs/plan.md")',
+      },
+      content: { type: "string", description: "Content to write" },
     },
-    handler: async (args, _context) => {
-        const cleaned = cleanFilePath(args.file_path);
-        if (cleaned.startsWith('attachments/') || cleaned === 'attachments') {
-            return `Error: attachments/ is read-only input. Copy the file first: Bash("cp attachments/${path.basename(cleaned)} myproject/")`;
-        }
-        const filePath = resolveUserPath(args.file_path);
-        if (args.file_path.endsWith('.md') && (!args.content || args.content.trim() === '')) {
-            return `Error: Cannot delete or clear .md files. Protected file: ${args.file_path}`;
-        }
-        try {
-            fs.mkdirSync(path.dirname(filePath), { recursive: true });
-            fs.writeFileSync(filePath, args.content);
-            // Report the RESOLVED absolute path — the orchestrator's digest
-            // confirm step checks claimed paths against the ask, which only
-            // works if the claim is real ('~/Desktop/x' resolved, not literal).
-            return `File written: ${filePath}`;
-        } catch (err: any) {
-            return `Error writing file: ${err.message}`;
-        }
-    },
-    toolset: 'file',
-    tier: 'both',
+    required: ["file_path", "content"],
+  },
+  handler: async (args, _context) => {
+    const cleaned = cleanFilePath(args.file_path);
+    if (cleaned.startsWith("attachments/") || cleaned === "attachments") {
+      return `Error: attachments/ is read-only input. Copy the file first: Bash("cp attachments/${path.basename(cleaned)} myproject/")`;
+    }
+    const authorization = await authorizeFileWrite(
+      cleaned,
+      args.content,
+      _context,
+      {
+        trialRoot: process.env.ANTHESIS_TRIAL_ROOT || process.cwd(),
+        runtimeId: process.env.ANTHESIS_TRIAL_RUNTIME || "warden-agent-runner",
+      },
+    );
+    if (!authorization.allowed) {
+      const reason = authorization.decision?.reason || "authorization_denied";
+      return `Error: Anthesis authorization denied: ${reason}`;
+    }
+    const filePath =
+      authorization.mode === "governed" && authorization.request
+        ? authorization.request.absoluteTarget
+        : resolveUserPath(args.file_path);
+    if (
+      args.file_path.endsWith(".md") &&
+      (!args.content || args.content.trim() === "")
+    ) {
+      return `Error: Cannot delete or clear .md files. Protected file: ${args.file_path}`;
+    }
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, args.content);
+      // Report the RESOLVED absolute path — the orchestrator's digest
+      // confirm step checks claimed paths against the ask, which only
+      // works if the claim is real ('~/Desktop/x' resolved, not literal).
+      return `File written: ${filePath}`;
+    } catch (err: any) {
+      return `Error writing file: ${err.message}`;
+    }
+  },
+  toolset: "file",
+  tier: "both",
 });
