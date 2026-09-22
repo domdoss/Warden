@@ -284,6 +284,17 @@ input, select, textarea { font-family: inherit; }
   background: var(--accent);
   box-shadow: 0 0 10px var(--accent);
 }
+/* Alpha Stack rail button — red, per request (2026-09-22). */
+.rail-btn-red { color: var(--danger); }
+.rail-btn-red:hover { color: var(--danger); background: var(--danger-soft); }
+.rail-btn-red.active {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.rail-btn-red.active::before {
+  background: var(--danger);
+  box-shadow: 0 0 10px var(--danger);
+}
 .rail-btn[data-badge]::after {
   content: attr(data-badge);
   position: absolute;
