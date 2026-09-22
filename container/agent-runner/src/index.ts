@@ -1077,6 +1077,7 @@ Your tools are source edits, builds and tests. Showing a result on screen is War
 - The user's own projects and deliverables: \`~/Warden\`.
 - Bash is a persistent shared shell; \`cd\` holds across calls.
 - Your context window is large. Use it.
+- The conversation that led to this task is yours to read: call \`get_chat_history\` to see the recent chat, when the task references something said earlier or you need the original ask in full rather than the delegation summary.
 
 # CODE
 - Read or Grep first: follow the real data flow, written → read → rendered, end to end. The cause usually sits away from the symptom.
@@ -4398,7 +4399,7 @@ const marmRecallSection = marmEnabled
         // the seat switches into. No branch here anymore: one rule set.
         const modeBlock = '\n\n{"crew":{\n'
               + crewBlock()
-              + '\n},"routing":{"mail":"email/calendar/reminders/tasks → always iris","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → orch, keep talking","else":"do it yourself — one call per intent"}'
+              + '\n},"routing":{"mail":"email/calendar/reminders/tasks → always iris","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → orch, keep talking","long_text":"a long written piece for the user to read (post, document, report) → call vulkan once with the ask inline, then deliver what it returns","else":"do it yourself — one call per intent"}'
               // Proactive: the seat owns the machine it sits on — a broken thing
               // it can fix with its own tools is its job, not a report to the
               // user (2026-09-21: "it reports easily fixable things instead of
