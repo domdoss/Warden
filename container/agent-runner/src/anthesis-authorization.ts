@@ -193,29 +193,92 @@ function engineDeny(reason: string): AuthorizationDecision {
   return { decision: "deny", source: "engine_guard", reason };
 }
 
-async function readDecision(): Promise<Record<string, any>> {
+async function readDecision(
+  request: FileWriteRequest,
+): Promise<{ raw: Record<string, any>; requestDigestIsLocal: boolean }> {
   const labBinary = process.env.ANTHESIS_LAB_BIN;
   if (labBinary) {
-    const scenario = process.env.ANTHESIS_TRIAL_SCENARIO_FILE;
     const repo = process.env.ANTHESIS_LAB_REPO;
-    if (!scenario || !repo) throw new Error("missing_lab_configuration");
-    const { stdout } = await execFileAsync(
-      labBinary,
-      ["evaluate", "--repo", repo, "--scenario", scenario, "--format", "json"],
-      { cwd: repo, maxBuffer: 1024 * 1024 },
-    );
-    const parsed = JSON.parse(stdout.trim()) as Record<string, any>;
-    return parsed.decision && typeof parsed.decision === "object"
-      ? parsed.decision
-      : parsed;
+    if (!repo) throw new Error("missing_lab_configuration");
+    const scenario = await createTrialScenario(request, repo);
+    try {
+      let stdout: string;
+      try {
+        ({ stdout } = await execFileAsync(
+          labBinary,
+          [
+            "evaluate",
+            "--repo",
+            repo,
+            "--scenario",
+            path.relative(repo, scenario.path),
+            "--format",
+            "json",
+          ],
+          { cwd: repo, maxBuffer: 1024 * 1024 },
+        ));
+      } catch (error: any) {
+        throw new Error(
+          `lab_evaluate_failed:${String(error?.stderr || error?.message || "unknown")}`,
+        );
+      }
+      const parsed = JSON.parse(stdout.trim()) as Record<string, any>;
+      return {
+        raw:
+          parsed.decision && typeof parsed.decision === "object"
+            ? parsed.decision
+            : parsed,
+        requestDigestIsLocal: false,
+      };
+    } finally {
+      await fs.rm(scenario.directory, { recursive: true, force: true });
+    }
   }
 
   const decisionPath = process.env.ANTHESIS_TRIAL_DECISION_FILE;
   if (!decisionPath) throw new Error("missing_decision");
-  return JSON.parse(await fs.readFile(decisionPath, "utf8")) as Record<
-    string,
-    any
-  >;
+  return {
+    raw: JSON.parse(await fs.readFile(decisionPath, "utf8")) as Record<
+      string,
+      any
+    >,
+    requestDigestIsLocal: true,
+  };
+}
+
+async function createTrialScenario(
+  request: FileWriteRequest,
+  repo: string,
+): Promise<{ path: string; directory: string }> {
+  const scenarioDir = await fs.mkdtemp(
+    path.join(path.resolve(repo), ".anthesis", ".warden-trial-"),
+  );
+  const scenarioPath = path.join(scenarioDir, "scenario.json");
+  const { request_digest: _requestDigest, ...scenarioBinding } =
+    request.requestBinding;
+  const scenario = {
+    version: "anthesis.scenario/v1",
+    id: process.env.ANTHESIS_TRIAL_SCENARIO_ID || "warden-file-write",
+    title: "Warden governed file write",
+    goal: "Authorize one exact Warden file.write effect.",
+    policy: process.env.ANTHESIS_TRIAL_POLICY || "local-sdlc",
+    source: { type: "local_scenario" },
+    actor: request.actor,
+    runtime: request.runtime,
+    request_binding: scenarioBinding,
+    attempts: [{ action: "file.write", path: request.target }],
+    expected: {
+      decision: process.env.ANTHESIS_TRIAL_EXPECTED_DECISION || "allow",
+      source: process.env.ANTHESIS_TRIAL_EXPECTED_SOURCE || "policy_rule",
+      rule_id:
+        process.env.ANTHESIS_TRIAL_EXPECTED_RULE ||
+        "scoped-docs-and-code-write",
+      reason: process.env.ANTHESIS_TRIAL_EXPECTED_REASON || "scoped_write",
+      evidence: ["scenario_id", "decision", "decision_source"],
+    },
+  };
+  await fs.writeFile(scenarioPath, JSON.stringify(scenario));
+  return { path: scenarioPath, directory: scenarioDir };
 }
 
 function isDigest(value: unknown): value is string {
@@ -267,14 +330,15 @@ function isValidDecision(raw: Record<string, any>): boolean {
 function matchesExactRequest(
   raw: Record<string, any>,
   request: FileWriteRequest,
+  requestDigestIsLocal: boolean,
 ): boolean {
   const binding = raw.request_binding;
   const effect = raw.effect;
   return Boolean(
     binding &&
-    Object.entries(request.requestBinding).every(
-      ([key, value]) => binding[key] === value,
-    ) &&
+    Object.entries(request.requestBinding)
+      .filter(([key]) => requestDigestIsLocal || key !== "request_digest")
+      .every(([key, value]) => binding[key] === value) &&
     effect?.action === request.action &&
     effect?.resource?.path === request.target &&
     effect?.actor?.role === request.actor.role &&
@@ -305,7 +369,8 @@ export async function authorizeFileWrite(
   }
 
   try {
-    const raw = await readDecision();
+    const evaluation = await readDecision(request);
+    const raw = evaluation.raw;
     if (!isValidDecision(raw)) {
       return {
         allowed: false,
@@ -314,7 +379,7 @@ export async function authorizeFileWrite(
         decision: engineDeny("malformed_decision"),
       };
     }
-    if (!matchesExactRequest(raw, request)) {
+    if (!matchesExactRequest(raw, request, evaluation.requestDigestIsLocal)) {
       return {
         allowed: false,
         mode: "governed",

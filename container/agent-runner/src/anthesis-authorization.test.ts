@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -125,6 +126,33 @@ describe("Anthesis trial authorization request binding", () => {
     await expect(
       fs.access(path.join(outside, "escaped.txt")),
     ).rejects.toThrow();
+  });
+
+  it.skipIf(
+    !existsSync("/home/ryjen/.local/bin/anthesis-lab") ||
+      !existsSync(
+        "/tmp/anthesis-governance-lab/.anthesis/policies/local-sdlc.yaml",
+      ),
+  )("authorizes a generated scenario through Governance Lab", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "warden-lab-"));
+    vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+    vi.stubEnv("ANTHESIS_LAB_BIN", "/home/ryjen/.local/bin/anthesis-lab");
+    vi.stubEnv("ANTHESIS_LAB_REPO", "/tmp/anthesis-governance-lab");
+
+    const result = await authorizeFileWrite(
+      "docs/onboarding.md",
+      "Governed Warden content.",
+      {
+        chatJid: "owner@local",
+        groupFolder: "owner",
+        isMain: true,
+        userId: "owner",
+      },
+      { trialRoot: root, runtimeId: "ollama-qwen3-14b" },
+    );
+
+    expect(result.allowed).toBe(true);
+    expect(result.decision?.engine?.name).toBe("anthesis-lab");
   });
 
   it("does not treat approval-required or denied as executable", () => {
