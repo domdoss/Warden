@@ -51,7 +51,9 @@ ANTHESIS_TRIAL_ALLOWED_TOOLS=Write
 
 When enabled, disallowed tools are removed from generated tool definitions and rejected at direct dispatch. The default allowlist is `Write`; set `ANTHESIS_TRIAL_ALLOWED_TOOLS` explicitly for a different bounded fixture.
 
-This registry restriction is necessary but not sufficient for complete mediation: a process with direct filesystem or child-process access can still bypass it.
+The registry restriction is also exposed as the explicit `anthesis-trial` toolset, whose only tool is `Write`. Use that toolset when constructing the disposable runtime so the intended boundary is visible in configuration as well as enforced at dispatch.
+
+This remains insufficient against a process with direct filesystem or child-process access.
 
 For a complete-mediation trial, start a disposable runtime exposing only the governed write dispatcher and the evaluator client. Disable or remove:
 

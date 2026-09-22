@@ -400,6 +400,8 @@ describe("Anthesis trial authorization request binding", () => {
 
     await import("./tools/file-write.js");
     const { registry } = await import("./tool-registry.js");
+    const { resolveToolset } = await import("./toolsets.js");
+    expect(resolveToolset("anthesis-trial")).toEqual(["Write"]);
     expect(registry.getDefinitions(["Write", "Edit"])).toHaveLength(1);
     expect(await registry.dispatch("Edit", {}, context)).toContain(
       "Anthesis trial tool denied",
