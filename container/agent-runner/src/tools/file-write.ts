@@ -16,6 +16,20 @@ function stateDigest(filePath: string): string {
   }
 }
 
+function assertNoSymlinkComponents(filePath: string, root: string): void {
+  let current = path.resolve(root);
+  const relativeParent = path.relative(current, path.dirname(filePath));
+  for (const component of relativeParent.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    if (fs.lstatSync(current).isSymbolicLink()) {
+      throw new Error("target path contains a symlink component");
+    }
+  }
+  if (fs.existsSync(filePath) && fs.lstatSync(filePath).isSymbolicLink()) {
+    throw new Error("target path is a symlink");
+  }
+}
+
 function appendEvidence(
   filePath: string | undefined,
   authorization: Awaited<ReturnType<typeof authorizeFileWrite>>,
@@ -94,7 +108,27 @@ registry.register({
     }
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, args.content);
+      if (authorization.mode === "governed") {
+        assertNoSymlinkComponents(
+          filePath,
+          process.env.ANTHESIS_TRIAL_ROOT || process.cwd(),
+        );
+        const descriptor = fs.openSync(
+          filePath,
+          fs.constants.O_WRONLY |
+            fs.constants.O_CREAT |
+            fs.constants.O_TRUNC |
+            fs.constants.O_NOFOLLOW,
+          0o644,
+        );
+        try {
+          fs.writeFileSync(descriptor, args.content);
+        } finally {
+          fs.closeSync(descriptor);
+        }
+      } else {
+        fs.writeFileSync(filePath, args.content);
+      }
       appendEvidence(
         process.env.ANTHESIS_TRIAL_EVIDENCE_FILE,
         authorization,
