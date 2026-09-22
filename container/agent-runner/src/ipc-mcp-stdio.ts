@@ -138,6 +138,23 @@ const server = new McpServer({
   version: '1.0.0',
 });
 
+// MCP tools are registered outside the Warden ToolRegistry. In a governed
+// trial, reject them at the MCP boundary before any callback can write IPC,
+// spawn a task, send a message, or mutate the workspace.
+if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+  const originalTool = server.tool.bind(server);
+  (server as any).tool = (...args: any[]) => {
+    const toolName = args[0];
+    const handler = args[args.length - 1];
+    if (typeof handler !== 'function') return originalTool(...args);
+    args[args.length - 1] = async () => ({
+      content: [{ type: 'text', text: `Error: Anthesis governed mode rejects MCP tool ${toolName}.` }],
+      isError: true,
+    });
+    return originalTool(...args);
+  };
+}
+
 server.tool(
   'send_message',
   "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times." +

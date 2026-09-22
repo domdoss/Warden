@@ -65,8 +65,9 @@ The evaluator-backed tests cover:
 - symlink escape denial;
 - malformed decision denial;
 - pre/post filesystem evidence;
-- `Edit`, `Bash`, and `open_app` are rejected before their effects in governed mode;
-- other MCP, desktop, document, media, and direct child-process paths remain excluded by the allowlist;
+- `Edit`, `Bash`, `open_app`, document writers, desktop tools, and media controls are rejected before their effects in governed mode;
+- the standalone MCP stdio boundary rejects all MCP callbacks in governed mode;
+- other direct filesystem and child-process access remains excluded by the allowlist/runtime boundary;
 
 ## Independent evidence checks
 
