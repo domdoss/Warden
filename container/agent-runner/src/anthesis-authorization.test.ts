@@ -409,6 +409,7 @@ describe("Anthesis trial authorization request binding", () => {
     vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "false");
     await import("./tools/file-edit.js");
     await import("./tools/host-tools.js");
+    await import("./tools/terminal.js");
     expect(
       await registry.dispatch(
         "Edit",
@@ -423,6 +424,9 @@ describe("Anthesis trial authorization request binding", () => {
     expect(
       await registry.dispatch("open_app", { app: "xdg-open" }, context),
     ).toContain("governed mode rejects host callbacks");
+    expect(
+      await registry.dispatch("Bash", { command: "touch bypass.txt" }, context),
+    ).toContain("governed mode rejects Bash");
     vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "true");
     const allowed = await registry.dispatch(
       "Write",

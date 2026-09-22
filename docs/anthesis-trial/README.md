@@ -65,7 +65,8 @@ The evaluator-backed tests cover:
 - symlink escape denial;
 - malformed decision denial;
 - pre/post filesystem evidence;
-- direct dispatch denial for a tool outside the trial allowlist.
+- `Edit`, `Bash`, and `open_app` are rejected before their effects in governed mode;
+- other MCP, desktop, document, media, and direct child-process paths remain excluded by the allowlist;
 
 ## Independent evidence checks
 
