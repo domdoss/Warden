@@ -189,6 +189,34 @@ describe("Anthesis trial authorization request binding", () => {
     expect(result.decision?.engine?.name).toBe("anthesis-lab");
   });
 
+  it.skipIf(
+    !labBinary || !labRepo || !existsSync(labBinary) || !existsSync(labRepo),
+  )("preserves an engine-guard denial from Governance Lab", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "warden-lab-deny-"));
+    vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_DECISION", "deny");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_SOURCE", "engine_guard");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_RULE", "");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_REASON", "unknown_runtime");
+
+    const result = await authorizeFileWrite(
+      "docs/onboarding.md",
+      "Must not execute.",
+      {
+        chatJid: "owner@local",
+        groupFolder: "owner",
+        isMain: true,
+        userId: "owner",
+      },
+      { trialRoot: root, runtimeId: "unregistered-runtime" },
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.decision?.decision).toBe("deny");
+    expect(result.decision?.source).toBe("engine_guard");
+    expect(result.decision?.reason).toBe("unknown_runtime");
+  });
+
   it("does not treat approval-required or denied as executable", () => {
     const decisions: AuthorizationDecision[] = [
       { decision: "deny", source: "policy_rule", reason: "blocked" },

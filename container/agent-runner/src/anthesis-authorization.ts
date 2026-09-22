@@ -285,13 +285,30 @@ async function createTrialScenario(
   const expectedSource = process.env.ANTHESIS_TRIAL_EXPECTED_SOURCE;
   const expectedRule = process.env.ANTHESIS_TRIAL_EXPECTED_RULE;
   const expectedReason = process.env.ANTHESIS_TRIAL_EXPECTED_REASON;
-  if (
-    !expectedDecision ||
-    !expectedSource ||
-    !expectedRule ||
-    !expectedReason
-  ) {
+  if (!expectedDecision || !expectedSource || !expectedReason) {
     throw new Error("missing_trial_expectation");
+  }
+  const expected: Record<string, string | string[]> = {
+    decision: expectedDecision,
+    source: expectedSource,
+    reason: expectedReason,
+    evidence: ["scenario_id", "decision", "decision_source"],
+  };
+  if (expectedSource === "policy_rule") {
+    if (!expectedRule) throw new Error("missing_trial_rule");
+    expected.rule_id = expectedRule;
+  } else if (expectedSource === "policy_default") {
+    expected.rule_id = expectedRule || "default";
+    if (expected.rule_id !== "default") {
+      throw new Error("invalid_trial_default_rule");
+    }
+  } else if (
+    expectedSource === "engine_guard" &&
+    (expectedDecision !== "deny" || expectedRule)
+  ) {
+    throw new Error("invalid_trial_engine_guard_expectation");
+  } else if (expectedSource !== "engine_guard") {
+    throw new Error("invalid_trial_source");
   }
   const scenario = {
     version: "anthesis.scenario/v1",
@@ -304,13 +321,7 @@ async function createTrialScenario(
     runtime: request.runtime,
     request_binding: scenarioBinding,
     attempts: [{ action: "file.write", path: request.target }],
-    expected: {
-      decision: expectedDecision,
-      source: expectedSource,
-      rule_id: expectedRule,
-      reason: expectedReason,
-      evidence: ["scenario_id", "decision", "decision_source"],
-    },
+    expected,
   };
   await fs.writeFile(scenarioPath, JSON.stringify(scenario));
   return { path: scenarioPath, directory: scenarioDir };
