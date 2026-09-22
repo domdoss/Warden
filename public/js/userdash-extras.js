@@ -1,5 +1,5 @@
 // Generated from the groupware v2/user dashboard (backups/dockbox on 67.213.74.115).
-// Ported views: home, files, sms, projects, automater, alarms, apikeys, actions, heartbeat, vault, talk.
+// Ported views: home, files, projects, automater, alarms, apikeys, actions, heartbeat, talk.
 // API paths rewritten from /api/users/{id}/* to the single-user /api/* routes.
 window.UserDash = (() => {
   // ---- single-user shims for groupware shell dependencies ----
@@ -1046,7 +1046,7 @@ window.UserDash = (() => {
         : `UserDash.previewFile('${escAttr(childPath)}')`;
       return `<div class="file-row${isDir ? ' is-dir' : ''}" data-name="${escAttr(e.name)}" data-path="${escAttr(childPath)}" data-isdir="${isDir}" onclick="${onclick}">`
         + `<div class="file-icon ${icon.cls}">${icon.svg}</div>`
-        + `<div class="file-info"><div class="file-name">${esc(e.name)}${e.scrubbed ? ' <span class="badge-scrubbed">scrubbed</span>' : ''}</div>`
+        + `<div class="file-info"><div class="file-name">${esc(e.name)}</div>`
         + (meta ? `<div class="file-meta">${meta}</div>` : '')
         + `</div>`
         + `<div class="file-actions-row">`
@@ -2177,122 +2177,6 @@ window.UserDash = (() => {
     }
   }
 
-  async function loadVault() {
-    try {
-      const r = await fetch(fileUrl('/api/vault'));
-      const d = await r.json();
-      renderVaultList(d.entries || []);
-    } catch {
-      document.getElementById('vaultList').innerHTML = '<div class="empty-state"><p class="empty-title">Unable to load vault</p></div>';
-    }
-  }
-
-  let currentVaultId = null;
-  let currentVaultStatus = null;
-
-  function renderVaultList(entries) {
-    const el = document.getElementById('vaultList');
-    document.getElementById('vaultDetail').classList.add('hidden');
-    currentVaultId = null;
-    if (!entries || entries.length === 0) {
-      el.innerHTML = '<div class="empty-state"><p class="empty-title">No scrubbed files yet</p></div>';
-      return;
-    }
-    el.innerHTML = entries.map(e => {
-      const date = new Date(e.scrubDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-      return `<div class="vault-entry" onclick="UserDash.viewVaultEntry('${escAttr(e.id)}', this)">
-        <svg class="vault-entry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-        <div class="vault-entry-info">
-          <span class="vault-entry-name">${esc(e.originalName || e.id)}</span>
-          <span class="vault-entry-meta">${date}</span>
-        </div>
-        <span class="vault-entry-status">${esc(e.status || 'scrubbed')}</span>
-      </div>`;
-    }).join('');
-  }
-
-  async function viewVaultEntry(id, el) {
-    currentVaultId = id;
-    const detail = document.getElementById('vaultDetail');
-    detail.classList.remove('hidden');
-
-    document.querySelectorAll('.vault-entry').forEach(e => e.classList.remove('selected'));
-    if (el) el.classList.add('selected');
-
-    const [scrubRes, mapRes] = await Promise.allSettled([
-      fetch(fileUrl('/api/vault/' + encodeURIComponent(id) + '/scrubbed')).then(r => r.json()),
-      fetch(fileUrl('/api/vault/' + encodeURIComponent(id) + '/mapping')).then(r => r.json()),
-    ]);
-
-    if (scrubRes.status === 'fulfilled' && scrubRes.value.content) {
-      const d = scrubRes.value;
-      currentVaultStatus = d.entry.status || 'scrubbed';
-      document.getElementById('vaultDetailTitle').textContent = d.entry.originalName;
-      vaultRawContent = d.content;
-      await loadVaultDictionary();
-      reHighlightVaultContent();
-      // Disable delete until restored
-      const delBtn = document.getElementById('btnVaultDelete');
-      delBtn.disabled = currentVaultStatus === 'scrubbed';
-      delBtn.title = currentVaultStatus === 'scrubbed' ? 'Restore the file first before removing' : '';
-    } else {
-      document.getElementById('vaultDetailTitle').textContent = '';
-      document.getElementById('vaultScrubbedContent').innerHTML = '<p style="color:var(--text-secondary)">Scrubbed content not available.</p>';
-    }
-
-    if (mapRes.status === 'fulfilled' && mapRes.value.mapping) {
-      const rows = Object.entries(mapRes.value.mapping).map(([ph, val]) =>
-        `<div class="vault-mapping-row"><span class="vault-mapping-ph">${esc(ph)}</span><span class="vault-mapping-val">${esc(val)}</span></div>`
-      ).join('');
-      document.getElementById('vaultMappingContent').innerHTML = rows || '<p style="color:var(--text-secondary)">No mappings</p>';
-    } else {
-      document.getElementById('vaultMappingContent').innerHTML = '<p style="color:var(--text-secondary)">Mapping not available.</p>';
-    }
-
-    showVaultTab('scrubbed');
-  }
-
-  function showVaultTab(tab) {
-    document.querySelectorAll('.vault-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    document.getElementById('vaultScrubbedContent').classList.toggle('hidden', tab !== 'scrubbed');
-    document.getElementById('vaultMappingContent').classList.toggle('hidden', tab !== 'mapping');
-  }
-
-  let vaultDictionary = null;
-  let vaultRawContent = ''; // Raw scrubbed content for re-highlighting
-
-  async function loadVaultDictionary() {
-    if (vaultDictionary) return vaultDictionary;
-    try {
-      const r = await fetch(fileUrl('/api/vault/dictionary'));
-      vaultDictionary = await r.json();
-    } catch {
-      vaultDictionary = {};
-    }
-    return vaultDictionary;
-  }
-
-  function reHighlightVaultContent() {
-    if (!vaultRawContent || !vaultDictionary) return;
-    let html = esc(vaultRawContent);
-    // Highlight existing placeholders
-    html = html.replace(/\[([A-Z_]+_\d+)\]/g, '<span class="ph-highlight">[$1]</span>');
-    // Highlight dictionary matches (show what would be scrubbed on next run)
-    const allWords = [];
-    for (const cat of Object.values(vaultDictionary)) {
-      if (Array.isArray(cat)) allWords.push(...cat);
-    }
-    if (allWords.length) {
-      const escaped = allWords.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(w => w.length >= 2);
-      if (escaped.length) {
-        const re = new RegExp('\\b(' + escaped.join('|') + ')\\b', 'gi');
-        html = html.replace(re, '<span class="dict-match-highlight">$1</span>');
-      }
-    }
-    document.getElementById('vaultScrubbedContent').innerHTML = html;
-  }
-
-  // Wire up selection-based quick-add
   function showNotification(data) {
     lastNotifType = data.type || '';
 
@@ -2760,7 +2644,6 @@ window.UserDash = (() => {
           <div><strong>Quick Actions</strong> \u2014 Pre-built prompts that work well out of the box. Great place to start.</div>
           <div><strong>Talk</strong> \u2014 Speak to Warden instead of typing. Same capabilities, just hands-free.</div>
           <div><strong>Email</strong> \u2014 Read and send emails. Connect your account in Connected Accounts first.</div>
-          <div><strong>SMS</strong> \u2014 Send and receive text messages through connected phone numbers.</div>
           <div><strong>Files</strong> \u2014 Your workspace. Everything Warden creates lives here \u2014 documents, PDFs, code, data.</div>
           <div><strong>Projects</strong> \u2014 Track projects with deliverables, blockers, budgets, and timelines.</div>
           <div><strong>Calendar</strong> \u2014 View and manage events. Syncs with Google or Outlook.</div>
@@ -2781,7 +2664,7 @@ window.UserDash = (() => {
         <div class="wt-field">
           <label class="wt-field-label">What are you most interested in?</label>
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px" id="wiz_interests">
-            ${['Project Management','Task Tracking','Email & Inbox','Calendar & Events','Scheduling & Automations','Documents & PDFs','Data Analysis & Charts','Web Scraping & Research','Build Dashboards','Build Web Apps','Python Scripts & Tools','Image Generation','Spreadsheets & CSV','SMS & Notifications','API Integrations','Code & Development','Database & SQL','Social Media Management'].map(f =>
+            ${['Project Management','Task Tracking','Email & Inbox','Calendar & Events','Scheduling & Automations','Documents & PDFs','Data Analysis & Charts','Web Scraping & Research','Build Dashboards','Build Web Apps','Python Scripts & Tools','Image Generation','Spreadsheets & CSV','Notifications','API Integrations','Code & Development','Database & SQL','Social Media Management'].map(f =>
               `<label style="display:flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px${(_wizData.interests || []).includes(f) ? ';background:var(--accent);color:#fff;border-color:var(--accent)' : ''}">
                 <input type="checkbox" value="${f}" style="display:none" ${(_wizData.interests || []).includes(f) ? 'checked' : ''} onchange="this.parentElement.style.background=this.checked?'var(--accent)':'';this.parentElement.style.color=this.checked?'#fff':'';this.parentElement.style.borderColor=this.checked?'var(--accent)':'var(--border)'">${f}</label>`
             ).join('')}
@@ -3574,222 +3457,6 @@ window.UserDash = (() => {
       document.getElementById('repeat-days-row').style.display = e.target.value === 'custom' ? '' : 'none';
     });
 
-  // ====================== SMS ======================
-
-  var smsAccounts = [];
-  var currentSmsAccountId = null;
-
-  async function loadSmsView() {
-    try {
-      var r = await fetch('/api/sms/accounts?userId=' + encodeURIComponent(userId), {});
-      var d = await r.json();
-      smsAccounts = d.accounts || [];
-    } catch (e) { smsAccounts = []; }
-
-    if (smsAccounts.length === 0) {
-      document.getElementById('smsSetup').style.display = '';
-      document.getElementById('smsActive').style.display = 'none';
-    } else {
-      document.getElementById('smsSetup').style.display = 'none';
-      document.getElementById('smsActive').style.display = '';
-
-      var sel = document.getElementById('smsAccountSelect');
-      sel.innerHTML = smsAccounts.map(function(a) {
-        return '<option value="' + esc(a.id) + '">' + esc(a.name) + ' (' + esc(a.phone_number) + ')</option>';
-      }).join('');
-      currentSmsAccountId = smsAccounts[0].id;
-
-      var isReadOnly = smsAccounts[0].read_only;
-      var banner = document.getElementById('smsSecurityBanner');
-      var compose = document.getElementById('smsCompose');
-      if (isReadOnly) {
-        banner.style.display = 'flex';
-        compose.style.display = 'none';
-      } else {
-        banner.style.display = 'none';
-        compose.style.display = '';
-      }
-
-      loadSmsMessages();
-    }
-  }
-
-  async function loadSmsMessages() {
-    var sel = document.getElementById('smsAccountSelect');
-    currentSmsAccountId = sel.value;
-    var account = smsAccounts.find(function(a) { return a.id === currentSmsAccountId; });
-    if (account) {
-      var banner = document.getElementById('smsSecurityBanner');
-      var compose = document.getElementById('smsCompose');
-      if (account.read_only) { banner.style.display = 'flex'; compose.style.display = 'none'; }
-      else { banner.style.display = 'none'; compose.style.display = ''; }
-    }
-
-    var list = document.getElementById('smsMessageList');
-    list.innerHTML = '<p style="color:var(--text3);text-align:center;padding:24px">Loading...</p>';
-
-    try {
-      var r = await fetch('/api/sms/messages?accountId=' + encodeURIComponent(currentSmsAccountId) + '&limit=50', {});
-      var d = await r.json();
-      var msgs = d.messages || [];
-
-      if (msgs.length === 0) {
-        list.innerHTML = '<p style="color:var(--text3);text-align:center;padding:24px">No messages yet.</p>';
-        return;
-      }
-
-      list.innerHTML = msgs.map(function(m) {
-        var isInbound = m.direction === 'inbound' || m.direction === 'inbound';
-        var align = isInbound ? 'flex-start' : 'flex-end';
-        var bg = isInbound ? 'var(--surface)' : 'var(--accent)';
-        var color = isInbound ? 'var(--text)' : '#fff';
-        var border = isInbound ? '1px solid var(--border)' : 'none';
-        var who = isInbound ? esc(m.from) : 'To: ' + esc(m.to);
-        var date = m.date_sent ? new Date(m.date_sent).toLocaleString() : '';
-        return '<div style="display:flex;justify-content:' + align + '">'
-          + '<div style="max-width:75%;padding:10px 14px;border-radius:12px;background:' + bg + ';color:' + color + ';border:' + border + ';font-size:0.9rem">'
-          + '<div style="font-size:0.72rem;opacity:0.7;margin-bottom:2px">' + who + (date ? ' &middot; ' + date : '') + '</div>'
-          + esc(m.body)
-          + '</div></div>';
-      }).join('');
-    } catch (e) {
-      list.innerHTML = '<p style="color:var(--danger);text-align:center;padding:24px">Failed to load messages.</p>';
-    }
-  }
-
-  async function sendSmsMessage() {
-    var to = document.getElementById('smsComposeTo').value.trim();
-    var body = document.getElementById('smsComposeBody').value.trim();
-    var errEl = document.getElementById('smsSendError');
-    errEl.textContent = '';
-    if (!to || !body) { errEl.textContent = 'Phone number and message are required.'; return; }
-
-    var btn = document.getElementById('smsSendBtn');
-    btn.disabled = true;
-    btn.textContent = 'Sending...';
-
-    try {
-      var r = await fetch('/api/sms/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: currentSmsAccountId, to: to, body: body })
-      });
-      var d = await r.json();
-      if (d.error) {
-        errEl.textContent = d.error;
-      } else {
-        document.getElementById('smsComposeBody').value = '';
-        loadSmsMessages();
-      }
-    } catch (e) {
-      errEl.textContent = 'Failed to send message.';
-    }
-    btn.disabled = false;
-    btn.textContent = 'Send';
-  }
-
-  async function testSmsConnection() {
-    var sid = document.getElementById('smsSetupSid').value.trim();
-    var token = document.getElementById('smsSetupToken').value.trim();
-    var errEl = document.getElementById('smsSetupError');
-    errEl.textContent = '';
-    if (!sid || !token) { errEl.textContent = 'SID and Auth Token are required.'; return; }
-
-    errEl.style.color = 'var(--text3)';
-    errEl.textContent = 'Testing...';
-    try {
-      var r = await fetch('/api/sms/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_sid: sid, auth_token: token })
-      });
-      var d = await r.json();
-      if (d.success) {
-        errEl.style.color = 'var(--green,#059669)';
-        errEl.textContent = 'Connection successful!';
-      } else {
-        errEl.style.color = 'var(--danger)';
-        errEl.textContent = d.error || 'Connection failed.';
-      }
-    } catch (e) {
-      errEl.style.color = 'var(--danger)';
-      errEl.textContent = 'Connection test failed.';
-    }
-  }
-
-  async function saveSmsAccount() {
-    var name = document.getElementById('smsSetupName').value.trim();
-    var sid = document.getElementById('smsSetupSid').value.trim();
-    var token = document.getElementById('smsSetupToken').value.trim();
-    var phone = document.getElementById('smsSetupPhone').value.trim();
-    var readOnly = document.getElementById('smsSetupReadOnly').checked;
-    var errEl = document.getElementById('smsSetupError');
-    errEl.style.color = 'var(--danger)';
-    errEl.textContent = '';
-
-    if (!name || !sid || !token || !phone) {
-      errEl.textContent = 'All fields are required.';
-      return;
-    }
-
-    try {
-      var r = await fetch('/api/sms/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name, account_sid: sid, auth_token: token, phone_number: phone, read_only: readOnly, user_id: userId })
-      });
-      var d = await r.json();
-      if (d.error) { errEl.textContent = d.error; return; }
-      loadSmsView();
-    } catch (e) {
-      errEl.textContent = 'Failed to save account.';
-    }
-  }
-
-  function showSmsSettings() {
-    var account = smsAccounts.find(function(a) { return a.id === currentSmsAccountId; });
-    if (!account) return;
-    var content = document.getElementById('smsSettingsContent');
-    content.innerHTML = '<div style="font-size:0.9rem;color:var(--text)">'
-      + '<p><strong>Name:</strong> ' + esc(account.name) + '</p>'
-      + '<p><strong>Phone:</strong> ' + esc(account.phone_number) + '</p>'
-      + '<p><strong>SID:</strong> ' + esc(account.account_sid) + '</p>'
-      + '<p><strong>Read-Only:</strong> ' + (account.read_only ? 'Yes' : 'No')
-      + ' <button onclick="UserDash.toggleSmsReadOnly()" style="margin-left:8px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer;font-size:0.8rem">'
-      + (account.read_only ? 'Enable Sending' : 'Disable Sending') + '</button></p>'
-      + '<p style="margin-top:8px;font-size:0.8rem;color:var(--text3)">Webhook URL for inbound SMS:<br><code style="font-size:0.75rem;word-break:break-all">' + location.origin + '/api/sms/webhook/' + esc(account.id) + '</code></p>'
-      + '</div>';
-    document.getElementById('smsSettingsModal').style.display = 'flex';
-  }
-
-  async function toggleSmsReadOnly() {
-    var account = smsAccounts.find(function(a) { return a.id === currentSmsAccountId; });
-    if (!account) return;
-    try {
-      await fetch('/api/sms/accounts/' + encodeURIComponent(account.id), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ read_only: account.read_only ? 0 : 1 })
-      });
-      document.getElementById('smsSettingsModal').style.display = 'none';
-      loadSmsView();
-    } catch (e) {}
-  }
-
-  async function deleteSmsAccountFn() {
-    if (!currentSmsAccountId) return;
-    if (!confirm('Delete this SMS account?')) return;
-    try {
-      await fetch('/api/sms/accounts/' + encodeURIComponent(currentSmsAccountId), {
-        method: 'DELETE'
-      });
-      document.getElementById('smsSettingsModal').style.display = 'none';
-      loadSmsView();
-    } catch (e) {}
-  }
-
-  function refreshSms() { loadSmsMessages(); }
-
   // ====================== Usage Dashboard ======================
 
   async function loadUsageDashboard() {
@@ -4046,7 +3713,6 @@ window.UserDash = (() => {
     toggleAutomation,
     deleteAutomation,
     useAutoTemplate,
-    viewVaultEntry,
     openPromptBuilder,
     updatePromptPreview,
     togglePromptFile,
@@ -4059,14 +3725,6 @@ window.UserDash = (() => {
     applyAlarmTemplate,
     snoozeAlarm,
     dismissAlarm,
-    loadSmsMessages,
-    sendSmsMessage,
-    testSmsConnection,
-    saveSmsAccount,
-    showSmsSettings,
-    toggleSmsReadOnly,
-    deleteSmsAccount: deleteSmsAccountFn,
-    refreshSms,
     loadUsageDashboard,
     toggleFullscreen,
     toggleApiKey,
@@ -4080,8 +3738,6 @@ window.UserDash = (() => {
     loadProjects,
     loadAutomations,
     renderAutoTemplates,
-    loadSmsView,
-    loadVault,
     renderActions,
     initTalkView,
     loadHeartbeat,

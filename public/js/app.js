@@ -286,10 +286,8 @@
       if (name === 'projects' && UD.loadProjects) UD.loadProjects();
       else if (name === 'heartbeat' && UD.loadHeartbeat) UD.loadHeartbeat();
       else if (name === 'alarms' && UD.loadAlarms) UD.loadAlarms();
-      else if (name === 'vault' && UD.loadVault) UD.loadVault();
       else if (name === 'apikeys' && UD.loadUsageDashboard) UD.loadUsageDashboard();
       else if (name === 'actions' && UD.renderActions) UD.renderActions();
-      else if (name === 'sms' && UD.loadSmsView) UD.loadSmsView();
       else if (name === 'talk' && UD.initTalkView) UD.initTalkView();
     }
   }
@@ -2462,6 +2460,18 @@
   const TRAINING_BTNS = ['btnTrainingAudit', 'btnTrainingModify', 'btnTrainingTrain'];
   function setTrainingButtons(enabled) {
     TRAINING_BTNS.forEach(id => { const b = $(id); if (b) b.disabled = !enabled; });
+    const stop = $('btnTrainingStop');
+    if (stop) stop.disabled = enabled; // stop is available exactly when the steps aren't
+  }
+  async function stopTraining() {
+    try {
+      const d = await postJson('/api/training/stop', {});
+      if (!d.ok) { toast(d.error || 'Stop failed', 'error'); return; }
+      toast('Stopped ' + d.stopped, 'info');
+      refreshTrainingStatus();
+    } catch (e) {
+      toast('Stop failed: ' + e.message, 'error');
+    }
   }
   async function startTrainingStep(step, body) {
     const tail = $('trainingTail'), chip = $('trainingStatus');
@@ -2488,6 +2498,7 @@
       tail.scrollTop = tail.scrollHeight;
       if (d.running) {
         chip.textContent = d.running + ' running';
+        setTrainingButtons(false);
       } else {
         if (STATE.trainingPollTimer) { clearInterval(STATE.trainingPollTimer); STATE.trainingPollTimer = null; }
         chip.textContent = 'idle';
@@ -2498,34 +2509,52 @@
       tail.textContent = 'Failed: ' + e.message;
     }
   }
+  // The Alpha Stack view embeds the stack's OWN webapp (its full UI, served on
+  // 127.0.0.1:8765). The webapp is spawned on demand by the server — we just
+  // check it's up, start it if not, then load the iframe. The src is set once
+  // so re-opening the view doesn't reload the webapp out from under the user.
+  function showAlphaStackFrame() {
+    const chip = $('alphaStackStatus'), frame = $('alphaStackFrame'), fallback = $('alphaStackFallback');
+    const meta = document.querySelector('#view-alphastack .chat-meta-row');
+    chip.textContent = 'ready';
+    fallback.style.display = 'none';
+    frame.style.display = '';
+    // Hide Warden's chip/refresh row while live — the webapp has its own
+    // top chrome, and a second header is what made it read as a frame.
+    if (meta) meta.style.display = 'none';
+    // Use the dashboard's own hostname, not a hardcoded localhost: the
+    // dashboard is reached from other devices (phone), where localhost
+    // would point at the phone itself and the iframe would die.
+    // ?embed=1 → webapp hides its own sidebar (no dashboard-in-dashboard);
+    // &theme= → webapp matches Warden's theme (synced live on toggle below).
+    if (!frame.getAttribute('src'))
+      frame.setAttribute('src', 'http://' + location.hostname + ':8765/?embed=1&theme='
+        + (document.documentElement.getAttribute('data-theme') || 'dark'));
+  }
   async function refreshAlphaStack() {
-    const inv = $('alphaStackInventory'), paper = $('alphaStackPaper'), runs = $('alphaStackRuns'),
-          logEl = $('alphaStackLog'), chip = $('alphaStackStatus');
+    const chip = $('alphaStackStatus'), fallback = $('alphaStackFallback');
+    // (Re)show the chip/refresh row while checking; showAlphaStackFrame hides
+    // it again once the webapp is live.
+    const meta = document.querySelector('#view-alphastack .chat-meta-row');
+    if (meta) meta.style.display = '';
     try {
       const d = await api('/api/alphastack/status');
-      if (!d.ok) { chip.textContent = 'error'; inv.textContent = d.error || 'unavailable'; return; }
-      const i = d.inventory || {};
-      chip.textContent = i.rootPresent ? (i.venvPython ? 'ready' : 'no venv') : 'not installed';
-      inv.innerHTML = [
-        i.venvPython ? `✅ venv python (bin/python, relocated → /opt/Warden/trading)` : '❌ venv python missing',
-        i.kronos ? '✅ Kronos forecaster' : '❌ Kronos missing',
-        i.tradingagents ? '✅ TradingAgents' : '❌ TradingAgents missing',
-        `scripts: ${i.scripts} py · webapp: ${i.webapp} py`,
-      ].map(l => `<div>${l}</div>`).join('');
-      const p = d.paper || {};
-      paper.innerHTML = (p && Object.keys(p).length)
-        ? `<div>capital: ${esc(String(p.capital ?? p.starting_capital ?? '?'))} · cash: ${esc(String(p.cash ?? '?'))}</div>` +
-          (p.positions ? Object.entries(p.positions).map(([k, v]) => `<div>• ${esc(k)}: ${esc(JSON.stringify(v))}</div>`).join('') : '') +
-          (d.state ? `<div style="margin-top:6px">state: ${esc(JSON.stringify(d.state).slice(0, 300))}</div>` : '')
-        : 'No paper-trading state yet.';
-      runs.innerHTML = (d.runs && d.runs.length)
-        ? d.runs.map(r => `<div>• ${esc(JSON.stringify(r).slice(0, 200))}</div>`).join('')
-        : 'No runs recorded yet.';
-      logEl.textContent = d.logTail || '(no logs)';
-      logEl.scrollTop = logEl.scrollHeight;
+      if (!d.ok) { chip.textContent = 'error'; fallback.style.display = ''; fallback.textContent = d.error || 'unavailable'; return; }
+      if (d.webappUp) { showAlphaStackFrame(); return; }
+      chip.textContent = 'starting webapp…';
+      fallback.style.display = '';
+      fallback.textContent = 'Starting the alpha-stack webapp…';
+      const s = await postJson('/api/alphastack/webapp/start', {});
+      if (!s.ok) {
+        chip.textContent = 'webapp down';
+        fallback.textContent = s.error || 'failed to start the webapp';
+        return;
+      }
+      showAlphaStackFrame();
     } catch (e) {
       chip.textContent = 'error';
-      inv.textContent = 'Failed: ' + e.message;
+      fallback.style.display = '';
+      fallback.textContent = 'Failed: ' + e.message;
     }
   }
 
@@ -2751,6 +2780,11 @@
     const next = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     try { localStorage.setItem('dockbox-theme', next); } catch {}
+    // Keep an embedded Alpha Stack webapp in theme sync with Warden.
+    try {
+      const f = $('alphaStackFrame');
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'as-theme', theme: next }, '*');
+    } catch {}
   }
 
   // ============================================================= Notifications (SSE + polling)
@@ -2820,6 +2854,55 @@
 
     // Rail nav
     qsa('.rail-btn[data-view]').forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
+
+    // Mobile "More" bottom sheet (visible only ≤720px via responsive.css).
+    // Rows are generated from the rail's own buttons (+ group labels), so the
+    // sheet always mirrors the rail. Footer actions (audit/settings/add page)
+    // proxy to their real buttons so we don't duplicate behavior.
+    (function initNavSheet() {
+      const sheet = $('navSheet');
+      if (!sheet) return;
+      const body = sheet.querySelector('.navsheet-body');
+      const PRIMARY = ['chat', 'alphastack', 'talk'];
+      const svgOf = (btn) => { const s = btn.querySelector('svg'); return s ? s.outerHTML : ''; };
+      qsa('.rail-nav > *').forEach(el => {
+        if (el.classList.contains('rail-group-label')) {
+          const h = document.createElement('div');
+          h.className = 'navsheet-group';
+          h.textContent = el.textContent;
+          body.appendChild(h);
+          return;
+        }
+        if (!el.classList.contains('rail-btn') || !el.dataset.view) return;
+        if (PRIMARY.includes(el.dataset.view)) return; // already bottom tabs
+        const row = document.createElement('button');
+        row.className = 'navsheet-row';
+        row.dataset.view = el.dataset.view;
+        row.innerHTML = `<span class="navsheet-ic">${svgOf(el)}</span><span class="navsheet-text">${el.textContent.trim()}</span>`;
+        body.appendChild(row);
+      });
+      const actionMap = { btnAudit: 'Run Audit', btnSettings: 'Settings', btnAddPage: 'Add Page' };
+      qsa('.rail-footer .rail-btn').forEach(el => {
+        if (!actionMap[el.id]) return;
+        const row = document.createElement('button');
+        row.className = 'navsheet-row';
+        row.dataset.action = el.id;
+        row.innerHTML = `<span class="navsheet-ic">${svgOf(el)}</span><span class="navsheet-text">${actionMap[el.id]}</span>`;
+        body.appendChild(row);
+      });
+      $('btnNavMore')?.addEventListener('click', () => sheet.classList.toggle('open'));
+      sheet.addEventListener('click', (e) => {
+        const row = e.target.closest('.navsheet-row');
+        if (row) {
+          sheet.classList.remove('open');
+          if (row.dataset.view) switchView(row.dataset.view);
+          else if (row.dataset.action) $(row.dataset.action)?.click();
+          return;
+        }
+        if (!e.target.closest('.navsheet')) sheet.classList.remove('open'); // backdrop
+      });
+    })();
+
     $('btnSettings').addEventListener('click', openSettings);
     $('btnAddPage').addEventListener('click', openAddPage);
     $('btnAudit').addEventListener('click', openAuditModal);
@@ -2932,12 +3015,20 @@
       }
     });
     $('btnRefreshLogs').addEventListener('click', refreshProcessLogs);
-    $('btnAlphaStackRefresh').addEventListener('click', refreshAlphaStack);
+    $('btnAlphaStackRefresh').addEventListener('click', async () => {
+      await refreshAlphaStack();
+      const frame = $('alphaStackFrame');
+      if (frame.getAttribute('src')) frame.setAttribute('src', frame.getAttribute('src')); // force a reload
+    });
     $('btnTrainingAudit').addEventListener('click', () => startTrainingStep('audit', { days: parseInt($('trainingDays').value, 10) || 3 }));
     $('btnTrainingModify').addEventListener('click', () => startTrainingStep('modify', {}));
     $('btnTrainingTrain').addEventListener('click', () => {
       if (confirm('Train 1 epoch? This clears VRAM and takes a long time.'))
         startTrainingStep('train', {});
+    });
+    $('btnTrainingStop').addEventListener('click', () => {
+      if (confirm('Stop the running training step? An aborted train leaves a partial adapter.'))
+        stopTraining();
     });
 
     // Make openHelp / openAuditModal callable from inline onclick handlers

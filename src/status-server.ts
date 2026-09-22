@@ -39,20 +39,6 @@ import {
 } from './types.js';
 import type { RegisteredGroup } from './group-folder.js';
 import {
-  scrubFile,
-  loadVaultIndex,
-  getVaultEntry,
-  readScrubbed,
-  readMapping,
-  deleteVaultEntry,
-  updateVaultEntryStatus,
-  unscrub,
-  loadDictionary,
-  saveDictionary,
-  VAULT_DIR,
-  SCRUBBED_DIR,
-} from './scrubber.js';
-import {
   addMcpServer,
   loadMcpServers,
   removeMcpServer,
@@ -91,13 +77,6 @@ import {
   createEmailDraft,
   getEmailDraftsByAccount,
   deleteEmailDraft,
-  createSmsAccount,
-  getSmsAccounts,
-  getSmsAccount,
-  updateSmsAccount,
-  deleteSmsAccount,
-  storeSmsMessage,
-  getSmsMessages,
   insertNotification,
   getNotifications,
   getUnreadNotificationCount,
@@ -208,7 +187,6 @@ function probeLocalPort(port: number, path: string): Promise<boolean> {
   });
 }
 import { fetchEmails, sendEmail, testConnection } from './email.js';
-import { sendSMS, fetchMessages as fetchSmsMessages, testConnection as testSmsConnection, testCredentials as testSmsCredentials } from './sms.js';
 
 const STATUS_PORT = parseInt(process.env.STATUS_PORT || '3200', 10);
 
@@ -1355,18 +1333,6 @@ async function handleFiles(
       return json(res, { files });
     }
 
-    // Build set of scrubbed file paths for badge indicators
-    const vaultIndex = loadVaultIndex();
-    const scrubbedPaths = new Set<string>();
-    for (const entry of vaultIndex) {
-      if (entry.status === 'scrubbed') {
-        scrubbedPaths.add(entry.originalPath);
-        // Also mark the .md replacement
-        const mdPath = entry.originalPath.replace(/\.[^.]+$/, '.md');
-        scrubbedPaths.add(mdPath);
-      }
-    }
-
     // Hide internal/system entries from file browser
     const HIDDEN_NAMES = new Set([
       'logs', 'conversations', '.claude',
@@ -1376,16 +1342,14 @@ async function handleFiles(
       .map((name) => {
       try {
         const s = fs.statSync(path.join(full, name));
-        const fullPath = path.join(full, name);
         return {
           name,
           type: s.isDirectory() ? 'dir' : 'file',
           size: s.size,
           mtime: s.mtime.toISOString(),
-          scrubbed: scrubbedPaths.has(fullPath),
         };
       } catch {
-        return { name, type: 'file', size: 0, mtime: '', scrubbed: false };
+        return { name, type: 'file', size: 0, mtime: '' };
       }
     });
     // No per-user folder filtering in single-user Warden.
@@ -2109,21 +2073,6 @@ function searchFiles(
   }
 }
 
-function searchVaultEntries(
-  query: string,
-  limit: number,
-): Array<{ id: string; originalName: string; originalPath: string }> {
-  const index = loadVaultIndex();
-  const lq = query.toLowerCase();
-  return index
-    .filter(
-      (e: any) =>
-        e.originalName?.toLowerCase().includes(lq) ||
-        e.originalPath?.toLowerCase().includes(lq),
-    )
-    .slice(0, limit);
-}
-
 // --- V2 API handlers ---
 
 async function handleSearch(
@@ -2141,13 +2090,12 @@ async function handleSearch(
   }));
   const files: Array<{ name: string; path: string; type: string }> = [];
   searchFiles(GROUPS_DIR, q, files, 10);
-  const vault = searchVaultEntries(q, 10);
   const tasks = searchTasks(q, 10).map((t) => ({
     id: t.id,
     prompt_snippet: t.prompt.slice(0, 200),
     status: t.status,
   }));
-  json(res, { messages, files, vault, tasks });
+  json(res, { messages, files, tasks });
 }
 
 function handleActivity(
@@ -2310,7 +2258,6 @@ function handleSkills(res: http.ServerResponse): void {
   })();
   // Container skill detection
   const skillsDir = path.resolve(process.cwd(), 'data', 'skills');
-  installed['scrub'] = fs.existsSync(path.join(skillsDir, 'scrub', 'SKILL.md'));
   installed['agent-browser'] = fs.existsSync(
     path.join(skillsDir, 'agent-browser', 'SKILL.md'),
   );
@@ -2440,142 +2387,7 @@ async function handleTasksCrud(
   return error(res, 'Not found', 404);
 }
 
-// --- Vault handlers ---
-
-async function handleVault(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  pathname: string,
-): Promise<void> {
-  // User-scoped folder filter (set by user session handler)
-  const userFolders: Set<string> | null = (req as any)._userFolders || null;
-  function isAllowedPath(filePath: string): boolean {
-    if (!userFolders) return true; // admin — no restriction
-    const rel = path.relative(GROUPS_DIR, filePath);
-    const topLevel = rel.split(path.sep)[0];
-    return userFolders.has(topLevel);
-  }
-  // POST /api/vault/scrub — scrub selected files
-  if (req.method === 'POST' && pathname === '/api/vault/scrub') {
-    const body = parseJson(await parseBody(req)) as {
-      paths?: string[];
-      useOllama?: boolean;
-    };
-    if (!body.paths || !Array.isArray(body.paths) || body.paths.length === 0) {
-      return error(res, 'paths array required');
-    }
-
-    const results: Array<{ path: string; entry?: any; error?: string; warnings?: string[]; ollamaUsed?: boolean }> = [];
-    for (const relPath of body.paths) {
-      const full = safePath(relPath);
-      if (!full) {
-        results.push({ path: relPath, error: 'Invalid path' });
-        continue;
-      }
-      if (!isAllowedPath(full)) {
-        results.push({ path: relPath, error: 'Access denied' });
-        continue;
-      }
-      if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) {
-        results.push({ path: relPath, error: 'Not a file' });
-        continue;
-      }
-      // Skip files larger than 20MB
-      if (fs.statSync(full).size > 20 * 1024 * 1024) {
-        results.push({ path: relPath, error: 'File too large (>20MB)' });
-        continue;
-      }
-      try {
-        const { entry, warnings, ollamaUsed } = await scrubFile(full, body.useOllama !== false);
-        results.push({ path: relPath, entry, warnings, ollamaUsed });
-      } catch (e: any) {
-        results.push({ path: relPath, error: e.message });
-      }
-    }
-    return json(res, { results });
-  }
-
-  // POST /api/vault/dictionary — update dictionary
-  if (req.method === 'POST' && pathname === '/api/vault/dictionary') {
-    const body = parseJson(await parseBody(req)) as Record<string, string[]>;
-    saveDictionary(body as any);
-    return json(res, { ok: true });
-  }
-
-  // GET /api/vault/dictionary
-  if (req.method === 'GET' && pathname === '/api/vault/dictionary') {
-    return json(res, loadDictionary());
-  }
-
-  // GET /api/vault — list entries (scoped to user's folders if applicable)
-  if (req.method === 'GET' && pathname === '/api/vault') {
-    const entries = loadVaultIndex().filter((e: any) => isAllowedPath(e.originalPath || ''));
-    return json(res, { entries });
-  }
-
-  // Routes with ID: /api/vault/{id}/...
-  const idMatch = pathname.match(
-    /^\/api\/vault\/([^/]+)\/(scrubbed|mapping|recombine)$/,
-  );
-  if (idMatch) {
-    const [, id, action] = idMatch;
-
-    const entry = getVaultEntry(id);
-    if (entry && !isAllowedPath(entry.originalPath || '')) return error(res, 'Access denied', 403);
-    if (!entry) return error(res, 'Vault entry not found', 404);
-
-    if (req.method === 'GET' && action === 'scrubbed') {
-      const content = readScrubbed(id);
-      if (!content) return error(res, 'Scrubbed file not found', 404);
-      return json(res, { content, entry });
-    }
-
-    if (req.method === 'GET' && action === 'mapping') {
-      const mapping = readMapping(id);
-      if (!mapping) return error(res, 'Mapping not found', 404);
-      return json(res, { mapping, entry });
-    }
-
-    if (req.method === 'POST' && action === 'recombine') {
-      const scrubbed = readScrubbed(id);
-      const mapping = readMapping(id);
-      if (!scrubbed || !mapping) return error(res, 'Missing vault data', 404);
-      const recombined = unscrub(scrubbed, mapping);
-
-      const ext = path.extname(entry.originalName).toLowerCase();
-      const isBinary = ext === '.docx' || ext === '.pdf';
-
-      if (isBinary && entry.originalPath && fs.existsSync(path.dirname(entry.originalPath))) {
-        // Restore original binary from vault
-        const vaultBinary = path.join(SCRUBBED_DIR, `${id}${ext}`);
-        if (fs.existsSync(vaultBinary)) {
-          fs.copyFileSync(vaultBinary, entry.originalPath);
-        }
-        // Remove the scrubbed .md
-        const mdPath = entry.originalPath.replace(/\.[^.]+$/, '.md');
-        if (fs.existsSync(mdPath)) fs.unlinkSync(mdPath);
-      } else if (entry.originalPath && fs.existsSync(path.dirname(entry.originalPath))) {
-        fs.writeFileSync(entry.originalPath, recombined);
-      }
-
-      updateVaultEntryStatus(id, 'recombined');
-      return json(res, {
-        content: recombined,
-        entry: { ...entry, status: 'recombined' },
-      });
-    }
-  }
-
-  // DELETE /api/vault/{id}
-  const deleteMatch = pathname.match(/^\/api\/vault\/([^/]+)$/);
-  if (req.method === 'DELETE' && deleteMatch) {
-    const ok = deleteVaultEntry(deleteMatch[1]);
-    if (!ok) return error(res, 'Entry not found', 404);
-    return json(res, { ok: true });
-  }
-
-  return error(res, 'Not found', 404);
-}
+// --- Vault handlers removed — /api/vault is 410-gated (local agent, no PII vault). ---
 
 // handleWorkTasks removed — /api/work-tasks is 410-gated at the routing layer.
 
@@ -3042,171 +2854,6 @@ export function startStatusServer(d: StatusDeps): void {
       const draftId = decodeURIComponent(deleteDraftMatch[1]);
       const deleted = deleteEmailDraft(draftId);
       return json(res, { ok: deleted });
-    }
-
-    return error(res, 'Not found', 404);
-  }
-
-  async function handleSms(
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    pathname: string,
-    params: URLSearchParams,
-    scopeUserId?: string,
-  ): Promise<void> {
-    // POST /api/sms/webhook/:accountId — Twilio inbound webhook (public, validated
-    // via X-Twilio-Signature against the account's auth token)
-    const webhookMatch = pathname.match(/^\/api\/sms\/webhook\/([^/]+)$/);
-    if (req.method === 'POST' && webhookMatch) {
-      const accountId = decodeURIComponent(webhookMatch[1]);
-      const account = getSmsAccount(accountId);
-      if (!account) return error(res, 'Account not found', 404);
-      const raw = await parseBody(req);
-      // Twilio posts application/x-www-form-urlencoded; accept JSON for manual/test posts
-      const contentType = (req.headers['content-type'] as string | undefined) || '';
-      let fields: Record<string, string> = {};
-      if (contentType.includes('json')) {
-        try { fields = (parseJson(raw) as Record<string, string>) || {}; } catch { fields = {}; }
-      } else {
-        for (const [k, v] of new URLSearchParams(raw.toString('utf-8'))) fields[k] = v;
-      }
-      // Validate X-Twilio-Signature: base64(HMAC-SHA1(authToken, fullUrl + sorted key+value pairs)).
-      // If the account has no auth token configured, keep accepting (legacy setups) but warn loudly.
-      if (account.auth_token) {
-        const signature = (req.headers['x-twilio-signature'] as string | undefined) || '';
-        const protoHeader = req.headers['x-forwarded-proto'];
-        const proto = (typeof protoHeader === 'string' && protoHeader.split(',')[0].trim()) || 'https';
-        const host = (req.headers['x-forwarded-host'] as string | undefined) || req.headers.host || '';
-        const fullUrl = proto + '://' + host + (req.url || pathname);
-        const payload = fullUrl + Object.keys(fields).sort().map((k) => k + fields[k]).join('');
-        const expected = crypto.createHmac('sha1', account.auth_token).update(Buffer.from(payload, 'utf-8')).digest();
-        let valid = false;
-        try {
-          const provided = Buffer.from(signature, 'base64');
-          valid = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
-        } catch { valid = false; }
-        if (!valid) {
-          logger.warn({ accountId, url: fullUrl }, 'Rejected SMS webhook: invalid or missing X-Twilio-Signature');
-          return error(res, 'Invalid signature', 403);
-        }
-      } else {
-        logger.warn({ accountId }, 'SMS account has no auth token — accepting webhook WITHOUT Twilio signature validation');
-      }
-      const from = fields.From || fields.from || '';
-      const msgBody = fields.Body || fields.body || '';
-      const sid = fields.MessageSid || fields.messageSid || '';
-      if (from && msgBody) {
-        storeSmsMessage({
-          account_id: accountId,
-          direction: 'inbound',
-          from_number: from,
-          to_number: account.phone_number,
-          body: msgBody,
-          twilio_sid: sid,
-          status: 'received',
-        });
-      }
-      res.writeHead(200, { 'Content-Type': 'text/xml' });
-      res.end('<Response/>');
-      return;
-    }
-
-    // GET /api/sms/accounts
-    if (req.method === 'GET' && pathname === '/api/sms/accounts') {
-      // Scoped user sessions only ever see their own accounts (ignore ?userId)
-      const userId = scopeUserId ?? (params.get('userId') || undefined);
-      const accounts = getSmsAccounts(userId || null);
-      const safe = accounts.map((a) => ({ ...a, auth_token: '***' }));
-      return json(res, { accounts: safe });
-    }
-
-    // POST /api/sms/accounts
-    if (req.method === 'POST' && pathname === '/api/sms/accounts') {
-      const body = parseJson(await parseBody(req)) as any;
-      if (!body.name || !body.phone_number || !body.account_sid || !body.auth_token) {
-        return error(res, 'Missing required fields: name, phone_number, account_sid, auth_token');
-      }
-      const account = createSmsAccount({
-        name: body.name,
-        phone_number: body.phone_number,
-        account_sid: body.account_sid,
-        auth_token: body.auth_token,
-        read_only: body.read_only !== false,
-        enabled: body.enabled !== false,
-        // Scoped user sessions always own the accounts they create
-        user_id: scopeUserId ?? (body.user_id || null),
-      });
-      return json(res, { ok: true, account: { ...account, auth_token: '***' } }, 201);
-    }
-
-    // PUT /api/sms/accounts/:id
-    const smsAccountMatch = pathname.match(/^\/api\/sms\/accounts\/([^/]+)$/);
-    // Ownership gate for mutations: a scoped user may only touch their own accounts.
-    // 404 (not 403) so account IDs of other tenants are not disclosed.
-    if (smsAccountMatch && scopeUserId && (req.method === 'PUT' || req.method === 'DELETE')) {
-      const existing = getSmsAccount(decodeURIComponent(smsAccountMatch[1]));
-      if (!existing || existing.user_id !== scopeUserId) return error(res, 'Account not found', 404);
-    }
-    if (req.method === 'PUT' && smsAccountMatch) {
-      const id = decodeURIComponent(smsAccountMatch[1]);
-      const body = parseJson(await parseBody(req)) as any;
-      const updated = updateSmsAccount(id, body);
-      if (!updated) return error(res, 'Account not found', 404);
-      const account = getSmsAccount(id);
-      return json(res, { ok: true, account: account ? { ...account, auth_token: '***' } : null });
-    }
-
-    // DELETE /api/sms/accounts/:id
-    if (req.method === 'DELETE' && smsAccountMatch) {
-      const id = decodeURIComponent(smsAccountMatch[1]);
-      const deleted = deleteSmsAccount(id);
-      return json(res, { ok: deleted });
-    }
-
-    // GET /api/sms/messages
-    if (req.method === 'GET' && pathname === '/api/sms/messages') {
-      const accountId = params.get('accountId');
-      if (!accountId) return error(res, 'accountId required');
-      const limit = parseInt(params.get('limit') || '50', 10);
-      const from = params.get('from') || undefined;
-      const source = params.get('source') || 'twilio'; // 'twilio' | 'local'
-      try {
-        if (source === 'local') {
-          const messages = getSmsMessages(accountId, limit, from);
-          return json(res, { messages });
-        }
-        const messages = await fetchSmsMessages(accountId, limit, from);
-        return json(res, { messages });
-      } catch (e: any) {
-        return error(res, e.message, 500);
-      }
-    }
-
-    // POST /api/sms/send
-    if (req.method === 'POST' && pathname === '/api/sms/send') {
-      const body = parseJson(await parseBody(req)) as any;
-      if (!body.accountId || !body.to || !body.body) {
-        return error(res, 'accountId, to, and body are required');
-      }
-      const result = await sendSMS(body.accountId, body.to, body.body);
-      if (!result.success) {
-        return json(res, { ok: false, error: result.error }, result.error?.includes('Read Only') ? 403 : 500);
-      }
-      return json(res, { ok: true, messageSid: result.messageSid });
-    }
-
-    // POST /api/sms/test
-    if (req.method === 'POST' && pathname === '/api/sms/test') {
-      const body = parseJson(await parseBody(req)) as any;
-      if (body.accountId) {
-        const result = await testSmsConnection(body.accountId);
-        return json(res, result);
-      }
-      if (body.account_sid && body.auth_token) {
-        const result = await testSmsCredentials(body.account_sid, body.auth_token);
-        return json(res, result);
-      }
-      return error(res, 'accountId or (account_sid + auth_token) required');
     }
 
     return error(res, 'Not found', 404);
@@ -3873,6 +3520,14 @@ export function startStatusServer(d: StatusDeps): void {
         return;
       }
 
+      // The PII vault was removed 2026-09-22 — Warden is a local agent, no
+      // scrubbing/recombination pipeline. 410 the whole route tree.
+      if (pathname.startsWith('/api/vault')) {
+        res.writeHead(410, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'vault removed (local agent)' }));
+        return;
+      }
+
       // --- Split-pane HTTP proxies (terminal HTML/assets + noVNC HTML/assets) ---
       // Container runtime is gone, so the ttyd/websockify split-pane is dead.
       // 410 the HTTP assets; the WS upgrade handler below also short-circuits.
@@ -3886,11 +3541,6 @@ export function startStatusServer(d: StatusDeps): void {
 
       // --- Public routes (no auth required) ---
 
-      // POST /api/sms/webhook/:accountId — Twilio inbound (public, no auth)
-      const smsWebhookMatch = pathname.match(/^\/api\/sms\/webhook\/([^/]+)$/);
-      if (smsWebhookMatch && req.method === 'POST') {
-        return await handleSms(req, res, pathname, params);
-      }
 
       // NOTE: /api/signup, /api/forgot-password, /api/reset-password/*, and
       // /api/users/:id/email were removed with the multi-user layer. They are
@@ -4238,6 +3888,24 @@ export function startStatusServer(d: StatusDeps): void {
           if (pathname === '/api/training/train' && req.method === 'POST') {
             return startTrainingStep('train');
           }
+          if (pathname === '/api/training/stop' && req.method === 'POST') {
+            let running: string | null = null;
+            for (const step of Object.keys(TRAINING_STEPS)) {
+              if (stepRunning(step)) { running = step; break; }
+            }
+            if (!running) return json(res, { ok: false, error: 'No training step is running' });
+            // The step was spawned detached (own session), so its pid IS the
+            // process-group id — killing the group takes down the whole tree
+            // (bash wrapper → atlasorch.sh → torchrun), not just the wrapper.
+            const r = spawnSync('pgrep', ['-f', TRAINING_STEPS[running].marker], { encoding: 'utf-8' });
+            const pids = (r.stdout || '').trim().split('\n').filter(Boolean).map(Number).filter((p) => Number.isFinite(p));
+            for (const pid of pids) {
+              try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch {} }
+            }
+            try { fs.appendFileSync(stepLog(running), `\n[warden] ${running} stopped by user at ${new Date().toLocaleString()}\n`); } catch {}
+            logger.info({ step: running, pids }, 'training step stopped by user');
+            return json(res, { ok: true, stopped: running });
+          }
           if (pathname === '/api/training/status' && req.method === 'GET') {
             let running: string | null = null;
             for (const step of Object.keys(TRAINING_STEPS)) {
@@ -4287,40 +3955,61 @@ export function startStatusServer(d: StatusDeps): void {
         }
       }
       // Alpha Stack (2026-09-22): the trading research stack copied from the
-      // old home into /opt/Warden/trading — venv-root layout with Kronos,
-      // TradingAgents, scripts, and a webapp. Read-only status surface for
-      // the dashboard's Alpha Stack view (red rail button).
+      // old home into /opt/Warden/trading. The dashboard view embeds the
+      // stack's OWN webapp (trading/webapp — stdlib server bound to 0.0.0.0
+      // so the dashboard's mobile/LAN clients reach it; probed here on the
+      // loopback). The webapp is not a daemon: it is spawned on
+      // demand by the start route below (same detached-spawn pattern as the
+      // training loop steps) and the status route reports whether it is up.
+      const alphastackWebappUp = async () => {
+        try {
+          const resp = await fetch('http://127.0.0.1:8765/api/status', { signal: AbortSignal.timeout(1000) });
+          return resp.ok;
+        } catch { return false; }
+      };
       if (pathname === '/api/alphastack/status' && req.method === 'GET') {
         try {
           const root = path.join(process.cwd(), 'trading');
-          const stateDir = path.join(root, '.alpha-stack');
           const exists = (p: string) => fs.existsSync(p);
           const inventory = {
             root,
             rootPresent: exists(root),
             venvPython: exists(path.join(root, 'bin', 'python')),
-            kronos: exists(path.join(root, 'Kronos', 'model')),
-            tradingagents: exists(path.join(root, 'tradingagents', 'tradingagents')),
-            scripts: exists(path.join(root, 'scripts')) ? fs.readdirSync(path.join(root, 'scripts')).filter((f: string) => f.endsWith('.py')).length : 0,
-            webapp: exists(path.join(root, 'webapp')) ? fs.readdirSync(path.join(root, 'webapp')).filter((f: string) => f.endsWith('.py')).length : 0,
+            webapp: exists(path.join(root, 'webapp', 'app.py')),
           };
-          const readJson = (p: string) => {
-            try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
-          };
-          const paper = readJson(path.join(stateDir, 'paper.json'));
-          const state = readJson(path.join(stateDir, 'state.json'));
-          let runs: any[] = [];
-          try {
-            const lines = fs.readFileSync(path.join(stateDir, 'runs.jsonl'), 'utf-8').trim().split('\n').filter(Boolean);
-            runs = lines.slice(-10).reverse().map((l) => { try { return JSON.parse(l); } catch { return { raw: l.slice(0, 120) }; } });
-          } catch {}
-          let logTail = '';
-          try {
-            const logDir = path.join(root, 'logs');
-            const logs = fs.readdirSync(logDir).map((f) => ({ f, m: fs.statSync(path.join(logDir, f)).mtimeMs })).sort((a, b) => b.m - a.m);
-            if (logs.length) logTail = fs.readFileSync(path.join(logDir, logs[0].f), 'utf-8').trim().split('\n').slice(-40).join('\n');
-          } catch {}
-          return json(res, { ok: true, inventory, paper, state, runs, logTail });
+          return json(res, { ok: true, webappUp: await alphastackWebappUp(), inventory });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname === '/api/alphastack/webapp/start' && req.method === 'POST') {
+        try {
+          if (await alphastackWebappUp()) return json(res, { ok: true, up: true, note: 'already running' });
+          const root = path.join(process.cwd(), 'trading');
+          const py = path.join(root, 'bin', 'python');
+          const script = path.join(root, 'webapp', 'app.py');
+          if (!fs.existsSync(py) || !fs.existsSync(script))
+            return json(res, { ok: false, error: 'trading venv or webapp missing' });
+          // A wedged instance that still holds 8765 without serving would block
+          // the fresh spawn — kill any stale copy first (it is a plain stdlib
+          // server; state lives on disk, so a restart loses nothing).
+          try { spawnSync('pkill', ['-f', 'webapp/app.py'], { stdio: 'ignore' }); } catch {}
+          fs.mkdirSync(path.join(root, 'logs'), { recursive: true });
+          const out = fs.openSync(path.join(root, 'logs', 'webapp.log'), 'a');
+          const child = spawn(py, [script], { detached: true, stdio: ['ignore', out, out], cwd: root });
+          child.unref();
+          fs.closeSync(out);
+          logger.info({ pid: child.pid }, 'alpha-stack webapp started');
+          // Bounded readiness wait — the stdlib server binds in well under a
+          // second; never hand back "started" for a server that never came up.
+          let up = false;
+          for (let i = 0; i < 10 && !up; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+            up = await alphastackWebappUp();
+          }
+          return up
+            ? json(res, { ok: true, up: true, pid: child.pid })
+            : json(res, { ok: false, error: 'webapp did not come up within 5s — check trading/logs/webapp.log' });
         } catch (err: any) {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }
@@ -4381,8 +4070,6 @@ export function startStatusServer(d: StatusDeps): void {
         return handleTasks(res);
       if (pathname.startsWith('/api/tasks'))
         return await handleTasksCrud(req, res, pathname);
-      if (pathname.startsWith('/api/vault'))
-        return await handleVault(req, res, pathname);
 
       // GET /api/memory-tree — the memory-tree taxonomy (data/memory-tree.json).
       // Serves the eyes_ears memory galaxy: the STRUCTURE of the brain (28 base
@@ -5090,8 +4777,6 @@ export function startStatusServer(d: StatusDeps): void {
       if (pathname === '/api/skills') return handleSkills(res);
       if (pathname.startsWith('/api/email'))
         return await handleEmail(req, res, pathname, params);
-      if (pathname.startsWith('/api/sms'))
-        return await handleSms(req, res, pathname, params);
       if (pathname.startsWith('/api/oauth'))
         return await handleOAuth(req, res, pathname, params);
 

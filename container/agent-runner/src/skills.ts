@@ -72,6 +72,14 @@ function stripTier<T extends any[]>(tools: T): Tool[] {
 /**
  * The always-on meta tools + basic file ops exposed to the LLM at every turn.
  * These live in the "core" builtin skill and are auto-activated.
+ *
+ * Descriptions are one-line nested JSON, not prose: the seats reading this are
+ * granite-family, and granite reads structure (same shape as the browser-gate
+ * TOOL_JSON table and the orchestrator prompt). Core is auto-activated on EVERY
+ * turn, so this block is the most re-read tool text in the system — prose here
+ * cost more per turn than it taught. Tool descriptions stay ≤200 chars on ONE
+ * line (stripTier clamps longer ones to their first line, slicing mid-JSON);
+ * param descriptions are not clamped and carry the detail.
  */
 export function buildAlwaysOnTools(): Tool[] {
   return [
@@ -79,12 +87,11 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'activate_skill',
-        description:
-          'Load a skill\'s tools into your context for this turn. Call this before using any tool that is not in your current tool list. The skill index in your system prompt lists the available names.',
+        description: '{"what":"load a skill tools into this turn","source":"a name from the skill index in your system prompt","use_when":"before calling any tool not in your current tool list"}',
         parameters: {
           type: 'object',
           properties: {
-            name: { type: 'string', description: 'Skill name from the skill index' },
+            name: { type: 'string', description: '{"what":"which skill to load","source":"the skill index in your system prompt — copy the name verbatim"}' },
           },
           required: ['name'],
         },
@@ -94,11 +101,11 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'deactivate_skill',
-        description: 'Drop a previously-activated skill\'s tools from your context.',
+        description: '{"what":"drop an activated skill tools from this turn","source":"a skill name you activated earlier"}',
         parameters: {
           type: 'object',
           properties: {
-            name: { type: 'string', description: 'Skill name to deactivate' },
+            name: { type: 'string', description: '{"what":"which skill to drop","source":"a skill you activated earlier this turn"}' },
           },
           required: ['name'],
         },
@@ -108,8 +115,7 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'list_skills',
-        description:
-          'Re-list the skill index (useful after install_mcp_server or create_skill, which add skills that appear on the next turn).',
+        description: '{"what":"re-list the skill index","use_when":"after install_mcp_server or create_skill, which add a skill that appears next turn"}',
         parameters: { type: 'object', properties: {} },
       },
     },
@@ -117,8 +123,7 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'list_running_agents',
-        description:
-          'List currently-running Atlas background jobs with their elapsed time, tool call count, last action, and job id. Use this when you want to check on what a background Atlas is doing before deciding whether to stop it.',
+        description: '{"what":"list running background jobs","returns":"job id, elapsed, tool call count, last action","use_when":"check a job before stopping or steering it"}',
         parameters: { type: 'object', properties: {} },
       },
     },
@@ -126,12 +131,11 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'stop_agent',
-        description:
-          'Stop a running Atlas background job by job id (obtained from list_running_agents or the job id returned when you delegated). The agent is given a chance to return its partial result. Use this when an Atlas is stuck, looping, or doing the wrong thing — then re-delegate with corrected instructions if needed.',
+        description: '{"what":"stop a running background job","returns":"the job partial result","use_when":"it is stuck, looping, or off-task; re-delegate after with corrected instructions"}',
         parameters: {
           type: 'object',
           properties: {
-            job_id: { type: 'string', description: 'The atlas-XXXX job id to stop.' },
+            job_id: { type: 'string', description: '{"what":"which job to stop","source":"list_running_agents, or the id returned when you delegated","format":"copy the id verbatim"}' },
           },
           required: ['job_id'],
         },
@@ -141,13 +145,12 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'nudge_agent',
-        description:
-          'Steer a running background job without killing it: inject a short instruction into its next turn naming what it should commit to, based on what it is actually doing wrong. Use this when the supervisor flags a job as off-track (grinding, off-task, or repeating failing calls) and redirecting it is better than stopping it. For a job that should be killed, use stop_agent instead. The job keeps running and sees your message on its next iteration.',
+        description: '{"what":"steer a running job without killing it","how":"your instruction lands on its next iteration","use_when":"redirecting beats stopping; to kill it use stop_agent"}',
         parameters: {
           type: 'object',
           properties: {
-            job_id: { type: 'string', description: 'The atlas-XXXX / vulkan-XXXX job id to steer (from list_running_agents or a supervisor flag).' },
-            message: { type: 'string', description: 'A short, specific instruction naming what the job should commit to on its next turn, based on what it is doing wrong and what the task actually needs.' },
+            job_id: { type: 'string', description: '{"what":"which job to steer","source":"list_running_agents, a supervisor flag, or the id returned when you delegated","format":"copy the id verbatim"}' },
+            message: { type: 'string', description: '{"what":"the correction the job reads next iteration","content":"name what it should commit to, drawn from what it is actually doing and what the task needs","length":"one or two sentences"}' },
           },
           required: ['job_id', 'message'],
         },
@@ -157,12 +160,11 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'agent_logs',
-        description:
-          "Read a background agent's step-by-step activity log — every tool call it made, with a preview of each call's result. Works on a running job (live progress) or a finished one (what it actually did, in order). Use this when you need to know what an agent actually did — whether it succeeded, what it changed, where it looked — instead of asking it to re-run or re-check. Pass the job id (e.g. atlas-abcd); omit it to get a one-line list of recent jobs.",
+        description: '{"what":"read a job step-by-step tool-call log with result previews","running":"live progress","finished":"what it actually did, in order","omit_job_id":"lists recent jobs"}',
         parameters: {
           type: 'object',
           properties: {
-            job_id: { type: 'string', description: 'The job id (e.g. atlas-abcd). Omit to list recent jobs.' },
+            job_id: { type: 'string', description: '{"what":"which job to read","source":"list_running_agents, or the id returned when you delegated","omit":"returns a one-line list of recent jobs"}' },
           },
           required: [],
         },
@@ -172,15 +174,14 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'install_mcp_server',
-        description:
-          'Register a new MCP server (written to data/mcp-servers.json). Available as a skill on the next turn.',
+        description: '{"what":"register a new MCP server","writes":"data/mcp-servers.json","available":"as a skill next turn"}',
         parameters: {
           type: 'object',
           properties: {
-            name: { type: 'string' },
-            command: { type: 'string' },
-            args: { type: 'array', items: { type: 'string' } },
-            env: { type: 'object', description: 'Optional env vars for the subprocess' },
+            name: { type: 'string', description: '{"what":"the server name, which becomes its skill name","format":"lowercase, dashes between words"}' },
+            command: { type: 'string', description: '{"what":"the executable that launches the server","source":"the server own install docs"}' },
+            args: { type: 'array', items: { type: 'string' }, description: '{"what":"the launch arguments","format":"one array entry per argument, in order","source":"the server own install docs"}' },
+            env: { type: 'object', description: '{"what":"env vars for the subprocess","format":"flat name to value map","default":"omit when the server needs none"}' },
           },
           required: ['name', 'command', 'args'],
         },
@@ -190,10 +191,12 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'uninstall_mcp_server',
-        description: 'Remove an MCP server from data/mcp-servers.json. Takes effect next turn.',
+        description: '{"what":"remove an MCP server from data/mcp-servers.json","takes_effect":"next turn"}',
         parameters: {
           type: 'object',
-          properties: { name: { type: 'string' } },
+          properties: {
+            name: { type: 'string', description: '{"what":"which server to remove","source":"the skill index, or list_skills"}' },
+          },
           required: ['name'],
         },
       },
@@ -202,43 +205,42 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'create_skill',
-        description:
-          'Create a new user-defined skill by writing data/skills/<name>/SKILL.md. Use this to package a multi-step workflow the user just completed with you so it can be repeated for similar future tasks. Available on the next turn. Prefer the structured fields (when_to_use, parameters, example_prompt, steps) over a freeform instructions string — they produce a SKILL.md the next session can actually follow.',
+        description: '{"what":"package a completed multi-step workflow as a repeatable skill","writes":"data/skills/<name>/SKILL.md","prefer":"the structured fields over freeform instructions","available":"next turn"}',
         parameters: {
           type: 'object',
           properties: {
-            name: { type: 'string', description: 'Alphanumeric + dashes only, 1-64 chars. Pick a name that describes the workflow, e.g. "deploy-nightly" or "triage-inbox".' },
-            description: { type: 'string', description: 'One-line description of what the skill does.' },
-            when_to_use: { type: 'string', description: 'When this skill should be activated. One or two sentences describing the trigger conditions / user intent that maps to this workflow.' },
+            name: { type: 'string', description: '{"what":"the skill name","format":"alphanumeric and dashes, 1-64 chars","source":"derive it from the workflow this skill repeats, in the words the user used for it"}' },
+            description: { type: 'string', description: '{"what":"what the skill does","length":"one line"}' },
+            when_to_use: { type: 'string', description: '{"what":"the trigger for activating this skill","content":"the user intent and conditions that map to this workflow","length":"one or two sentences"}' },
             parameters: {
               type: 'array',
-              description: 'Inputs the workflow expects from the user at repeat time. Each entry: { name, description, example }.',
+              description: '{"what":"inputs the workflow needs from the user each time it repeats","entry":"{name, description, example}","source":"the values that varied in the run you just completed"}',
               items: {
                 type: 'object',
                 properties: {
-                  name: { type: 'string', description: 'Parameter name (lowercase, words separated by dashes or underscores).' },
-                  description: { type: 'string', description: 'What this parameter means.' },
-                  example: { type: 'string', description: 'A concrete example value the user might supply.' },
+                  name: { type: 'string', description: '{"what":"the parameter name","format":"lowercase, words joined by dashes or underscores"}' },
+                  description: { type: 'string', description: '{"what":"what this parameter means"}' },
+                  example: { type: 'string', description: '{"what":"a value of the shape the user would supply","source":"the actual value used in the run you just completed"}' },
                 },
                 required: ['name', 'description'],
               },
             },
             steps: {
               type: 'array',
-              description: 'Ordered list of concrete steps that make up the workflow. Each step is what you would do, in order, to take a fresh user request from start to finish.',
+              description: '{"what":"the ordered steps that carry a fresh request start to finish","source":"the run you just completed, in the order you did it"}',
               items: {
                 type: 'object',
                 properties: {
-                  description: { type: 'string', description: 'What this step does in plain language.' },
-                  tool: { type: 'string', description: 'Tool or sub-agent you would call (e.g. "Bash", "atlas", "read_file"). Leave empty if no tool call.' },
-                  key_args: { type: 'string', description: 'Key arguments the tool call needs, with placeholders for parameters in {{param}} form (e.g. "git checkout {{branch_name}}").' },
+                  description: { type: 'string', description: '{"what":"what this step does","length":"one line, plain language"}' },
+                  tool: { type: 'string', description: '{"what":"the tool or sub-agent this step calls","source":"the tool you actually called at this step","omit":"steps that call nothing"}' },
+                  key_args: { type: 'string', description: '{"what":"the arguments this step call needs","format":"the argument text, with each varying value written as {{parameter_name}} naming its entry in parameters","source":"the call you actually made, with its varying values replaced by their parameter names"}' },
                 },
                 required: ['description'],
               },
             },
-            example_prompt: { type: 'string', description: 'A concrete user prompt that would trigger this skill, written as if the user said it. Helps future-you recognize the workflow.' },
-            tools: { type: 'array', items: { type: 'string' }, description: 'Tool names this skill exposes (currently informational — leave empty for instruction-only skills).' },
-            instructions: { type: 'string', description: 'Optional freeform body of the SKILL.md. If you fill the structured fields above, this is rarely needed — use it only for notes that do not fit anywhere else.' },
+            example_prompt: { type: 'string', description: '{"what":"a request that should trigger this skill","voice":"written as the user would say it","source":"the request that started the run you just completed"}' },
+            tools: { type: 'array', items: { type: 'string' }, description: '{"what":"tool names this skill exposes","status":"informational","default":"empty for instruction-only skills"}' },
+            instructions: { type: 'string', description: '{"what":"freeform SKILL.md body","use_when":"a note does not fit any structured field above","default":"omit when the structured fields carry the workflow"}' },
           },
           required: ['name', 'description'],
         },
@@ -248,10 +250,10 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'read_file',
-        description: 'Read a file from the workspace.',
+        description: '{"what":"read a workspace file","path":"workspace-relative or absolute"}',
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string' } },
+          properties: { path: { type: 'string', description: '{"what":"the file to read","format":"workspace-relative or absolute path"}' } },
           required: ['path'],
         },
       },
@@ -260,10 +262,13 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'write_file',
-        description: 'Write text to a workspace file.',
+        description: '{"what":"write text to a workspace file","overwrites":"the whole file"}',
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string' }, content: { type: 'string' } },
+          properties: {
+            path: { type: 'string', description: '{"what":"the file to write","format":"workspace-relative or absolute path","creates":"parent directories as needed"}' },
+            content: { type: 'string', description: '{"what":"the full new file contents","note":"this replaces the whole file"}' },
+          },
           required: ['path', 'content'],
         },
       },
@@ -272,10 +277,10 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'list_file',
-        description: 'List entries in a workspace directory.',
+        description: '{"what":"list entries in a workspace directory","default":"workspace root"}',
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string', description: 'Defaults to workspace root' } },
+          properties: { path: { type: 'string', description: '{"what":"the directory to list","format":"workspace-relative or absolute path","default":"workspace root"}' } },
         },
       },
     },
@@ -284,28 +289,43 @@ export function buildAlwaysOnTools(): Tool[] {
 
 /** Convert a McpTool (server-prefixed) into an Ollama Tool definition. */
 function mcpToolToTool(tool: McpTool): Tool {
+  // A description-less tool is invisible to relevance ranking (dynamic-selection
+  // scores name + description), so it silently loses every ranking it should
+  // win. The name template is all we can synthesize — say so, loudly.
+  if (!tool.description) {
+    process.stderr.write(
+      `[skills] mcp "${tool.server}" ships no description for tool "${tool.name}" — it will rank on its name alone\n`,
+    );
+  }
   return {
     type: 'function',
     function: {
       name: `mcp__${tool.server}__${tool.name}`,
-      description: tool.description ?? `MCP tool ${tool.name} from ${tool.server}`,
+      description: tool.description ?? `{"what":${JSON.stringify(`${tool.name}, from the ${tool.server} MCP server`)},"note":"the server shipped no description"}`,
       parameters: (tool.inputSchema ?? { type: 'object', properties: {} }) as Record<string, any>,
     },
   };
 }
 
-/** Parse a SKILL.md file's YAML frontmatter + body. Returns null on missing/bad file. */
+/** Parse a SKILL.md file's YAML frontmatter + body. Returns null on missing/bad file.
+ *  A malformed file makes the skill vanish from the index with no other signal,
+ *  so every rejection below says why — a typo'd frontmatter key is otherwise
+ *  indistinguishable from a skill that was never written. */
 function parseSkillMarkdown(filePath: string): Skill | null {
   if (!fs.existsSync(filePath)) return null;
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[skills] unreadable ${filePath}: ${(err as Error).message}\n`);
     return null;
   }
   // YAML frontmatter delimited by --- on its own line.
   const m = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
-  if (!m) return null;
+  if (!m) {
+    process.stderr.write(`[skills] skipped ${filePath}: no --- frontmatter block\n`);
+    return null;
+  }
   const front = m[1];
   const body = (m[2] || '').trim();
   const fields: Record<string, string> = {};
@@ -314,7 +334,10 @@ function parseSkillMarkdown(filePath: string): Skill | null {
     if (mm) fields[mm[1]] = mm[2].trim();
   }
   const name = fields.name;
-  if (!name) return null;
+  if (!name) {
+    process.stderr.write(`[skills] skipped ${filePath}: frontmatter has no name: field\n`);
+    return null;
+  }
   const description = fields.description || '';
   // tools field is informational only — we don't synthesize tool schemas from it.
   // The user-defined skill currently acts as instructions-only; future work may
@@ -413,19 +436,18 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<Skill
 }
 
 /**
- * Render the skill index for the system prompt: a header line instructing the
- * LLM to call activate_skill(name), followed by a bulleted "name: description"
- * line per skill.
+ * Render the skill index for the system prompt. One line of nested JSON, the
+ * same envelope shape as the orchestrator prompt's other sections (see
+ * dynamic-selection buildRelevantPatternsSection) — this rides in the system
+ * prompt on every turn, and the seats reading it are granite-family.
+ * Skill descriptions stay verbatim as JSON values: most come from MCP servers
+ * and user SKILL.md frontmatter, so they are data, not directives.
  */
 export function renderSkillIndex(skills: Skill[]): string {
-  const lines: string[] = [
-    'You have access to these skills. Call activate_skill(name) to load a skill\'s tools into your context for this turn.',
-    '',
-  ];
-  for (const s of skills) {
-    lines.push(`- ${s.name}: ${s.description}`);
-  }
-  return lines.join('\n');
+  const items = skills.map(
+    (s) => `${JSON.stringify(s.name)}:${JSON.stringify(s.description || 'skill')}`,
+  );
+  return `{"skills":{"load":"activate_skill(name) loads that skill tools into this turn","items":{${items.join(',')}}}}`;
 }
 
 /**

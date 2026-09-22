@@ -3,14 +3,13 @@ import { getFabricIndex, getFabricPatternContent, rankFabricPatterns } from '../
 
 registry.register({
     name: 'fabric_pattern',
-    description:
-        'Load an expert prompt pattern from the Fabric prompt library by name (e.g. "summarize", "analyze_claims", "extract_wisdom"). Returns the full system prompt for that pattern — follow its instructions to perform the task at expert level. Use when a listed RELEVANT PATTERN fits the current task.',
+    description: '{"what":"load an expert prompt pattern from the Fabric library","returns":"the full system prompt — follow it","when":"a listed RELEVANT PATTERN fits the task"}',
     schema: {
         type: 'object',
         properties: {
             name: {
                 type: 'string',
-                description: 'Pattern name, e.g. "summarize" or "analyze_claims" (snake_case directory name)',
+                description: '{"what":"the pattern to load","format":"snake_case directory name","source":"the RELEVANT PATTERNS list for this turn"}',
             },
         },
         required: ['name'],

@@ -85,7 +85,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // (one tool call per delegation); the orchestrator drives any
     // multi-step flow by calling iris once per step.
     'iris-core':     { name: 'iris-core',     tools: ['email','task','calendar','alarm'] },
-    'file-core':     { name: 'file-core',     includes: ['file','chat'] },
+    // NOTE on registry tags with no entry here ('api'): those tools
+    // reach the model through the orchestrator's own pool (registry.getAllToolNames
+    // minus SUBAGENT_OWNED — see index.ts), never through resolveToolset, so
+    // they need no TOOLSETS definition; adding one would be a toolset nothing
+    // includes. Same reason the merged `project` tool needs no sub-agent entry.
 };
 
 // Register all toolsets

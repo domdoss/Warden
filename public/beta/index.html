@@ -49,10 +49,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         <span class="rail-tip">Email</span>
       </button>
-      <button class="rail-btn" data-view="sms" data-tip="SMS">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-        <span class="rail-tip">SMS</span>
-      </button>
       <!-- Organize -->
       <div class="rail-group-label">Org</div>
       <button class="rail-btn" data-view="projects" data-tip="Projects">
@@ -481,97 +477,6 @@
 
       <!-- Chat -->
 
-
-      <!-- SMS -->
-
-<!-- ==== ported view: sms ==== -->
-      <section class="view" id="view-sms">
-        <div class="sms-security-banner" id="smsSecurityBanner" style="display:none;padding:10px 16px;background:rgba(99,102,241,0.08);border-radius:10px;margin-bottom:16px;font-size:0.82rem;color:#6366f1;align-items:center;gap:8px">
-          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-          <span id="smsSecurityText">Read-Only Mode — Sending is disabled.</span>
-        </div>
-
-        <!-- Setup state (no accounts) -->
-        <div id="smsSetup" style="display:none">
-          <div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 200px)">
-            <div style="max-width:460px;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:36px 32px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">
-              <div style="text-align:center;margin-bottom:28px">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-                <h2 style="font-size:1.25rem;font-weight:700;color:var(--text);margin-bottom:6px">Connect Twilio SMS</h2>
-                <p style="color:var(--text3);font-size:0.88rem;line-height:1.5">Enter your Twilio credentials to send and receive SMS messages.</p>
-              </div>
-
-              <div style="margin-bottom:16px">
-                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Account Name</label>
-                <input type="text" id="smsSetupName" placeholder="e.g. Business SMS" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-              </div>
-              <div style="margin-bottom:16px">
-                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Account SID</label>
-                <input type="text" id="smsSetupSid" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;font-family:monospace;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-              </div>
-              <div style="margin-bottom:16px">
-                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Auth Token</label>
-                <input type="password" id="smsSetupToken" placeholder="Your auth token" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-              </div>
-              <div style="margin-bottom:16px">
-                <label style="display:block;font-size:0.8rem;font-weight:600;color:var(--text2);margin-bottom:5px;letter-spacing:0.01em">Phone Number</label>
-                <input type="text" id="smsSetupPhone" placeholder="+12025551234" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);box-sizing:border-box;transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-              </div>
-              <div style="margin-bottom:20px">
-                <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;color:var(--text2);cursor:pointer">
-                  <input type="checkbox" id="smsSetupReadOnly" checked style="accent-color:var(--accent);width:16px;height:16px"> Read-only mode (disable sending)
-                </label>
-              </div>
-              <p id="smsSetupError" style="color:var(--danger);font-size:0.82rem;min-height:1.2em;margin-bottom:12px;text-align:center"></p>
-              <div style="display:flex;gap:10px">
-                <button onclick="UserDash.testSmsConnection()" style="flex:1;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);cursor:pointer;font-size:0.88rem;font-weight:500;transition:background 0.15s">Test Connection</button>
-                <button onclick="UserDash.saveSmsAccount()" style="flex:1;padding:10px 16px;border:none;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer;font-size:0.88rem;font-weight:600;box-shadow:0 2px 8px rgba(37,99,235,0.2);transition:background 0.15s">Save Account</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Active state (has accounts) -->
-        <div id="smsActive" style="display:none">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-            <div class="view-title" style="margin:0">SMS Messages</div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <select id="smsAccountSelect" onchange="UserDash.loadSmsMessages()" style="padding:7px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.82rem;background:var(--surface);color:var(--text)"></select>
-              <button onclick="UserDash.refreshSms()" title="Refresh" style="width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text2);cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center">&#x21bb;</button>
-              <button onclick="UserDash.showSmsSettings()" title="Settings" style="width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text2);cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center">&#x2699;</button>
-            </div>
-          </div>
-
-          <!-- Compose -->
-          <div id="smsCompose" style="margin-bottom:20px;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px">
-            <div style="display:flex;gap:8px;margin-bottom:10px">
-              <input type="text" id="smsComposeTo" placeholder="To: +1234567890" style="flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-            </div>
-            <div style="display:flex;gap:8px">
-              <input type="text" id="smsComposeBody" placeholder="Type a message..." style="flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:0.9rem;background:var(--bg);color:var(--text);transition:border-color 0.15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'" onkeydown="if(event.key==='Enter')UserDash.sendSmsMessage()">
-              <button onclick="UserDash.sendSmsMessage()" id="smsSendBtn" style="padding:10px 20px;border:none;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer;font-size:0.88rem;font-weight:600;white-space:nowrap;box-shadow:0 2px 8px rgba(37,99,235,0.2);transition:background 0.15s">Send</button>
-            </div>
-            <p id="smsSendError" style="color:var(--danger);font-size:0.82rem;min-height:1em;margin-top:6px"></p>
-          </div>
-
-          <!-- Message list -->
-          <div id="smsMessageList" style="display:flex;flex-direction:column;gap:10px">
-            <p style="color:var(--text3);text-align:center;padding:32px">Loading messages...</p>
-          </div>
-        </div>
-
-        <!-- Settings modal (edit/delete account) -->
-        <div id="smsSettingsModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.45);backdrop-filter:blur(4px);align-items:center;justify-content:center">
-          <div style="background:var(--surface);border-radius:16px;padding:32px;max-width:440px;width:90%;margin:auto;position:relative;box-shadow:0 16px 48px rgba(0,0,0,0.15)">
-            <h3 style="margin-bottom:20px;font-size:1.15rem;font-weight:700;color:var(--text)">SMS Account Settings</h3>
-            <div id="smsSettingsContent"></div>
-            <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
-              <button onclick="UserDash.deleteSmsAccount()" style="padding:9px 18px;border:1px solid var(--danger);border-radius:10px;background:transparent;color:var(--danger);cursor:pointer;font-size:0.85rem;font-weight:500;transition:background 0.15s">Delete Account</button>
-              <button onclick="document.getElementById('smsSettingsModal').style.display='none'" style="padding:9px 18px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);cursor:pointer;font-size:0.85rem;font-weight:500;transition:background 0.15s">Close</button>
-            </div>
-          </div>
-        </div>
-      </section>
 
       <!-- Projects -->
 

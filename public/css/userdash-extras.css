@@ -1,5 +1,5 @@
 /* ============================================================================
-   WARDEN — ported view styles (projects / vault / talk / alarms / actions /
+   WARDEN — ported view styles (projects / talk / alarms / actions /
    sms / heartbeat / apikeys). Shares the design tokens + language defined in
    style.css so every surface reads as one product. Loaded after style.css;
    equal-specificity rules here win on source order where both define a class.
@@ -119,61 +119,6 @@
 .timesheet-by-user { margin-bottom: 14px; }
 
 /* ----------------------------------------------------------------------------
-   VAULT
----------------------------------------------------------------------------- */
-.vault-layout { display: grid; grid-template-columns: 300px 1fr; gap: 14px; }
-.vault-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
-.vault-entry {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--r-md);
-  cursor: pointer;
-  transition: border-color 0.14s ease;
-}
-.vault-entry:hover { border-color: var(--border-hi); }
-.vault-entry.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.vault-entry-icon { color: var(--accent); flex-shrink: 0; }
-.vault-entry-icon svg { width: 16px; height: 16px; }
-.vault-entry-info { flex: 1; min-width: 0; }
-.vault-entry-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vault-entry-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
-.vault-entry-status { font-size: 11px; font-weight: 600; }
-.badge-scrubbed { background: var(--violet-soft); color: var(--violet); }
-.vault-detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.vault-detail-header { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; }
-.vault-detail-title { font-size: 14px; font-weight: 700; flex: 1; }
-.vault-detail-actions { display: flex; gap: 6px; }
-.vault-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border-soft); margin-bottom: 10px; }
-.vault-tab { padding: 7px 13px; border: none; background: transparent; color: var(--text-dim); font-size: 12.5px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
-.vault-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.vault-dict-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.vault-dict-input { flex: 1; padding: 7px 11px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elev); color: var(--text); font-size: 12.5px; }
-.vault-dict-input:focus { outline: none; border-color: var(--accent); }
-.vault-dict-hint { font-size: 11px; color: var(--text-faint); }
-.vault-detail-body { flex: 1; min-height: 0; overflow: auto; }
-.vault-content {
-  margin: 0;
-  padding: 16px;
-  background: var(--bg-deep);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.vault-mapping { display: flex; flex-direction: column; gap: 6px; }
-.vault-mapping-row { display: flex; gap: 10px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--r-md); font-size: 12.5px; }
-.vault-mapping-ph { color: var(--accent); font-family: var(--font-mono); }
-.vault-mapping-val { color: var(--text-dim); }
-.dict-match-highlight { background: var(--violet-soft); border-radius: 3px; padding: 0 2px; }
-
-/* ----------------------------------------------------------------------------
    TALK
 ---------------------------------------------------------------------------- */
 .talk-container { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0; }
@@ -276,11 +221,6 @@
 .action-icon svg { width: 18px; height: 18px; }
 .action-name { font-size: 13.5px; font-weight: 700; }
 .action-desc { font-size: 12.5px; color: var(--text-dim); }
-
-/* ----------------------------------------------------------------------------
-   SMS
----------------------------------------------------------------------------- */
-.sms-security-banner { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--info-soft); border-radius: var(--r-md); margin-bottom: 16px; font-size: 13px; }
 
 /* ----------------------------------------------------------------------------
    HEARTBEAT / EDITOR
@@ -457,7 +397,6 @@
 .prompt-preview-section { margin-top: 14px; }
 .prompt-preview-label { font-size: 12px; font-weight: 700; display: block; margin-bottom: 6px; }
 .prompt-preview { padding: 12px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: var(--r-md); font-family: var(--font-mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.ph-highlight { background: var(--accent-soft); border-radius: 3px; }
 
 /* ----------------------------------------------------------------------------
    DROP OVERLAY / DRAG

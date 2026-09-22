@@ -7,7 +7,7 @@ import { writeCallbackAsync } from '../index.js';
 
 registry.register({
     name: 'list_api_keys',
-    description: "List the user's configured API keys. Returns names and base URLs. Use to discover what services are available.",
+    description: '{"what":"list the configured API keys: names and base URLs","use_when":"discover which services are available","answer":"the returned list"}',
     schema: { type: 'object', properties: {} },
     handler: async (args, context) => {
         const keyData = await writeCallbackAsync('ipc', { type: 'list_api_keys', userId: context.userId || '', groupFolder: context.groupFolder || '', timestamp: new Date().toISOString() });
@@ -25,15 +25,15 @@ registry.register({
 
 registry.register({
     name: 'api_request',
-    description: 'Call any external API with automatic key injection. The system injects stored API keys automatically — never hardcode keys. Use list_api_keys first to discover available services.',
+    description: '{"what":"call an external API, the stored key injected automatically","first":"list_api_keys to see services and key names","rule":"never hardcode a key"}',
     schema: {
         type: 'object',
         properties: {
-            key_type: { type: 'string', description: 'API key name from list_api_keys (e.g. "openai", "github", "slack")' },
-            method: { type: 'string', description: 'HTTP method: GET, POST, PUT, PATCH, DELETE (default GET)' },
-            path: { type: 'string', description: 'API endpoint path (e.g. "/v1/chat/completions" or full URL)' },
-            body: { type: 'string', description: 'JSON request body as string' },
-            description: { type: 'string', description: 'What this request does (for logging)' },
+            key_type: { type: 'string', description: '{"what":"name of the key to use","source":"the key_type value from list_api_keys output"}' },
+            method: { type: 'string', description: '{"what":"HTTP method","vals":"GET|POST|PUT|PATCH|DELETE","default":"GET"}' },
+            path: { type: 'string', description: '{"what":"API endpoint path or full URL","format":"a \\"/v1/...\\" style path, or a full https:// URL"}' },
+            body: { type: 'string', description: '{"what":"request body","format":"JSON as a string"}' },
+            description: { type: 'string', description: '{"what":"what this request does","use":"logging"}' },
         },
         required: ['key_type', 'path'],
     },

@@ -64,6 +64,39 @@ const IRIS_SYSTEM = irisPromptMatch[1];
 const SYSTEMS = { iris: IRIS_SYSTEM };
 export { SYSTEMS, IRIS_SYSTEM };
 
+// OUTPUT-CONTRACT GUARD (2026-09-22). The system block above is extracted
+// live, but the assistant turns below are AUTHORED here — so an edit to the
+// live OUTPUT section silently desyncs the two halves, and the dataset trains
+// the model to disobey its own system prompt. That already happened: the
+// shipped toolcall-sft.jsonl (2026-09-17) carries "Answer with one plain-text
+// line" plus plain-text replies, while the live prompt now demands one JSON
+// object — the deployed toolcall-ft was never trained on the contract
+// production parses. Assert the shape the emitters below produce, and fail
+// generation loudly if the live prompt moves again.
+const IRIS_WANTS_JSON = /Exactly one JSON object, nothing outside it/.test(IRIS_SYSTEM)
+  && /"result"/.test(IRIS_SYSTEM) && /"items"/.test(IRIS_SYSTEM);
+if (!IRIS_WANTS_JSON) {
+  throw new Error(
+    'OUTPUT-CONTRACT DRIFT: the live iris systemPrompt no longer demands the ' +
+    '{"result":…,"items":[…]} object this generator emits. Update irisReply() in ' +
+    'training/gen_toolcall_sft.mjs to match the live OUTPUT section — do NOT ship ' +
+    'assistant turns that contradict the system block.',
+  );
+}
+
+// Every iris assistant turn that carries content goes through here, so the
+// emitted shape can never drift from the guard above. `result` is the single
+// outcome line; `items` carries real list structure (the live contract states
+// an escaped newline never appears in the output — list lines are separate
+// strings, never "\n" inside result).
+function irisReply(result, items = []) {
+  const line = String(result);
+  if (line.includes('\n')) {
+    throw new Error(`irisReply: result must be one line — put list structure in items. Got: ${line.slice(0, 80)}…`);
+  }
+  return JSON.stringify({ result: line, items: items.map(String) });
+}
+
 // Fixed anchor so iris's absolute timestamps are reproducible. Matches the
 // injected time-header format exactly (the dispatch path prepends this for
 // every iris call).
@@ -123,18 +156,18 @@ function ex(agent, request, toolCalls, opts = {}) {
   for (let i = 0; i < toolCalls.length; i++) {
     msgs.push({ role: 'tool', name: toolCalls[i].name, content: String(results[i]) });
   }
-  if (opts.reply) msgs.push({ role: 'assistant', content: opts.reply });
+  if (opts.reply) msgs.push({ role: 'assistant', content: irisReply(opts.reply, opts.items) });
   return { messages: msgs, tools: TOOLS.iris };
 }
 
 // No-tool: assistant replies with text only (ask-back / out-of-scope / empty).
-function exText(agent, request, reply) {
+function exText(agent, request, reply, items) {
   assertIris(agent);
   return {
     messages: [
       { role: 'system', content: IRIS_SYSTEM },
       { role: 'user', content: brief(request) },
-      { role: 'assistant', content: reply },
+      { role: 'assistant', content: irisReply(reply, items) },
     ],
     tools: TOOLS.iris,
   };
@@ -145,7 +178,7 @@ function exText(agent, request, reply) {
 // id clause is derived from actionArgs and appended to the request, matching
 // how real orchestrator briefs carry explicit ids ("…the Warden project
 // (proj-warden-01)…"). Emits exactly ONE tool call.
-function exManage(agent, request, { actionTool, actionArgs, actionResult, reply }) {
+function exManage(agent, request, { actionTool, actionArgs, actionResult, reply, items }) {
   assertIris(agent);
   const idKey = Object.keys(actionArgs).find((k) => /_id$/.test(k));
   const briefText = idKey ? `${request} (id: ${actionArgs[idKey]} — use that exact id.)` : request;
@@ -154,7 +187,7 @@ function exManage(agent, request, { actionTool, actionArgs, actionResult, reply 
     { role: 'user', content: brief(briefText) },
     { role: 'assistant', content: '', tool_calls: [{ type: 'function', function: { name: actionTool, arguments: actionArgs } }] },
     { role: 'tool', name: actionTool, content: actionResult },
-    { role: 'assistant', content: reply },
+    { role: 'assistant', content: irisReply(reply, items) },
   ];
   return { messages: msgs, tools: TOOLS.iris };
 }
@@ -164,7 +197,7 @@ function exManage(agent, request, { actionTool, actionArgs, actionResult, reply 
 // call must use a fact the PREVIOUS result returned (an id from a read, a
 // filename from a get's Attachments line) — that dependency is the whole point
 // of these rows. steps: [{ call: {name, arguments}, result }, …].
-function exMulti(agent, request, steps, reply) {
+function exMulti(agent, request, steps, reply, items) {
   assertIris(agent);
   const msgs = [
     { role: 'system', content: IRIS_SYSTEM },
@@ -174,7 +207,7 @@ function exMulti(agent, request, steps, reply) {
     msgs.push({ role: 'assistant', content: '', tool_calls: [{ type: 'function', function: s.call }] });
     msgs.push({ role: 'tool', name: s.call.name, content: String(s.result) });
   }
-  msgs.push({ role: 'assistant', content: reply });
+  msgs.push({ role: 'assistant', content: irisReply(reply, items) });
   return { messages: msgs, tools: TOOLS.iris };
 }
 
@@ -360,7 +393,12 @@ examples.push(ex('iris', 'Change the reminder task-cb-1788206097352-yadl0c (the 
 examples.push(ex('iris', 'What reminders do I have set right now?',
   [{ name: 'task', arguments: { action: 'list' } }],
   { results: ['3 tasks:\n1. task-cb-1788206097352-yadl0c | cron 30 11 * * * | Take xyz medication | active\n2. task-cb-1788206097352-abc123 | cron 0 7 * * * | Meditate | active\n3. task-cb-1788206097352-xyz789 | once PT2M | Check the oven | active'],
-    reply: 'You have 3 active reminders: take xyz medication daily at 11:30am, meditate daily at 7am, and check the oven in 2 minutes.' }));
+    reply: 'You have 3 active reminders.',
+    items: [
+      'Take xyz medication — daily at 11:30am (task-cb-1788206097352-yadl0c)',
+      'Meditate — daily at 7am (task-cb-1788206097352-abc123)',
+      'Check the oven — in 2 minutes (task-cb-1788206097352-xyz789)',
+    ] }));
 
 // ---- F. Calendar events ------------------------------------------------
 examples.push(ex('iris', 'Create a calendar event — a meeting tomorrow at 2:00 PM (America/Vancouver) called "Project Review".',
@@ -380,17 +418,21 @@ examples.push(ex('iris', 'Book the conference room for a meeting tomorrow 10 AM 
   { reply: 'Created a "Vendor Demo" in the conference room tomorrow 10–11:30am.' }));
 examples.push(ex('iris', 'What is on my calendar this week?',
   [{ name: 'calendar', arguments: { action: 'list', start: '2026-09-14T00:00:00', end: '2026-09-20T23:59:59' } }],
-  { results: ['2 events:\n1. 2026-09-16T14:00:00 → 2026-09-16T15:00:00 | Project Review (uid ev-1001)\n\n2. 2026-09-18T00:00:00 | Company Holiday (uid ev-1002)'],
-    reply: 'This week you have: Project Review tomorrow 2–3pm (ev-1001), and an all-day Company Holiday on Friday (ev-1002).' }));
+  { results: ['2 events:\n1. 2026-09-16T14:00:00 → 2026-09-16T15:00:00 | Project Review (uid cal-1789332000000-c9g9i1e5)\n\n2. 2026-09-18T00:00:00 | Company Holiday (uid cal-1789245600000-d4n7r2xp)'],
+    reply: 'You have 2 events this week.',
+    items: [
+      'Project Review — tomorrow 2–3pm (cal-1789332000000-c9g9i1e5)',
+      'Company Holiday — all day Friday (cal-1789245600000-d4n7r2xp)',
+    ] }));
 // Calendar manage (id supplied — single call).
-examples.push(ex('iris', 'Delete the calendar event ev-1001 — the "Project Review" meeting tomorrow at 2 PM.',
-  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'ev-1001' } }],
-  { results: ['Calendar event ev-1001 deleted.'],
-    reply: 'Cancelled the Project Review meeting (ev-1001).' }));
-examples.push(ex('iris', 'Move the calendar event ev-1001 (the 2 PM "Project Review" meeting) to 3 PM — set start_time to 2026-09-16T15:00:00 and end_time to 2026-09-16T16:00:00.',
-  [{ name: 'calendar', arguments: { action: 'update', event_id: 'ev-1001', start_time: '2026-09-16T15:00:00', end_time: '2026-09-16T16:00:00' } }],
-  { results: ['Calendar event ev-1001 updated.'],
-    reply: 'Moved the Project Review from 2pm to 3pm tomorrow (ev-1001).' }));
+examples.push(ex('iris', 'Delete the calendar event cal-1789332000000-c9g9i1e5 — the "Project Review" meeting tomorrow at 2 PM.',
+  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'cal-1789332000000-c9g9i1e5' } }],
+  { results: ['Calendar event cal-1789332000000-c9g9i1e5 deleted.'],
+    reply: 'Cancelled the Project Review meeting (cal-1789332000000-c9g9i1e5).' }));
+examples.push(ex('iris', 'Move the calendar event cal-1789332000000-c9g9i1e5 (the 2 PM "Project Review" meeting) to 3 PM — set start_time to 2026-09-16T15:00:00 and end_time to 2026-09-16T16:00:00.',
+  [{ name: 'calendar', arguments: { action: 'update', event_id: 'cal-1789332000000-c9g9i1e5', start_time: '2026-09-16T15:00:00', end_time: '2026-09-16T16:00:00' } }],
+  { results: ['Calendar event cal-1789332000000-c9g9i1e5 updated.'],
+    reply: 'Moved the Project Review from 2pm to 3pm tomorrow (cal-1789332000000-c9g9i1e5).' }));
 
 // ---- G. Both reminder + calendar event in one turn ---------------------
 examples.push(ex('iris', 'Set a 2 PM reminder about the meeting and create a calendar event for it at the same time.',
@@ -657,26 +699,26 @@ examples.push(ex('iris', 'Set a one-time reminder about the phone call at 4:30 P
   { reply: 'Set a 4:30pm reminder for the phone call and created a "Phone call" calendar event tomorrow (2026-09-16T16:30:00).' }));
 
 // ---- W12. Calendar manage (id supplied — single call) -------------------
-examples.push(ex('iris', 'Cancel the dentist appointment — delete calendar event ev-1003 (the Sep 3 10 AM dentist appointment).',
-  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'ev-1003' } }],
-  { results: ['Calendar event ev-1003 deleted.'],
-    reply: 'Cancelled the dentist appointment (ev-1003).' }));
-examples.push(ex('iris', 'Reschedule the "Team Sync" — update event ev-1004 to start at 4 PM (2026-09-15T16:00:00) and end at 5 PM (2026-09-15T17:00:00).',
-  [{ name: 'calendar', arguments: { action: 'update', event_id: 'ev-1004', start_time: '2026-09-15T16:00:00', end_time: '2026-09-15T17:00:00' } }],
-  { results: ['Calendar event ev-1004 updated.'],
-    reply: 'Moved the Team Sync from 3pm to 4pm today (ev-1004).' }));
-examples.push(ex('iris', 'Cancel my meeting tomorrow — delete calendar event ev-1005 (the 9 AM standup on Sep 2).',
-  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'ev-1005' } }],
-  { results: ['Calendar event ev-1005 deleted.'],
-    reply: 'Cancelled tomorrow\'s 9am Standup (ev-1005).' }));
-examples.push(ex('iris', 'Move the "Vendor Demo" — update event ev-1006 to 2 PM tomorrow (start 2026-09-16T14:00:00, end 2026-09-16T15:30:00).',
-  [{ name: 'calendar', arguments: { action: 'update', event_id: 'ev-1006', start_time: '2026-09-16T14:00:00', end_time: '2026-09-16T15:30:00' } }],
-  { results: ['Calendar event ev-1006 updated.'],
-    reply: 'Moved the Vendor Demo to 2pm tomorrow (ev-1006).' }));
-examples.push(ex('iris', 'Delete the "Company Holiday" event — calendar event ev-1002.',
-  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'ev-1002' } }],
-  { results: ['Calendar event ev-1002 deleted.'],
-    reply: 'Deleted the Company Holiday event (ev-1002).' }));
+examples.push(ex('iris', 'Cancel the dentist appointment — delete calendar event cal-1789159200000-f8k3m6qt (the Sep 3 10 AM dentist appointment).',
+  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'cal-1789159200000-f8k3m6qt' } }],
+  { results: ['Calendar event cal-1789159200000-f8k3m6qt deleted.'],
+    reply: 'Cancelled the dentist appointment (cal-1789159200000-f8k3m6qt).' }));
+examples.push(ex('iris', 'Reschedule the "Team Sync" — update event cal-1789072800000-g5w9z2jb to start at 4 PM (2026-09-15T16:00:00) and end at 5 PM (2026-09-15T17:00:00).',
+  [{ name: 'calendar', arguments: { action: 'update', event_id: 'cal-1789072800000-g5w9z2jb', start_time: '2026-09-15T16:00:00', end_time: '2026-09-15T17:00:00' } }],
+  { results: ['Calendar event cal-1789072800000-g5w9z2jb updated.'],
+    reply: 'Moved the Team Sync from 3pm to 4pm today (cal-1789072800000-g5w9z2jb).' }));
+examples.push(ex('iris', 'Cancel my meeting tomorrow — delete calendar event cal-1788986400000-h3tq7v4n (the 9 AM standup on Sep 2).',
+  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'cal-1788986400000-h3tq7v4n' } }],
+  { results: ['Calendar event cal-1788986400000-h3tq7v4n deleted.'],
+    reply: 'Cancelled tomorrow\'s 9am Standup (cal-1788986400000-h3tq7v4n).' }));
+examples.push(ex('iris', 'Move the "Vendor Demo" — update event cal-1788900000000-j6dy8c5s to 2 PM tomorrow (start 2026-09-16T14:00:00, end 2026-09-16T15:30:00).',
+  [{ name: 'calendar', arguments: { action: 'update', event_id: 'cal-1788900000000-j6dy8c5s', start_time: '2026-09-16T14:00:00', end_time: '2026-09-16T15:30:00' } }],
+  { results: ['Calendar event cal-1788900000000-j6dy8c5s updated.'],
+    reply: 'Moved the Vendor Demo to 2pm tomorrow (cal-1788900000000-j6dy8c5s).' }));
+examples.push(ex('iris', 'Delete the "Company Holiday" event — calendar event cal-1789245600000-d4n7r2xp.',
+  [{ name: 'calendar', arguments: { action: 'delete', event_id: 'cal-1789245600000-d4n7r2xp' } }],
+  { results: ['Calendar event cal-1789245600000-d4n7r2xp deleted.'],
+    reply: 'Deleted the Company Holiday event (cal-1789245600000-d4n7r2xp).' }));
 
 // =========================================================================
 // IRIS — alarms (the alarm tool). Clock alerts with a label: HH:MM time,
@@ -713,24 +755,29 @@ examples.push(ex('iris', 'Wake me up at 7:15 tomorrow morning — call it "Late 
 // ---- AL2. list + id-supplied manage --------------------------------------
 examples.push(ex('iris', 'What alarms do I have set?',
   [{ name: 'alarm', arguments: { action: 'list' } }],
-  { results: ['Alarms:\n- [alm-1] "Wake up" at 06:30 repeat=daily\n- [alm-2] "Work" at 07:00 repeat=weekdays\n- [alm-3] "Wind down" at 21:00 repeat=none'],
-    reply: 'You have 3 alarms: "Wake up" daily 6:30am, "Work" weekdays 7:00am, and "Wind down" 9:00pm.' }));
-examples.push(ex('iris', 'Delete the alarm alm-3 — the "Wind down" one.',
-  [{ name: 'alarm', arguments: { action: 'delete', alarm_id: 'alm-3' } }],
+  { results: ['Alarms:\n- [alarm-1789339200000-k3v7xmq2] "Wake up" at 06:30 repeat=daily\n- [alarm-1789296000000-p9wq4dzn] "Work" at 07:00 repeat=weekdays\n- [alarm-1789252800000-b5tcy8er] "Wind down" at 21:00 repeat=none'],
+    reply: 'You have 3 alarms.',
+    items: [
+      '"Wake up" — 6:30am daily (alarm-1789339200000-k3v7xmq2)',
+      '"Work" — 7:00am weekdays (alarm-1789296000000-p9wq4dzn)',
+      '"Wind down" — 9:00pm, no repeat (alarm-1789252800000-b5tcy8er)',
+    ] }));
+examples.push(ex('iris', 'Delete the alarm alarm-1789252800000-b5tcy8er — the "Wind down" one.',
+  [{ name: 'alarm', arguments: { action: 'delete', alarm_id: 'alarm-1789252800000-b5tcy8er' } }],
   { results: ['Alarm deleted.'],
-    reply: 'Deleted the "Wind down" alarm (alm-3).' }));
-examples.push(ex('iris', 'Turn off the alarm alm-4 — the 5 AM "Early run" one — but keep it for later.',
-  [{ name: 'alarm', arguments: { action: 'update', alarm_id: 'alm-4', enabled: false } }],
+    reply: 'Deleted the "Wind down" alarm (alarm-1789252800000-b5tcy8er).' }));
+examples.push(ex('iris', 'Turn off the alarm alarm-1789209600000-m2fs7xqk — the 5 AM "Early run" one — but keep it for later.',
+  [{ name: 'alarm', arguments: { action: 'update', alarm_id: 'alarm-1789209600000-m2fs7xqk', enabled: false } }],
   { results: ['Alarm updated.'],
-    reply: 'Disabled the "Early run" alarm (alm-4) — it is kept but will not ring.' }));
-examples.push(ex('iris', 'Change the "Wake up" alarm (alm-1) to 7:00 AM.',
-  [{ name: 'alarm', arguments: { action: 'update', alarm_id: 'alm-1', alarm_time: '07:00' } }],
+    reply: 'Disabled the "Early run" alarm (alarm-1789209600000-m2fs7xqk) — it is kept but will not ring.' }));
+examples.push(ex('iris', 'Change the "Wake up" alarm (alarm-1789339200000-k3v7xmq2) to 7:00 AM.',
+  [{ name: 'alarm', arguments: { action: 'update', alarm_id: 'alarm-1789339200000-k3v7xmq2', alarm_time: '07:00' } }],
   { results: ['Alarm updated.'],
-    reply: 'Moved the "Wake up" alarm (alm-1) to 7:00am.' }));
-examples.push(ex('iris', 'Rename the alarm alm-2 to "Get to work" and make it ring only on weekdays.',
-  [{ name: 'alarm', arguments: { action: 'update', alarm_id: 'alm-2', label: 'Get to work', repeat_type: 'weekdays' } }],
+    reply: 'Moved the "Wake up" alarm (alarm-1789339200000-k3v7xmq2) to 7:00am.' }));
+examples.push(ex('iris', 'Rename the alarm alarm-1789296000000-p9wq4dzn to "Get to work" and make it ring only on weekdays.',
+  [{ name: 'alarm', arguments: { action: 'update', alarm_id: 'alarm-1789296000000-p9wq4dzn', label: 'Get to work', repeat_type: 'weekdays' } }],
   { results: ['Alarm updated.'],
-    reply: 'Renamed alm-2 to "Get to work" (still weekdays).' }));
+    reply: 'Renamed alarm-1789296000000-p9wq4dzn to "Get to work" (still weekdays).' }));
 
 // ---- S. Email: read / search / get ---------------------------------------
 // (Result strings byte-match the runner's email handler: read = "N emails
@@ -739,22 +786,22 @@ examples.push(ex('iris', 'Rename the alarm alm-2 to "Get to work" and make it ri
 // own strings.)
 examples.push(ex('iris', "What's in my inbox?",
   [{ name: 'email', arguments: { action: 'read',} }],
-  { results: ['5 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   Hi Dominic, the Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.\n5. [id: email-11a9] From: boss@acme.io | Subject: Monday standup moved to 11 | Date: 2026-09-14T11:00:00\n   Heads-up — standup moves to 11am from Monday.'],
+  { results: ['5 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   Hi Dominic, the Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.\n5. [id: 18f0d5b3a9c2e746] From: boss@acme.io | Subject: Monday standup moved to 11 | Date: 2026-09-14T11:00:00\n   Heads-up — standup moves to 11am from Monday.'],
     reply: '5 emails in your inbox. Actionable: Sarah (Q4 budget sign-off by Friday), Jason (sign NDA), boss (standup moved to 11). The rest are a newsletter and a Stripe receipt.' }));
 examples.push(ex('iris', "Find emails from Sarah about the Q4 budget.",
   [{ name: 'email', arguments: { action: 'read', search: 'from:sarah Q4 budget', limit: 20 } }],
-  { results: ['2 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-9b1c] From: sarah@acme.io | Subject: Q4 budget draft v2 | Date: 2026-09-12T10:05:00\n   Attached is draft v2 of the Q4 budget for your review.'],
+  { results: ['2 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c3f92d4a7e05b6] From: sarah@acme.io | Subject: Q4 budget draft v2 | Date: 2026-09-12T10:05:00\n   Attached is draft v2 of the Q4 budget for your review.'],
     reply: 'Found 2 emails from Sarah about the Q4 budget: "Re: Q4 budget approval needed" (Sep 15) and "Q4 budget draft v2" (Sep 12).' }));
 examples.push(ex('iris', "Show me emails from the last 24 hours.",
   [{ name: 'email', arguments: { action: 'read', since: '2026-09-14T14:05:00', limit: 50 } }],
-  { results: ['3 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.'],
+  { results: ['3 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.'],
     reply: '3 emails in the last 24h: Sarah (budget sign-off), HN Weekly (newsletter), Stripe (paid receipt).' }));
 // (The old "Open the email from Jason about the NDA" row lived here — a bare
 // read + "want me to fetch the full body?" It taught stopping after the read,
 // which the maxIterations 3 contract replaces: that request now chains
 // read→get, covered by the 2-turn section below.)
-examples.push(ex('iris', "Get me the FULL body of email email-4f2a (Jason's NDA email).",
-  [{ name: 'email', arguments: { action: 'get', email_id: 'email-4f2a' } }],
+examples.push(ex('iris', "Get me the FULL body of email 18f2c9ab41d2b7e1 (Jason's NDA email).",
+  [{ name: 'email', arguments: { action: 'get', email_id: '18f2c9ab41d2b7e1' } }],
   { results: ['Email content:\nFrom: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-09-14T14:20:00\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason\n\nAttachments (1): NDA-partnership.pdf (245 KB)'],
     reply: 'Jason asks you to review and sign the attached NDA (NDA-partnership.pdf, 245 KB) to move the partnership forward. Full body fetched.' }));
 examples.push(ex('iris', "Refresh my email cache.",
@@ -763,7 +810,7 @@ examples.push(ex('iris', "Refresh my email cache.",
     reply: 'Refreshed the email cache — 42 emails cached.' }));
 examples.push(ex('iris', "What cached emails do you have?",
   [{ name: 'email', arguments: { action: 'cached' } }],
-  { results: ['Cached emails:\n[\n  {\n    "id": "email-4f2a",\n    "from": "jason@partnerco.com",\n    "subject": "Action required: sign the NDA",\n    "date": "2026-09-14T14:20:00"\n  },\n  {\n    "id": "email-9b2f",\n    "from": "sarah@acme.io",\n    "subject": "Re: Q4 budget approval needed",\n    "date": "2026-09-15T09:12:00"\n  },\n  {\n    "id": "email-11a9",\n    "from": "boss@acme.io",\n    "subject": "Monday standup moved to 11",\n    "date": "2026-09-14T11:00:00"\n  }\n]'],
+  { results: ['Cached emails:\n[\n  {\n    "id": "18f2c9ab41d2b7e1",\n    "from": "jason@partnerco.com",\n    "subject": "Action required: sign the NDA",\n    "date": "2026-09-14T14:20:00"\n  },\n  {\n    "id": "18d94e07a3c5f2b8",\n    "from": "sarah@acme.io",\n    "subject": "Re: Q4 budget approval needed",\n    "date": "2026-09-15T09:12:00"\n  },\n  {\n    "id": "18f0d5b3a9c2e746",\n    "from": "boss@acme.io",\n    "subject": "Monday standup moved to 11",\n    "date": "2026-09-14T11:00:00"\n  }\n]'],
     reply: '3 cached emails: the NDA from Jason, Sarah\'s budget reply, and the standup-time change from your boss.' }));
 
 // ---- T. Email: send -----------------------------------------------------
@@ -783,84 +830,84 @@ examples.push(ex('iris', "Send a note to the team: standup is back to 10am Monda
 // ---- T2. Email: download (single-turn — the brief carries id + filename) --
 // The orchestrator already resolved both facts (its own read + get dispatches)
 // and hands them to iris, exactly like the manage flows above.
-examples.push(ex('iris', "Download the attachment NDA-partnership.pdf from the email email-4f2a (Jason's 'Action required: sign the NDA' email) and tell me where it lands.",
-  [{ name: 'email', arguments: { action: 'download', email_id: 'email-4f2a', filename: 'NDA-partnership.pdf' } }],
-  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf (NDA-partnership.pdf, 251234 bytes). Use this path for any further work on the file.'],
-    reply: "Saved NDA-partnership.pdf from Jason's NDA email (email-4f2a) to /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf." }));
-examples.push(ex('iris', "Save the attachment Q4-budget-v2.xlsx from email email-9b2f (Sarah's Q4 budget email) — give me the file path.",
-  [{ name: 'email', arguments: { action: 'download', email_id: 'email-9b2f', filename: 'Q4-budget-v2.xlsx' } }],
-  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.'],
-    reply: "Saved Q4-budget-v2.xlsx from Sarah's budget email (email-9b2f) to /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx." }));
-examples.push(ex('iris', "Download invoice-4421.pdf from email email-7d3e — the Stripe 'Invoice #4421 paid' receipt — so I have a local copy.",
-  [{ name: 'email', arguments: { action: 'download', email_id: 'email-7d3e', filename: 'invoice-4421.pdf' } }],
-  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-7d3e_invoice-4421.pdf (invoice-4421.pdf, 96500 bytes). Use this path for any further work on the file.'],
-    reply: 'Saved invoice-4421.pdf from the Stripe receipt (email-7d3e) to /home/dominic/Warden/data/email-attachments/email-7d3e_invoice-4421.pdf.' }));
-examples.push(ex('iris', "Pull the shipping label label-48215.pdf out of email email-a1b2 (the orders@shop.io 'Order #48215 shipped' email) and save it.",
-  [{ name: 'email', arguments: { action: 'download', email_id: 'email-a1b2', filename: 'label-48215.pdf' } }],
-  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/email-a1b2_label-48215.pdf (label-48215.pdf, 33400 bytes). Use this path for any further work on the file.'],
-    reply: 'Saved label-48215.pdf from the Order #48215 email (email-a1b2) to /home/dominic/Warden/data/email-attachments/email-a1b2_label-48215.pdf.' }));
+examples.push(ex('iris', "Download the attachment NDA-partnership.pdf from the email 18f2c9ab41d2b7e1 (Jason's 'Action required: sign the NDA' email) and tell me where it lands.",
+  [{ name: 'email', arguments: { action: 'download', email_id: '18f2c9ab41d2b7e1', filename: 'NDA-partnership.pdf' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/18f2c9ab41d2b7e1_NDA-partnership.pdf (NDA-partnership.pdf, 251234 bytes). Use this path for any further work on the file.'],
+    reply: "Saved NDA-partnership.pdf from Jason's NDA email (18f2c9ab41d2b7e1) to /home/dominic/Warden/data/email-attachments/18f2c9ab41d2b7e1_NDA-partnership.pdf." }));
+examples.push(ex('iris', "Save the attachment Q4-budget-v2.xlsx from email 18d94e07a3c5f2b8 (Sarah's Q4 budget email) — give me the file path.",
+  [{ name: 'email', arguments: { action: 'download', email_id: '18d94e07a3c5f2b8', filename: 'Q4-budget-v2.xlsx' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/18d94e07a3c5f2b8_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.'],
+    reply: "Saved Q4-budget-v2.xlsx from Sarah's budget email (18d94e07a3c5f2b8) to /home/dominic/Warden/data/email-attachments/18d94e07a3c5f2b8_Q4-budget-v2.xlsx." }));
+examples.push(ex('iris', "Download invoice-4421.pdf from email 18b76e0d53f9a2c4 — the Stripe 'Invoice #4421 paid' receipt — so I have a local copy.",
+  [{ name: 'email', arguments: { action: 'download', email_id: '18b76e0d53f9a2c4', filename: 'invoice-4421.pdf' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/18b76e0d53f9a2c4_invoice-4421.pdf (invoice-4421.pdf, 96500 bytes). Use this path for any further work on the file.'],
+    reply: 'Saved invoice-4421.pdf from the Stripe receipt (18b76e0d53f9a2c4) to /home/dominic/Warden/data/email-attachments/18b76e0d53f9a2c4_invoice-4421.pdf.' }));
+examples.push(ex('iris', "Pull the shipping label label-48215.pdf out of email 18a2b7c9e4d0f361 (the orders@shop.io 'Order #48215 shipped' email) and save it.",
+  [{ name: 'email', arguments: { action: 'download', email_id: '18a2b7c9e4d0f361', filename: 'label-48215.pdf' } }],
+  { results: ['Attachment saved: /home/dominic/Warden/data/email-attachments/18a2b7c9e4d0f361_label-48215.pdf (label-48215.pdf, 33400 bytes). Use this path for any further work on the file.'],
+    reply: 'Saved label-48215.pdf from the Order #48215 email (18a2b7c9e4d0f361) to /home/dominic/Warden/data/email-attachments/18a2b7c9e4d0f361_label-48215.pdf.' }));
 
 // ---- U. Email 2-turn chains (read→get, get→download — the maxIterations 3
 // contract: call 2 must use an id/filename call 1's result returned) --------
 examples.push(exMulti('iris', 'Find the email from Jason about the NDA and show me the full body.',
   [
     { call: { name: 'email', arguments: { action: 'read', search: 'from:jason NDA', limit: 10 } },
-      result: '1 email found:\n1. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.' },
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-4f2a' } },
+      result: '1 email found:\n1. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18f2c9ab41d2b7e1' } },
       result: 'Email content:\nFrom: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-09-14T14:20:00\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason\n\nAttachments (1): NDA-partnership.pdf (245 KB)' },
   ],
-  "Jason's NDA email (email-4f2a, Sep 14): review and sign the attached NDA (NDA-partnership.pdf, 245 KB) to move the partnership forward."));
+  "Jason's NDA email (18f2c9ab41d2b7e1, Sep 14): review and sign the attached NDA (NDA-partnership.pdf, 245 KB) to move the partnership forward."));
 examples.push(exMulti('iris', "Look up Sarah's latest email about the Q4 budget and show me what she needs.",
   [
     { call: { name: 'email', arguments: { action: 'read', search: 'from:sarah Q4 budget', limit: 20 } },
-      result: '2 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-9b1c] From: sarah@acme.io | Subject: Q4 budget draft v2 | Date: 2026-09-12T10:05:00\n   Attached is draft v2 of the Q4 budget for your review.' },
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-9b2f' } },
+      result: '2 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c3f92d4a7e05b6] From: sarah@acme.io | Subject: Q4 budget draft v2 | Date: 2026-09-12T10:05:00\n   Attached is draft v2 of the Q4 budget for your review.' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18d94e07a3c5f2b8' } },
       result: 'Email content:\nFrom: sarah@acme.io\nSubject: Re: Q4 budget approval needed\nDate: 2026-09-15T09:12:00\n\nHi Dominic,\n\nThe Q4 budget needs your sign-off by Friday — draft v2 is attached. Let me know if anything looks off.\n\n— Sarah\n\nAttachments (1): Q4-budget-v2.xlsx (47 KB)' },
   ],
-  'Sarah (email-9b2f) needs the Q4 budget signed off by Friday; draft v2 (Q4-budget-v2.xlsx) is attached.'));
+  'Sarah (18d94e07a3c5f2b8) needs the Q4 budget signed off by Friday; draft v2 (Q4-budget-v2.xlsx) is attached.'));
 examples.push(exMulti('iris', 'Get the full body of the email from billing@stripe.com about invoice #4421 and tell me the total.',
   [
     { call: { name: 'email', arguments: { action: 'read', search: 'from:billing 4421', limit: 10 } },
-      result: '1 email found:\n1. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00. A PDF copy is attached.' },
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-7d3e' } },
+      result: '1 email found:\n1. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00. A PDF copy is attached.' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18b76e0d53f9a2c4' } },
       result: 'Email content:\nFrom: billing@stripe.com\nSubject: Invoice #4421 paid\nDate: 2026-09-14T17:55:00\n\nHi Dominic,\n\nYour invoice #4421 was paid — total $199.00. A PDF copy is attached.\n\n— Stripe Billing\n\nAttachments (1): invoice-4421.pdf (94 KB)' },
   ],
-  'Stripe invoice #4421 (email-7d3e) is paid — total $199.00, PDF copy attached (invoice-4421.pdf).'));
-examples.push(exMulti('iris', "Download the NDA attachment from email email-4f2a (Jason's NDA email).",
+  'Stripe invoice #4421 (18b76e0d53f9a2c4) is paid — total $199.00, PDF copy attached (invoice-4421.pdf).'));
+examples.push(exMulti('iris', "Download the NDA attachment from email 18f2c9ab41d2b7e1 (Jason's NDA email).",
   [
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-4f2a' } },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18f2c9ab41d2b7e1' } },
       result: 'Email content:\nFrom: jason@partnerco.com\nSubject: Action required: sign the NDA\nDate: 2026-09-14T14:20:00\n\nHi Dominic,\n\nPlease review and sign the attached NDA so we can move forward with the partnership. Let me know if you have questions.\n\n— Jason\n\nAttachments (1): NDA-partnership.pdf (245 KB)' },
-    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-4f2a', filename: 'NDA-partnership.pdf' } },
-      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf (NDA-partnership.pdf, 251234 bytes). Use this path for any further work on the file.' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: '18f2c9ab41d2b7e1', filename: 'NDA-partnership.pdf' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/18f2c9ab41d2b7e1_NDA-partnership.pdf (NDA-partnership.pdf, 251234 bytes). Use this path for any further work on the file.' },
   ],
-  'Saved NDA-partnership.pdf from email-4f2a to /home/dominic/Warden/data/email-attachments/email-4f2a_NDA-partnership.pdf (251234 bytes).'));
-examples.push(exMulti('iris', "Save the budget spreadsheet attached to email email-9b2f (Sarah's Q4 budget email) — I need the file.",
+  'Saved NDA-partnership.pdf from 18f2c9ab41d2b7e1 to /home/dominic/Warden/data/email-attachments/18f2c9ab41d2b7e1_NDA-partnership.pdf (251234 bytes).'));
+examples.push(exMulti('iris', "Save the budget spreadsheet attached to email 18d94e07a3c5f2b8 (Sarah's Q4 budget email) — I need the file.",
   [
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-9b2f' } },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18d94e07a3c5f2b8' } },
       result: 'Email content:\nFrom: sarah@acme.io\nSubject: Re: Q4 budget approval needed\nDate: 2026-09-15T09:12:00\n\nHi Dominic,\n\nThe Q4 budget needs your sign-off by Friday — draft v2 is attached. Let me know if anything looks off.\n\n— Sarah\n\nAttachments (1): Q4-budget-v2.xlsx (47 KB)' },
-    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-9b2f', filename: 'Q4-budget-v2.xlsx' } },
-      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: '18d94e07a3c5f2b8', filename: 'Q4-budget-v2.xlsx' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/18d94e07a3c5f2b8_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.' },
   ],
-  "Saved Q4-budget-v2.xlsx from Sarah's email (email-9b2f) to /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx."));
-examples.push(exMulti('iris', "Email email-11d0 from support@saas.io has the maintenance plan attached — download just the plan PDF, not the ticket transcript.",
+  "Saved Q4-budget-v2.xlsx from Sarah's email (18d94e07a3c5f2b8) to /home/dominic/Warden/data/email-attachments/18d94e07a3c5f2b8_Q4-budget-v2.xlsx."));
+examples.push(exMulti('iris', "Email 18e90c4b72d1f5a3 from support@saas.io has the maintenance plan attached — download just the plan PDF, not the ticket transcript.",
   [
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-11d0' } },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18e90c4b72d1f5a3' } },
       result: 'Email content:\nFrom: support@saas.io\nSubject: Maintenance window Sunday\nDate: 2026-09-11T15:40:00\n\nHi Dominic,\n\nSunday\'s maintenance window runs 02:00–04:00. The plan and the ticket transcript are attached.\n\n— Support\n\nAttachments (2): maintenance-plan.pdf (210 KB), ticket-4421-transcript.txt (6 KB)' },
-    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-11d0', filename: 'maintenance-plan.pdf' } },
-      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-11d0_maintenance-plan.pdf (maintenance-plan.pdf, 215040 bytes). Use this path for any further work on the file.' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: '18e90c4b72d1f5a3', filename: 'maintenance-plan.pdf' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/18e90c4b72d1f5a3_maintenance-plan.pdf (maintenance-plan.pdf, 215040 bytes). Use this path for any further work on the file.' },
   ],
-  'Saved maintenance-plan.pdf from the support email (email-11d0) to /home/dominic/Warden/data/email-attachments/email-11d0_maintenance-plan.pdf.'));
+  'Saved maintenance-plan.pdf from the support email (18e90c4b72d1f5a3) to /home/dominic/Warden/data/email-attachments/18e90c4b72d1f5a3_maintenance-plan.pdf.'));
 // The full 3-call chain — the outer edge of the maxIterations: 3 contract.
 examples.push(exMulti('iris', "Find Sarah's Q4 budget email, open it, and save the attached spreadsheet.",
   [
     { call: { name: 'email', arguments: { action: 'read', search: 'from:sarah Q4 budget', limit: 20 } },
-      result: '2 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-9b1c] From: sarah@acme.io | Subject: Q4 budget draft v2 | Date: 2026-09-12T10:05:00\n   Attached is draft v2 of the Q4 budget for your review.' },
-    { call: { name: 'email', arguments: { action: 'get', email_id: 'email-9b2f' } },
+      result: '2 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c3f92d4a7e05b6] From: sarah@acme.io | Subject: Q4 budget draft v2 | Date: 2026-09-12T10:05:00\n   Attached is draft v2 of the Q4 budget for your review.' },
+    { call: { name: 'email', arguments: { action: 'get', email_id: '18d94e07a3c5f2b8' } },
       result: 'Email content:\nFrom: sarah@acme.io\nSubject: Re: Q4 budget approval needed\nDate: 2026-09-15T09:12:00\n\nHi Dominic,\n\nThe Q4 budget needs your sign-off by Friday — draft v2 is attached. Let me know if anything looks off.\n\n— Sarah\n\nAttachments (1): Q4-budget-v2.xlsx (47 KB)' },
-    { call: { name: 'email', arguments: { action: 'download', email_id: 'email-9b2f', filename: 'Q4-budget-v2.xlsx' } },
-      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.' },
+    { call: { name: 'email', arguments: { action: 'download', email_id: '18d94e07a3c5f2b8', filename: 'Q4-budget-v2.xlsx' } },
+      result: 'Attachment saved: /home/dominic/Warden/data/email-attachments/18d94e07a3c5f2b8_Q4-budget-v2.xlsx (Q4-budget-v2.xlsx, 48210 bytes). Use this path for any further work on the file.' },
   ],
-  "Saved Q4-budget-v2.xlsx from Sarah's budget reply (email-9b2f) to /home/dominic/Warden/data/email-attachments/email-9b2f_Q4-budget-v2.xlsx."));
+  "Saved Q4-budget-v2.xlsx from Sarah's budget reply (18d94e07a3c5f2b8) to /home/dominic/Warden/data/email-attachments/18d94e07a3c5f2b8_Q4-budget-v2.xlsx."));
 
 // ---- V. Iris no-op / edge cases ----------------------------------------
 examples.push(exText('iris', 'Summarize the email from my lawyer about the contract.',
@@ -873,23 +920,23 @@ examples.push(exText('iris', 'What is the weather?',
 // ---- W8. Iris: inbox queries ALWAYS call email(action="read") ----
 examples.push(ex('iris', 'List my recent emails from the inbox.',
   [{ name: 'email', arguments: { action: 'read',} }],
-  { results: ['5 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.\n5. [id: email-11a9] From: boss@acme.io | Subject: Standup moved to 11 | Date: 2026-09-14T11:00:00\n   Heads-up — standup moves to 11am from Monday.'],
+  { results: ['5 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.\n5. [id: 18f0d5b3a9c2e746] From: boss@acme.io | Subject: Standup moved to 11 | Date: 2026-09-14T11:00:00\n   Heads-up — standup moves to 11am from Monday.'],
     reply: '5 recent emails. Actionable: Sarah (budget sign-off by Friday), Jason (sign NDA), boss (standup moved to 11). The rest are a newsletter and a Stripe receipt.' }));
 examples.push(ex('iris', 'Check the inbox and list my recent emails.',
   [{ name: 'email', arguments: { action: 'read',} }],
-  { results: ['4 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.'],
+  { results: ['4 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.'],
     reply: '4 emails in your inbox. Actionable: Sarah (budget sign-off) and Jason (sign NDA).' }));
 examples.push(ex('iris', 'Check the inbox for any new email received today.',
   [{ name: 'email', arguments: { action: 'read', since: '2026-09-15T00:00:00', limit: 50 } }],
-  { results: ['2 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.'],
+  { results: ['2 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.'],
     reply: '2 emails today: Sarah (budget sign-off needed) and an HN newsletter.' }));
 examples.push(ex('iris', 'Read the inbox and list the emails.',
   [{ name: 'email', arguments: { action: 'read',} }],
-  { results: ['3 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n3. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.'],
+  { results: ['3 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n3. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.'],
     reply: '3 emails: Sarah (budget sign-off), Stripe (receipt), Jason (sign NDA).' }));
 examples.push(ex('iris', 'Check the inbox for any email received in the last hour.',
   [{ name: 'email', arguments: { action: 'read', since: '2026-09-15T13:05:00', limit: 20 } }],
-  { results: ['1 email found:\n1. [id: email-c1b0] From: ci-bot@warden | Subject: Build #1284 failed | Date: 2026-09-15T13:42:00\n   Pipeline run #1284 failed at the test stage — see the logs for the failing job.'],
+  { results: ['1 email found:\n1. [id: 18a9c4e7f2b1d305] From: ci-bot@warden | Subject: Build #1284 failed | Date: 2026-09-15T13:42:00\n   Pipeline run #1284 failed at the test stage — see the logs for the failing job.'],
     reply: '1 email in the last hour: CI bot — Build #1284 failed. Want me to dig in?' }));
 
 // ---- W9. Iris: email(action="send") with explicit, clean args (kill schema-as-args) ----
@@ -1062,31 +1109,31 @@ examples.push(exText('iris', 'Set a one-time reminder for tomorrow morning.',
 // ---- RG7. Email briefs (orch style: "Check/Search/List …") ---------------
 examples.push(ex('iris', 'Check the inbox for emails from support received in the last 7 days — report how many and what each is about.',
   [{ name: 'email', arguments: { action: 'read', search: 'from:support', since: '2026-09-08T14:05:00', limit: 50 } }],
-  { results: ['2 emails found:\n1. [id: email-11d0] From: support@saas.io | Subject: Ticket #4421 resolved | Date: 2026-09-13T10:11:00\n   Your ticket #4421 is resolved — see the transcript for details.\n2. [id: email-11c7] From: support@saas.io | Subject: Maintenance window Sunday | Date: 2026-09-11T15:40:00\n   Sunday\'s maintenance window runs 02:00–04:00.'],
+  { results: ['2 emails found:\n1. [id: 18e90c4b72d1f5a3] From: support@saas.io | Subject: Ticket #4421 resolved | Date: 2026-09-13T10:11:00\n   Your ticket #4421 is resolved — see the transcript for details.\n2. [id: 18b3f8a0c5d2e917] From: support@saas.io | Subject: Maintenance window Sunday | Date: 2026-09-11T15:40:00\n   Sunday\'s maintenance window runs 02:00–04:00.'],
     reply: '2 emails from support in the last 7 days: ticket #4421 resolved (Sep 13) and a Sunday maintenance window (Sep 11).' }));
 examples.push(ex('iris', 'Search the emails for one containing the word "invoice" and report the total amount mentioned in it.',
   [{ name: 'email', arguments: { action: 'read', search: 'invoice', limit: 20 } }],
-  { results: ['1 email found:\n1. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.'],
+  { results: ['1 email found:\n1. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.'],
     reply: 'Found 1 invoice email: Stripe "Invoice #4421 paid" (Sep 14), total $199.00.' }));
 examples.push(ex('iris', 'List my unread emails grouped by sender.',
   [{ name: 'email', arguments: { action: 'read',} }],
-  { results: ['4 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.'],
+  { results: ['4 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.\n3. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.\n4. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.'],
     reply: '4 unread, by sender: Sarah (budget sign-off), Jason (sign NDA), Stripe (receipt), Hacker News (newsletter).' }));
 examples.push(ex('iris', 'Check for any new email received in the past hour.',
   [{ name: 'email', arguments: { action: 'read', since: '2026-09-15T13:05:00', limit: 20 } }],
-  { results: ['1 email found:\n1. [id: email-c1b0] From: ci-bot@warden | Subject: Build #1284 failed | Date: 2026-09-15T13:42:00\n   Pipeline run #1284 failed at the test stage — see the logs for the failing job.'],
+  { results: ['1 email found:\n1. [id: 18a9c4e7f2b1d305] From: ci-bot@warden | Subject: Build #1284 failed | Date: 2026-09-15T13:42:00\n   Pipeline run #1284 failed at the test stage — see the logs for the failing job.'],
     reply: '1 new email in the past hour: CI bot — Build #1284 failed.' }));
 examples.push(ex('iris', 'Check for any emails received today that I should not have missed.',
   [{ name: 'email', arguments: { action: 'read', since: '2026-09-15T00:00:00', limit: 50 } }],
-  { results: ['2 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-44e1] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.'],
+  { results: ['2 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18c7a2f9e4b1d803] From: newsletter@hackernews.com | Subject: HN Weekly | Date: 2026-09-15T08:40:00\n   Top stories this week, plus the usual roundup of links.'],
     reply: '2 emails today: Sarah (Q4 budget sign-off by Friday — worth acting on) and an HN newsletter (no action).' }));
 examples.push(ex('iris', 'Check whether I have any important emails in the inbox.',
   [{ name: 'email', arguments: { action: 'read',} }],
-  { results: ['3 emails found:\n1. [id: email-9b2f] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: email-4f2a] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.\n3. [id: email-7d3e] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.'],
+  { results: ['3 emails found:\n1. [id: 18d94e07a3c5f2b8] From: sarah@acme.io | Subject: Re: Q4 budget approval needed | Date: 2026-09-15T09:12:00\n   The Q4 budget needs your sign-off by Friday — draft v2 is attached.\n2. [id: 18f2c9ab41d2b7e1] From: jason@partnerco.com | Subject: Action required: sign the NDA | Date: 2026-09-14T14:20:00\n   Please review and sign the attached NDA so we can move forward with the partnership.\n3. [id: 18b76e0d53f9a2c4] From: billing@stripe.com | Subject: Invoice #4421 paid | Date: 2026-09-14T17:55:00\n   Your invoice #4421 was paid — total $199.00.'],
     reply: '2 look important: Sarah needs the Q4 budget signed off by Friday, and Jason needs the NDA signed. The Stripe email is just a paid receipt.' }));
 examples.push(ex('iris', 'Find the email for order #48215 and pull the tracking info out of it.',
   [{ name: 'email', arguments: { action: 'read', search: '48215', limit: 10 } }],
-  { results: ['1 email found:\n1. [id: email-a1b2] From: orders@shop.io | Subject: Order #48215 shipped | Date: 2026-09-14T11:00:00\n   Your order #48215 shipped — tracking 1Z999AA10123456784.'],
+  { results: ['1 email found:\n1. [id: 18a2b7c9e4d0f361] From: orders@shop.io | Subject: Order #48215 shipped | Date: 2026-09-14T11:00:00\n   Your order #48215 shipped — tracking 1Z999AA10123456784.'],
     reply: 'Found order #48215 (orders@shop.io, Sep 14): tracking number 1Z999AA10123456784.' }));
 
 
@@ -1129,11 +1176,25 @@ function pickDistinct(arr, n) {
   }
   return out;
 }
+// Id shapes byte-match the live stack, so the fine-tune copies real ids from
+// context instead of learning template-shaped ones:
+//   email:   raw Gmail message ids — 16 lowercase hex chars, no prefix
+//   calendar: cal-<13-digit-ms-epoch>-<8-char base36>   (src/db.ts createEvent)
+//   alarm:   alarm-<13-digit-ms-epoch>-<8-char base36>  (src/db.ts createAlarm)
 function hexId() {
   let s = '';
-  for (let i = 0; i < 4; i++) s += '0123456789abcdef'[Math.floor(rng() * 16)];
-  return `email-${s}`;
+  for (let i = 0; i < 16; i++) s += '0123456789abcdef'[Math.floor(rng() * 16)];
+  return s;
 }
+function dbId(prefix) {
+  // 13-digit ms epoch within the 30 days before the anchor, like Date.now().
+  const ms = Math.floor(ANCHOR_MS - rng() * 30 * 86400000);
+  let sfx = '';
+  for (let i = 0; i < 8; i++) sfx += Math.floor(rng() * 36).toString(36);
+  return `${prefix}${ms}-${sfx}`;
+}
+const calId = () => dbId('cal-');
+const alarmId = () => dbId('alarm-');
 
 // ---- time helpers (UTC math on the anchor date; output strings carry no
 // offset, matching the ANCHOR header) --------------------------------------
@@ -1554,9 +1615,12 @@ const ALARMS = [
 ];
 function alarmListResult() {
   const chosen = pickDistinct(ALARMS, 3 + Math.floor(rng() * 3));
+  // ids minted in the live db.ts shape (alarm-<ms-epoch>-<base36>), so the
+  // model learns to copy a real-looking id from the list, not invent one.
+  const ids = chosen.map(() => alarmId());
   return {
-    ids: chosen.map((_, i) => `alm-${i + 1}`),
-    text: `Alarms:\n${chosen.map((al, i) => `- [alm-${i + 1}] "${al.label}" at ${al.time} repeat=${al.repeat}`).join('\n')}`,
+    ids,
+    text: `Alarms:\n${chosen.map((al, i) => `- [${ids[i]}] "${al.label}" at ${al.time} repeat=${al.repeat}`).join('\n')}`,
     chosen,
   };
 }
@@ -1595,15 +1659,16 @@ for (let i = 0; i < 20; i++) {
   ], `Deleted the "${al.label}" alarm (${id}).`));
 }
 // calendar scenarios
-const CALS = [
-  { title: 'Team Sync', start: '2026-09-16T10:00:00', end: '2026-09-16T11:00:00', loc: 'Meet', uid: 'ev-1004' },
-  { title: 'Vendor Demo', start: '2026-09-16T14:00:00', end: '2026-09-16T15:30:00', loc: 'Conference room', uid: 'ev-1006' },
-  { title: 'Dentist appointment', start: '2026-09-17T09:30:00', end: '2026-09-17T10:30:00', loc: 'Brightsmile', uid: 'ev-1012' },
-  { title: 'Design review', start: '2026-09-17T15:00:00', end: '2026-09-17T16:00:00', loc: 'Meet', uid: 'ev-1013' },
-  { title: 'Project Review', start: '2026-09-16T14:00:00', end: '2026-09-16T15:00:00', loc: '', uid: 'ev-1001' },
-  { title: 'Poker night', start: '2026-09-18T18:00:00', end: '2026-09-18T22:00:00', loc: "Alex's place", uid: 'ev-1020' },
-  { title: 'Lunch with Dana', start: '2026-09-17T12:00:00', end: '2026-09-17T13:00:00', loc: 'Ramen place', uid: 'ev-1014' },
-];
+// calendar scenarios — uids minted per-row in the live db.ts cal-<ms>-<base36> shape
+const CALS = pickDistinct([
+  { title: 'Team Sync', start: '2026-09-16T10:00:00', end: '2026-09-16T11:00:00', loc: 'Meet' },
+  { title: 'Vendor Demo', start: '2026-09-16T14:00:00', end: '2026-09-16T15:30:00', loc: 'Conference room' },
+  { title: 'Dentist appointment', start: '2026-09-17T09:30:00', end: '2026-09-17T10:30:00', loc: 'Brightsmile' },
+  { title: 'Design review', start: '2026-09-17T15:00:00', end: '2026-09-17T16:00:00', loc: 'Meet' },
+  { title: 'Project Review', start: '2026-09-16T14:00:00', end: '2026-09-16T15:00:00', loc: '' },
+  { title: 'Poker night', start: '2026-09-18T18:00:00', end: '2026-09-18T22:00:00', loc: "Alex's place" },
+  { title: 'Lunch with Dana', start: '2026-09-17T12:00:00', end: '2026-09-17T13:00:00', loc: 'Ramen place' },
+], 7).map((c) => ({ ...c, uid: calId() }));
 function calListResult() {
   const chosen = pickDistinct(CALS, 3 + Math.floor(rng() * 3));
   const lines = chosen.map((c, i) => {

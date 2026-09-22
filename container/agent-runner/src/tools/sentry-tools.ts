@@ -19,32 +19,53 @@ async function callHost(tool: string, args: any, timeoutMs = 30000): Promise<any
 // failure-prone, same reasoning as host-computed reminder durations).
 registry.register({
     name: 'sentry_report',
-    description:
-        "Submit the completed security-scan inventory to the host and get the verdict back. " +
-        "Call this ONCE at the end of your scan, after collecting every category your mode covers. " +
-        "Each array entry is one plain string; use the exact formats below. " +
-        "For 'peek' mode fill: listening, connections, services. For 'deep' mode fill all categories. " +
-        "listening entries: 'proto|addr:port|process' (from ss -tulpn, e.g. 'tcp|0.0.0.0:3200|node'). " +
-        "connections entries: 'proto|local|remote|process' (established, from ss -tunp). " +
-        "services entries: running service names (systemctl list-units --type=service --state=running). " +
-        "autostart entries: 'scope|name|command' from ~/.config/autostart, /etc/xdg/autostart (deep only). " +
-        "crontab entries: user crontab lines from crontab -l (deep only). " +
-        "units entries: enabled user units from systemctl --user list-unit-files --state=enabled (deep only). " +
-        "suspicious entries: anything that looked wrong to YOU while scanning, as 'what — why' " +
-        "(e.g. 'port 4444 listening — 4444 is a common backdoor port'); the host reports these even if the item is in the baseline. " +
-        "The host diffs your inventory against the known-good baseline and returns the verdict — clean, findings, or baseline-learned. " +
-        "State that returned verdict as your final answer.",
+    // Tool descriptions are clamped at 200 chars (stripTier) — this is sentry's
+    // ONLY tool, so the per-category formats and their source commands live in
+    // the parameter descriptions below, which are NOT clamped.
+    description: '{"what":"submit the finished scan inventory, get the verdict back","when":"ONCE, after collecting every category your mode covers","answer":"state the returned verdict as your final answer"}',
     schema: {
         type: 'object',
         properties: {
-            mode: { type: 'string', enum: ['peek', 'deep'], description: "The scan mode you were asked to run." },
-            listening: { type: 'array', items: { type: 'string' }, description: "Listening sockets as 'proto|addr:port|process'." },
-            connections: { type: 'array', items: { type: 'string' }, description: "Established connections as 'proto|local|remote|process'." },
-            services: { type: 'array', items: { type: 'string' }, description: "Names of running services." },
-            autostart: { type: 'array', items: { type: 'string' }, description: "Deep: autostart entries as 'scope|name|command'." },
-            crontab: { type: 'array', items: { type: 'string' }, description: "Deep: user crontab lines." },
-            units: { type: 'array', items: { type: 'string' }, description: "Deep: enabled user units." },
-            suspicious: { type: 'array', items: { type: 'string' }, description: "Items you judge suspicious, as 'what — why'." },
+            mode: {
+                type: 'string',
+                enum: ['peek', 'deep'],
+                description: '{"what":"the scan mode you were asked to run","vals":"peek|deep","peek_fills":"listening, connections, services","deep_fills":"every category"}',
+            },
+            listening: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"listening sockets, one string per socket","format":"proto|addr:port|process","source":"ss -tulpn"}',
+            },
+            connections: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"established connections, one string each","format":"proto|local|remote|process","source":"ss -tunp"}',
+            },
+            services: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"running service names, one per entry","source":"systemctl list-units --type=service --state=running"}',
+            },
+            autostart: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"autostart entries, one string each","format":"scope|name|command","source":"~/.config/autostart and /etc/xdg/autostart","mode":"deep only"}',
+            },
+            crontab: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"user crontab lines, one per entry","source":"crontab -l","mode":"deep only"}',
+            },
+            units: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"enabled user units, one per entry","source":"systemctl --user list-unit-files --state=enabled","mode":"deep only"}',
+            },
+            suspicious: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '{"what":"anything that looked wrong to YOU while scanning","format":"what — why","effect":"the host reports these even when the item is in the baseline"}',
+            },
         },
         required: ['mode'],
     },

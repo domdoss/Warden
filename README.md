@@ -354,7 +354,7 @@ The live surface is the extension's own `chrome_*` toolset (~27 tools: `chrome_n
 
 ### ✉️ Communications
 
-`email` (read/send/cache, date-windowed) — your real IMAP inbox · `send_sms` / `read_sms` — Twilio in and out · `contacts` — full CRUD (`list_contacts`, `search_contacts`, `get_contact`, `create_contact`, `update_contact`, `delete_contact`) · `calendar` — CalDAV events, Kontact/Google-synced.
+`email` (read/send/cache, date-windowed) — your real IMAP inbox · `contacts` — full CRUD (`list_contacts`, `search_contacts`, `get_contact`, `create_contact`, `update_contact`, `delete_contact`) · `calendar` — CalDAV events, Kontact/Google-synced.
 
 ### ⏰ Scheduling & time
 
@@ -395,15 +395,15 @@ The dashboard includes:
 | | | |
 |---|---|---|
 | 💬 **Chat** | Main conversation interface | 🗂️ **Projects** | Deliverables, blockers, financials |
-| 📁 **Files** | Browse, upload, download, manage | 🔒 **Vault** | PII-scrubbed file storage |
-| 🔑 **API Keys** | Provider credentials | ⏰ **Scheduled Tasks** | Cron/interval/once automation |
-| 💓 **Heartbeat** | Standing instructions on schedule | ⏰ **Alarms** | Reminders with sound + desktop notify |
-| ⚡ **Actions** | One-touch prompt buttons | 📱 **SMS** | Twilio send/receive |
-| 🎤 **Talk** | Voice transcription | ✉️ **Email** | IMAP inbox + send |
-| 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
-| 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
-| 📜 **Process Logs** | Live log tail | 📰 **Digest** | Hourly/daily/weekly grounded briefings |
-| 🎓 **Training** | Failure-audit → data-modify → retrain loop (see [Training loop](#-training-loop)) | 📈 **Alpha Stack** | Trading research stack status (see [Alpha Stack](#-alpha-stack)) |
+| 📁 **Files** | Browse, upload, download, manage | ⏰ **Scheduled Tasks** | Cron/interval/once automation |
+| 🔑 **API Keys** | Provider credentials | ⏰ **Alarms** | Reminders with sound + desktop notify |
+| 💓 **Heartbeat** | Standing instructions on schedule | ⚡ **Actions** | One-touch prompt buttons |
+| ✉️ **Email** | IMAP inbox + send |
+| 🎤 **Talk** | Voice transcription | 📝 **Notes** | Obsidian-style markdown vault |
+| 📅 **Calendar** | CalDAV synced with Kontact | 🧩 **Skills & MCP** | Hot-pluggable capabilities |
+| 📈 **Agent Activity** | Live verbose status + collapsible progress panel | 📜 **Process Logs** | Live log tail |
+| 📰 **Digest** | Hourly/daily/weekly grounded briefings | 🎓 **Training** | Failure-audit → data-modify → retrain loop (see [Training loop](#-training-loop)) |
+| 📈 **Alpha Stack** | Trading research stack — its own webapp, embedded (see [Alpha Stack](#-alpha-stack)) | |
 | 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
 | 🏗️ **Ops Panel** | Inbox (scanned work tasks + calendar events — ✓ confirm / ✕ deny), Work tasks, Reminders, Schedules, Calendar (Google-synced appointments), + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
@@ -539,16 +539,11 @@ Each step is a detached background job with a live log tail in the view; only on
 
 ### 📈 Alpha Stack
 
-The trading research stack lives at `trading/` (red rail button under Chat in the dashboard) — a machine-local environment, **not part of a fresh install**: the venv, models, data, and paper-trading state are self-ignored via `trading/.gitignore` and are never committed. On the machine that has it, the Alpha Stack view shows:
+The trading research stack lives at `trading/` (red rail button under Chat in the dashboard) — a machine-local environment, **not part of a fresh install**: the venv, models, data, and paper-trading state are self-ignored via `trading/.gitignore` and are never committed.
 
-| Panel | What it reads |
-|---|---|
-| **Stack** | venv python (`trading/bin/python`), the Kronos forecaster, TradingAgents, script/webapp counts |
-| **Paper trading** | `.alpha-stack/{paper.json,state.json}` — capital, cash, open positions |
-| **Recent runs** | last 10 entries of `.alpha-stack/runs.jsonl` |
-| **Last log lines** | tail of the newest file in `trading/logs/` |
+The Alpha Stack view is the stack's **own webapp** — `trading/webapp/` (a stdlib-only server, bound to `0.0.0.0:8765` so the dashboard's mobile/LAN clients can load the embedded iframe — same no-auth single-user posture as the dashboard itself). Warden does not run it as a daemon: opening the Alpha Stack view spawns it on demand (`trading/bin/python webapp/app.py`, detached, logging to `trading/logs/webapp.log`); the systemd drop-in `warden.service.d/alpha-webapp.conf` also starts it on every Warden (re)start. The iframe targets the dashboard's own hostname on `:8765`, so it renders from any device that can reach the dashboard. State (`trading/.alpha-stack/`) and reports (`trading/.tradingagents/logs/`) live on disk under the stack root, so a webapp restart loses nothing.
 
-Everything is fail-open: with no `trading/` present the view says `not installed` and Warden runs identically. The stack's local LLM dependency (TradingAgents points at `http://localhost:11434/v1`) is the same Ollama the rest of Warden uses.
+Everything is fail-open: with no `trading/` present the view reports the failure and Warden runs identically. The stack's local LLM dependency (TradingAgents points at `http://localhost:11434/v1`) is the same Ollama the rest of Warden uses.
 
 ---
 
@@ -567,11 +562,11 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | **Actionable / Ops inbox** | `POST /api/scan/run` (run hourly extraction now) · `GET /api/scan/inbox` (unconfirmed tasks + events) · `POST /api/scan/confirm` · `GET/POST /api/scan/config` (`{ autoAccept }`) |
 | **Tasks & scheduling** | `GET/POST /api/tasks` · `POST /api/tasks/bulk` · `GET/POST /api/work-tasks` · `GET/POST /api/timers` · `GET/POST /api/automations` · `GET/POST /api/alarms` |
 | **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
-| **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
+| **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
 | **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
-| **Training loop** | `POST /api/training/audit` `{days: 1\|3\|7}` · `POST /api/training/modify` · `POST /api/training/train` · `GET /api/training/status` · `GET /api/training/catalogs` |
-| **Alpha Stack** | `GET /api/alphastack/status` (trading stack inventory, paper-trading state, recent runs, log tail) |
-| **Vault & audit** | `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
+| **Training loop** | `POST /api/training/audit` `{days: 1\|3\|7}` · `POST /api/training/modify` · `POST /api/training/train` · `POST /api/training/stop` (SIGTERMs the running step's process group) · `GET /api/training/status` · `GET /api/training/catalogs` |
+| **Alpha Stack** | `GET /api/alphastack/status` (inventory + whether the webapp is up) · `POST /api/alphastack/webapp/start` (spawns the stack's webapp on `0.0.0.0:8765` on demand) |
+| **Audit** | `POST /api/audit/run` · `GET /api/audit/status` |
 | **Settings & UI plumbing** | `GET/POST /api/settings` · `GET/POST /api/dashboard-pages` (live/beta file editing) · `GET/POST /api/mcp-servers` · `GET /api/notifications` · `GET /api/notifications/poll` · `GET/POST /api/notification-list` · `POST /api/notification-list/read-all` · `GET/POST /api/api-keys` |
 
 ### Things worth knowing
