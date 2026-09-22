@@ -69,6 +69,64 @@ describe("Anthesis trial authorization request binding", () => {
     expect(sha256Digest({ b: 2, a: 1 })).toBe(sha256Digest({ a: 1, b: 2 }));
   });
 
+  it("binds caller identity into the input digest", () => {
+    const options = {
+      trialRoot: "/tmp/anthesis-trial",
+      runtimeId: "warden-trial",
+    };
+    const owner = buildFileWriteRequest(
+      "allowed.txt",
+      "one",
+      {
+        chatJid: "owner@local",
+        groupFolder: "owner",
+        isMain: true,
+        userId: "owner",
+      },
+      options,
+    );
+    const otherUser = buildFileWriteRequest(
+      "allowed.txt",
+      "one",
+      {
+        chatJid: "other@local",
+        groupFolder: "other",
+        isMain: true,
+        userId: "other",
+      },
+      options,
+    );
+
+    expect(otherUser.requestBinding.input_digest).not.toBe(
+      owner.requestBinding.input_digest,
+    );
+  });
+
+  it("rejects a symlinked target outside the trial root", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "warden-root-"));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "warden-outside-"));
+    await fs.symlink(outside, path.join(root, "link"));
+    vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+
+    const result = await authorizeFileWrite(
+      "link/escaped.txt",
+      "blocked",
+      {
+        chatJid: "owner@local",
+        groupFolder: "owner",
+        isMain: true,
+        userId: "owner",
+      },
+      { trialRoot: root, runtimeId: "warden-trial" },
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.decision?.reason).toBe("invalid_input");
+    await expect(
+      fs.access(path.join(outside, "escaped.txt")),
+    ).rejects.toThrow();
+  });
+
   it("does not treat approval-required or denied as executable", () => {
     const decisions: AuthorizationDecision[] = [
       { decision: "deny", source: "policy_rule", reason: "blocked" },
@@ -162,12 +220,24 @@ describe("Anthesis trial authorization request binding", () => {
       trialRoot: root,
       runtimeId: "warden-trial",
     });
+    expect(allowed.allowed).toBe(true);
+
+    decision.policy_digest = "not-a-digest";
+    await fs.writeFile(decisionPath, JSON.stringify(decision));
+    const malformed = await authorizeFileWrite("allowed.txt", "one", context, {
+      trialRoot: root,
+      runtimeId: "warden-trial",
+    });
+    expect(malformed.allowed).toBe(false);
+    expect(malformed.decision?.reason).toBe("malformed_decision");
+
+    decision.policy_digest = sha256Digest("trial-policy");
+    await fs.writeFile(decisionPath, JSON.stringify(decision));
     const changed = await authorizeFileWrite("other.txt", "one", context, {
       trialRoot: root,
       runtimeId: "warden-trial",
     });
 
-    expect(allowed.allowed).toBe(true);
     expect(changed.allowed).toBe(false);
     expect(changed.decision?.reason).toBe("request_binding_mismatch");
   });

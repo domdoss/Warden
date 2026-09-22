@@ -112,6 +112,11 @@ export function buildFileWriteRequest(
   const actor = { role: options.role || "implementation" };
   const runtime = { id: options.runtimeId };
   const contentDigest = sha256Digest(content);
+  const caller = {
+    userId: context.userId,
+    chatJid: context.chatJid,
+    groupFolder: context.groupFolder,
+  };
   const effect = {
     action: "file.write",
     path: target,
@@ -120,16 +125,11 @@ export function buildFileWriteRequest(
     runtime,
   };
 
-  // Context identity is deliberately not treated as authorization. It is
-  // retained only as stable input to the trial binding until Warden exposes a
-  // stronger trusted specialist identity.
-  void context;
-
   const requestBinding = {
     version: "anthesis.request-binding/v1" as const,
     canonicalization: "rfc8785-json" as const,
     algorithm: "sha256" as const,
-    input_digest: sha256Digest(effect),
+    input_digest: sha256Digest({ effect, caller }),
     plan_digest: sha256Digest(options.plan ?? { action: "file.write", target }),
     source_digest: sha256Digest(options.source ?? { warden: "trial" }),
     dependency_state_digest: sha256Digest(
@@ -154,6 +154,35 @@ export function buildFileWriteRequest(
     runtime,
     requestBinding: { ...requestBinding, request_digest: requestDigest },
   };
+}
+
+async function assertRealTargetIsInRoot(
+  target: string,
+  root: string,
+): Promise<void> {
+  const resolvedRoot = await fs.realpath(root);
+  let cursor = target;
+  const suffix: string[] = [];
+
+  while (true) {
+    try {
+      const resolvedCursor = await fs.realpath(cursor);
+      const resolvedTarget = path.resolve(resolvedCursor, ...suffix.reverse());
+      if (
+        resolvedTarget !== resolvedRoot &&
+        !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)
+      ) {
+        throw new Error("target path escapes outside trial root");
+      }
+      return;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw new Error("target path cannot be resolved");
+      suffix.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
 }
 
 export function isExecutableDecision(decision: AuthorizationDecision): boolean {
@@ -189,6 +218,52 @@ async function readDecision(): Promise<Record<string, any>> {
   >;
 }
 
+function isDigest(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+function isValidDecision(raw: Record<string, any>): boolean {
+  const binding = raw.request_binding;
+  const effect = raw.effect;
+  const source = raw.decision_source;
+  const validSourceRules =
+    (source === "policy_rule" && typeof raw.policy_rule_id === "string") ||
+    (source === "policy_default" && raw.policy_rule_id === "default") ||
+    (source === "engine_guard" &&
+      raw.decision === "deny" &&
+      raw.policy_rule_id === undefined);
+
+  return Boolean(
+    raw.version === "anthesis.decision/v1" &&
+    typeof raw.scenario_id === "string" &&
+    ["allow", "deny", "approval_required"].includes(raw.decision) &&
+    ["policy_rule", "policy_default", "engine_guard"].includes(source) &&
+    typeof raw.policy === "string" &&
+    isDigest(raw.policy_digest) &&
+    raw.canonicalization === "rfc8785-json" &&
+    typeof raw.reason === "string" &&
+    validSourceRules &&
+    effect &&
+    typeof effect.action === "string" &&
+    effect.resource &&
+    typeof effect.resource.path === "string" &&
+    (effect.command === null || typeof effect.command === "string") &&
+    typeof effect.actor?.role === "string" &&
+    typeof effect.runtime?.id === "string" &&
+    binding?.version === "anthesis.request-binding/v1" &&
+    binding.canonicalization === "rfc8785-json" &&
+    binding.algorithm === "sha256" &&
+    isDigest(binding.request_digest) &&
+    isDigest(binding.input_digest) &&
+    isDigest(binding.plan_digest) &&
+    isDigest(binding.source_digest) &&
+    isDigest(binding.dependency_state_digest) &&
+    raw.engine?.name === "anthesis-lab" &&
+    typeof raw.engine.version === "string" &&
+    raw.engine.version.length > 0,
+  );
+}
+
 function matchesExactRequest(
   raw: Record<string, any>,
   request: FileWriteRequest,
@@ -220,6 +295,7 @@ export async function authorizeFileWrite(
   let request: FileWriteRequest;
   try {
     request = buildFileWriteRequest(filePath, content, context, options);
+    await assertRealTargetIsInRoot(request.absoluteTarget, options.trialRoot);
   } catch {
     return {
       allowed: false,
@@ -230,6 +306,14 @@ export async function authorizeFileWrite(
 
   try {
     const raw = await readDecision();
+    if (!isValidDecision(raw)) {
+      return {
+        allowed: false,
+        mode: "governed",
+        request,
+        decision: engineDeny("malformed_decision"),
+      };
+    }
     if (!matchesExactRequest(raw, request)) {
       return {
         allowed: false,
