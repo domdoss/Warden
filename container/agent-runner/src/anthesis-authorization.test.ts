@@ -406,6 +406,20 @@ describe("Anthesis trial authorization request binding", () => {
     expect(await registry.dispatch("Edit", {}, context)).toContain(
       "Anthesis trial tool denied",
     );
+    vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "false");
+    await import("./tools/file-edit.js");
+    expect(
+      await registry.dispatch(
+        "Edit",
+        {
+          file_path: "allowed.txt",
+          old_string: "before",
+          new_string: "bypass",
+        },
+        context,
+      ),
+    ).toContain("governed mode rejects Edit");
+    vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "true");
     const allowed = await registry.dispatch(
       "Write",
       { file_path: "allowed.txt", content: "after" },
