@@ -9,6 +9,11 @@ export interface AuthorizationDecision {
   decision: AuthorizationOutcome;
   source: "policy_rule" | "policy_default" | "engine_guard";
   reason: string;
+  version?: "anthesis.decision/v1";
+  scenarioId?: string;
+  policy?: string;
+  canonicalization?: "rfc8785-json";
+  engine?: { name: "anthesis-lab"; version: string };
   policyRuleId?: string;
   policyDigest?: string;
 }
@@ -24,6 +29,7 @@ export interface FileWriteRequest {
     version: "anthesis.request-binding/v1";
     canonicalization: "rfc8785-json";
     algorithm: "sha256";
+    request_digest: string;
     input_digest: string;
     plan_digest: string;
     source_digest: string;
@@ -115,6 +121,26 @@ export function buildFileWriteRequest(
   // stronger trusted specialist identity.
   void context;
 
+  const requestBinding = {
+    version: "anthesis.request-binding/v1" as const,
+    canonicalization: "rfc8785-json" as const,
+    algorithm: "sha256" as const,
+    input_digest: sha256Digest(effect),
+    plan_digest: sha256Digest(options.plan ?? { action: "file.write", target }),
+    source_digest: sha256Digest(options.source ?? { warden: "trial" }),
+    dependency_state_digest: sha256Digest(
+      options.dependencyState ?? { state: "unknown" },
+    ),
+  };
+  const requestDigest = sha256Digest({
+    action: "file.write",
+    target,
+    contentDigest,
+    actor,
+    runtime,
+    requestBinding,
+  });
+
   return {
     action: "file.write",
     target,
@@ -122,19 +148,7 @@ export function buildFileWriteRequest(
     contentDigest,
     actor,
     runtime,
-    requestBinding: {
-      version: "anthesis.request-binding/v1",
-      canonicalization: "rfc8785-json",
-      algorithm: "sha256",
-      input_digest: sha256Digest(effect),
-      plan_digest: sha256Digest(
-        options.plan ?? { action: "file.write", target },
-      ),
-      source_digest: sha256Digest(options.source ?? { warden: "trial" }),
-      dependency_state_digest: sha256Digest(
-        options.dependencyState ?? { state: "unknown" },
-      ),
-    },
+    requestBinding: { ...requestBinding, request_digest: requestDigest },
   };
 }
 
@@ -212,6 +226,11 @@ export async function authorizeFileWrite(
       decision: raw.decision,
       source: raw.decision_source,
       reason: raw.reason,
+      version: raw.version,
+      scenarioId: raw.scenario_id,
+      policy: raw.policy,
+      canonicalization: raw.canonicalization,
+      engine: raw.engine,
       policyRuleId: raw.policy_rule_id,
       policyDigest: raw.policy_digest,
     };
@@ -220,7 +239,13 @@ export async function authorizeFileWrite(
       !["policy_rule", "policy_default", "engine_guard"].includes(
         decision.source,
       ) ||
-      typeof decision.reason !== "string"
+      typeof decision.reason !== "string" ||
+      decision.version !== "anthesis.decision/v1" ||
+      typeof decision.scenarioId !== "string" ||
+      typeof decision.policy !== "string" ||
+      decision.canonicalization !== "rfc8785-json" ||
+      decision.engine?.name !== "anthesis-lab" ||
+      typeof decision.engine.version !== "string"
     ) {
       return {
         allowed: false,

@@ -135,15 +135,23 @@ describe("Anthesis trial authorization request binding", () => {
       runtimeId: "warden-trial",
     });
     const decision = {
+      version: "anthesis.decision/v1",
+      scenario_id: "file-write-allow",
       decision: "allow",
       decision_source: "policy_rule",
+      policy: "trial-policy",
+      policy_digest: sha256Digest("trial-policy"),
+      canonicalization: "rfc8785-json",
+      policy_rule_id: "allow-scoped-write",
       reason: "scoped_write",
       effect: {
         action: "file.write",
         resource: { path: request.target },
+        command: null,
         actor: request.actor,
         runtime: request.runtime,
       },
+      engine: { name: "anthesis-lab", version: "test" },
       request_binding: request.requestBinding,
     };
     await fs.writeFile(decisionPath, JSON.stringify(decision));
@@ -181,15 +189,23 @@ describe("Anthesis trial authorization request binding", () => {
     await fs.writeFile(
       decisionPath,
       JSON.stringify({
+        version: "anthesis.decision/v1",
+        scenario_id: "file-write-allow",
         decision: "allow",
         decision_source: "policy_rule",
+        policy: "trial-policy",
+        policy_digest: sha256Digest("trial-policy"),
+        canonicalization: "rfc8785-json",
+        policy_rule_id: "allow-scoped-write",
         reason: "scoped_write",
         effect: {
           action: "file.write",
           resource: { path: request.target },
+          command: null,
           actor: request.actor,
           runtime: request.runtime,
         },
+        engine: { name: "anthesis-lab", version: "test" },
         request_binding: request.requestBinding,
       }),
     );
