@@ -412,6 +412,7 @@ describe("Anthesis trial authorization request binding", () => {
     await import("./tools/terminal.js");
     await import("./tools/documents.js");
     await import("./tools/desktop.js");
+    await import("./tools/media.js");
     expect(
       await registry.dispatch(
         "Edit",
@@ -445,6 +446,9 @@ describe("Anthesis trial authorization request binding", () => {
     expect(
       await registry.dispatch("desktop_screenshot", {}, context),
     ).toContain("governed mode rejects desktop tools");
+    expect(
+      await registry.dispatch("media_control", { action: "play_pause" }, context),
+    ).toContain("governed mode rejects media tools");
     vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "true");
     const allowed = await registry.dispatch(
       "Write",
