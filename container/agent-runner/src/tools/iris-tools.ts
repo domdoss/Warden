@@ -23,6 +23,10 @@ async function callHost(tool: string, args: any, timeoutMs = 30000): Promise<any
     }
 }
 
+// Ceiling on how many emails one `action=read` may fetch from the provider —
+// matches the `limit` param's documented default of 500.
+const EMAIL_FETCH_MAX = 500;
+
 // ─── email: read | get | send | refresh | cached ──────────────────────────
 registry.register({
     name: 'email',
@@ -48,7 +52,7 @@ registry.register({
     handler: async (args, context) => {
         const a = String(args.action || '');
         if (a === 'read') {
-            const limit = Math.min(parseInt(args.limit) || 500, 500);
+            const limit = Math.min(parseInt(args.limit) || EMAIL_FETCH_MAX, EMAIL_FETCH_MAX);
             // A date-range lookup (since/before) with a large limit can take well
             // over the default 30s — fetching hundreds of emails from Gmail/Graph
             // is slow, so a read gets a 90s ceiling. Plain recent-email reads

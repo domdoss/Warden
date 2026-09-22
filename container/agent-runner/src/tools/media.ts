@@ -147,12 +147,12 @@ async function mediaControl(action: string): Promise<string> {
 
 registry.register({
     name: 'audio_volume',
-    description: "Control the SPEAKER (output) volume. action 'get' returns the current level, 'set' takes level (0-100), 'toggle_mute' mutes/unmutes the speaker. Use this for the user's speaker loudness — not the mic.",
+    description: '{"what":"SPEAKER (output) volume","scope":"how loud the user hears sound","mic_sensitivity":"mic_volume","actions":"get|set|toggle_mute"}',
     schema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['get', 'set', 'toggle_mute'], description: "What to do: 'get' current volume, 'set' to level, or 'toggle_mute'." },
-            level: { type: 'number', description: "Target volume 0-100. Required when action='set', ignored otherwise." },
+            action: { type: 'string', enum: ['get', 'set', 'toggle_mute'], description: '{"what":"the operation","vals":"get|set|toggle_mute"}' },
+            level: { type: 'number', description: '{"what":"target speaker volume","range":"0-100","required_when":"action=set"}' },
         },
         required: ['action'],
     },
@@ -163,12 +163,12 @@ registry.register({
 
 registry.register({
     name: 'mic_volume',
-    description: "Control the MIC (input/capture) volume. action 'get' returns the current level, 'set' takes level (0-100), 'toggle_mute' mutes/unmutes the microphone. Use this for microphone sensitivity, not the speaker.",
+    description: '{"what":"MIC (input/capture) volume","scope":"microphone sensitivity","speaker_loudness":"audio_volume","actions":"get|set|toggle_mute"}',
     schema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['get', 'set', 'toggle_mute'], description: "What to do: 'get' current mic level, 'set' to level, or 'toggle_mute'." },
-            level: { type: 'number', description: "Target volume 0-100. Required when action='set', ignored otherwise." },
+            action: { type: 'string', enum: ['get', 'set', 'toggle_mute'], description: '{"what":"the operation","vals":"get|set|toggle_mute"}' },
+            level: { type: 'number', description: '{"what":"target mic level","range":"0-100","required_when":"action=set"}' },
         },
         required: ['action'],
     },
@@ -179,11 +179,11 @@ registry.register({
 
 registry.register({
     name: 'media_control',
-    description: "Control media playback (play, pause, toggle, next track, previous track, stop) on a running media player — a browser YouTube tab, Spotify, mpv, VLC, etc. Anything exposing MPRIS. Returns the resulting playback status. If no player is running it says so.",
+    description: '{"what":"playback control on any running MPRIS player (Spotify, mpv, VLC)","returns":"resulting playback status","youtube_asks":"the youtube tool owns those"}',
     schema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['play', 'pause', 'play_pause', 'next', 'previous', 'stop'], description: 'Playback action.' },
+            action: { type: 'string', enum: ['play', 'pause', 'play_pause', 'next', 'previous', 'stop'], description: '{"what":"the playback operation","vals":"play|pause|play_pause|next|previous|stop"}' },
         },
         required: ['action'],
     },

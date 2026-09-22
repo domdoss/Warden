@@ -4,7 +4,11 @@
 // deliverable | blocker | priority | financials), `action` selects the
 // operation. Every action calls the SAME host callback with the SAME payload
 // the old flat tool used, and returns the SAME result text — only the
-// tool-call surface changed, so the host is untouched. Wired into iris-core.
+// tool-call surface changed, so the host is untouched. Wired 2026-09-22:
+// no sub-agent owns it, so it flows into the orchestrator's own tool pool and
+// the orchestrator handles projects/work-tasks DIRECTLY (see toolsets.ts).
+// Description is a JSON one-liner under 200 chars (stripTier clamps prose);
+// the kind/action matrix lives in the unclamped parameter descriptions.
 import { registry } from '../tool-registry.js';
 import { writeCallbackAsync } from '../index.js';
 
@@ -26,12 +30,12 @@ function fmtResult(resp: any, okPrefix: string, failPrefix: string): string {
 
 registry.register({
     name: 'project',
-    description: 'Projects, work tasks, deliverables, blockers, priorities, and financials. kind=project: action=create (name, description, due_date), list, get (project_id), update (project_id + fields), archive, complete, delete. kind=task (work tasks on the user dashboard): action=create (title, description, notes, priority, due_date, project_id — a plain task with no project lands in the user Personal project), list, update (task_id), delete (task_id). kind=deliverable: action=add (project_id, name, due_date), toggle (deliverable_id), delete (deliverable_id). kind=blocker: action=add (project_id, description, severity), delete (blocker_id). kind=priority: action=add (project_id, item, impact), delete (priority_id). kind=financials: action=update (project_id, budget, spent, revenue, notes).',
+    description: '{"what":"manage projects, work tasks, deliverables, blockers, priorities, financials","how":"kind + action pick the operation","answer":"the returned result text"}',
     schema: {
         type: 'object',
         properties: {
-            kind: { type: 'string', enum: ['project', 'task', 'deliverable', 'blocker', 'priority', 'financials'], description: 'Which record type to operate on.' },
-            action: { type: 'string', enum: ['create', 'list', 'get', 'update', 'archive', 'complete', 'delete', 'add', 'toggle'], description: 'Which operation to perform (not all apply to every kind).' },
+            kind: { type: 'string', enum: ['project', 'task', 'deliverable', 'blocker', 'priority', 'financials'], description: '{"what":"which record type to operate on","vals":"project|task|deliverable|blocker|priority|financials"}' },
+            action: { type: 'string', enum: ['create', 'list', 'get', 'update', 'archive', 'complete', 'delete', 'add', 'toggle'], description: '{"what":"the operation","per_kind":{"project":"create,list,get,update,archive,complete,delete","task":"create,list,update,delete","deliverable":"add,toggle,delete","blocker":"add,delete","priority":"add,delete","financials":"update"}}' },
             project_id: { type: 'string', description: 'id of the project (most actions; task create: optional — omit to use the Personal project)' },
             id: { type: 'string', description: 'id of the record being managed: task_id for tasks, deliverable_id, blocker_id, priority_id' },
             name: { type: 'string', description: 'project create: project name | deliverable add: deliverable name' },

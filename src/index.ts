@@ -768,7 +768,6 @@ export function buildAgentCallbacks(): CallbackMap {
         const accounts = getEmailAccounts(null);
         const account = accounts.find((a) => a.enabled && !a.read_only);
         if (!account) {
-          // TODO: wire to actual email function once a writable account is configured.
           return { ok: false, error: 'no enabled read-write email account' };
         }
         const result = await sendEmail(account.id, to, subject, body);
@@ -794,10 +793,14 @@ export function buildAgentCallbacks(): CallbackMap {
           return { ok: false, error: 'no enabled email account' };
         }
         const errors: string[] = [];
+        const disconnected: string[] = [];
+        let searched = 0;
         for (const account of accounts) {
           if (account.oauth_account_id && !getOAuthAccount(account.oauth_account_id)) {
+            disconnected.push(account.email);
             continue;
           }
+          searched++;
           try {
             const email = await getEmailById(account.id, emailId);
             if (email) return { ok: true, email };
@@ -805,7 +808,16 @@ export function buildAgentCallbacks(): CallbackMap {
             errors.push(`${account.email}: ${String(err?.message ?? err)}`);
           }
         }
-        return { ok: false, error: `email not found — ${errors.join('; ')}` };
+        // Each branch below names why the lookup ended empty. The skip-guard
+        // above used to leave `errors` empty, so every one of these cases
+        // returned the bare string "email not found — " (2026-09-21 19:07).
+        if (searched === 0) {
+          return { ok: false, error: `no mailbox could be searched — the stored OAuth link is missing for ${disconnected.join(', ')}` };
+        }
+        if (errors.length > 0) {
+          return { ok: false, error: `email ${emailId} could not be fetched — ${errors.join('; ')}` };
+        }
+        return { ok: false, error: `no connected mailbox holds a message with id ${emailId}` };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }
@@ -831,10 +843,14 @@ export function buildAgentCallbacks(): CallbackMap {
           return { ok: false, error: 'no enabled email account' };
         }
         const errors: string[] = [];
+        const disconnected: string[] = [];
+        let searched = 0;
         for (const account of accounts) {
           if (account.oauth_account_id && !getOAuthAccount(account.oauth_account_id)) {
+            disconnected.push(account.email);
             continue;
           }
+          searched++;
           try {
             const att = await downloadEmailAttachment(account.id, emailId, attachmentId, filename);
             if (!att) continue;
@@ -851,7 +867,13 @@ export function buildAgentCallbacks(): CallbackMap {
             errors.push(`${account.email}: ${String(err?.message ?? err)}`);
           }
         }
-        return { ok: false, error: `attachment not downloaded — ${errors.join('; ')}` };
+        if (searched === 0) {
+          return { ok: false, error: `no mailbox could be searched — the stored OAuth link is missing for ${disconnected.join(', ')}` };
+        }
+        if (errors.length > 0) {
+          return { ok: false, error: `attachment could not be downloaded — ${errors.join('; ')}` };
+        }
+        return { ok: false, error: `no connected mailbox holds ${attachmentId ? `attachment ${attachmentId}` : `an attachment named ${filename}`} on email ${emailId}` };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }
@@ -1260,9 +1282,51 @@ export function buildAgentCallbacks(): CallbackMap {
 
     open_app: async (args: any) => {
       try {
-        const app = typeof args?.app === 'string' ? args.app.trim() : '';
-        if (!app) return { ok: false, error: 'missing app name' };
-        const extraArgs: string[] = Array.isArray(args?.args) ? args.args.map(String) : [];
+        const requested = typeof args?.app === 'string' ? args.app.trim() : '';
+        if (!requested) return { ok: false, error: 'missing app name' };
+        // Model-friendly names don't always match the binary installed here
+        // (2026-09-21: `open_app chrome` -> spawn ENOENT; the browser on this
+        // box is google-chrome-stable). Each value is argv, so a flatpak app
+        // resolves to the command that launches it. Every target below was
+        // checked with `command -v` on this host — a name that maps to nothing
+        // installed is left out on purpose, so asking for a program this box
+        // does not have fails with its real ENOENT instead of quietly opening
+        // some other program.
+        const APP_ALIASES: Record<string, string[]> = {
+          chrome: ['google-chrome-stable'],
+          'google-chrome': ['google-chrome-stable'],
+          browser: ['google-chrome-stable'],
+          'web-browser': ['google-chrome-stable'],
+          files: ['dolphin'],
+          'file-manager': ['dolphin'],
+          filemanager: ['dolphin'],
+          explorer: ['dolphin'],
+          terminal: ['konsole'],
+          console: ['konsole'],
+          editor: ['kate'],
+          'text-editor': ['kate'],
+          texteditor: ['kate'],
+          notepad: ['kate'],
+          calculator: ['kcalc'],
+          settings: ['systemsettings'],
+          'system-settings': ['systemsettings'],
+          screenshot: ['spectacle'],
+          'image-viewer': ['gwenview'],
+          'pdf-viewer': ['okular'],
+          'document-viewer': ['okular'],
+          'archive-manager': ['ark'],
+          mail: ['kmail'],
+          email: ['kmail'],
+          'mail-client': ['kmail'],
+          discord: ['flatpak', 'run', 'com.discordapp.Discord'],
+        };
+        const resolved = APP_ALIASES[requested.toLowerCase()] ?? [requested];
+        const app = resolved[0];
+        const launched = resolved.join(' ');
+        const extraArgs: string[] = [
+          ...resolved.slice(1),
+          ...(Array.isArray(args?.args) ? args.args.map(String) : []),
+        ];
         const hostEnv = {
           ...process.env,
           DISPLAY: process.env.DISPLAY || ':0',
@@ -1281,14 +1345,23 @@ export function buildAgentCallbacks(): CallbackMap {
         // around spawn never sees them, and an unhandled 'error' event is a
         // fatal process crash: `open_app chrome` (no such binary on this box)
         // took the whole Warden host down twice on 2026-09-21, mid-turn, and
-        // the wreckage is what sent the seat into pkill. Log it instead; the
-        // seat already got its fire-and-forget launch reply.
-        child.on('error', (err) => {
-          logger.error({ app, err: String((err as Error)?.message || err) }, 'open_app: launch failed');
+        // the wreckage is what sent the seat into pkill. Log it, and hold the
+        // reply briefly so a launch failure (bad binary name) doesn't get
+        // reported to the user as a success (2026-09-21: "I've opened Google
+        // Chrome" when nothing launched — logs/warden.log 17:39:03-06).
+        const launchError: Promise<string | null> = new Promise((resolve) => {
+          child.once('error', (err) => {
+            const message = String((err as Error)?.message || err);
+            logger.error({ launched, err: message }, 'open_app: launch failed');
+            resolve(message);
+          });
+          setTimeout(() => resolve(null), 300);
         });
         child.unref();
-        logger.info({ app, args: extraArgs }, 'open_app: launched host application');
-        return { ok: true, message: `Launched ${app}` };
+        const failure = await launchError;
+        if (failure) return { ok: false, error: `failed to launch ${launched}: ${failure}` };
+        logger.info({ launched, args: extraArgs }, 'open_app: launched host application');
+        return { ok: true, message: `Launched ${launched}` };
       } catch (err: any) {
         return { ok: false, error: String(err?.message ?? err) };
       }
@@ -1307,6 +1380,20 @@ export function buildAgentCallbacks(): CallbackMap {
         // app's frame server, which runs in the laptop's graphical session).
         // Region is cropped here from the full-screen PNG. window_title is not
         // supported remotely (no way to focus a window on the laptop from here).
+        //
+        // Say so instead of dropping the argument: this handler used to accept
+        // window_title, ignore it, and return the whole screen, so a caller that
+        // asked for one window got a full-desktop frame it believed was that
+        // window (2026-09-21 18:33, window_title "facebook.com"). The caller's
+        // reply is built from `error` alone, so refusing is the only way the
+        // mismatch reaches it.
+        const windowTitle = typeof args?.window_title === 'string' ? args.window_title.trim() : '';
+        if (windowTitle) {
+          return {
+            ok: false,
+            error: 'this capture is the whole screen — per-window capture is unavailable on this host. A sub-rectangle of the screen is available through region {x,y,w,h}.',
+          };
+        }
         let region: { x: number; y: number; w: number; h: number } | undefined;
         const r = args?.region;
         if (r && typeof r === 'object') {

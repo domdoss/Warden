@@ -409,6 +409,10 @@ input, select, textarea { font-family: inherit; }
 }
 .view.active { display: flex; }
 
+/* Alpha Stack fills the whole view — no Warden gutter or chrome, the
+   embedded webapp IS the dashboard, not a framed page. */
+#view-alphastack { padding: 0; }
+
 /* ----------------------------------------------------------------------------
    4. CORE COMPONENTS
 ---------------------------------------------------------------------------- */

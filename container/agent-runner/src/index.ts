@@ -222,16 +222,22 @@ function applyDefaultApps(builtins: any[], mcpDefs: any[]): any[] {
     return builtins.filter(t => !drop.has(String(t?.function?.name || '')));
 }
 
-/** Is this MCP server configured as lazy (optional, on-demand only)? */
+/** Is this MCP server configured as lazy (optional, on-demand only)?
+ *  Unreadable config answers YES: the caller withholds a capability's built-in
+ *  tools for a non-lazy server whether or not it is connected, so answering NO
+ *  on a failed read strands that capability with ZERO tools — the exact state
+ *  the lazy contract exists to prevent. Keeping the built-ins is the recoverable
+ *  side of this branch, and the read failure is logged rather than swallowed. */
 function isLazyMcpServer(server: string): boolean {
+    const cfgPath = process.env.MCP_SERVERS_CONFIG || path.join(process.cwd(), 'data', 'mcp-servers.json');
     try {
-        const cfgPath = process.env.MCP_SERVERS_CONFIG || path.join(process.cwd(), 'data', 'mcp-servers.json');
         // Small config, read per seat-build — no caching needed.
         const raw = fs.readFileSync(cfgPath, 'utf-8');
         const list = JSON.parse(raw);
         return Array.isArray(list) && list.some((s: any) => s && s.name === server && s.enabled !== false && s.lazy === true);
-    } catch {
-        return false;
+    } catch (err: any) {
+        log(`[default-apps] mcp-servers config unreadable at ${cfgPath} (${err?.message || err}) — treating ${server} as lazy so built-in tools stay available`);
+        return true;
     }
 }
 
@@ -458,10 +464,13 @@ const RESEARCH_TOOLS = new Set([
     'read_file', 'list_file', 'get_chat_history', 'list_running_agents',
     'read_job_result', 'agent_logs',
     // Browser probes count as research: atlas-10gs circled 40+ iterations on
-    // browser_evaluate probes of Reddit's shadow-DOM composer without acting.
-    'browser_navigate', 'browser_snapshot', 'browser_evaluate',
-    'browser_current_url', 'browser_tabs', 'browser_screenshot',
-    'browser_wait_for', 'desktop_screenshot',
+    // page-read probes of Reddit's shadow-DOM composer without acting. The CDP
+    // browser_* names are retired; browsing now rides the MCP bridge, so the
+    // read/inspection class of its tools carries the streak (full mcp-prefixed
+    // names — see TOOL_RESULT_MAX_CHARS for the same convention).
+    'mcp__browser-driving__chrome_read_page', 'mcp__browser-driving__chrome_get_web_content',
+    'mcp__browser-driving__chrome_screenshot', 'mcp__browser-driving__chrome_navigate',
+    'desktop_screenshot',
     'mcp__marm__marm_smart_recall',
 ]);
 // Narration cap: a stream that has produced this many chars of CONTENT with
@@ -563,8 +572,6 @@ function toolLabel(name) {
         Skill: 'Running skill',
         api_request: 'Calling API',
         list_api_keys: 'Checking API keys',
-        send_sms: 'Sending SMS',
-        read_sms: 'Reading SMS',
         atlas: 'Running Atlas',
         artemis: 'Running Artemis',
         iris: 'Running Iris',
@@ -617,10 +624,8 @@ function toolDetailLabel(name, args) {
         case 'add_priority': return `Add priority`;
         case 'schedule_task': return `Schedule ${args.schedule_type || 'task'}`;
         case 'create_calendar_event': return `Calendar: ${short(args.title || '', 40)}`;
-        case 'send_sms': return `SMS to ${short(args.to || '', 20)}`;
         case 'generate_pdf': return `Generate PDF: ${clean(args.filename || '')}`;
         case 'convert_file': return `Convert ${clean(args.input || '')} → ${args.format || '?'}`;
-        case 'read_sms': return `Read SMS${args.from ? ' from ' + short(args.from, 20) : ''}`;
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'atlas': return `🌍 Atlas: ${args.task || ''}`;
         case 'artemis': return `🏹 Artemis: ${args.task || 'reviewing the conversation'}`;
@@ -736,7 +741,6 @@ function applySettingsSync(data: any) {
     if (data.irisModel !== undefined) IRIS_MODEL = (data.irisModel || '').replace(/^local:/, '');
     if (data.artemisModel !== undefined) ARTEMIS_MODEL = (data.artemisModel || '').replace(/^local:/, '');
     if (data.sentryModel !== undefined) SENTRY_MODEL = (data.sentryModel || '').replace(/^local:/, '');
-    if (data.sentryModel !== undefined) SENTRY_MODEL = (data.sentryModel || '').replace(/^local:/, '');
     if (data.drivingForce !== undefined) {
         DRIVING_FORCE_ID = data.drivingForce || '';
     }
@@ -822,17 +826,6 @@ function drainIpcResults() {
                     const status = data.success ? 'sent successfully' : `failed: ${data.error}`;
                     messages.push(`[System: Email to ${data.to || 'recipient'} ${status}]`);
                 }
-                else if (data.type === 'sms_send_result') {
-                    const status = data.success ? 'sent successfully' : `failed: ${data.error}`;
-                    messages.push(`[System: SMS to ${data.to || 'recipient'} ${status}]`);
-                }
-                else if (data.type === 'sms_read_result') {
-                    if (data.error) {
-                        messages.push(`[System: SMS read failed - ${data.error}]`);
-                    } else {
-                        messages.push(`[System: SMS messages retrieved - ${data.messages?.length || 0} messages]`);
-                    }
-                }
                 else if (data.type === 'work_tasks_list') {
                     messages.push(`[System: Work tasks retrieved - ${data.tasks?.length || 0} tasks]`);
                 }
@@ -887,6 +880,10 @@ Date: ${e.date}`).join('\n---\n');
 // All tools self-register via imports in ./tools/index.js.
 // Tool schemas for Ollama are generated via registry.getDefinitions().
 
+// Tool names already reported as over-long, so the warning below fires once per
+// tool instead of every prompt.
+const CLAMP_WARNED = new Set<string>();
+
 // Strip tier field before sending to Ollama — it only expects { type, function }
 function stripTier(tools: any[]) {
     // The tool schema block is re-ingested EVERY prompt — descriptions ride
@@ -896,6 +893,16 @@ function stripTier(tools: any[]) {
     return tools.map(({ tier, ...rest }) => {
         const d = rest?.function?.description;
         if (typeof d === 'string' && d.length > 200) {
+            const name = String(rest?.function?.name || '');
+            // Our own descriptions are authored to fit; one going over means a
+            // real constraint is being cut mid-sentence and no one can see it.
+            // Four tools shipped truncated this way before anyone noticed, so
+            // say it once. MCP tools are exempt: third-party servers ship
+            // paragraphs by design and that is what the clamp is for.
+            if (!name.startsWith('mcp__') && !CLAMP_WARNED.has(name)) {
+                CLAMP_WARNED.add(name);
+                log(`[tools] description for "${name}" is ${d.length} chars — clamped to 200, the tail is not reaching the model; shorten it or move the detail into a parameter description (those are not clamped)`);
+            }
             const first = d.split('\n').map((l: string) => l.trim()).find(Boolean) || d;
             rest.function.description = first.length > 200 ? first.slice(0, 197).trimEnd() + '…' : first;
         }
@@ -993,6 +1000,7 @@ function agentKernel(doneLine: string): string {
 // # ROLE/# THE CREW/# THE LOOP sections, keyed (kernel rides inside).
 const ORCH_MANAGER_SYSTEM = JSON.stringify({
     role: 'Orch: delegation and verification manager. A task reaches you because it is too big or too varied for one specialist alone. Break it into pieces, hand each piece to the specialist that owns it, VERIFY what comes back, hand up ONE consolidated result only once every piece checks out. The task states the outcome; the decomposition is yours. Act on the first turn.',
+    gating: 'you run only on a request the user explicitly approved — the orchestrator proposes you and the user decides, so a task in your hands already carries that approval and the work to do is the task as written',
     crew: {
         call: 'directly — the result comes back inline, in the same turn, never to an inbox',
         vulkan: 'coding, scripting, building, heavy bash',
@@ -1068,6 +1076,12 @@ const SUBAGENTS: SubAgentDef[] = [
         routing: "code, scripts, builds, heavy bash; big-context work (many files, long docs, big logs) even when not code",
         maxIterations: 200,
         summary: 'code, builds, tests, heavy bash, big-context work',
+        // Markdown prose, deliberately: vulkan is the CLOUD seat (see the
+        // VULKAN_MODEL notes and the vision-resolver comment below), not one of
+        // the local granite seats. The dense-nested-JSON style the other
+        // prompts use exists because granite reads structure rather than prose;
+        // that reason does not apply here, so this stays prose. The shared
+        // kernel still arrives as JSON — it is authored once for both seats.
         systemPrompt: `# ROLE
 You are Vulkan. You write and change code. The task states what the user needs; the engineering is yours. Act on the first turn.
 
@@ -1091,6 +1105,9 @@ Your tools are source edits, builds and tests. Showing a result on screen is War
 # VERIFYING
 - A successful Edit or Write is applied.
 - A behavioral change is verified by running the build and the relevant test, or a focused reproduction, and reading the output.
+
+# KERNEL
+The rules below are shared with Atlas and authored once (agentKernel), so they arrive as JSON inside this Markdown brief rather than being restated here — restating them is what lets the two seats drift apart. Read them as the same standing rules, in JSON form.
 
 ${agentKernel('every deliverable exists on disk — the file written, the edit applied, the build clean, and the tests or a focused reproduction actually run and passing. Report the files you changed and the commands you ran.')}`,
         mcpServers: ['*'], // every MCP server the user has installed
@@ -1149,11 +1166,11 @@ INPUT
 - Line 1 is the current local time — use it when a schedule time is relative.
 - BRIEF: one JSON object — {"intent": "read|send|download|schedule|list|create|update|delete", ...} — carrying every id, address, and value it needs inline.
 
-schedule_value
-- once, relative: ISO-8601 duration — PT2M, PT1H30M, P1D
-- once, absolute: local YYYY-MM-DDTHH:MM:SS
-- interval: milliseconds string — 300000
-- recurring: 5-field cron — 0 9 * * 1-5
+schedule_value — compute the value from what THIS request asked for and the current local time on line 1; each type writes it in one fixed wire format:
+- once, relative: an ISO-8601 duration in the pattern PnYnMnDTnHnMnS — keep only the units the ask implies
+- once, absolute: the local date and time in the pattern YYYY-MM-DDTHH:MM:SS
+- interval: the gap between runs in milliseconds, digits only
+- recurring: a 5-field cron expression — minute hour day-of-month month day-of-week, space-separated, * meaning every
 
 OUTPUT
 - Exactly one JSON object, nothing outside it: {"result": "<the outcome in one line>", "items": ["<one string per list item>"]}.
@@ -1220,7 +1237,12 @@ OUTPUT
         // temperature 0; granite reads structure, not prose.
         systemPrompt: JSON.stringify({
             role: "Sentry, Warden's desktop security agent. You run inside the user's account with user-level permissions — that is always enough; sudo, installs, and file writes are outside your job.",
-            known_good: 'you scan the machine Warden itself lives on; Warden and its parts are normal here: the Warden orchestrator (node) with its dashboard on port 3200, the agent-runner (node), the voice app (port 8767), the MARM memory server (port 8001), and Ollama (port 11434)',
+            // Ports come from the same env the rest of the runner reads, so a
+            // changed port cannot leave Sentry flagging Warden's own dashboard
+            // as a finding. Parsed without `new URL`, which throws on a
+            // malformed value — this string is built at module load, where a
+            // throw would take the whole runner down over a cosmetic detail.
+            known_good: `you scan the machine Warden itself lives on; Warden and its parts are normal here: the Warden orchestrator (node) with its dashboard on port ${process.env.STATUS_PORT || '3200'}, the agent-runner (node), the voice app (port ${process.env.VOICE_CONTROL_PORT || '8767'}), the MARM memory server (port ${process.env.MARM_PORT || '8001'}), and Ollama (port ${(process.env.OLLAMA_URL || '').match(/:(\d+)/)?.[1] || '11434'})`,
             tools: {
                 bash: 'running commands',
                 sentry_report: 'once, at the end — its schema describes everything it accepts',
@@ -1234,12 +1256,12 @@ OUTPUT
                 investigate: 'a non-standard port, an unknown process, an outbound connection you cannot place: investigate it, Bash and your iterations exist for this',
                 owner: 'ps -p PID, systemctl status UNIT, ls -l /proc/PID/exe',
                 package: 'pacman -Qo PATH',
-                ports: 'vendor software uses registered ports (TeamViewer 5938/5939, Steam 27036, KDE Connect 1716)',
+                ports: 'a port matching a vendor registration (TeamViewer 5938/5939, Steam 27036, KDE Connect 1716) names the process you expect to find — confirm it by owner and package before you treat the port as explained; the registration is the hypothesis, the owner check is the evidence',
                 root_sockets: 'root-owned sockets read as "unknown" at user level — resolve them through the service list',
             },
             report: {
                 content: 'what stays unexplained after you checked, saying what you checked and what it turned out to be; something you resolved is understood, whatever it looked like at first; each genuine finding as "what — why"; an empty suspicious list means the machine is clean',
-                submit: 'one sentry_report, then the verdict — CLEAN or FINDINGS — as your final answer',
+                submit: 'one sentry_report; it returns the host verdict, and that returned verdict is your final answer, stated as it came back',
                 format: 'one or two sentences; for a scheduled scan the host posts findings itself; for an orchestrator delegation your verdict text is the report it relays — give each finding its own line there',
             },
         }),
@@ -1543,12 +1565,16 @@ const COUNCIL_TOOL_DEF = {
     type: 'function',
     function: {
         name: 'council',
-        description: 'Convene The Council — three Artemis instances (Skeptic, Pragmatist, Synthesist) deliberate in parallel on the same question from three different angles. Each round, all three answers are shared and each seat re-evaluates independently. The loop repeats until all three agree on a single answer (or max_rounds is hit). Use for high-stakes questions where you want a council consensus rather than a single answer. Slower than a single delegate call — expect 1-3 minutes.',
+        // Descriptions ride through stripTier, which clamps anything over 200
+        // chars to its first line — the tail (when to use it, the timing cost)
+        // was being cut mid-sentence. Dense JSON under the cap; the detail that
+        // does not fit lives in the param descriptions, which are NOT clamped.
+        description: JSON.stringify({ what: 'three Artemis seats deliberate in parallel, re-reading each other each round, until they converge', use_when: 'high-stakes question wanting consensus over one opinion', cost: '1-3 min' }),
         parameters: {
             type: 'object',
             properties: {
-                task: { type: 'string', description: 'The question for The Council to deliberate on. Self-contained — no chat history available to the seats.' },
-                max_rounds: { type: 'number', description: 'Maximum deliberation rounds. Default 4, capped at 15. Each round spawns 3 parallel Artemis calls; seats argue, disagree, present new points, and work toward one answer all three can endorse.' },
+                task: { type: 'string', description: 'The question for The Council to deliberate on. Self-contained — the seats get no chat history. Three seats answer it from different angles: Skeptic, Pragmatist, Synthesist.' },
+                max_rounds: { type: 'number', description: 'Maximum deliberation rounds. Default 4, capped at 15. Each round spawns 3 parallel Artemis calls; seats argue, disagree, present new points, and work toward one answer all three can endorse. The loop ends early once all three agree.' },
             },
             required: ['task'],
         },
@@ -1559,7 +1585,7 @@ const COUNCIL_STATUS_TOOL_DEF = {
     type: 'function',
     function: {
         name: 'council_status',
-        description: 'Peek at what The Council is doing right now. Returns the deliberation status (round in progress, elapsed time) and each seat\'s answer from the completed rounds, or the outcome if it already finished. Use when the user asks how the council is doing, what it is thinking, or whether it is done. Read-only — does not interrupt the deliberation.',
+        description: JSON.stringify({ what: 'progress of the running Council: round, elapsed, each seat answer so far, or the outcome', use_when: 'asked how it is doing or whether it is done', effect: 'read-only, never interrupts' }),
         parameters: { type: 'object', properties: {}, required: [] },
     },
 };
@@ -1636,7 +1662,7 @@ function delegateToolDef(s: SubAgentDef) {
                     properties: {
                         task: {
                             type: 'string',
-                            description: '{"what":"one JSON object, nothing else","keys":"intent (read|send|download|schedule|list|create|update|delete) + every id, address, filename, date, value inline","pick_by_user_ask":{"user_names_an_email":{"intent":"read","email_id":"<the id the user named>"},"user_gives_no_id_check_or_recent":{"intent":"read"},"user_wants_a_download":{"intent":"download","email_id":"<id>","filename":"<name>"}},"rule":"email_id or account only when the user gave one; no id = read every connected inbox, recent first","note":"no preamble, no time — the runner prepends local time"}',
+                            description: '{"what":"one JSON object, nothing else","keys":"intent (read|send|download|schedule|list|create|update|delete) + every id, address, filename, date, value inline","pick_by_user_ask":{"user_names_an_email":{"intent":"read","email_id":"<the id the user named>"},"user_gives_no_id_check_or_recent":{"intent":"read"},"user_wants_a_download":{"intent":"download","email_id":"<id>","filename":"<name>"}},"id_source":"every id key — email_id, alarm_id, task_id, event_id — carries a value one of iris earlier list/read results returned for that same noun, quoted exactly as it came back; hold no id for the noun and the brief omits the key, so the intent is the matching list/read and the id arrives from its result","rule":"no id = read/list every connected source, recent first","note":"no preamble, no time — the runner prepends local time"}',
                         },
                     },
                     required: ['task'],
@@ -4021,11 +4047,11 @@ async function runNativeOllama(input: ContainerInput) {
         type: 'function',
         function: {
             name: 'atlas_background',
-            description: 'Run work in the BACKGROUND as a copy of yourself, on your own model and tools, when it is too long for a chat turn (minutes of browsing, a multi-step build). The result arrives in your inbox and you keep talking meanwhile. For anything you can finish in this turn, just do it yourself with your tools instead.',
+            description: JSON.stringify({ what: 'background copy of yourself, your model and tools', use_when: 'work too long for one chat turn', returns: 'result to your inbox; you keep talking', finishable_now: 'do it yourself' }),
             parameters: {
                 type: 'object',
                 properties: {
-                    task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, where to look, how to code, or tool names.' },
+                    task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, where to look, how to code, or tool names. Worth backgrounding: minutes of browsing, a multi-step build.' },
                     urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
                 },
                 required: ['task'],
@@ -4039,7 +4065,7 @@ async function runNativeOllama(input: ContainerInput) {
             description: 'Read the full stored output of a finished background job from your inbox (e.g. when the user asks for the raw result, or a preview was truncated). Call with no job_id to list all stored results.',
             parameters: {
                 type: 'object',
-                properties: { job_id: { type: 'string', description: 'Job id like "atlas-4f2a". Omit to list available results.' } },
+                properties: { job_id: { type: 'string', description: 'The job id exactly as your inbox entry for that finished job printed it. Omit to list available results, then read the id from that list.' } },
                 required: [],
             },
         },
@@ -4048,12 +4074,12 @@ async function runNativeOllama(input: ContainerInput) {
         type: 'function',
         function: {
             name: 'report_task_failure',
-            description: 'Record that a finished background job PROVEN failed — its result shows the deliverable is wrong or missing (not merely that success is hard to see). Call this before re-delegating; the runner allows the task exactly one automatic retry, consumed on the next dispatch, then refuses further retries.',
+            description: JSON.stringify({ what: 'record a finished job as PROVEN failed: its result shows the deliverable wrong or missing', when: 'before you re-delegate', budget: 'one automatic retry, then the runner refuses' }),
             parameters: {
                 type: 'object',
                 properties: {
                     task: { type: 'string', description: 'The failed task, as it was delegated.' },
-                    reason: { type: 'string', description: 'What proved it failed — the evidence from the result.' },
+                    reason: { type: 'string', description: 'What proved it failed — the evidence from the result. A deliverable that is merely hard to see from the text is not proven failed; the retry budget is one dispatch, consumed on the next re-delegation.' },
                 },
                 required: ['task', 'reason'],
             },
@@ -4465,7 +4491,6 @@ const marmRecallSection = marmEnabled
     SUPERVISOR_ENABLED = input.supervisorEnabled !== false;
     IRIS_MODEL = (input.irisModel || '').replace(/^local:/, '');
     ARTEMIS_MODEL = (input.artemisModel || '').replace(/^local:/, '');
-    SENTRY_MODEL = (input.sentryModel || '').replace(/^local:/, '');
     SENTRY_MODEL = (input.sentryModel || '').replace(/^local:/, '');
     DRIVING_FORCE_ID = input.drivingForce || '';
     CONTEXT_CLEAR_AT = input.contextClearAt || '';
@@ -5779,8 +5804,8 @@ const marmRecallSection = marmEnabled
                       `[Inbox] ${unreadItems.length} background job result${unreadItems.length > 1 ? 's' : ''} completed:\n\n${body}\n\n` +
                       `For each result, run the CONFIRM step before anything else: compare it against what the user originally asked for — that ask is in your context.\n` +
                       `1. CONFIRMED — deliverable present and right. Media or window the user can already see or hear: stay silent. Else relay in one or two sentences.\n` +
-                      `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call browser_snapshot and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
-                      `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, check the state (browser_snapshot) or treat it as PROVEN-FAILED.\n` +
+                      `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call chrome_read_page on the task tab and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
+                      `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, check the state (chrome_read_page) or treat it as PROVEN-FAILED.\n` +
                       `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.\n` +
                       `FORMAT: the reply is chat to the captain, not a report. One or two plain sentences per result, carrying the outcome itself. No headers, no bullets, no restating the ask or the job id, no verdict words, no next-steps offers.` +
                       stillRunningBlock
@@ -6540,7 +6565,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
     } else if (toolName === 'stop_agent') {
         const targetId = String(args?.job_id || '');
         if (!targetId) {
-            result = 'Error: job_id is required (e.g. atlas-abcd from list_running_agents).';
+            result = 'Error: job_id is required — the id exactly as list_running_agents printed it for that job.';
         } else {
             const job = backgroundJobs.get(targetId);
             if (!job) {
@@ -6815,8 +6840,11 @@ async function main() {
             const def = SUBAGENT_BY_DELEGATE.get('iris');
             if (!def) throw new Error('iris sub-agent not defined');
             // Only email — Iris compiles + outputs text; it does not publish.
+            // Iris's registered tool is named 'email' (it wraps the host's
+            // read_emails handler internally) — filtering on the host handler
+            // name here yields zero tools and the digest compiles blind.
             const tools = (SUBAGENT_TOOL_DEFS.get('iris') || []).filter(
-                (t: any) => t?.function?.name === 'read_emails',
+                (t: any) => t?.function?.name === 'email',
             );
             const ctx = {
                 chatJid: containerInput.chatJid || 'owner@local',

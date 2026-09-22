@@ -49,14 +49,16 @@ function queueForVision(b64: string): void {
 
 registry.register({
     name: 'desktop_screenshot',
-    description: 'Take a screenshot of the full desktop (or a window/region). The image is loaded into your vision context immediately — you can see it in your next response and use the pixel coordinates to drive desktop_click(x, y). Returns the native resolution. Use this to SEE a native desktop app (Stremio, a media player, a settings window) before clicking it; for web pages use browser_snapshot instead.',
+    // Whole-screen capture only: the host serves one full frame and refuses a
+    // per-window ask, so window_title is gone from the schema rather than
+    // advertised-and-rejected. `region` is the way to narrow a capture.
+    description: '{"what":"capture the whole screen into your vision context","use_when":"see a native desktop app before desktop_click","web_pages":"chrome_read_page"}',
     schema: {
         type: 'object',
         properties: {
-            window_title: { type: 'string', description: 'Optional: capture a specific window by title substring instead of the full desktop.' },
             region: {
                 type: 'object',
-                description: 'Optional: capture a sub-rectangle in pixels.',
+                description: '{"what":"narrow the capture to a sub-rectangle of the screen","unit":"pixels","fields":"x,y,w,h — all four required together","default":"omit = whole screen"}',
                 properties: {
                     x: { type: 'number' }, y: { type: 'number' },
                     w: { type: 'number' }, h: { type: 'number' },
@@ -87,12 +89,12 @@ registry.register({
 
 registry.register({
     name: 'webcam_capture',
-    description: 'Take a photo, picture, or selfie with the host webcam (camera) and load it into YOUR vision context. Use when the user asks to take a photo, snap a picture, take a selfie, see what the camera sees, or check who/what is in the room. The Warden orchestrator grabs the frame on the host. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the resolution.',
+    description: '{"what":"photo/selfie from the host webcam into your vision context","use_when":"take a photo, see what the camera sees, who is in the room","rule":"call it yourself — sub-agents have no vision"}',
     schema: {
         type: 'object',
         properties: {
-            device: { type: 'string', description: 'Optional: v4l2 device path (default /dev/video0).' },
-            width: { type: 'number', description: 'Optional: requested frame width in pixels (default 640).' },
+            device: { type: 'string', description: '{"what":"v4l2 device path","default":"/dev/video0","when":"omit unless the user names a second camera"}' },
+            width: { type: 'number', description: '{"what":"requested frame width","unit":"pixels","default":640}' },
         },
         required: [],
     },
@@ -117,11 +119,11 @@ registry.register({
 
 registry.register({
     name: 'read_image',
-    description: 'Read an image file from the HOST filesystem (any absolute path the Warden orchestrator can access) and load it into YOUR vision context. Use this for images outside the container workspace. Call this yourself; do NOT delegate it to a sub-agent (sub-agents have no vision and cannot see the result). Returns the dimensions. Only call this when the user actually points you at a specific image file path.',
+    description: '{"what":"load a host image file into your vision context","use_when":"the user points at a specific image path","source":"absolute host path","rule":"call it yourself — sub-agents have no vision"}',
     schema: {
         type: 'object',
         properties: {
-            path: { type: 'string', description: 'Absolute path to the image file on the host.' },
+            path: { type: 'string', description: '{"what":"the image file to load","format":"absolute path on the host","source":"a path the user named, or one a file listing returned"}' },
         },
         required: ['path'],
     },
@@ -146,14 +148,14 @@ registry.register({
 
 registry.register({
     name: 'desktop_click',
-    description: 'Click at absolute screen coordinates. Use coordinates from a desktop_screenshot image.',
+    description: '{"what":"click at absolute screen coordinates","source":"coordinates read off a desktop_screenshot image","scope":"native desktop apps; a web page belongs to the browser tools"}',
     schema: {
         type: 'object',
         properties: {
-            x: { type: 'number', description: 'X coordinate (pixels from left)' },
-            y: { type: 'number', description: 'Y coordinate (pixels from top)' },
-            button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (default: left)' },
-            double: { type: 'boolean', description: 'Double-click (default: false)' },
+            x: { type: 'number', description: '{"what":"horizontal position","unit":"pixels from the left edge","source":"a desktop_screenshot image"}' },
+            y: { type: 'number', description: '{"what":"vertical position","unit":"pixels from the top edge","source":"a desktop_screenshot image"}' },
+            button: { type: 'string', enum: ['left', 'right', 'middle'], description: '{"what":"mouse button","vals":"left|right|middle","default":"left"}' },
+            double: { type: 'boolean', description: '{"what":"double-click instead of single","default":false}' },
         },
         required: ['x', 'y'],
     },
@@ -177,13 +179,13 @@ registry.register({
 
 registry.register({
     name: 'desktop_type',
-    description: 'Type text or send keyboard shortcuts on the desktop. Use for typing into focused fields or sending key combos like ctrl+c. Multi-line text is fine — pass it with real line breaks and each line is typed with a Return between; never write "\\n" as two characters, and never flatten a document to one line.',
+    description: '{"what":"type text or send a key combo into the focused desktop field","multiline":"pass real line breaks — each line is typed with a Return between","one_of":"text or keys, never both"}',
     schema: {
         type: 'object',
         properties: {
-            text: { type: 'string', description: 'Text to type. Cannot be used together with keys.' },
-            keys: { type: 'string', description: 'Key combo to send, e.g. "ctrl+c", "Return", "alt+F4", "ctrl+shift+t". Cannot be used together with text.' },
-            delay_ms: { type: 'number', description: 'Delay between keystrokes in ms (default 12). Increase for slow apps.' },
+            text: { type: 'string', description: '{"what":"the text to type","format":"real line breaks for multi-line; the document keeps its own shape","exclusive_with":"keys"}' },
+            keys: { type: 'string', description: '{"what":"one key or combo to send","format":"xdotool key syntax — a key name, or modifiers joined by +","exclusive_with":"text"}' },
+            delay_ms: { type: 'number', description: '{"what":"delay between keystrokes","unit":"ms","default":12,"raise_when":"the target app drops characters"}' },
         },
         required: [],
     },

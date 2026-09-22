@@ -180,7 +180,7 @@ const TOOL_JSON: Record<string, Record<string, unknown>> = {
   performance_start_trace: { what: 'start a performance trace on the active tab', reload: false, autoStop: false, durationMs: 'auto-stop ms, default 5000' },
   performance_stop_trace: { what: 'stop the active trace', saveToDownloads: true, filenamePrefix: 'optional' },
   performance_analyze_insight: { what: 'lightweight summary of the last recorded trace', insightName: 'informational only', timeoutMs: 60000 },
-  chrome_read_page: { what: 'accessibility tree of visible page elements', use_when: 'find refs before click/type; pass the task tabId', fallback: 'fields missing → shadow DOM: chrome_javascript reaches them' },
+  chrome_read_page: { what: 'accessibility tree of visible page elements', use_when: 'find refs before click/type; pass the task tabId', fail: 'sparse tree/missing fields → chrome_get_web_content or chrome_javascript' },
   chrome_computer: { what: 'mouse+keyboard+screenshot on the page', click: 'find ref via chrome_read_page first', actions: 'click|scroll|type|key|fill|fill_form|hover|wait|screenshot|zoom|resize_page' },
   chrome_navigate: { what: 'navigate a tab to a URL; refresh; history back/forward', returns: 'tabId of the target tab — pass it in every later call', rule: 'existing tab default; a new one only when the user asks' },
   chrome_screenshot: { what: 'screenshot the page or one element', prefer: 'chrome_computer action=screenshot', to_see_page: 'storeBase64=true, savePng=false' },
@@ -194,9 +194,9 @@ const TOOL_JSON: Record<string, Record<string, unknown>> = {
   chrome_bookmark_search: { what: 'search bookmarks by title and URL', query: 'empty = all', maxResults: 50 },
   chrome_bookmark_add: { what: 'add a bookmark', url: 'omit = active tab', parentId: 'folder path or id', createFolder: false },
   chrome_bookmark_delete: { what: 'delete a bookmark', by: 'bookmarkId, or url' },
-  chrome_javascript: { what: 'run JS in a tab, return the value', use_when: 'form fields missing from read_page: reach into el.shadowRoot, set value, dispatch input event', code: 'async function body — return x; await ok' },
+  chrome_javascript: { what: 'run JS in a tab, return the value', use_when: 'form fields missing from read_page: reach into el.shadowRoot, set value, dispatch input event', code: 'async body — return x; await ok' },
   chrome_click_element: { what: 'click an element', target: 'ref (from chrome_read_page) | selector | coordinates', tabId: 'pass the task tabId', miss: 'ref not found → re-read the page' },
-  chrome_fill_or_select: { what: 'fill input/textarea/select/checkbox/radio', target: 'ref | selector', workflow: 'read_page refs → fill each field → click submit → verify', hidden: 'missing from the read → chrome_javascript' },
+  chrome_fill_or_select: { what: 'fill input/textarea/select/checkbox/radio', target: 'ref | selector', workflow: 'read_page refs → fill each field → click submit → verify', hidden: 'missing from read → chrome_javascript' },
   chrome_request_element_selection: { what: 'ask the USER to click the element(s) — human fallback after ~3 failed targeting attempts', returns: 'refs usable by click/fill', timeoutMs: 180000 },
   chrome_keyboard: { what: 'keyboard input on a page: keys, combos, text', keys: '"Enter" | "Ctrl+C" | plain text', selector: 'optional target element', tabId: 'pass the task tabId on every call' },
   chrome_console: { what: 'read a tab console output', mode: 'snapshot (waits ~2s) | buffer (instant)', onlyErrors: false, pattern: 'regex filter' },
@@ -435,9 +435,23 @@ const PARAM_JSON: Record<string, Record<string, unknown>> = {
   },
 };
 
+// Upstream tools absent from TOOL_JSON keep their upstream description; the
+// first sight of each is logged (a tools/list maps every tool) so a new or
+// renamed upstream tool is noticed instead of quietly shipping prose to the
+// local Granite seat — prose descriptions are what the header comment above
+// TOOL_JSON blames for bad tool calls.
+const uncoveredTools = new Set<string>();
 function patchBrowserSchema(tool: any): any {
   const toolJson = TOOL_JSON[tool?.name];
-  if (toolJson) tool.description = JSON.stringify(toolJson);
+  if (toolJson) {
+    tool.description = JSON.stringify(toolJson);
+  } else {
+    const name = typeof tool?.name === 'string' ? tool.name : 'unknown';
+    if (!uncoveredTools.has(name)) {
+      uncoveredTools.add(name);
+      logger.warn({ tool: name }, '[browser-gate] tool has no TOOL_JSON entry — upstream description passes through unpatched');
+    }
+  }
   const params = PARAM_JSON[tool?.name];
   if (params) {
     const props = tool?.inputSchema?.properties;

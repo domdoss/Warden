@@ -292,3 +292,111 @@
 
 /* Desktop default: the mobile-only topbar settings button is hidden. */
 #btnSettingsMobile { display: none; }
+
+/* ============================================================= ≤720: Bottom-tab mobile shell
+ * The desktop rail (16+ buttons) becomes a horizontally scrolling top strip on
+ * mobile, which leaves four control bars fighting above the composer and the
+ * nav a thumb-hostile scroll strip. This block turns the rail into a native-style
+ * BOTTOM tab bar: three primary tabs (Chat / Alpha Stack / Talk) + a "More" tab
+ * that opens a bottom sheet with every other view (rows generated from the rail
+ * by app.js). The topbar is slimmed to status + Stop + theme + settings; the
+ * rarely used Restart/Switch-user/Help buttons live in the sheet's actions.
+ * Desktop is untouched: #btnNavMore and #navSheet are display:none outside this
+ * media query. */
+#btnNavMore, #navSheet { display: none; }
+
+@media (max-width: 720px) {
+  /* Shell: main column takes the top, rail docks to the bottom in-flow (grid),
+   * so the composer can never slide under it. */
+  .app { grid-template-rows: minmax(0, 1fr) auto; }
+  .main { grid-row: 1; }
+  .rail {
+    grid-row: 2;
+    border-bottom: none;
+    border-top: 1px solid var(--border-soft);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .rail-logo { display: none; }
+  .rail-footer { display: none; }
+
+  /* Bottom bar: 4 equal tabs, icon over label, fat tap targets. */
+  .rail-nav {
+    justify-content: space-around;
+    align-items: stretch;
+    overflow: visible;
+    gap: 0;
+    padding: 2px 0;
+  }
+  .rail-nav > .rail-btn {
+    flex: 1 1 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    min-height: 50px;
+    padding: 6px 2px;
+    border-radius: 0;
+  }
+  .rail-btn svg { width: 20px; height: 20px; }
+  .rail-label { font-size: 9.5px; line-height: 1; }
+  /* Only the three primary tabs + More survive on mobile… */
+  .rail-nav > .rail-btn:not([data-view="chat"]):not([data-view="alphastack"]):not([data-view="talk"]):not(#btnNavMore) {
+    display: none;
+  }
+  #btnNavMore { display: inline-flex; }
+
+  /* …everything else lives in the sheet. */
+  #navSheet { display: block; }
+
+  /* Active tab: tinted text + soft pill, drop the old underline bar. */
+  .rail-btn.active { color: var(--accent); background: var(--accent-soft); border-radius: 10px; }
+  .rail-btn.active::before { display: none; }
+
+  /* Slim topbar: keep status dot, name, Stop, theme, settings. The rest is
+   * desktop furniture (Restart/Switch-user/Help live on desktop only). */
+  .topbar { min-height: 40px; }
+  #btnRestart, #btnSwitchUser, #btnHelp { display: none !important; }
+  .topbar-actions .tbtn { min-height: 32px; }
+  .topbar-actions .tbtn svg { width: 15px; height: 15px; }
+}
+
+/* More sheet — always hidden (display base above); styled regardless of
+ * breakpoint so nothing flashes if it ever appears unscoped. */
+#navSheet { position: fixed; inset: 0; z-index: 999; }
+#navSheet .navsheet-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); }
+#navSheet.open .navsheet { transform: translateY(0); }
+#navSheet:not(.open) .navsheet { transform: translateY(105%); }
+#navSheet .navsheet {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  max-height: 72dvh; overflow-y: auto;
+  background: var(--surface, #16161d);
+  border-top: 1px solid var(--border-soft);
+  border-radius: 16px 16px 0 0;
+  padding: 6px 10px calc(10px + env(safe-area-inset-bottom));
+  transition: transform 0.18s ease;
+  -webkit-overflow-scrolling: touch;
+}
+#navSheet .navsheet-handle {
+  width: 38px; height: 4px; border-radius: 2px;
+  background: var(--border-soft, #333); margin: 6px auto 8px;
+}
+#navSheet .navsheet-group {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint, #666);
+  padding: 12px 10px 4px;
+}
+#navSheet .navsheet-row {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; min-height: 46px;
+  padding: 8px 10px;
+  background: transparent; border: none; border-radius: 8px;
+  color: var(--text, #e6e6e6); font-size: 14px; text-align: left;
+  cursor: pointer;
+}
+#navSheet .navsheet-row:active { background: var(--accent-soft, #1f2733); }
+#navSheet .navsheet-ic { display: inline-flex; color: var(--text-dim, #999); }
+#navSheet .navsheet-ic svg { width: 19px; height: 19px; }
+/* Only interactive when open (backdrop covers the viewport when it is). */
+#navSheet:not(.open) { pointer-events: none; }
+#navSheet:not(.open) .navsheet-backdrop { opacity: 0; }
+#navSheet.open .navsheet-backdrop { opacity: 1; transition: opacity 0.18s ease; }
+#navSheet .navsheet-backdrop { transition: opacity 0.18s ease; }

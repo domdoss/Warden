@@ -46,9 +46,9 @@
 
   var VIEWS = [
     ['home', 'Home'], ['chat', 'Chat'], ['logs', 'Logs'], ['talk', 'Talk'],
-    ['email', 'Email'], ['sms', 'SMS'], ['projects', 'Projects'],
+    ['email', 'Email'], ['projects', 'Projects'],
     ['calendar', 'Calendar'], ['files', 'Files'], ['automater', 'Schedules'],
-    ['heartbeat', 'Heartbeat'], ['alarms', 'Alarms'], ['vault', 'Vault'],
+    ['heartbeat', 'Heartbeat'], ['alarms', 'Alarms'],
     ['apikeys', 'API Keys'], ['accounts', 'Connected Accounts'], ['actions', 'Quick Actions']
   ];
 

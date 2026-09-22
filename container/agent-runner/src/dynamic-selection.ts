@@ -14,6 +14,36 @@ import { log } from './ipc-helpers.js';
 
 export const FABRIC_PROMPTS_DIR = process.env.FABRIC_PROMPTS_DIR ?? path.join(process.cwd(), 'groups', 'global', 'prompts');
 
+/** Env override for a tunable, falling back to the shipped default. */
+function numEnv(name: string, fallback: number): number {
+    const n = Number(process.env[name]);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// Retuning these is a routing decision, not a code change — every one of them
+// shifts which tools the seat can see for a given ask.
+/** Keywords carried forward from the conversation into ranking. */
+const KEYWORD_LIMIT = numEnv('SELECTION_KEYWORD_LIMIT', 24);
+/** Conversation turns scanned for keywords: the latest user message + 4 prior. */
+const CONTEXT_TURNS = numEnv('SELECTION_CONTEXT_TURNS', 5);
+/** Per-turn char cap so one giant tool dump cannot drown the user request. */
+const TURN_CHAR_CAP = numEnv('SELECTION_TURN_CHAR_CAP', 4000);
+/** The latest user message outweighs older turns by this factor. */
+const LATEST_USER_WEIGHT = numEnv('SELECTION_LATEST_USER_WEIGHT', 3);
+/** Tools handed to the seat per turn. */
+const TOOL_TOPK = numEnv('SELECTION_TOOL_TOPK', 12);
+/** Fabric patterns listed in the RELEVANT PATTERNS section. */
+const FABRIC_TOPK = numEnv('SELECTION_FABRIC_TOPK', 5);
+/** Weight a generic tool competes at once any specific tool has scored. */
+const GENERIC_TOOL_WEIGHT = numEnv('SELECTION_GENERIC_TOOL_WEIGHT', 0.5);
+
+// A name hit is the strongest signal a tool owns the job, a bigram is a phrase
+// the user actually said, a description hit is the weakest — it fires on any
+// tool whose prose happens to mention the word.
+const SCORE_NAME_MATCH = 3;
+const SCORE_BIGRAM_MATCH = 2;
+const SCORE_DESC_MATCH = 1;
+
 const STOPWORDS = new Set([
     'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can', 'her', 'was', 'one',
     'our', 'out', 'his', 'has', 'have', 'had', 'how', 'its', 'may', 'new', 'now', 'old', 'see',
@@ -53,7 +83,7 @@ interface ChatMessage {
  * the last few conversation turns. The latest user message is weighted 3x.
  * Returns up to `limit` keywords sorted by score. Bigrams use a space separator.
  */
-export function extractKeywords(messages: ChatMessage[], limit = 24): string[] {
+export function extractKeywords(messages: ChatMessage[], limit = KEYWORD_LIMIT): string[] {
     try {
         const textTurns = (messages || []).filter(
             (m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim()
@@ -65,14 +95,12 @@ export function extractKeywords(messages: ChatMessage[], limit = 24): string[] {
             }
             return -1;
         })();
-        // Latest user message + up to 4 preceding turns
-        const start = Math.max(0, textTurns.length - 5);
+        const start = Math.max(0, textTurns.length - CONTEXT_TURNS);
         const scores = new Map<string, number>();
         const bump = (k: string, by: number) => scores.set(k, (scores.get(k) || 0) + by);
         for (let i = start; i < textTurns.length; i++) {
-            const weight = i === lastUserIdx ? 3 : 1;
-            // Cap each turn so a giant tool dump doesn't drown the user request
-            const tokens = tokenize((textTurns[i].content || '').slice(0, 4000));
+            const weight = i === lastUserIdx ? LATEST_USER_WEIGHT : 1;
+            const tokens = tokenize((textTurns[i].content || '').slice(0, TURN_CHAR_CAP));
             for (const t of tokens) bump(t, weight);
             for (let j = 0; j < tokens.length - 1; j++) {
                 bump(`${tokens[j]} ${tokens[j + 1]}`, weight);
@@ -99,10 +127,10 @@ function scoreText(keywords: string[], nameWords: Set<string>, descText: string)
     for (const kw of keywords) {
         if (kw.includes(' ')) {
             // bigram: substring match against description / joined name
-            if (descText.includes(kw)) score += 2;
+            if (descText.includes(kw)) score += SCORE_BIGRAM_MATCH;
         } else {
-            if (nameWords.has(kw)) score += 3;
-            else if (descText.includes(kw)) score += 1;
+            if (nameWords.has(kw)) score += SCORE_NAME_MATCH;
+            else if (descText.includes(kw)) score += SCORE_DESC_MATCH;
         }
     }
     return score;
@@ -111,18 +139,23 @@ function scoreText(keywords: string[], nameWords: Set<string>, descText: string)
 // Generic filesystem/shell tools score on almost any sentence, so on a vague
 // ask they crowd out the specific tool that owns the job ("change the song"
 // → read_file/list_file/bash, observed 2026-09-19). When any SPECIFIC tool
-// scores at all, generic ones compete at half weight — they still surface for
-// genuinely generic asks, but a specific match beats them.
+// scores at all, generic ones compete at GENERIC_TOOL_WEIGHT — they still
+// surface for genuinely generic asks, but a specific match beats them.
+// Every name here must match a REGISTERED tool exactly: this is a Set lookup on
+// the live tool name, so a near-miss fails closed and silently exempts that
+// tool from the halving (2026-09-22: `edit_file`, `Read_file` and lowercase
+// `bash` had never matched anything). Registry names are PascalCase
+// (tools/file-*.ts, terminal.ts); the core builtins are snake_case (skills.ts).
 const GENERIC_TOOLS = new Set([
-    'read_file', 'list_file', 'write_file', 'edit_file',
-    'bash', 'Bash', 'Read', 'Read_file', 'Glob', 'Grep', 'open_app',
+    'read_file', 'write_file', 'list_file',
+    'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'open_app',
 ]);
 
 /**
  * Rank tool defs by keyword overlap against tool name (snake_case split) +
  * description. Returns the names of the top-K tools that scored above zero.
  */
-export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = 12): string[] {
+export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = TOOL_TOPK): string[] {
     try {
         if (!keywords || keywords.length === 0) return [];
         const scored: Array<{ name: string; score: number }> = [];
@@ -135,7 +168,7 @@ export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = 
             if (score > 0) scored.push({ name, score });
         }
         const anySpecific = scored.some((s) => s.score > 0 && !GENERIC_TOOLS.has(s.name));
-        const weight = (n: string) => anySpecific && GENERIC_TOOLS.has(n) ? 0.5 : 1;
+        const weight = (n: string) => anySpecific && GENERIC_TOOLS.has(n) ? GENERIC_TOOL_WEIGHT : 1;
         const ranked = scored
             .map((s) => ({ ...s, rank: s.score * weight(s.name) }))
             .sort((a, b) => b.rank - a.rank)
@@ -216,7 +249,7 @@ export function getFabricIndex(): Map<string, FabricPattern> {
 }
 
 /** Rank Fabric patterns by keyword overlap against name (snake_case split) + description. */
-export function rankFabricPatterns(keywords: string[], topK = 5): FabricPattern[] {
+export function rankFabricPatterns(keywords: string[], topK = FABRIC_TOPK): FabricPattern[] {
     try {
         if (!keywords || keywords.length === 0) return [];
         const index = getFabricIndex();
@@ -260,7 +293,7 @@ export function getFabricPatternContent(name: string): string | null {
  * Build the `## RELEVANT PATTERNS` system-prompt section for the top-ranked
  * Fabric patterns. Returns '' if nothing scores above zero (section omitted).
  */
-export function buildRelevantPatternsSection(keywords: string[], topK = 5): string {
+export function buildRelevantPatternsSection(keywords: string[], topK = FABRIC_TOPK): string {
     try {
         const patterns = rankFabricPatterns(keywords, topK);
         if (patterns.length === 0) return '';

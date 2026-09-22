@@ -12,12 +12,12 @@ const MAX_CHARS = 50_000;
 
 registry.register({
     name: 'WebSearch',
-    description: 'Search the web and return ranked results. This FINDS a URL — it does not read the page. Read it with WebFetch; SHOW it to the user, or interact with it, via browser_navigate. Prefer one WebFetch on a known URL over a search when you already know where the answer lives.',
+    description: '{"what":"find URLs — ranked results, not page content","read_a_result":"WebFetch","show_or_interact":"chrome_navigate","rule":"a URL you already know goes straight to WebFetch"}',
     schema: {
         type: 'object',
         properties: {
-            query: { type: 'string', description: 'Search query' },
-            max_results: { type: 'number', description: 'Max results (default 5)' },
+            query: { type: 'string', description: '{"what":"what to search for, in the user own words"}' },
+            max_results: { type: 'number', description: '{"what":"result count","default":5}' },
         },
         required: ['query'],
     },
@@ -171,15 +171,12 @@ function cleanMd(md: string): string {
 
 registry.register({
     name: 'WebFetch',
-    description:
-        'Fetch a web page and return its content as clean Markdown (headings, links, lists, code, tables preserved; nav/footer/ads stripped). ' +
-        'This reads the page server-side WITHOUT launching the browser — use it to look up a fact, scrape an article, or get a price/number from a URL. ' +
-        'Only fall back to browser_navigate + browser_snapshot when the page needs JavaScript to render or WebFetch returns empty/blocked.',
+    description: '{"what":"read a page server-side as clean Markdown, no browser","use_when":"look up a fact, scrape an article, get a number from a URL","js_or_empty":"chrome_navigate + chrome_get_web_content"}',
     schema: {
         type: 'object',
         properties: {
-            url: { type: 'string', description: 'URL to fetch' },
-            format: { type: 'string', enum: ['text', 'html'], description: 'Return format: text (default, Markdown) or html (raw).' },
+            url: { type: 'string', description: '{"what":"the page to read","source":"a URL the user gave, or one a WebSearch result returned"}' },
+            format: { type: 'string', enum: ['text', 'html'], description: '{"what":"return format","vals":"text|html","default":"text (Markdown)","html_when":"you need the raw markup"}' },
         },
         required: ['url'],
     },
@@ -197,7 +194,7 @@ registry.register({
             const html = await response.text();
             if (args.format === 'html') return html.slice(0, MAX_CHARS);
             const md = extractMarkdown(html, response.url || args.url);
-            if (!md.trim()) return 'Page fetched but no readable content found (the page may need JavaScript to render — try browser_navigate + browser_snapshot).';
+            if (!md.trim()) return 'Page fetched but no readable content found — it renders with JavaScript. Read it through the browser tools: chrome_navigate to the URL, then chrome_get_web_content on that tab.';
             return md.length > MAX_CHARS ? md.slice(0, MAX_CHARS) + `\n[... truncated at ${MAX_CHARS} chars]` : md;
         } catch (err: any) {
             return `Error fetching URL: ${err.message}`;

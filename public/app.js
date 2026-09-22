@@ -288,7 +288,6 @@
       else if (name === 'vault' && UD.loadVault) UD.loadVault();
       else if (name === 'apikeys' && UD.loadUsageDashboard) UD.loadUsageDashboard();
       else if (name === 'actions' && UD.renderActions) UD.renderActions();
-      else if (name === 'sms' && UD.loadSmsView) UD.loadSmsView();
       else if (name === 'talk' && UD.initTalkView) UD.initTalkView();
     }
   }

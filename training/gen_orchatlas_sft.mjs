@@ -37,11 +37,121 @@
 // RESULT strings in rows are realistic shapes, not byte-matches.
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { extractDelegates, extractDelegateToolDefFn } from './extract_runner_source.mjs';
 
 const SCHEMAS = JSON.parse(readFileSync(new URL('./tool_schemas.json', import.meta.url), 'utf8'));
 const TOOLS = SCHEMAS.merged;
 if (!TOOLS || !Array.isArray(TOOLS) || TOOLS.length === 0) {
   throw new Error('tool_schemas.json has no merged toolset — run node dump_tool_schemas.mjs first (build agent-runner first if tools changed).');
+}
+
+// ---- LIVE-SOURCED TOOLS (2026-09-22) ----------------------------------------
+// tool_schemas.json is a dump, and dumps go stale between the moment they are
+// written and the moment this generator runs. Two of its layers predate the
+// 2026-09-21 rewrites, so the rows would train text production never shows the
+// model. Instead of refreshing the dump by hand, the two drifting layers are
+// re-sourced LIVE here, at generation time, from the same code production runs
+// (extraction via extract_runner_source.mjs — the dump's own machinery, which
+// throws a loud EXTRACTION DRIFT error rather than silently baking old text):
+//
+//   1. DELEGATE DEFS (iris/vulkan/artemis/sentry): since the 2026-09-21
+//      rewrite their descriptions are JSON.stringify({delegate, does, mode,
+//      returns, urgent, …}) shapes and iris's `task` param teaches the
+//      id_source rule (every id key carries a value an earlier list/read
+//      result returned — no parrotable literal "Example:" with a concrete
+//      email_id). The dump may still carry the old English-prose paragraphs
+//      and the parrotable {"intent":"download","email_id":"18f2c9ab41",…}
+//      example, so the delegate defs are replaced with live-extracted ones.
+//   2. BROWSER (chrome_*) DESCRIPTIONS: the live gate
+//      (src/browser-mcp-gate.ts patchBrowserSchema) rewrites every browser
+//      tool description to structured JSON (TOOL_JSON/PARAM_JSON) before any
+//      consumer sees it, and TAB_PARAM pins the task tabId on EVERY call.
+//      chrome_schemas.json in the dump is a hand snapshot that predates that
+//      rewrite (old prose, no tabId rule), so the gate's own rewrite is
+//      extracted and applied here, identically.
+const delegateToolDef = extractDelegateToolDefFn();
+const GATE_DELEGATES = extractDelegates().map(delegateToolDef);
+for (const def of GATE_DELEGATES) {
+  const i = TOOLS.findIndex((t) => t.function.name === def.function.name);
+  if (i === -1) {
+    throw new Error(
+      `DELEGATE DRIFT: live delegate ${def.function.name} is missing from tool_schemas.json merged — re-run dump_tool_schemas.mjs.`);
+  }
+  TOOLS[i] = def;
+}
+
+const GATE_SRC = readFileSync(new URL('../src/browser-mcp-gate.ts', import.meta.url), 'utf8');
+
+// `const NAME<optional TS type annotation> = { … };` from the gate source —
+// bracket-matched (string- and comment-aware), then eval'd exactly like
+// extract_runner_source.mjs evalSlice. Direct eval runs in this module's
+// scope, so PARAM_JSON's `tabId: TAB_PARAM` identifier refs resolve against
+// the consts extracted just below.
+function gateObject(name) {
+  const at = GATE_SRC.indexOf(`const ${name}`);
+  if (at === -1) {
+    throw new Error(`BROWSER-GATE DRIFT: const ${name} not found in src/browser-mcp-gate.ts — update the gate extraction in gen_orchatlas_sft.mjs.`);
+  }
+  const openIdx = GATE_SRC.indexOf('{', at);
+  let depth = 0, i = openIdx, inStr = null, esc = false;
+  while (i < GATE_SRC.length) {
+    const ch = GATE_SRC[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === inStr) inStr = null;
+    } else if (ch === "'" || ch === '"' || ch === '`') inStr = ch;
+    else if (ch === '/' && GATE_SRC[i + 1] === '/') { while (i < GATE_SRC.length && GATE_SRC[i] !== '\n') i++; }
+    else if (ch === '/' && GATE_SRC[i + 1] === '*') { i += 2; while (i < GATE_SRC.length && !(GATE_SRC[i] === '*' && GATE_SRC[i + 1] === '/')) i++; i++; }
+    else if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) break; }
+    i++;
+  }
+  if (depth !== 0) {
+    throw new Error(`BROWSER-GATE DRIFT: const ${name} in src/browser-mcp-gate.ts has unbalanced braces.`);
+  }
+  try {
+    return eval(`(${GATE_SRC.slice(openIdx, i + 1)})`);
+  } catch (err) {
+    throw new Error(`BROWSER-GATE DRIFT: const ${name} no longer evaluates (${err.message}) — update the gate extraction in gen_orchatlas_sft.mjs.`);
+  }
+}
+
+const TAB_PARAM = gateObject('TAB_PARAM');   // extracted first: PARAM_JSON refs these
+const WIN_PARAM = gateObject('WIN_PARAM');
+const TOOL_JSON = gateObject('TOOL_JSON');
+const PARAM_JSON = gateObject('PARAM_JSON');
+
+// patchBrowserSchema's exact logic: description ← JSON.stringify(TOOL_JSON),
+// per-param description ← JSON.stringify(PARAM_JSON entry).
+let gatePatched = 0;
+for (const tool of TOOLS) {
+  const fn = tool.function;
+  if (!TOOL_JSON[fn.name]) continue;
+  fn.description = JSON.stringify(TOOL_JSON[fn.name]);
+  const params = PARAM_JSON[fn.name];
+  const props = fn.parameters && fn.parameters.properties;
+  if (params && props) {
+    for (const [key, json] of Object.entries(params)) {
+      if (props[key]) props[key] = { ...props[key], description: JSON.stringify(json) };
+    }
+  }
+  gatePatched++;
+}
+// Drift guard: every tool the live gate rewrites must be present and patched.
+// A miss means the chrome_schemas.json snapshot is stale (extension toolset
+// changed) — loud here, not a silent prose/JSON mismatch in 2000 rows.
+const GATE_TOOL_NAMES = Object.keys(TOOL_JSON);
+if (gatePatched !== GATE_TOOL_NAMES.length) {
+  const have = new Set(TOOLS.map((t) => t.function.name));
+  const missing = GATE_TOOL_NAMES.filter((n) => !have.has(n));
+  throw new Error(
+    `BROWSER-GATE DRIFT: ${missing.length} gate tool(s) missing from tool_schemas.json merged (${missing.join(', ')}) — refresh chrome_schemas.json and re-run dump_tool_schemas.mjs.`);
+}
+// Drift guard: TAB_PARAM's every-call rule is the 2026-09-21 discipline; if
+// the gate ever drops it, examples below would teach the opposite of live.
+if (!/EVERY call/i.test(String(TAB_PARAM.rule))) {
+  throw new Error('BROWSER-GATE DRIFT: TAB_PARAM.rule no longer pins the task tab on every call — update the tabId-discipline rows in gen_orchatlas_sft.mjs to match.');
 }
 
 // Provisional merged-seat system prompt — terse, positive-framed, structured
@@ -58,6 +168,7 @@ You are Warden, first officer to the captain and the hands that carry the work o
 Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with their real accounts.
 
 - The browser is their signed-in Chrome. Work in the YouTube tab that is already open when the task is about what is on screen.
+- Browser tools act on a tabId: resolve the task tab once (get_windows_and_tabs by url, or chrome_navigate's reply), then pass that tabId on every later call for the page — the human's active tab is usually a different page.
 - Warden's source is /opt/Warden (src/, container/agent-runner/; dist/ is build output). The user's own files, deliverables and uploads are in ~/Warden.
 - sudo is interactive: the USER types the password. Run an install once, say a prompt is waiting, and end your turn.
 
@@ -491,61 +602,86 @@ examples.push(exMulti('Install playerctl so media control can pause the browser 
 // tabs playing over each other after the tab churn).
 // =========================================================================
 
-// ---- B1. tabs — list, close the duplicates (real brief), activate ----
+// ---- B1. tabs — list, close the duplicates (real brief), activate ---------
+// 2026-09-22 rewrite: the old browser_tabs/browser_current_url tools no longer
+// exist (CDP registrations removed). These rows use the live browser-driving
+// set and the tabId discipline the gate's TAB_PARAM pins: resolve the task tab
+// ONCE from get_windows_and_tabs (or chrome_navigate's reply), then pass that
+// tabId on EVERY later call for the page. Ids are large numbers, copied
+// verbatim from the tool's own reply.
+const TABS_RESULT_3 = 'windows: [{windowId: 1, tabs: [{tabId: 185230641, url: "https://www.youtube.com/watch?v=gGOpElxqlQw", title: "Heavy Lofi Hip Hop - YouTube"}, {tabId: 185230699, url: "http://localhost:3200/", title: "Warden"}, {tabId: 185230742, url: "https://mail.google.com/", title: "Gmail"}]}]';
+const TABS_RESULT_5 = 'windows: [{windowId: 1, tabs: [{tabId: 185230418, url: "https://www.youtube.com/watch?v=jfKfPfyJRdk", title: "lofi radio - YouTube"}, {tabId: 185230641, url: "https://www.youtube.com/watch?v=gGOpElxqlQw", title: "Heavy Lofi Hip Hop - YouTube"}, {tabId: 185230712, url: "https://www.youtube.com/watch?v=4xDzrJKXOOY", title: "synthwave radio - YouTube"}, {tabId: 185230699, url: "http://localhost:3200/", title: "Warden"}, {tabId: 185230789, url: "https://news.ycombinator.com/", title: "Hacker News"}]}]';
 examples.push(ex('Which browser tabs do I have open?',
-  [{ name: 'browser_tabs', arguments: { action: 'list' } }],
-  ['3 tabs: 1 "Heavy Lofi Hip Hop - YouTube" (youtube.com/watch?v=gGOpElxqlQw), 2 "Warden" (localhost:3200), 3 "Gmail" (mail.google.com).'],
+  [{ name: 'get_windows_and_tabs', arguments: {} }],
+  [TABS_RESULT_3],
   'Three tabs: the YouTube player, the Warden dashboard, and Gmail.'));
 examples.push(ex('What tabs are in my browser right now?',
-  [{ name: 'browser_tabs', arguments: { action: 'list' } }],
-  ['5 tabs: 1 "lofi radio - YouTube" (youtube.com/watch?v=jfKfPfyJRdk), 2 "Heavy Lofi Hip Hop - YouTube" (youtube.com/watch?v=gGOpElxqlQw), 3 "synthwave radio - YouTube" (youtube.com/watch?v=4xDzrJKXOOY), 4 "Warden" (localhost:3200), 5 "Hacker News" (news.ycombinator.com).'],
+  [{ name: 'get_windows_and_tabs', arguments: {} }],
+  [TABS_RESULT_5],
   'Five tabs — three of them are YouTube players, which is probably why things were playing over each other.'));
 examples.push(exMulti('Close the YouTube tabs that are playing music — there should only be one player.',
   [
-    {
-      call: { name: 'browser_tabs', arguments: { action: 'list' } },
-      result: '3 tabs: 1 "lofi radio - YouTube" (youtube.com/watch?v=jfKfPfyJRdk), 2 "Heavy Lofi Hip Hop - YouTube" (youtube.com/watch?v=gGOpElxqlQw), 3 "Warden" (localhost:3200).',
-    },
-    { call: { name: 'browser_tabs', arguments: { action: 'close', index: 2 } }, result: 'Closed tab 2 ("Heavy Lofi Hip Hop - YouTube").' },
+    { call: { name: 'get_windows_and_tabs', arguments: {} }, result: TABS_RESULT_5 },
+    { call: { name: 'chrome_close_tabs', arguments: { tabIds: [185230641, 185230712] } }, result: 'Closed 2 tabs (tabIds 185230641, 185230712).' },
   ],
-  'Closed the extra player — the lofi radio tab is the only one playing now.'));
-examples.push(ex('Close the tab that is playing the old playlist.',
-  [{ name: 'browser_tabs', arguments: { action: 'close', index: 2 } }],
-  ['Closed tab 2 ("Heavy Lofi Hip Hop - YouTube").'],
+  'Closed the extra players — the lofi radio tab is the only one playing now.'));
+examples.push(exMulti('Close the tab that is playing the old playlist.',
+  [
+    { call: { name: 'get_windows_and_tabs', arguments: {} }, result: TABS_RESULT_3 },
+    { call: { name: 'chrome_close_tabs', arguments: { tabIds: [185230641] } }, result: 'Closed 1 tab (tabId 185230641).' },
+  ],
   'Closed it — the old playlist is gone.'));
-examples.push(ex('Switch to the Gmail tab.',
-  [{ name: 'browser_tabs', arguments: { action: 'activate', index: 3 } }],
-  ['Activated tab 3 ("Gmail").'],
+examples.push(exMulti('Switch to the Gmail tab.',
+  [
+    { call: { name: 'get_windows_and_tabs', arguments: {} }, result: TABS_RESULT_3 },
+    { call: { name: 'chrome_switch_tab', arguments: { tabId: 185230742 } }, result: 'Active tab is now 185230742 ("Gmail").' },
+  ],
   'You are on Gmail now.'));
-examples.push(ex('What URL is the browser on?',
-  [{ name: 'browser_current_url', arguments: {} }],
-  ['https://www.youtube.com/watch?v=gGOpElxqlQw'],
-  'The YouTube watch page for the lofi track.'));
+examples.push(exMulti("What URL is the YouTube tab on?",
+  [
+    { call: { name: 'get_windows_and_tabs', arguments: {} }, result: TABS_RESULT_3 },
+  ],
+  'The YouTube tab is on the watch page for the lofi track — https://www.youtube.com/watch?v=gGOpElxqlQw'));
 
-// ---- B2. read the page / answer from it ----
-examples.push(ex("What's on the YouTube tab right now?",
-  [{ name: 'browser_snapshot', arguments: {} }],
-  ['Snapshot: tab 1 "Heavy Lofi Hip Hop - YouTube" — a paused watch page, video at 1:07, recommendations rail below.'],
+// ---- B2. read the page / answer from it ------------------------------------
+// Same tabId discipline: the FIRST call of any browser task is
+// get_windows_and_tabs (match the task page by url, copy its tabId), or
+// chrome_navigate whose reply carries the tabId — then that tabId rides on
+// EVERY later call for the page. Never fire a browser tool untargeted: the
+// active tab is whatever the human happens to be viewing.
+examples.push(exMulti("What's on the YouTube tab right now?",
+  [
+    { call: { name: 'get_windows_and_tabs', arguments: {} }, result: TABS_RESULT_3 },
+    { call: { name: 'chrome_read_page', arguments: { tabId: 185230641 } },
+      result: 'Accessibility tree, tab 185230641 "Heavy Lofi Hip Hop - YouTube": paused watch page, video at 1:07, recommendations rail below (interactive: play/pause button, volume slider, 20 recommendation links).' },
+  ],
   'A paused lofi video, about a minute in, with the recommendations list below it.'));
-examples.push(ex("Check what's at news.ycombinator.com right now — top three headlines.",
-  [{ name: 'browser_navigate', arguments: { url: 'https://news.ycombinator.com/' } },
-   { name: 'browser_snapshot', arguments: {} }],
-  ['Navigated to https://news.ycombinator.com/ — page loaded ("Hacker News").',
-   'Snapshot: Hacker News front page. Top rows: "A new approach to local LLM routing" (312 pts), "Postgres 18 released" (548 pts), "I built a lo-fi radio with a Raspberry Pi" (201 pts).'],
+examples.push(exMulti("Check what's at news.ycombinator.com right now — top three headlines.",
+  [
+    { call: { name: 'chrome_navigate', arguments: { url: 'https://news.ycombinator.com/' } },
+      result: 'Navigated to https://news.ycombinator.com/ — tabId 185231055, title "Hacker News".' },
+    { call: { name: 'chrome_read_page', arguments: { tabId: 185231055 } },
+      result: 'Accessibility tree, tab 185231055 "Hacker News": top rows "A new approach to local LLM routing" (312 pts), "Postgres 18 released" (548 pts), "I built a lo-fi radio with a Raspberry Pi" (201 pts).' },
+  ],
   'Top three: a local LLM routing post, the Postgres 18 release, and a Raspberry Pi lo-fi radio build.'));
 examples.push(ex('Open the Warden dashboard in the browser.',
-  [{ name: 'browser_navigate', arguments: { url: 'http://localhost:3200/' } }],
-  ['Navigated to http://localhost:3200/ — page loaded ("Warden" title).'],
+  [{ name: 'chrome_navigate', arguments: { url: 'http://localhost:3200/' } }],
+  ['Navigated to http://localhost:3200/ — tabId 185231055, title "Warden".'],
   'Dashboard is open.'));
-examples.push(ex('What does the Warden dashboard status page say right now?',
-  [{ name: 'browser_navigate', arguments: { url: 'http://localhost:3200/' } },
-   { name: 'browser_snapshot', arguments: {} }],
-  ['Navigated to http://localhost:3200/ — page loaded ("Warden" title).',
-   'Snapshot: Warden dashboard. Status card: orchestrator active, atlas idle, 2 jobs completed today, uptime 6h 12m.'],
-  'Everything green: orchestrator active, atlas idle, two jobs done today, up since about six.']);
-examples.push(ex('Go back to the previous page.',
-  [{ name: 'browser_back', arguments: {} }],
-  ['Went back — now on https://www.youtube.com/results?search_query=lofi+mix'],
+examples.push(exMulti('What does the Warden dashboard status page say right now?',
+  [
+    { call: { name: 'chrome_navigate', arguments: { url: 'http://localhost:3200/' } },
+      result: 'Navigated to http://localhost:3200/ — tabId 185231055, title "Warden".' },
+    { call: { name: 'chrome_read_page', arguments: { tabId: 185231055 } },
+      result: 'Accessibility tree, tab 185231055 "Warden": status card — orchestrator active, atlas idle, 2 jobs completed today, uptime 6h 12m.' },
+  ],
+  'Everything green: orchestrator active, atlas idle, two jobs done today, up since about six.'));
+examples.push(exMulti('Go back to the previous page.',
+  [
+    { call: { name: 'get_windows_and_tabs', arguments: {} }, result: TABS_RESULT_3 },
+    { call: { name: 'chrome_navigate', arguments: { url: 'back', tabId: 185230641 } },
+      result: 'Navigated back in tab 185230641 — now on https://www.youtube.com/results?search_query=lofi+mix.' },
+  ],
   'Back on the YouTube results page.'));
 
 // ---- B3. desktop — screenshot, click, type, open_app ----
@@ -926,11 +1062,11 @@ examples.push(exMulti('Find the biggest file in my downloads and tell me what it
 examples.push(exMulti('What is the weather site saying about the weekend? Check surf-forecast.com.',
   [
     {
-      call: { name: 'browser_navigate', arguments: { url: 'https://www.surf-forecast.com/' } },
-      result: 'Navigated to https://www.surf-forecast.com/ — page loaded ("Surf Forecast").',
+      call: { name: 'chrome_navigate', arguments: { url: 'https://www.surf-forecast.com/' } },
+      result: 'Navigated to https://www.surf-forecast.com/ — tabId 185231201, title "Surf Forecast".',
     },
-    { call: { name: 'browser_snapshot', arguments: {} },
-      result: 'Snapshot: Surf Forecast homepage. Weekend outlook: Saturday 6ft offshore winds clean, Sunday 3ft onshore choppy.' },
+    { call: { name: 'chrome_read_page', arguments: { tabId: 185231201 } },
+      result: 'Accessibility tree, tab 185231201 "Surf Forecast": weekend outlook — Saturday 6ft offshore winds clean, Sunday 3ft onshore choppy.' },
   ],
   'Saturday is the day — six foot and clean with offshore winds. Sunday drops to three foot and turns choppy.'));
 // plan stated → first step runs, later steps delegate to vulkan and WAIT
@@ -1132,7 +1268,7 @@ examples.push(exMulti('That job looks stuck — check and kill it if it is loopi
   [
     {
       call: { name: 'list_running_agents', arguments: {} },
-      result: '1 running job: atlas-f9g4 — 2600s elapsed, 89 tool calls, last: browser_evaluate(document.querySelector(\'#search\')) — repeated 20+ times.',
+      result: '1 running job: atlas-f9g4 — 2600s elapsed, 89 tool calls, last: chrome_javascript(document.querySelector(\'#search\')) — repeated 20+ times.',
     },
     {
       call: { name: 'stop_agent', arguments: { job_id: 'atlas-f9g4' } },
@@ -1150,7 +1286,7 @@ examples.push(ex('What results do you have stored?',
   'Three on file: the proxy timeout fix, the status endpoint, and the playerctl install.'));
 examples.push(ex('What did the atlas job actually do, step by step?',
   [{ name: 'agent_logs', arguments: { job_id: 'atlas-x7k2' } }],
-  ['atlas-x7k2 (completed): 1. browser_tabs list → found Ghostwriter tab. 2. open_app ghostwriter → window focused. 3. desktop_type (213 chars) → typed the introduction. 4. Bash xdotool Ctrl+S → saved.'],
+  ['atlas-x7k2 (completed): 1. get_windows_and_tabs → found Ghostwriter tab. 2. open_app ghostwriter → window focused. 3. desktop_type (213 chars) → typed the introduction. 4. Bash xdotool Ctrl+S → saved.'],
   'Four steps: found the tab, focused Ghostwriter, typed the whole introduction, and saved it.'));
 examples.push(exText('Check the build.',
   'Vulkan is already on the build job — it is running, and I will report the outcome when it lands.'));
