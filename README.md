@@ -312,11 +312,13 @@ The agent-runner speaks Ollama's native HTTP API and talks to Ollama directly �
 
 ## 🌐 Real Browser Automation
 
-Warden connects to your actual Chrome via Playwright and the Chrome DevTools Protocol (port 9222). Your real profile — cookies, sessions, saved passwords, extensions — everything is intact.
+Warden browses through **your actual Chrome** — the one you're logged into, with cookies, sessions, and extensions intact. There is no Warden-owned browser, no headless puppet, no CDP port: the single path is a Chrome extension bridge.
 
-The browser tools operate on **DOM accessibility snapshots**, not screenshots. Each element gets a `[ref=e12]` identifier. The agent clicks, types, and navigates by ref — fast, precise, and cheap. Screenshots exist only for visual verification of end states.
+The chain: the **chrome-mcp-server** extension (unpacked copy at `chrome-mcp-server-1.0.0/`) runs in your real Chrome and spawns the **mcp-chrome-bridge** native host (`npm install -g mcp-chrome-bridge`, serving MCP on `127.0.0.1:12306`). Warden's **browser gate** (`src/browser-mcp-gate.ts`) owns the single upstream connection to that host and re-serves it statelessly at `POST /mcp/browser` on `:3200` — the agent-runner never touches 12306 directly.
 
-Chrome runs as a persistent process with its own watchdog. It survives agent restarts — and service restarts too: on startup the watchdog adopts an already-running, healthy Warden Chrome instead of killing it, so your window and tabs persist. Sign into Google once; the profile persists forever.
+The browser is an **optional component that never blocks anything**. It's dialed on demand — only when a browser/web tool is actually invoked — and the gate fails fast (5s) if the bridge is down, so no request can hang on it. Warden boots, chats, and runs every non-web turn with the bridge completely absent.
+
+For the full contract (lazy connect, fail-to-default toolsets, the diagnostics ladder, and the one-command repair via `scripts/restart-browser-bridge.sh`), see `CLAUDE.md` → *Browser capability*.
 
 ---
 
@@ -332,11 +334,9 @@ Almost none of Warden's tools are generic wrappers — they're purpose-built, on
 
 The design rule for the action tools is **one tool per noun, one `action` parameter** (a 2026-09 collapse of 41 flat tools): `email`, `task`, `calendar`, `alarm`, `project` — each a single schema whose `action` selects the operation. Small models stay in-distribution, and every new operation is one enum value, not a new tool.
 
-### 🌐 Browser automation (13 tools)
+### 🌐 Browser automation (via the extension bridge)
 
-`browser_navigate` · `browser_snapshot` · `browser_click` · `browser_type` · `browser_press_key` · `browser_select_option` · `browser_hover` · `browser_evaluate` · `browser_wait_for` · `browser_tabs` · `browser_back` · `browser_current_url` · `browser_screenshot`
-
-Built on your real Chrome over CDP — no headless puppet browser, no fresh profile. Interaction tools (`click`, `press_key`, `select_option`, `hover`) return the updated page snapshot **in the same result** when the page changes, or an explicit *did not visibly change* signal when the action was a no-op — so the agent knows immediately instead of re-clicking itself in circles. Local files open in the same persistent Chrome via bare paths (`~/site/index.html`), no throwaway `google-chrome` spawns.
+The live surface is the extension's own `chrome_*` toolset (~27 tools: `chrome_navigate`, `chrome_read_page`, `chrome_computer`, tab management, key presses, …) served through the Warden gate. The `youtube` tool (`container/agent-runner/src/tools/youtube.ts`) drives pages through the `McpPage` adapter on top of it — navigate + script-eval are the required pair, with tab-list and key-press tools upgrading fidelity when present. If the bridge is down, the tool reports that as a terminal fact and the turn ends — browser failure never takes down chat or any other capability.
 
 ### 🖱️ Desktop & apps
 
@@ -403,7 +403,7 @@ The dashboard includes:
 | 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
 | 📜 **Process Logs** | Live log tail | 📰 **Digest** | Hourly/daily/weekly grounded briefings |
-| 🎓 **Training** | Failure-audit → data-modify → retrain loop (see [Training loop](#-training-loop)) | | |
+| 🎓 **Training** | Failure-audit → data-modify → retrain loop (see [Training loop](#-training-loop)) | 📈 **Alpha Stack** | Trading research stack status (see [Alpha Stack](#-alpha-stack)) |
 | 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
 | 🏗️ **Ops Panel** | Inbox (scanned work tasks + calendar events — ✓ confirm / ✕ deny), Work tasks, Reminders, Schedules, Calendar (Google-synced appointments), + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
@@ -531,11 +531,24 @@ Warden's seat model is a fine-tune (`orchatlas-ft`, built from `training/`), and
 
 | Step | What it does |
 |---|---|
-| **Audit logs** (1 / 3 / 7-day window) | Clears VRAM (refuses while an agent turn is live), loads a 17 GB local analyst model, parses the warden logs (journald, `warden.log` fallback) for failure-shaped turns — tool errors that never recovered, dead ends with zero tool calls, refusals, hallucinated answers, infra outages — and has the analyst classify each slice as a failure class or `not_a_failure` (conversational turns grep-match too; the classifier filters them, not the regexes). **No cap** — every failure-shaped turn is cataloged, because dropped slices are dropped training data. Catalogs land in `training/loop/catalogs/`. |
+| **Audit logs** (1 / 3 / 7-day window) | Clears VRAM (refuses while an agent turn is live), loads a 17 GB local analyst model, parses the warden logs (journald, `warden.log` fallback) for failure-shaped turns — tool errors that never recovered, dead ends with zero tool calls, refusals, hallucinated answers, infra outages — and has the analyst classify each slice as a failure class or `not_a_failure` (conversational turns grep-match too; the classifier filters them, not the regexes). **No cap** — every failure-shaped turn is cataloged, because dropped slices are dropped training data. The catalog is checkpointed after every slice, so a crash mid-run keeps the classification work. Catalogs land in `training/loop/catalogs/`. |
 | **Modify training data** | Takes the newest catalog, drops the non-failures, and has the analyst write new SFT rows against the live tool pool and existing exemplars. Every row is validated locally against the merge contract (exact time anchor, tools in the role pool, no per-row tools), then `merge_orchatlas_parts.mjs` runs as the gate — anything invalid gets renamed `.rejected` and the step fails loudly instead of corrupting the dataset. |
 | **Train** | Runs the standard 1-epoch `atlasorch.sh` as-is. When it finishes, flip the seat model to `orchatlas-ft` in the dashboard. |
 
 Each step is a detached background job with a live log tail in the view; only one step runs at a time, and audit/modify unload the analyst when they finish so the VRAM goes back to the resident models. The keep-alive re-pin cooperates: it only maintains models that are *loaded* — it snapshots Ollama's `/api/ps` and never re-spawns a model that was deliberately unloaded, so a pinned seat model can't fight the analyst for VRAM mid-audit.
+
+### 📈 Alpha Stack
+
+The trading research stack lives at `trading/` (red rail button under Chat in the dashboard) — a machine-local environment, **not part of a fresh install**: the venv, models, data, and paper-trading state are self-ignored via `trading/.gitignore` and are never committed. On the machine that has it, the Alpha Stack view shows:
+
+| Panel | What it reads |
+|---|---|
+| **Stack** | venv python (`trading/bin/python`), the Kronos forecaster, TradingAgents, script/webapp counts |
+| **Paper trading** | `.alpha-stack/{paper.json,state.json}` — capital, cash, open positions |
+| **Recent runs** | last 10 entries of `.alpha-stack/runs.jsonl` |
+| **Last log lines** | tail of the newest file in `trading/logs/` |
+
+Everything is fail-open: with no `trading/` present the view says `not installed` and Warden runs identically. The stack's local LLM dependency (TradingAgents points at `http://localhost:11434/v1`) is the same Ollama the rest of Warden uses.
 
 ---
 
@@ -557,6 +570,7 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
 | **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
 | **Training loop** | `POST /api/training/audit` `{days: 1\|3\|7}` · `POST /api/training/modify` · `POST /api/training/train` · `GET /api/training/status` · `GET /api/training/catalogs` |
+| **Alpha Stack** | `GET /api/alphastack/status` (trading stack inventory, paper-trading state, recent runs, log tail) |
 | **Vault & audit** | `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
 | **Settings & UI plumbing** | `GET/POST /api/settings` · `GET/POST /api/dashboard-pages` (live/beta file editing) · `GET/POST /api/mcp-servers` · `GET /api/notifications` · `GET /api/notifications/poll` · `GET/POST /api/notification-list` · `POST /api/notification-list/read-all` · `GET/POST /api/api-keys` |
 
@@ -624,7 +638,7 @@ The Telegram bot is **single-owner by design** — it only talks to one chat. Th
 |-------|-----------|
 | Runtime | Node.js 20+ with TypeScript |
 | Database | SQLite via better-sqlite3 |
-| Browser | Playwright (playwright-core) over CDP, driving your real Chrome — DOM interaction (navigate, click, type, read, screenshot, evaluate JS) |
+| Browser | mcp-chrome-bridge native host (12306) + chrome-mcp-server extension on your real Chrome, re-served statelessly by the Warden gate — navigate, read, click, type, key-press, tab management |
 | Desktop | xdotool + spectacle — coordinate input, screenshots |
 | Terminal | Live PTY shell (tmux `warden-shell`) |
 | LLM | Ollama (local + cloud) |
@@ -652,7 +666,7 @@ Warden is an autonomous AI that runs on your own hardware. It can operate fully 
 | Node.js | 20+ | 22 LTS |
 | RAM | 8 GB | 16 GB+ (local models + browser tools) |
 | GPU | Optional | NVIDIA GPU for local vision / TTS models |
-| Browser | Chromium/Chrome | System Chromium for Playwright CDP tools |
+| Browser | Optional — your real Google Chrome | Google Chrome + the `mcp-chrome-bridge` native host for the extension-driven browser tools |
 | Microphone/speaker | Optional | USB or Bluetooth headset for voice |
 
 ### Step 1 — Get the repo
@@ -672,16 +686,17 @@ On Arch Linux (the primary target):
 bash install-deps.sh
 ```
 
-This installs Node.js, npm, git, build tools, Chromium, poppler, tmux, sqlite, Radicale, KDE PIM integration, and desktop-control utilities (`xdotool`, `ydotool`, `wtype`, `grim`, clipboard tools, etc.). It also enables `loginctl linger` so user systemd services keep running after logout.
+This installs Node.js, npm, git, build tools, poppler, tmux, sqlite, Radicale, KDE PIM integration, and desktop-control utilities (`xdotool`, `ydotool`, `wtype`, `grim`, clipboard tools, etc.). It also enables `loginctl linger` so user systemd services keep running after logout.
 
 On other distros, install the equivalents manually. The key binaries Warden expects are:
 
 - `node` and `npm`
-- `chromium` or `google-chrome-stable`
 - `poppler` (for `pdftotext`)
 - `tmux`, `sqlite3`
 - `xdotool`, `ydotool`, `wtype`, `grim`, `wl-clipboard`, `xclip`, `scrot`
 - `radicale`, `akonadi`, `kdepim-runtime`, `kontact` (for calendar/contacts; optional)
+
+For the browser capability (optional): your normal **Google Chrome**, plus `npm install -g mcp-chrome-bridge` and the unpacked `chrome-mcp-server-1.0.0/` extension from this repo loaded via `chrome://extensions` → *Load unpacked*. No system Chromium and no CDP flags needed — the extension bridge is the only path.
 
 macOS users can try `bash install-macos.sh` as a best-effort alternative. Some Linux-only tools will not be available.
 
@@ -696,13 +711,14 @@ bash install.sh
 1. Shows a safety warning and asks you to type `I UNDERSTAND` before continuing.
 2. Verifies Node.js >= 20.
 3. Offers to run `install-deps.sh` if it detects `pacman`.
-4. Installs npm dependencies for the server and the agent-runner.
-5. Compiles TypeScript with `npm run build`.
-6. Creates runtime directories: `data/`, `store/`, `groups/`, `logs/`.
-7. Initializes the SQLite database.
-8. Writes a starter `data/env/env` config file if one does not exist.
-9. Registers and starts a systemd user service: `~/.config/systemd/user/warden.service`.
-10. Enables user linger so the service survives logout.
+4. Checks for the optional browser chain (Google Chrome, `mcp-chrome-bridge`, the unpacked extension folder) and warns — never blocks — if any are missing.
+5. Installs npm dependencies for the server and the agent-runner.
+6. Compiles TypeScript with `npm run build`.
+7. Creates runtime directories: `data/`, `store/`, `groups/`, `logs/`.
+8. Initializes the SQLite database.
+9. Writes a starter `data/env/env` config file if one does not exist.
+10. Registers and starts a systemd user service: `~/.config/systemd/user/warden.service`, plus a drop-in that runs `scripts/restart-browser-bridge.sh` on every start so a Warden restart also repairs the browser bridge.
+11. Enables user linger so the service survives logout.
 
 After it finishes, the dashboard is available at `http://localhost:3200`.
 
@@ -816,7 +832,7 @@ The pipeline looks like this:
 
 Here's how a spoken question travels through the pipeline. By default everything is local: you press the push-to-talk button (or clap twice), the desktop's mic captures audio, Whisper transcribes it, and the text goes to the Warden orchestrator on the same machine. Warden reads it, delegates to whatever specialists are needed, and sends back a reply. The reply hits the local TTS engine (Kokoro or Orpheus, running on the GPU), which synthesizes a WAV file and PipeWire plays it on the desk speakers. If you've offloaded audio I/O to a satellite, the mic stream comes from the satellite's `satellite_server.py` over HTTP instead, and the finished WAV is POSTed to the satellite's `:8766/play` endpoint to come out of whatever speaker is plugged into it.
 
-Every joint in that chain is a flag. `--mic local` means "read the desktop's built-in mic." `--mic 192.168.0.171` means "stream it from a satellite." `--speaker local` means "play through the desktop speakers." `--speaker 192.168.0.180` means "send the WAV to a satellite in another room." The desktop always runs STT, TTS, and the hologram UI — those need the GPU. The satellite only ever runs `pw-record` and `pw-play`. It has no Python dependencies. It doesn't even need a virtual environment. You could run it on a Pi Zero and it wouldn't break a sweat.
+Every joint in that chain is a flag. `--mic local` means "read the desktop's built-in mic." `--mic 192.168.1.80` means "stream it from a satellite." `--speaker local` means "play through the desktop speakers." `--speaker 192.168.1.81` means "send the WAV to a satellite in another room." The desktop always runs STT, TTS, and the hologram UI — those need the GPU. The satellite only ever runs `pw-record` and `pw-play`. It has no Python dependencies. It doesn't even need a virtual environment. You could run it on a Pi Zero and it wouldn't break a sweat.
 
 This means you can put mics and speakers wherever you actually spend time — kitchen, workshop, bedside table — without moving the GPU. Each satellite is just a small box with a USB mic and a powered speaker, running one script. The desktop stays on your desk. And `run.sh` ties it all together: one command, a few flags, and the whole system comes up.
 
@@ -830,20 +846,20 @@ Mic and speaker are chosen **independently**. You can have the Pi mic in one roo
 # Everything local (the default)
 ./run.sh
 
-# Both mic and speaker on the default Pi satellite (192.168.0.171)
+# Both mic and speaker on the default satellite (from eyes_ears/config/settings.yaml)
 ./run.sh --remote
 
-# Both on a specific Pi
-./run.sh --remote 192.168.0.180
+# Both on a specific satellite
+./run.sh --remote 192.168.1.80
 
-# Pi mic, local desk speaker
-./run.sh --mic 192.168.0.171 --speaker local
+# Satellite mic, local desk speaker
+./run.sh --mic 192.168.1.80 --speaker local
 
-# Local desktop mic, Pi speaker in another room
-./run.sh --mic local --speaker 192.168.0.171
+# Local desktop mic, satellite speaker in another room
+./run.sh --mic local --speaker 192.168.1.80
 
-# Different Pis for mic and speaker
-./run.sh --mic 192.168.0.171 --speaker 192.168.0.180
+# Different satellites for mic and speaker
+./run.sh --mic 192.168.1.80 --speaker 192.168.1.81
 ```
 
 The `--mic` and `--speaker` flags accept `local`, `remote` (resolves to the default satellite IP), `remote:<ip>`, or a bare IP. The root `run.sh` normalizes all of these into `main.py`'s `--mic`/`--speaker` format before launching.
@@ -896,7 +912,7 @@ cd eyes_ears
 ./run.sh --tts orpheus_cpp --tts-device cuda:0
 
 # Remote mic, local speaker
-./run.sh --mic remote:192.168.0.171 --speaker local
+./run.sh --mic remote:192.168.1.80 --speaker local
 ```For a permanent install, prefer the systemd service. `run.sh` is for development, one-off tests, and split-machine topologies.
 
 ---

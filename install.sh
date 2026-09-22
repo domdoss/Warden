@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # Warden installer — single-user, host-native (no Docker).
 #
-# Deploys the project to /opt/warden, builds the Node backend, creates the
-# eyes_ears Python venv, and provisions a systemd --user service.
+# Deploys the project to /opt/Warden, builds the Node backend, creates the
+# eyes_ears Python venv (voice app), and provisions a systemd --user service.
 # Runtime data (notes, memory, uploads, groups) lives in $WORKSPACE_ROOT
-# (~/warden), separate from the code so a reinstall preserves it.
+# (~/Warden), separate from the code so a reinstall preserves it.
+#
+# The browser capability is OPTIONAL and needs nothing from this script to
+# boot: it's your real Chrome + the chrome-mcp-server extension + the
+# mcp-chrome-bridge native host, dialed on demand (see CLAUDE.md → Browser
+# capability). This script only provisions the bridge-repair drop-in.
+#
+# trading/ (Alpha Stack) is a machine-local environment — it is excluded
+# from the deploy sync and never part of a fresh install.
 #
 # Target: Linux (Arch/KDE Plasma primary). Run from the project root:
 #   ./install.sh
 #
 # Override the install/workspace locations:
-#   WARDEN_INSTALL_DIR=/opt/warden WARDEN_WORKSPACE=$HOME/warden ./install.sh
+#   WARDEN_INSTALL_DIR=/opt/Warden WARDEN_WORKSPACE=$HOME/Warden ./install.sh
 set -e
 
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="${WARDEN_INSTALL_DIR:-/opt/warden}"
-WORKSPACE_ROOT="${WARDEN_WORKSPACE:-$HOME/warden}"
+INSTALL_DIR="${WARDEN_INSTALL_DIR:-/opt/Warden}"
+WORKSPACE_ROOT="${WARDEN_WORKSPACE:-$HOME/Warden}"
 
 echo ""
 echo "  Warden · Personal AI Assistant"
@@ -36,24 +44,32 @@ command -v node >/dev/null || { echo "  Node.js >= 20 required: https://nodejs.o
 command -v python3 >/dev/null || { echo "  python3 required (e.g. sudo pacman -S python)"; exit 1; }
 python3 -m venv --help >/dev/null 2>&1 || { echo "  python3-venv required (e.g. sudo pacman -S python; on Debian/Ubuntu: python3-venv)"; exit 1; }
 
-# System packages (chromium for the native browser tools, desktop control,
-# PIM stack, Python audio/ML headers, rsync for the deploy). Arch only; on
-# other distros install the equivalents by hand. Run this before the rsync
-# check — install-deps.sh installs rsync.
+# System packages (desktop control, PIM stack, Python audio/ML headers,
+# rsync for the deploy). Arch only; on other distros install the equivalents
+# by hand. Run this before the rsync check — install-deps.sh installs rsync.
 if command -v pacman >/dev/null && [ -f "$SOURCE_DIR/install-deps.sh" ]; then
     read -r -p "  Install system packages via install-deps.sh (sudo pacman)? [Y/n] " R
     [ "$R" = "n" ] || [ "$R" = "N" ] || bash "$SOURCE_DIR/install-deps.sh"
 fi
 command -v rsync >/dev/null || { echo "  rsync required (e.g. sudo pacman -S rsync)"; exit 1; }
-command -v chromium >/dev/null || command -v google-chrome >/dev/null || command -v google-chrome-stable >/dev/null \
-    || echo "  ! No chromium/google-chrome found — browser tools won't work until one is installed."
+# Browser capability (optional): the ONE path is the user's real Chrome +
+# the chrome-mcp-server extension + the mcp-chrome-bridge native host on
+# 12306. No system chromium, no CDP port, no headless fallback — and Warden
+# boots and runs fine with none of it present (the bridge is dialed on demand).
+command -v google-chrome >/dev/null || command -v google-chrome-stable >/dev/null \
+    || echo "  ! No Google Chrome found — browser tools need your real Chrome with the extension."
+command -v mcp-chrome-bridge >/dev/null \
+    || echo "  ! mcp-chrome-bridge not installed (browser tools will report the bridge down). Install: npm install -g mcp-chrome-bridge"
+[ -d "$SOURCE_DIR/chrome-mcp-server-1.0.0" ] \
+    || echo "  ! chrome-mcp-server-1.0.0/ extension folder missing — load it unpacked via chrome://extensions."
 
 # ── Deploy to $INSTALL_DIR ───────────────────────────────────────────
 # Sync the working tree (including uncommitted dev changes) into the install
 # dir. Preserve data that must survive a reinstall: the DB (store/), config
-# (data/), logs, and the Python venvs (reused below). dist/ and node_modules/
-# are rebuilt in place. If install.sh is already run from $INSTALL_DIR, the
-# rsync is a no-op self-sync.
+# (data/), logs, and the Python venvs (reused below). trading/ (Alpha Stack,
+# a machine-local environment) is excluded too — never copied, never deleted.
+# dist/ and node_modules/ are rebuilt in place. If install.sh is already run
+# from $INSTALL_DIR, the rsync is a no-op self-sync.
 echo "  Installing Warden to $INSTALL_DIR..."
 sudo mkdir -p "$INSTALL_DIR"
 sudo chown "$USER:$(id -gn)" "$INSTALL_DIR"
@@ -68,6 +84,7 @@ if [ "$SOURCE_DIR" != "$INSTALL_DIR" ]; then
     --exclude 'logs' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
+    --exclude 'trading' \
     "$SOURCE_DIR/" "$INSTALL_DIR/"
 fi
 cd "$INSTALL_DIR"
@@ -127,9 +144,6 @@ if [ ! -f "$ENV_FILE" ]; then
 ASSISTANT_NAME=Warden
 TZ=UTC
 
-# Dashboard admin password (required for dashboard login).
-ADMIN_PASSWORD=warden
-
 # LLM access — set ONE of these, or run Ollama locally (default URL below).
 #ANTHROPIC_API_KEY=
 #CLAUDE_CODE_OAUTH_TOKEN=
@@ -162,10 +176,9 @@ ADMIN_PASSWORD=warden
 #RADICALE_CAL_COLLECTION=warden-calendar
 #RADICALE_CARD_COLLECTION=warden-contacts
 
-# Browser tools (defaults shown)
-#BROWSER_CDP_PORT=9222
-#BROWSER_BIN=
-#BROWSER_HEADLESS=
+# Browser capability: needs NO config here. It is your real Chrome + the
+# chrome-mcp-server extension + the mcp-chrome-bridge native host (12306),
+# dialed on demand — see CLAUDE.md → Browser capability.
 ENVEOF
     echo "  Wrote config template to $ENV_FILE — edit it to add your keys."
 fi
@@ -263,6 +276,21 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now warden 2>/dev/null || true
 loginctl enable-linger "$USER" 2>/dev/null || true
+
+# ── Browser bridge repair drop-in (part of the service, like MARM) ────
+# Restarting warden.service also repairs the Chrome MCP bridge chain:
+# doctor --fix re-registers the native host, a stale host gets cleared so
+# the extension respawns it. Leading '-' keeps a down bridge from failing
+# the start job. No-op when the bridge is healthy; harmless when absent.
+if [ -x "$INSTALL_DIR/scripts/restart-browser-bridge.sh" ]; then
+    mkdir -p ~/.config/systemd/user/warden.service.d
+    cat > ~/.config/systemd/user/warden.service.d/browser-bridge.conf <<BREOF
+[Service]
+ExecStartPost=-$INSTALL_DIR/scripts/restart-browser-bridge.sh
+BREOF
+    systemctl --user daemon-reload
+    echo "  Browser-bridge repair drop-in enabled (runs on every Warden start)"
+fi
 
 # ── MARM semantic long-term recall (OPTIONAL — off by default) ────────
 # MARM (https://github.com/Lyellr88/marm-memory, by Lyellr88) gives the

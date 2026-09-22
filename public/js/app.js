@@ -274,6 +274,7 @@
     else if (name === 'skills') { refreshSkills(); refreshMcp(); }
     else if (name === 'activity') refreshActivity();
     else if (name === 'training') { refreshTrainingStatus(); refreshTrainingCatalogs(); }
+    else if (name === 'alphastack') refreshAlphaStack();
     else if (name === 'security') refreshSecurity();
     else if (name === 'logs') refreshProcessLogs();
     else if (name === 'accounts') refreshAccounts();
@@ -2497,6 +2498,37 @@
       tail.textContent = 'Failed: ' + e.message;
     }
   }
+  async function refreshAlphaStack() {
+    const inv = $('alphaStackInventory'), paper = $('alphaStackPaper'), runs = $('alphaStackRuns'),
+          logEl = $('alphaStackLog'), chip = $('alphaStackStatus');
+    try {
+      const d = await api('/api/alphastack/status');
+      if (!d.ok) { chip.textContent = 'error'; inv.textContent = d.error || 'unavailable'; return; }
+      const i = d.inventory || {};
+      chip.textContent = i.rootPresent ? (i.venvPython ? 'ready' : 'no venv') : 'not installed';
+      inv.innerHTML = [
+        i.venvPython ? `✅ venv python (bin/python, relocated → /opt/Warden/trading)` : '❌ venv python missing',
+        i.kronos ? '✅ Kronos forecaster' : '❌ Kronos missing',
+        i.tradingagents ? '✅ TradingAgents' : '❌ TradingAgents missing',
+        `scripts: ${i.scripts} py · webapp: ${i.webapp} py`,
+      ].map(l => `<div>${l}</div>`).join('');
+      const p = d.paper || {};
+      paper.innerHTML = (p && Object.keys(p).length)
+        ? `<div>capital: ${esc(String(p.capital ?? p.starting_capital ?? '?'))} · cash: ${esc(String(p.cash ?? '?'))}</div>` +
+          (p.positions ? Object.entries(p.positions).map(([k, v]) => `<div>• ${esc(k)}: ${esc(JSON.stringify(v))}</div>`).join('') : '') +
+          (d.state ? `<div style="margin-top:6px">state: ${esc(JSON.stringify(d.state).slice(0, 300))}</div>` : '')
+        : 'No paper-trading state yet.';
+      runs.innerHTML = (d.runs && d.runs.length)
+        ? d.runs.map(r => `<div>• ${esc(JSON.stringify(r).slice(0, 200))}</div>`).join('')
+        : 'No runs recorded yet.';
+      logEl.textContent = d.logTail || '(no logs)';
+      logEl.scrollTop = logEl.scrollHeight;
+    } catch (e) {
+      chip.textContent = 'error';
+      inv.textContent = 'Failed: ' + e.message;
+    }
+  }
+
   async function refreshTrainingCatalogs() {
     const el = $('trainingCatalogs');
     if (!el) return;
@@ -2900,6 +2932,7 @@
       }
     });
     $('btnRefreshLogs').addEventListener('click', refreshProcessLogs);
+    $('btnAlphaStackRefresh').addEventListener('click', refreshAlphaStack);
     $('btnTrainingAudit').addEventListener('click', () => startTrainingStep('audit', { days: parseInt($('trainingDays').value, 10) || 3 }));
     $('btnTrainingModify').addEventListener('click', () => startTrainingStep('modify', {}));
     $('btnTrainingTrain').addEventListener('click', () => {

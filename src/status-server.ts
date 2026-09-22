@@ -4286,6 +4286,45 @@ export function startStatusServer(d: StatusDeps): void {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }
       }
+      // Alpha Stack (2026-09-22): the trading research stack copied from the
+      // old home into /opt/Warden/trading — venv-root layout with Kronos,
+      // TradingAgents, scripts, and a webapp. Read-only status surface for
+      // the dashboard's Alpha Stack view (red rail button).
+      if (pathname === '/api/alphastack/status' && req.method === 'GET') {
+        try {
+          const root = path.join(process.cwd(), 'trading');
+          const stateDir = path.join(root, '.alpha-stack');
+          const exists = (p: string) => fs.existsSync(p);
+          const inventory = {
+            root,
+            rootPresent: exists(root),
+            venvPython: exists(path.join(root, 'bin', 'python')),
+            kronos: exists(path.join(root, 'Kronos', 'model')),
+            tradingagents: exists(path.join(root, 'tradingagents', 'tradingagents')),
+            scripts: exists(path.join(root, 'scripts')) ? fs.readdirSync(path.join(root, 'scripts')).filter((f: string) => f.endsWith('.py')).length : 0,
+            webapp: exists(path.join(root, 'webapp')) ? fs.readdirSync(path.join(root, 'webapp')).filter((f: string) => f.endsWith('.py')).length : 0,
+          };
+          const readJson = (p: string) => {
+            try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+          };
+          const paper = readJson(path.join(stateDir, 'paper.json'));
+          const state = readJson(path.join(stateDir, 'state.json'));
+          let runs: any[] = [];
+          try {
+            const lines = fs.readFileSync(path.join(stateDir, 'runs.jsonl'), 'utf-8').trim().split('\n').filter(Boolean);
+            runs = lines.slice(-10).reverse().map((l) => { try { return JSON.parse(l); } catch { return { raw: l.slice(0, 120) }; } });
+          } catch {}
+          let logTail = '';
+          try {
+            const logDir = path.join(root, 'logs');
+            const logs = fs.readdirSync(logDir).map((f) => ({ f, m: fs.statSync(path.join(logDir, f)).mtimeMs })).sort((a, b) => b.m - a.m);
+            if (logs.length) logTail = fs.readFileSync(path.join(logDir, logs[0].f), 'utf-8').trim().split('\n').slice(-40).join('\n');
+          } catch {}
+          return json(res, { ok: true, inventory, paper, state, runs, logTail });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
       if (pathname === '/api/open-terminal' && req.method === 'POST') {
         try {
           // Launch a desktop terminal attached to the `warden-shell` tmux session
