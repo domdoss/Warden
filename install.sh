@@ -292,22 +292,27 @@ BREOF
     echo "  Browser-bridge repair drop-in enabled (runs on every Warden start)"
 fi
 
-# ── MARM semantic long-term recall (OPTIONAL — off by default) ────────
+# ── MARM semantic long-term recall (DEFAULT — opt out: INSTALL_MARM=0) ────
 # MARM (https://github.com/Lyellr88/marm-memory, by Lyellr88) gives the
 # orchestrator long-term semantic memory: the memory writeback mirrors every
 # distilled fact into it, and each incoming message auto-recalls the most
-# relevant memories into the orchestrator's prompt. Warden runs identically
-# without it — every MARM path is fail-open, and the shipped config leaves it
-# off so a fresh install never references a server that isn't there.
-#
-# To enable: install MARM, then uncomment the next line and re-run install.sh
-#   uv tool install marm-mcp-server
-# INSTALL_MARM=1
-if [ "${INSTALL_MARM:-0}" = "1" ]; then
+# relevant memories into the orchestrator's prompt. DEFAULT-ON since
+# 2026-09-22; opt out with INSTALL_MARM=0. Every MARM path is still
+# fail-open — Warden runs identically if the server is absent.
+INSTALL_MARM="${INSTALL_MARM:-1}"
+if [ "$INSTALL_MARM" = "1" ]; then
+    # pipx/uv tool bins land here; make lookup work in a fresh shell.
+    PATH="$HOME/.local/bin:$PATH"
     if ! command -v marm-memory >/dev/null; then
-        echo "  ! INSTALL_MARM=1 but marm-memory not on PATH —"
-        echo "    run: uv tool install marm-mcp-server"
-    else
+        echo "  Installing marm-mcp-server via uv…"
+        if command -v uv >/dev/null; then
+            uv tool install marm-mcp-server \
+                || echo "  ! MARM install failed — Warden runs fine without it"
+        else
+            echo "  ! uv not on PATH — install uv, then re-run install.sh"
+        fi
+    fi
+    if command -v marm-memory >/dev/null; then
         MARM_BIN="$(command -v marm-memory)"
         cat > ~/.config/systemd/user/marm-memory.service <<MARMEOF
 [Unit]
@@ -326,6 +331,16 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 MARMEOF
+        # Optional concept-graph topic-model pin: set MARM_TOPIC_MODEL to a
+        # model you actually have (`ollama list`) if the server default is
+        # wrong for your box. Blank = no drop-in, server's own default wins.
+        if [ -n "${MARM_TOPIC_MODEL:-}" ]; then
+            mkdir -p ~/.config/systemd/user/marm-memory.service.d
+            cat > ~/.config/systemd/user/marm-memory.service.d/topic-model.conf <<TMEOF
+[Service]
+Environment=MARM_TOPIC_MODEL=${MARM_TOPIC_MODEL}
+TMEOF
+        fi
         # Wire it into Warden via a drop-in so the main unit stays stock
         # (and so deleting this drop-in fully reverts the wiring).
         mkdir -p ~/.config/systemd/user/warden.service.d
@@ -334,6 +349,11 @@ MARMEOF
 Wants=marm-memory.service
 After=marm-memory.service
 DROPEOF
+        # Register the stdio side in the MCP config with the ABSOLUTE binary
+        # path — systemd --user PATH can miss ~/.local/bin. Upsert-only:
+        # skips entirely when INSTALL_MARM=0.
+        node "$INSTALL_DIR/scripts/register-marm.mjs" "$MARM_BIN" \
+            || echo "  ! could not register marm in data/mcp-servers.json"
         systemctl --user daemon-reload
         systemctl --user enable --now marm-memory 2>/dev/null || true
         echo "  MARM memory server enabled on 127.0.0.1:8001 (starts with Warden)"
