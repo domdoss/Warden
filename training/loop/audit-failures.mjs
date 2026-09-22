@@ -99,6 +99,24 @@ Classes:
 
 const failures = [];
 let unclassified = 0;
+
+// --- 5. catalog path (computed BEFORE the loop; the catalog is checkpointed
+// after every slice so a crash mid-run keeps the classification work) ---
+mkdirSync(CATALOGS_DIR, { recursive: true });
+const ts = new Date();
+const stamp = `${ts.getFullYear()}${String(ts.getMonth() + 1).padStart(2, '0')}${String(ts.getDate()).padStart(2, '0')}-${String(ts.getHours()).padStart(2, '0')}${String(ts.getMinutes()).padStart(2, '0')}${String(ts.getSeconds()).padStart(2, '0')}`;
+const file = path.join(CATALOGS_DIR, `${stamp}-${days}d.json`);
+const writeCatalog = (complete) => writeFileSync(file, JSON.stringify({
+  version: 1,
+  generated_at: ts.toISOString(),
+  days,
+  source,
+  log_lines_scanned: L.length,
+  failure_slices_found: slices.length,
+  classifiers: { model: ANALYST_MODEL, unclassified },
+  failures,
+  complete,
+}, null, 2));
 for (let s = 0; s < slices.length; s++) {
   if (s % 10 === 0) log(`classifying ${s + 1}/${slices.length}…`);
   const sl = slices[s];
@@ -130,23 +148,11 @@ for (let s = 0; s < slices.length; s++) {
     classification,
     model_raw: modelRaw,
   });
+  writeCatalog(false); // checkpoint: a crash here loses one slice, not the run
 }
 
-// --- 5. write the catalog ---
-mkdirSync(CATALOGS_DIR, { recursive: true });
-const ts = new Date();
-const stamp = `${ts.getFullYear()}${String(ts.getMonth() + 1).padStart(2, '0')}${String(ts.getDate()).padStart(2, '0')}-${String(ts.getHours()).padStart(2, '0')}${String(ts.getMinutes()).padStart(2, '0')}${String(ts.getSeconds()).padStart(2, '0')}`;
-const file = path.join(CATALOGS_DIR, `${stamp}-${days}d.json`);
-writeFileSync(file, JSON.stringify({
-  version: 1,
-  generated_at: ts.toISOString(),
-  days,
-  source,
-  log_lines_scanned: L.length,
-  failure_slices_found: slices.length,
-  classifiers: { model: ANALYST_MODEL, unclassified },
-  failures,
-}, null, 2));
+// --- final write: same file, complete flag flipped ---
+writeCatalog(true);
 log(`wrote catalog ${file} (${failures.length - unclassified} classified, ${unclassified} unclassified)`);
 
 await unloadAnalyst();
