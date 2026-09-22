@@ -36,8 +36,10 @@ function appendEvidence(
   outcome: "success" | "failure" | "denied-before-effect",
   beforeDigest?: string,
   afterDigest?: string,
-): void {
-  if (!filePath || !authorization.request || !authorization.decision) return;
+): boolean {
+  if (!filePath || !authorization.request || !authorization.decision) {
+    return true;
+  }
   const evidence = {
     version: "warden.anthesis-write-evidence/v1",
     recorded_at: new Date().toISOString(),
@@ -49,7 +51,12 @@ function appendEvidence(
     pre_state_digest: beforeDigest,
     post_state_digest: afterDigest,
   };
-  fs.appendFileSync(filePath, `${JSON.stringify(evidence)}\n`, "utf8");
+  try {
+    fs.appendFileSync(filePath, `${JSON.stringify(evidence)}\n`, "utf8");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 registry.register({
@@ -129,13 +136,35 @@ registry.register({
       } else {
         fs.writeFileSync(filePath, args.content);
       }
-      appendEvidence(
+      const postDigest =
+        authorization.mode === "governed" ? stateDigest(filePath) : undefined;
+      const expectedPostDigest =
+        authorization.mode === "governed"
+          ? sha256Digest({ exists: true, content: args.content })
+          : undefined;
+      if (
+        authorization.mode === "governed" &&
+        postDigest !== expectedPostDigest
+      ) {
+        appendEvidence(
+          process.env.ANTHESIS_TRIAL_EVIDENCE_FILE,
+          authorization,
+          "failure",
+          beforeDigest,
+          postDigest,
+        );
+        return "Error: governed write indeterminate: post-state verification failed";
+      }
+      const evidenceWritten = appendEvidence(
         process.env.ANTHESIS_TRIAL_EVIDENCE_FILE,
         authorization,
         "success",
         beforeDigest,
-        authorization.mode === "governed" ? stateDigest(filePath) : undefined,
+        postDigest,
       );
+      if (!evidenceWritten && authorization.mode === "governed") {
+        return "Error: governed write indeterminate: evidence recording failed";
+      }
       // Report the RESOLVED absolute path — the orchestrator's digest
       // confirm step checks claimed paths against the ask, which only
       // works if the claim is real ('~/Desktop/x' resolved, not literal).

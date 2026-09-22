@@ -417,6 +417,21 @@ describe("Anthesis trial authorization request binding", () => {
       successEvidence.post_state_digest,
     );
 
+    vi.stubEnv(
+      "ANTHESIS_TRIAL_EVIDENCE_FILE",
+      path.join(root, "missing", "evidence.jsonl"),
+    );
+    const indeterminate = await registry.dispatch(
+      "Write",
+      { file_path: "allowed.txt", content: "after" },
+      context,
+    );
+    expect(indeterminate).toContain("write indeterminate");
+    expect(await fs.readFile(path.join(root, "allowed.txt"), "utf8")).toBe(
+      "after",
+    );
+
+    vi.stubEnv("ANTHESIS_TRIAL_EVIDENCE_FILE", evidencePath);
     await fs.writeFile(path.join(root, "allowed.txt"), "before");
     const blocked = await registry.dispatch(
       "Write",
