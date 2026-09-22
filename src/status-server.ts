@@ -12,6 +12,7 @@ import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getPro
 import { syncAgentCtxEnv } from './index.js';
 import { parseRelativeDuration } from './task-scheduler.js';
 import { handleBrowserMcp, startBrowserGate } from './browser-mcp-gate.js';
+import { propagateOpsModel } from './ops-model.js';
 import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts, scanConfig, setScanConfig, requestScanAbort } from './memory-tree.js';
 import {
   ASSISTANT_NAME,
@@ -1503,6 +1504,11 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     // orchestrator ctx for display (the runner falls back the same way).
     sentryCtx: getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx'),
     mercuryMode: getRouterState('mercury:mode') || 'full',
+    // Ops model — the ONE model choice for heavy utility tools and external
+    // integrations (today: Alpha Stack analysis + MARM topic model). Saved to
+    // router_state, then propagated to the components' own configs
+    // (src/ops-model.ts) — neither reads router_state itself.
+    opsModel: getRouterState('ops:model') || '',
     // Mercury has its own model (mercury:model) — report the real value.
     mercuryModel: getRouterState('mercury:model') || '',
     mercuryCtx: getRouterState('local:mercury_ctx') || toolcallCtx,
@@ -1731,6 +1737,11 @@ async function handleSettingsSave(
   if (body.mercuryCtx !== undefined) {
     setRouterState('local:mercury_ctx', String(body.mercuryCtx || ''));
   }
+  if (body.opsModel !== undefined) {
+    const v = String(body.opsModel || '').trim();
+    setRouterState('ops:model', v);
+    if (v) propagateOpsModel(v);
+  }
   // Push every per-agent ctx + keep_alive override just written into process.env
   // so they take effect IMMEDIATELY for fresh-spawn sub-agents (the scan/digest
   // one-shots inherit { ...process.env }) and the persistent child's next re-sync.
@@ -1775,6 +1786,7 @@ async function handleSettingsSave(
     body.contextIdleClearMinutes !== undefined ||
     body.mercuryIntervalMinutes !== undefined || body.mercuryDowntimeMinutes !== undefined ||
     body.mercuryModel !== undefined || body.mercuryCtx !== undefined ||
+    body.opsModel !== undefined ||
     body.maxOutputTokens !== undefined ||
     body.thinking !== undefined ||
     body.default_apps !== undefined ||
