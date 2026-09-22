@@ -72,7 +72,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // merge active skill tools at spawn, so the data/skills/ library is inherited.
     // 'email' added 2026-09-15 (Dom, "just in case"): vulkan can email Dom a
     // bug report / .patch directly instead of only reporting via orchestrator.
-    'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash','email'], includes: ['capture'] },
+    'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash','email','get_chat_history'], includes: ['capture'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
     // Iris — single toolcall agent (byte merged in 2026-09-05). 2026-09-09
     // collapse: 4 merged action tools (email/task/calendar/alarm), one per

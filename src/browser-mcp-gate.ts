@@ -176,13 +176,13 @@ function jsonReply(res: http.ServerResponse, id: unknown, result: unknown, errCo
  *  longer descriptions to their first non-empty line (stripTier), which would
  *  slice mid-JSON. Param descriptions ride at full length. */
 const TOOL_JSON: Record<string, Record<string, unknown>> = {
-  get_windows_and_tabs: { what: 'list every open window and tab', returns: 'windows:[{windowId,tabs:[{tabId,url,title}]}]', use_when: 'FIRST for any tab work (navigate/close/switch) — ids come from here' },
+  get_windows_and_tabs: { what: 'list every open window and tab', returns: 'windows:[{windowId,tabs:[{tabId,url,title}]}]', use_when: 'FIRST call of any browser task: match the task page by url, copy its tabId' },
   performance_start_trace: { what: 'start a performance trace on the active tab', reload: false, autoStop: false, durationMs: 'auto-stop ms, default 5000' },
   performance_stop_trace: { what: 'stop the active trace', saveToDownloads: true, filenamePrefix: 'optional' },
   performance_analyze_insight: { what: 'lightweight summary of the last recorded trace', insightName: 'informational only', timeoutMs: 60000 },
-  chrome_read_page: { what: 'accessibility tree of visible page elements', use_when: 'find element refs before click/type', fallback: 'form fields missing → shadow DOM: chrome_javascript reaches them' },
+  chrome_read_page: { what: 'accessibility tree of visible page elements', use_when: 'find refs before click/type; pass the task tabId', fallback: 'fields missing → shadow DOM: chrome_javascript reaches them' },
   chrome_computer: { what: 'mouse+keyboard+screenshot on the page', click: 'find ref via chrome_read_page first', actions: 'click|scroll|type|key|fill|fill_form|hover|wait|screenshot|zoom|resize_page' },
-  chrome_navigate: { what: 'navigate a tab to a URL; refresh; history back/forward', url_special: '"back"|"forward"', rule: 'existing window/tab is the default; a new one only when the user asks' },
+  chrome_navigate: { what: 'navigate a tab to a URL; refresh; history back/forward', returns: 'tabId of the target tab — pass it in every later call', rule: 'existing tab default; a new one only when the user asks' },
   chrome_screenshot: { what: 'screenshot the page or one element', prefer: 'chrome_computer action=screenshot', to_see_page: 'storeBase64=true, savePng=false' },
   chrome_close_tabs: { what: 'close tabs', by: 'tabIds array, or url match', default: 'active tab' },
   chrome_switch_tab: { what: 'make one tab the active one', tabId: 'required' },
@@ -195,10 +195,10 @@ const TOOL_JSON: Record<string, Record<string, unknown>> = {
   chrome_bookmark_add: { what: 'add a bookmark', url: 'omit = active tab', parentId: 'folder path or id', createFolder: false },
   chrome_bookmark_delete: { what: 'delete a bookmark', by: 'bookmarkId, or url' },
   chrome_javascript: { what: 'run JS in a tab, return the value', use_when: 'form fields missing from read_page: reach into el.shadowRoot, set value, dispatch input event', code: 'async function body — return x; await ok' },
-  chrome_click_element: { what: 'click an element', target: 'ref (from chrome_read_page) | selector | coordinates', tabId: 'omit = active tab', miss: 'ref not found → re-read the page, then chrome_request_element_selection' },
+  chrome_click_element: { what: 'click an element', target: 'ref (from chrome_read_page) | selector | coordinates', tabId: 'pass the task tabId', miss: 'ref not found → re-read the page' },
   chrome_fill_or_select: { what: 'fill input/textarea/select/checkbox/radio', target: 'ref | selector', workflow: 'read_page refs → fill each field → click submit → verify', hidden: 'missing from the read → chrome_javascript' },
   chrome_request_element_selection: { what: 'ask the USER to click the element(s) — human fallback after ~3 failed targeting attempts', returns: 'refs usable by click/fill', timeoutMs: 180000 },
-  chrome_keyboard: { what: 'keyboard input on a page: keys, combos, text', keys: '"Enter" | "Ctrl+C" | plain text', selector: 'optional target element', tabId: 'omit = active tab' },
+  chrome_keyboard: { what: 'keyboard input on a page: keys, combos, text', keys: '"Enter" | "Ctrl+C" | plain text', selector: 'optional target element', tabId: 'pass the task tabId on every call' },
   chrome_console: { what: 'read a tab console output', mode: 'snapshot (waits ~2s) | buffer (instant)', onlyErrors: false, pattern: 'regex filter' },
   chrome_upload_file: { what: 'put a local file into a file input', selector: 'input[type=file]', filePath: 'local path', tabId: 'omit = active tab' },
   chrome_handle_dialog: { what: 'answer a JS alert/confirm/prompt', action: 'accept|dismiss', promptText: 'for prompts' },
@@ -206,9 +206,14 @@ const TOOL_JSON: Record<string, Record<string, unknown>> = {
 };
 
 /** Per-tool param descriptions, same nested-JSON shape. `tab` is the shared
- *  tabId description — "omit = active tab" keeps untargeted calls honest
- *  without ever forcing a target. */
-const TAB_PARAM = { type: 'number', source: 'get_windows_and_tabs', rule: 'copy the value verbatim from its reply — real ids are large numbers; 0 or 1 are never valid ids', default: 'omit = active tab' };
+ *  tabId description (2026-09-21): the browser is the user's REAL Chrome, and
+ *  the "active tab" is whatever the human happens to be viewing — the seat
+ *  treated "omit = active tab" as a license to fire tools untargeted, which
+ *  scripted the user's own tab (the dashboard, ollama settings, anything)
+ *  instead of the task page. So the rule now pins the task tab on every
+ *  call, resolved once from chrome_navigate's reply or a url match in
+ *  get_windows_and_tabs. */
+const TAB_PARAM = { type: 'number', source: 'chrome_navigate reply (tabId) or get_windows_and_tabs (match the task page by url)', rule: 'resolve the task tab once, then pass it on EVERY call for that page — the human is usually viewing a different tab', ids: 'copy the value verbatim — real ids are large numbers; 0 or 1 are never valid ids', omit: 'the tab the human is currently viewing, usually the wrong page' };
 const WIN_PARAM = { type: 'number', source: 'get_windows_and_tabs', use_when: 'picks the active tab of this window when tabId is omitted' };
 const PARAM_JSON: Record<string, Record<string, unknown>> = {
   performance_start_trace: {
@@ -227,7 +232,7 @@ const PARAM_JSON: Record<string, Record<string, unknown>> = {
   chrome_navigate: {
     url: { type: 'string', special: '"back"|"forward" = history in the target tab' },
     newWindow: { type: 'boolean', default: false, use_when: 'user explicitly asks for a NEW window', otherwise: 'omit; to change an existing tab pass tabId' },
-    tabId: { type: 'number', source: 'get_windows_and_tabs', use_when: 'navigating a tab the user already has open', rule: 'copy the value verbatim from its reply — real ids are large numbers; 0 or 1 are never valid ids', default: 'omit = active tab' },
+    tabId: { type: 'number', source: 'get_windows_and_tabs', use_when: 'navigating a tab the user already has open', rule: 'copy the value verbatim from its reply — real ids are large numbers; 0 or 1 are never valid ids', omit: 'the tab the human is currently viewing' },
     windowId: WIN_PARAM,
     background: { type: 'boolean', default: false, effect: 'does not activate the tab or focus the window' },
     width: { type: 'number', effect: 'creates a NEW window', use_when: 'user asks for a new window of a specific size (pass with height)', default: 'omit' },
@@ -277,7 +282,7 @@ const PARAM_JSON: Record<string, Record<string, unknown>> = {
     windowId: WIN_PARAM,
   },
   chrome_close_tabs: {
-    tabIds: { type: 'array', source: 'get_windows_and_tabs', rule: 'copy the values verbatim from its reply — real ids are large numbers; 0 or 1 are never valid ids', default: 'omit = active tab' },
+    tabIds: { type: 'array', source: 'get_windows_and_tabs', rule: 'copy the values verbatim from its reply — real ids are large numbers; 0 or 1 are never valid ids', omit: 'the tab the human is currently viewing' },
     url: { type: 'string', effect: 'closes tabs matching this url instead', rule: 'the FULL url exactly as get_windows_and_tabs shows it — a bare domain matches nothing' },
   },
   chrome_switch_tab: {
