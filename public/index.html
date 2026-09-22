@@ -111,6 +111,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         <span class="rail-label">Process Logs</span>
       </button>
+      <button class="rail-btn" data-view="training" data-tip="Training">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
+        <span class="rail-label">Training</span>
+      </button>
     </div>
     <div class="rail-footer">
       <button class="rail-btn" id="btnAudit" data-tip="Run Audit">
@@ -178,6 +182,7 @@
             <span class="chip" id="chipIdea">root</span>
             <span class="spacer" style="flex:1"></span>
             <button class="btn btn-ghost btn-sm" id="btnNewThought" title="Start a fresh thought (clears cursor)">New Thought</button>
+            <button class="btn btn-ghost btn-sm" id="btnClearConversation" title="Delete the stored conversation log and start completely fresh">Clear Conversation</button>
           </div>
 
           <div class="messages" id="messages">
@@ -205,6 +210,7 @@
               <!-- Mobile-only: relocated from the chat header (which wraps and
                    creates blank space on phone). Hidden on desktop via CSS. -->
               <button class="btn btn-ghost btn-sm" id="btnNewThoughtMobile" title="Start a fresh thought (clears cursor)">New Thought</button>
+              <button class="btn btn-ghost btn-sm" id="btnClearConversationMobile" title="Delete the stored conversation log and start completely fresh">Clear Conversation</button>
               <span class="spacer"></span>
             </div>
             <div class="composer-input-row">
@@ -449,13 +455,36 @@
         </div>
       </section>
 
+      <!-- ===== Training view ===== -->
+      <section class="view" id="view-training">
+        <div class="chat-meta-row">
+          <span class="chip">training loop</span>
+          <span class="chip" id="trainingStatus">idle</span>
+          <span class="spacer"></span>
+          <select class="select" id="trainingDays" title="Audit window" style="min-width:90px">
+            <option value="1">1 day</option>
+            <option value="3" selected>3 days</option>
+            <option value="7">7 days</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="btnTrainingAudit">Audit Logs</button>
+          <button class="btn btn-ghost btn-sm" id="btnTrainingModify">Modify Training Data</button>
+          <button class="btn btn-ghost btn-sm" id="btnTrainingTrain">Train (1 epoch)</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="section-divider">Failure catalog</div>
+          <div id="trainingCatalogs" class="dim mono" style="font-size:11px">No catalogs yet.</div>
+          <div class="section-divider" style="margin-top:24px">Step log</div>
+          <pre class="audit-log" id="trainingTail" style="min-height:200px;max-height:420px;overflow-y:auto;border-radius:6px;"></pre>
+        </div>
+      </section>
+
       <!-- ===== Process Logs view ===== -->
       <section class="view" id="view-logs">
         <div class="chat-meta-row">
           <span class="chip">process logs</span>
           <span class="spacer"></span>
           <button class="btn btn-ghost btn-sm" id="btnRefreshLogs">Refresh</button>
-          <span class="dim mono" style="font-size:10px">tail -n 200 dockbox.log</span>
+          <span class="dim mono" style="font-size:10px">tail -n 200 warden.log</span>
         </div>
         <pre class="audit-log" id="processLogsContent" style="flex:1;min-height:0;max-height:none;border-radius:6px;margin:14px;">Loading...</pre>
       </section>
