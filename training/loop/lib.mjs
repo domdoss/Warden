@@ -48,27 +48,37 @@ export function readJournal(days) {
   return { lines: file.split('\n'), source: 'warden.log' };
 }
 
-/** Ollama chat, no streaming, temperature 0 (analysis, not creativity). */
+/** Ollama chat, no streaming, temperature 0 (analysis, not creativity).
+ * Retries transient failures — ollama runs fine while one pooled keep-alive
+ * socket dies at the instant we reuse it (ECONNRESET with no server-side log),
+ * and a multi-hour classify pass must not lose its work to a single blip. */
 export async function ollamaChat(model, messages) {
-  let res;
-  try {
-    res = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(600_000),
-      body: JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 } }),
-    });
-  } catch {
-    throw new Error('Ollama not reachable at localhost:11434 — aborting');
+  let lastErr;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(600_000),
+        body: JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 } }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Ollama error ${res.status}: ${body.slice(0, 300)}`);
+      }
+      const data = await res.json();
+      const content = data?.message?.content;
+      if (typeof content !== 'string') throw new Error(`Ollama returned no message content for ${model}`);
+      return content;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 4) {
+        log(`ollamaChat attempt ${attempt} for ${model} failed (${err?.message ?? err}) — retrying in ${attempt * 10}s`);
+        await new Promise((r) => setTimeout(r, attempt * 10_000));
+      }
+    }
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Ollama error ${res.status}: ${body.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const content = data?.message?.content;
-  if (typeof content !== 'string') throw new Error(`Ollama returned no message content for ${model}`);
-  return content;
+  throw new Error(`Ollama unreachable after 4 attempts (${model}): ${lastErr?.message ?? lastErr}`);
 }
 
 /** Unload a model (keep_alive 0 — same as `ollama stop`). */
