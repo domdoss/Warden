@@ -394,11 +394,16 @@ describe("Anthesis trial authorization request binding", () => {
     vi.stubEnv("ANTHESIS_TRIAL_ROOT", root);
     vi.stubEnv("ANTHESIS_TRIAL_RUNTIME", "warden-agent-runner");
     vi.stubEnv("ANTHESIS_TRIAL_DECISION_FILE", decisionPath);
+    vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "true");
     const evidencePath = path.join(root, "evidence.jsonl");
     vi.stubEnv("ANTHESIS_TRIAL_EVIDENCE_FILE", evidencePath);
 
     await import("./tools/file-write.js");
     const { registry } = await import("./tool-registry.js");
+    expect(registry.getDefinitions(["Write", "Edit"])).toHaveLength(1);
+    expect(await registry.dispatch("Edit", {}, context)).toContain(
+      "Anthesis trial tool denied",
+    );
     const allowed = await registry.dispatch(
       "Write",
       { file_path: "allowed.txt", content: "after" },

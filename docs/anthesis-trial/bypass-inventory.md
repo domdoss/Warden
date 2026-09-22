@@ -42,6 +42,17 @@ This supports claims about the selected `Write` seam only. It does not support c
 
 ## Required next runtime restriction
 
+The registry now supports an opt-in bounded trial allowlist:
+
+```text
+ANTHESIS_TRIAL_RESTRICT_TOOLS=true
+ANTHESIS_TRIAL_ALLOWED_TOOLS=Write
+```
+
+When enabled, disallowed tools are removed from generated tool definitions and rejected at direct dispatch. The default allowlist is `Write`; set `ANTHESIS_TRIAL_ALLOWED_TOOLS` explicitly for a different bounded fixture.
+
+This registry restriction is necessary but not sufficient for complete mediation: a process with direct filesystem or child-process access can still bypass it.
+
 For a complete-mediation trial, start a disposable runtime exposing only the governed write dispatcher and the evaluator client. Disable or remove:
 
 1. `Edit`.
