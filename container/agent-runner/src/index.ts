@@ -1191,17 +1191,25 @@ OUTPUT
         summary: "read-only audit: logs, DBs, the conversation — flags mistakes",
         // Dense nested JSON — artemis runs on a local granite seat; granite
         // reads structure, not prose. Same facts as the old # sections, keyed.
+        // artemis-flag: its tools come from ARTEMIS_TOOL_DEFS below; listing the
+        // toolset here puts flag_training_error in SUBAGENT_OWNED, keeping it
+        // out of the orchestrator's own pool.
         systemPrompt: JSON.stringify({
             role: 'Artemis, the critical reviewer inside Warden. You receive a transcript of the user and the assistant. Audit it: what the user asked, what the assistant said and did, and where it went wrong.',
             tools: {
-                set: 'Read, Grep, Glob, get_chat_history, Bash — read-only inspection only',
+                set: 'Read, Grep, Glob, get_chat_history, Bash — read-only inspection; flag_training_error — your one write',
                 use: 'check claims against the real files, messages, databases and logs the conversation refers to',
-                invariant: 'auditing is the whole job; the system stays as you found it',
+                invariant: 'auditing is the whole job; the system stays as you found it, apart from the training flags you add',
+            },
+            training_errors: {
+                what: 'a fine-tunable failure: the model chose badly while the tool worked — wrong tool, wrong arguments, narrated instead of calling, call written as text, wrong answer shape, dead end, refusal, invented facts',
+                action: 'each one you confirm in the logs: one flag_training_error call with the verbatim log lines; the training loop writes the corrective examples from your flags',
+                code_defects: 'a missing tool, a tool returning the wrong thing, a wrong path or setting: list these in your findings with the proving log line',
             },
             log_mining: {
                 when: 'asked to mine the logs for failures, or turn them into training data',
                 first: 'Read `data/skills/log-mining/SKILL.md` and follow it',
-                writes: 'exactly two things: your findings, and the training data under `training/` — nothing else on the system changes',
+                writes: 'your findings, plus one flag_training_error per fine-tunable failure',
             },
             evidence: {
                 db: '/opt/Warden/store/messages.db, read-only — sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."; holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more; run .tables first, then .schema <table>; this file is the live one — the .db files under data/ are empty stubs',
@@ -1221,7 +1229,7 @@ OUTPUT
                 note: 'reference the exact point you are critiquing; your notes are saved automatically — write them as a standalone record',
             },
         }),
-        toolsets: [],
+        toolsets: ['artemis-flag'],
     },
     {
         // Sentry was reborn 2026-09-08 — this is the software-security scanner.
@@ -1408,10 +1416,13 @@ const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
 ]);
 
 // Artemis: read-only auditor tools (Bash included for read-only inspection:
-// sqlite3 queries against the store DB, reading service logs — never writes)
+// sqlite3 queries against the store DB, reading service logs) plus its one
+// write, flag_training_error. The Council seats get the read-only set only.
+const AUDIT_READ_TOOL_NAMES = ['Read', 'Grep', 'Glob', 'Bash', 'get_chat_history'];
 const ARTEMIS_TOOL_DEFS = stripTier(
-    registry.getDefinitions(['Read', 'Grep', 'Glob', 'Bash', 'get_chat_history']),
+    registry.getDefinitions([...AUDIT_READ_TOOL_NAMES, 'flag_training_error']),
 );
+const COUNCIL_TOOL_DEFS = stripTier(registry.getDefinitions(AUDIT_READ_TOOL_NAMES));
 
 // The Council: three Artemis instances reason in parallel on the same question
 // from three different angles, then iterate until they agree. Uses Artemis's
@@ -6201,7 +6212,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                                 const labeled = answers.map((a, idx) => `--- Seat ${COUNCIL_SEAT_NAMES[idx]} (previous round) ---\n${a}`).join('\n\n');
                                 taskForInstance = `Question: ${task}\n\nThree proposed answers from the previous round (yours and the two other seats, including any disagreements they raised):\n\n${labeled}\n\nHave it out. Re-read the other seats' answers; argue, agree, disagree, and present another point where you genuinely differ — name the seat, quote the point. For each real disagreement: concede (say why they're right) or hold (one concrete reason, only if it would make the answer wrong). You may raise a new point the others haven't considered. But do not argue for the sake of arguing — your destination is ONE answer all three seats can endorse. If another seat's answer already covers your concern, endorse it. Then output your refined final answer in 2-4 sentences, written so all three seats could sign it.`;
                             }
-                            roundPromises.push(runSubAgent(`council-${COUNCIL_SEAT_NAMES[i].toLowerCase()}`, COUNCIL_SEAT_MODELS[i](), COUNCIL_SEAT_PROMPTS[i], ARTEMIS_TOOL_DEFS, taskForInstance, context, 30));
+                            roundPromises.push(runSubAgent(`council-${COUNCIL_SEAT_NAMES[i].toLowerCase()}`, COUNCIL_SEAT_MODELS[i](), COUNCIL_SEAT_PROMPTS[i], COUNCIL_TOOL_DEFS, taskForInstance, context, 30));
                         }
                         const roundResults = await Promise.all(roundPromises);
                         answers = roundResults.map(r => (r.content || '').trim());

@@ -3,31 +3,68 @@
 //
 //   node modify-parts.mjs
 //
-// Flow: newest catalog → for each classified failure, the analyst writes 1-2
+// Flow: newest catalog + Artemis's pending flags (flags/artemis-flags.jsonl,
+// written by the flag_training_error tool) → for each classified failure, the analyst writes 1-2
 // part rows (validated locally against the merge contract) → rows land in
 // orchatlas-parts/s<N>-loop-<date>.jsonl → merge_orchatlas_parts.mjs runs as
 // the validation gate (on failure the part file is renamed .rejected so the
 // dataset keeps its last-good merged jsonl).
-import { readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { ANALYST_MODEL, CATALOGS_DIR, clearVram, exitMsg, log, ollamaChat, parseJsonLoose, TRAINING_DIR, unloadAnalyst } from './lib.mjs';
+import { ANALYST_MODEL, CATALOGS_DIR, clearVram, exitMsg, HERE, log, ollamaChat, parseJsonLoose, TRAINING_DIR, unloadAnalyst } from './lib.mjs';
 
 const PARTS_DIR = path.join(TRAINING_DIR, 'orchatlas-parts');
 const SCHEMAS = JSON.parse(readFileSync(path.join(TRAINING_DIR, 'tool_schemas.json'), 'utf8'));
 const seatTools = SCHEMAS.merged.map((t) => t.function.name);
 const orchTools = SCHEMAS.orchPool.map((t) => t.function.name);
+const FLAGS_FILE = path.join(HERE, 'flags', 'artemis-flags.jsonl');
+
+function readFlags() {
+  if (!existsSync(FLAGS_FILE)) return [];
+  return readFileSync(FLAGS_FILE, 'utf8').split('\n').filter((l) => l.trim()).map((l) => {
+    try { return JSON.parse(l); } catch { return null; }
+  }).filter(Boolean);
+}
+
+/** Stamp every flag this run processed as consumed, with its outcome:
+ * merged (rows landed), rejected (merge gate refused the batch), no_rows
+ * (the analyst produced no valid row for it). Re-reads the file right before
+ * writing so a flag Artemis added mid-run stays pending. */
+function stampFlags(mergeOk) {
+  if (!pendingFlags.length) return;
+  const processed = new Set(pendingFlags.map((f) => f.id));
+  const now = new Date().toISOString();
+  const all = readFlags().map((f) => {
+    if (!processed.has(f.id) || f.status !== 'pending') return f;
+    const kept = keptById.get(f.id) || 0;
+    return { ...f, status: 'consumed', consumed_at: now, outcome: kept ? (mergeOk ? 'merged' : 'rejected') : 'no_rows' };
+  });
+  const tmp = `${FLAGS_FILE}.tmp`;
+  writeFileSync(tmp, all.map((f) => JSON.stringify(f)).join('\n') + '\n');
+  renameSync(tmp, FLAGS_FILE);
+  log(`stamped ${processed.size} Artemis flag(s) consumed`);
+}
 const ANCHOR = 'Current local time is 2026-09-18T12:05:00 (timezone America/Vancouver).';
 
-// --- 1. newest catalog ---
-const catalogs = readdirSync(CATALOGS_DIR).filter((f) => f.endsWith('.json')).sort();
-if (!catalogs.length) exitMsg('No catalog found — run the audit step first');
-const catalogFile = catalogs[catalogs.length - 1];
-const catalog = JSON.parse(readFileSync(path.join(CATALOGS_DIR, catalogFile), 'utf8'));
-const failures = (catalog.failures || []).filter(
-  (f) => f.classification && f.classification.failure_class && !['not_a_failure', 'unclassified'].includes(f.classification.failure_class),
-);
-log(`catalog ${catalogFile}: ${catalog.failures?.length || 0} failures, ${failures.length} trainable (skipping not_a_failure/unclassified)`);
-if (!failures.length) exitMsg('No trainable failures in the newest catalog — nothing to write');
+// --- 1. newest catalog + Artemis's pending flags ---
+const catalogs = existsSync(CATALOGS_DIR) ? readdirSync(CATALOGS_DIR).filter((f) => f.endsWith('.json')).sort() : [];
+const failures = [];
+if (catalogs.length) {
+  const catalogFile = catalogs[catalogs.length - 1];
+  const catalog = JSON.parse(readFileSync(path.join(CATALOGS_DIR, catalogFile), 'utf8'));
+  failures.push(...(catalog.failures || []).filter(
+    (f) => f.classification && f.classification.failure_class && !['not_a_failure', 'unclassified'].includes(f.classification.failure_class),
+  ));
+  log(`catalog ${catalogFile}: ${catalog.failures?.length || 0} failures, ${failures.length} trainable (skipping not_a_failure/unclassified)`);
+} else {
+  log('no audit catalog yet — using Artemis flags only');
+}
+const pendingFlags = readFlags().filter((f) => f.status === 'pending');
+failures.push(...pendingFlags);
+log(`Artemis flags: ${pendingFlags.length} pending`);
+if (!failures.length) exitMsg('No trainable failures in the newest catalog or Artemis flags — nothing to write');
+// Rows kept per failure id — decides each flag's outcome when it is stamped.
+const keptById = new Map();
 
 // --- 2. exemplars: real rows from existing parts fix the row shape ---
 function exemplarFor(prefix) {
@@ -114,10 +151,14 @@ Write the corrective row(s) now.`;
     validRows.push(row);
     kept++;
   }
+  keptById.set(f.id, kept);
   log(`failure ${f.id} (${c.failure_class}, ${role}): ${kept}/${rows.length} rows kept`);
 }
 
-if (!validRows.length) exitMsg('No valid rows written — see rejections above');
+if (!validRows.length) {
+  stampFlags(false);
+  exitMsg('No valid rows written — see rejections above');
+}
 
 // --- 5. write the part files (next free s-number, scanned numerically) ---
 // Role is determined per row from the tools it actually calls: orch rows must
@@ -163,8 +204,10 @@ if (merge.status !== 0) {
   log(`merge REJECTED the rows — part file(s) renamed .rejected (dataset keeps its last-good jsonl)`);
   const errOut = (merge.stderr || merge.stdout || '').trim().split('\n').slice(0, 20).join('\n');
   log(`merge errors:\n${errOut}`);
+  stampFlags(false);
   exitMsg('modify step failed validation — no rows landed in the dataset');
 }
+stampFlags(true);
 log(`merge OK — ${(merge.stdout || '').trim().split('\n').filter((l) => l.startsWith('Merged')).join(' ')}`);
 
 await unloadAnalyst();

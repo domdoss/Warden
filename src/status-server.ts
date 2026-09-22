@@ -188,6 +188,7 @@ function probeLocalPort(port: number, path: string): Promise<boolean> {
   });
 }
 import { fetchEmails, sendEmail, testConnection } from './email.js';
+import { listTrainingFlags } from './training-flags.js';
 
 const STATUS_PORT = parseInt(process.env.STATUS_PORT || '3200', 10);
 
@@ -3960,6 +3961,13 @@ export function startStatusServer(d: StatusDeps): void {
               } catch {}
             }
             return json(res, { ok: true, catalogs, newest });
+          }
+          // Artemis's trainable-error flags (src/training-flags.ts), newest
+          // first. Pending ones feed the next modify step.
+          if (pathname === '/api/training/flags' && req.method === 'GET') {
+            const flags = listTrainingFlags().reverse();
+            const pending = flags.filter((f) => f.status === 'pending').length;
+            return json(res, { ok: true, flags, counts: { pending, consumed: flags.length - pending, total: flags.length } });
           }
           return error(res, 'unknown training route');
         } catch (err: any) {
