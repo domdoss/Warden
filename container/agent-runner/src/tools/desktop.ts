@@ -66,6 +66,9 @@ registry.register({
         required: [],
     },
     handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects desktop tools.';
+        }
         try {
             const res = await writeCallbackAsync('desktop_screenshot', args, 30000);
             if (!res || res.ok === false) {
@@ -97,6 +100,9 @@ registry.register({
         required: [],
     },
     handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects desktop tools.';
+        }
         try {
             const res = await writeCallbackAsync('webcam_capture', args, 20000);
             if (!res || res.ok === false) {
@@ -126,6 +132,9 @@ registry.register({
         required: ['path'],
     },
     handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects desktop tools.';
+        }
         try {
             const res = await writeCallbackAsync('read_image', args, 20000);
             if (!res || res.ok === false) {
@@ -158,6 +167,9 @@ registry.register({
         required: ['x', 'y'],
     },
     handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects desktop tools.';
+        }
         const x = Math.round(args.x);
         const y = Math.round(args.y);
         const btn = args.button === 'right' ? 3 : args.button === 'middle' ? 2 : 1;
@@ -188,6 +200,9 @@ registry.register({
         required: [],
     },
     handler: async (args) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects desktop tools.';
+        }
         const delay = args.delay_ms ?? 12;
 
         if (args.keys) {
