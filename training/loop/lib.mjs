@@ -3,6 +3,7 @@
 // training/. Every helper echoes through log() so the dashboard tail
 // (training/loop/logs/<step>.log) stays readable.
 import { spawnSync } from 'node:child_process';
+import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +16,9 @@ export const ANALYST_MODEL = 'granite4.2:30b';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 export function log(msg) {
-  console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
+  // Local time — warden.log and the dashboard run local; UTC stamps made
+  // 21:48 look like "04:48" and read as a different incident.
+  console.log(`[${new Date().toLocaleTimeString('en-CA', { hour12: false })}] ${msg}`);
 }
 
 export function exitMsg(msg) {
@@ -49,36 +52,36 @@ export function readJournal(days) {
 }
 
 /** Ollama chat, no streaming, temperature 0 (analysis, not creativity).
- * Retries transient failures — ollama runs fine while one pooled keep-alive
- * socket dies at the instant we reuse it (ECONNRESET with no server-side log),
- * and a multi-hour classify pass must not lose its work to a single blip. */
-export async function ollamaChat(model, messages) {
-  let lastErr;
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    try {
-      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(600_000),
-        body: JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 } }),
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Ollama error ${res.status}: ${body.slice(0, 300)}`);
-      }
-      const data = await res.json();
-      const content = data?.message?.content;
-      if (typeof content !== 'string') throw new Error(`Ollama returned no message content for ${model}`);
-      return content;
-    } catch (err) {
-      lastErr = err;
-      if (attempt < 4) {
-        log(`ollamaChat attempt ${attempt} for ${model} failed (${err?.message ?? err}) — retrying in ${attempt * 10}s`);
-        await new Promise((r) => setTimeout(r, attempt * 10_000));
-      }
-    }
-  }
-  throw new Error(`Ollama unreachable after 4 attempts (${model}): ${lastErr?.message ?? lastErr}`);
+ * node:http with `agent: false` — one fresh connection per request, closed
+ * after the response. No pooled keep-alive socket for ollama to close under us
+ * (the 2026-09-21 crash: undici reused a connection ollama had just closed —
+ * ECONNRESET with the server fine and nothing in its log). No pool, no race. */
+export function ollamaChat(model, messages) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 } });
+    const req = http.request(
+      `${OLLAMA_URL}/api/chat`,
+      { method: 'POST', agent: false, headers: { 'Content-Type': 'application/json' } },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) return reject(new Error(`Ollama error ${res.statusCode}: ${data.slice(0, 300)}`));
+          try {
+            const content = JSON.parse(data)?.message?.content;
+            if (typeof content !== 'string') return reject(new Error(`Ollama returned no message content for ${model}`));
+            resolve(content);
+          } catch (err) {
+            reject(new Error(`Ollama reply was not JSON: ${String(data).slice(0, 200)} (${err?.message ?? err})`));
+          }
+        });
+      },
+    );
+    req.setTimeout(600_000, () => req.destroy(new Error('Ollama chat timed out after 600s')));
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 /** Unload a model (keep_alive 0 — same as `ollama stop`). */
