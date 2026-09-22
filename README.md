@@ -112,7 +112,7 @@ Each sub-agent has its own system prompt and toolset. Iris and Sentry share one 
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
 | **Sentry** | Local or cloud (local recommended) | Bash (read-only), `sentry_report` | Background security scanner — periodically inventories the PC (listening sockets, network connections, running services, autostart, user crontab, enabled units, processes) with no elevated permissions, diffs against a learned baseline, and reports only when something new or suspicious appears. Runs an hourly peek and a daily deep scan; can also be dispatched on demand ("run a security scan"). |
 
-> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Iris and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Iris/Sentry) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident.
+> 🎛️ **Atlas, Vulkan, Artemis, and each Council seat have their own model.** **Iris and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Orchestrator (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Iris/Sentry) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident. The keep-alive re-pin that runs every minute only maintains models that are **loaded** — it snapshots Ollama's `/api/ps` first and never re-spawns a model that was deliberately unloaded, so a pinned model can't fight something big (like the training loop's 17 GB analyst) for VRAM after you cleared it on purpose.
 
 ![The Agents panel: every sub-agent with its model, status, and toolset](docs/screenshots/agents.png)
 
@@ -251,6 +251,7 @@ Under the hood, the heartbeat is a real scheduled task (`heartbeat-owner`) persi
 The orchestrator keeps its running context lean by design, not by a giant ceiling. After every turn its persistent conversation collapses to chat-history-only — the last few turns' final responses (~1K each) — and drops all the tool calls, tool results, and system injections that produced them. Mercury is pinned; long-term memory isn't relied on for the working window. Trimming is group-aware (it drops whole tool-call→result groups, so it keeps fewer messages without orphaning a tool result), and each tool result is capped at ~1K tokens. Two manual resets sit on top:
 
 - **New Thought** (chat header) clears the orchestrator's context server-side — the next message starts a fresh conversation, no accumulated history.
+- **Clear Conversation** (chat header) goes further: it deletes the stored message log for the chat too, wipes the rolling Mercury summary, and sets the context-clear marker — the next message starts from a genuinely empty history, database included.
 - **Idle auto-clear** (Settings → Model Configuration → *Idle clear*, default 30 min) drops context automatically when your last message was older than the threshold. `0` disables it.
 
 ### ✏️ Self-Editing
@@ -345,6 +346,8 @@ Built on your real Chrome over CDP — no headless puppet browser, no fresh prof
 
 `audio_volume` (speakers) · `mic_volume` · `media_control` (play/pause/skip) — anything exposing MPRIS: a browser YouTube tab, Spotify, mpv, VLC. Dedicated tools, not `amixer`/`playerctl` shell noise.
 
+`youtube` — play, search, and **control** the real Chrome YouTube tab through the browser bridge: now-playing, pause/resume, next, seek, fullscreen. Any ask mentioning YouTube routes here and the tool result is the reply; a "stop the music" ask maps to `action: pause`, and the prompt's control rule forbids ever *stating* a playback change without the call that made it — that exact zero-tool-call hallucination (seat claimed "paused" while the music kept playing) is what the mapping was added for (2026-09-21).
+
 ### 👁️ Vision
 
 `query_image` — ask questions about any image on disk, answered locally. `read_image` + `webcam_capture` + `desktop_screenshot` feed frames into the agent's vision context automatically.
@@ -400,6 +403,7 @@ The dashboard includes:
 | 📅 **Calendar** | CalDAV synced with Kontact | 📝 **Notes** | Obsidian-style markdown vault |
 | 🧩 **Skills & MCP** | Hot-pluggable capabilities | 📈 **Agent Activity** | Live verbose status + collapsible progress panel |
 | 📜 **Process Logs** | Live log tail | 📰 **Digest** | Hourly/daily/weekly grounded briefings |
+| 🎓 **Training** | Failure-audit → data-modify → retrain loop (see [Training loop](#-training-loop)) | | |
 | 🖥️ **Hologram Panels** | Today, digest, agents, chat, tasks, upload, system — all in the voice UI | |
 | 🏗️ **Ops Panel** | Inbox (scanned work tasks + calendar events — ✓ confirm / ✕ deny), Work tasks, Reminders, Schedules, Calendar (Google-synced appointments), + all scheduled crons with pause/resume — heartbeat, iris-digest hourly/daily/weekly | |
 
@@ -521,6 +525,18 @@ Each digest span has a **talk** toggle (`digest:talk:hourly|daily|weekly` in rou
 
 The daily digest's cron is configurable from the dashboard (default `17 21 * * *`, i.e. 21:17 local — deliberately off the :00 mark). Move it to your wake time, turn on `digest:talk:daily`, and the morning briefing — today's calendar, active tasks, notable emails, and the `alerts` block — is spoken to you at that time. Grounded in your real local data, not a generic forecast. A TTS alarm clock that knows you've got a standup in 20 minutes.
 
+### 🎓 Training loop
+
+Warden's seat model is a fine-tune (`orchatlas-ft`, built from `training/`), and the dashboard's Training view closes the circuit: failures the system actually made become new SFT rows and a fresh retrain — **audit → modify → train**, three buttons, no terminal.
+
+| Step | What it does |
+|---|---|
+| **Audit logs** (1 / 3 / 7-day window) | Clears VRAM (refuses while an agent turn is live), loads a 17 GB local analyst model, parses the warden logs (journald, `warden.log` fallback) for failure-shaped turns — tool errors that never recovered, dead ends with zero tool calls, refusals, hallucinated answers, infra outages — and has the analyst classify each slice as a failure class or `not_a_failure` (conversational turns grep-match too; the classifier filters them, not the regexes). **No cap** — every failure-shaped turn is cataloged, because dropped slices are dropped training data. Catalogs land in `training/loop/catalogs/`. |
+| **Modify training data** | Takes the newest catalog, drops the non-failures, and has the analyst write new SFT rows against the live tool pool and existing exemplars. Every row is validated locally against the merge contract (exact time anchor, tools in the role pool, no per-row tools), then `merge_orchatlas_parts.mjs` runs as the gate — anything invalid gets renamed `.rejected` and the step fails loudly instead of corrupting the dataset. |
+| **Train** | Runs the standard 1-epoch `atlasorch.sh` as-is. When it finishes, flip the seat model to `orchatlas-ft` in the dashboard. |
+
+Each step is a detached background job with a live log tail in the view; only one step runs at a time, and audit/modify unload the analyst when they finish so the VRAM goes back to the resident models. The keep-alive re-pin cooperates: it only maintains models that are *loaded* — it snapshots Ollama's `/api/ps` and never re-spawns a model that was deliberately unloaded, so a pinned seat model can't fight the analyst for VRAM mid-audit.
+
 ---
 
 ## 🔌 HTTP API
@@ -532,7 +548,7 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | Group | Endpoints |
 | --- | --- |
 | **System & control** | `GET /api/status` · `GET /api/health` · `GET /api/heartbeat` · `GET /api/activity` · `GET/POST /api/process-logs` · `POST /api/server/restart` · `POST /api/open-terminal` · `POST /api/terminal` |
-| **Chat & agents** | `GET/POST /api/messages` · `POST /api/chat/stop` · `POST /api/chat/interrupt` · `POST /api/chat/clear-context` · `POST /api/agents/kill` · `POST /api/voice` |
+| **Chat & agents** | `GET/POST /api/messages` · `POST /api/chat/stop` · `POST /api/chat/interrupt` · `POST /api/chat/clear-context` · `POST /api/chat/clear-conversation` · `POST /api/agents/kill` · `POST /api/voice` |
 | **Files (shared workspace)** | `POST /api/files/upload` · `GET /api/files/download` · `GET /api/files/serve` · `GET /api/files/list` · `GET /api/files/read` · `GET /api/files/stat` · `POST /api/files/mkdir` · `POST /api/files/copy` · `POST /api/files/rename` · `POST /api/files/revert` · `GET /api/files/history` · `GET /api/files/version` |
 | **Digests** | `GET/POST /api/summaries?span=` · `POST /api/digest/generate?span=hourly\|daily\|weekly` |
 | **Actionable / Ops inbox** | `POST /api/scan/run` (run hourly extraction now) · `GET /api/scan/inbox` (unconfirmed tasks + events) · `POST /api/scan/confirm` · `GET/POST /api/scan/config` (`{ autoAccept }`) |
@@ -540,6 +556,7 @@ Everything talks to Warden through one HTTP server — the dashboard, the hologr
 | **Memory, bio, search** | `GET/POST /api/bio` · `GET/POST /api/projects` · `GET /api/search` · `GET /api/skills` · `GET /api/groups` |
 | **Channels** | `GET /api/channels` · `*/api/channels/slack` · `*/api/channels/telegram` · `*/api/channels/whatsapp` (+ `/qr`, `/sync`) · `*/api/email/{accounts,inbox,drafts,message,send,test}` · `*/api/sms/{accounts,messages,send,test}` · `GET/POST /api/calendar/events` · `POST /api/calendar/import` · `GET/POST /api/calendar-token` · `GET /api/oauth/start` · `GET /api/oauth/callback` · `GET /api/oauth/accounts` |
 | **Models / Ollama** | `GET /api/ollama/servers` · `GET /api/ollama/model-names` · `POST /api/ollama/test` · `GET /api/ollama/thinking-support` · `POST /api/ollama/toggle` |
+| **Training loop** | `POST /api/training/audit` `{days: 1\|3\|7}` · `POST /api/training/modify` · `POST /api/training/train` · `GET /api/training/status` · `GET /api/training/catalogs` |
 | **Vault & audit** | `GET/POST /api/vault` · `GET /api/vault/dictionary` · `POST /api/vault/scrub` · `POST /api/audit/run` · `GET /api/audit/status` |
 | **Settings & UI plumbing** | `GET/POST /api/settings` · `GET/POST /api/dashboard-pages` (live/beta file editing) · `GET/POST /api/mcp-servers` · `GET /api/notifications` · `GET /api/notifications/poll` · `GET/POST /api/notification-list` · `POST /api/notification-list/read-all` · `GET/POST /api/api-keys` |
 

@@ -166,11 +166,13 @@ function providerFor(capability: string): string {
     return v.startsWith('mcp:') ? v.slice(4).trim() : '';
 }
 
-/** Asks the core `youtube` tool owns: playback + transport control of media.
- *  On these turns the default browser provider's raw page tools stand down
- *  from the seat's tool pools (see alwaysIn) — the consumer tool IS the
- *  interface. Bare 'next'/'previous' are deliberately absent so "next steps"
- *  never hides the browser. */
+/** Playback/control asks (play/skip/pause). Its ONLY use is the iteration-1
+ *  think-skip in the orchestrator loop — a one-call mechanical ask wastes a
+ *  planning pass. The tool stand-down it used to gate is GONE (2026-09-21):
+ *  any playback word in an ask ("check my notifications while the music
+ *  plays") withheld the browser provider's tools from that turn, and a
+ *  facebook-notifications ask that mentioned music lost the browser entirely
+ *  — the seat fell back to youtube and the user's ask went unanswered. */
 const PLAYBACK_ASK_RE = /\b(play|playing|played|pause|paused|resume|skip|skipped|song|songs|music|video|videos|track|tracks|playlist|playlists|youtube|lofi|chillstep|chill|mix|fullscreen|now playing|put on|listen|queue)\b/i;
 
 // Cooldown for the per-turn lazy-dial of the default browser provider (see
@@ -1025,7 +1027,7 @@ const SUBAGENTS: SubAgentDef[] = [
         background: true,
         routing: "shell, browser, desktop, files, anything online — hands-on work, however small",
         maxIterations: 200,
-        summary: 'web search, page fetching/scraping, live browser automation, running shell commands, and generating or converting documents (PDF, DOCX, XLSX, etc.)',
+        summary: 'web, browser automation, shell, documents (PDF, DOCX, XLSX)',
         // Dense nested JSON — atlas background jobs run on granite4.1:8b on
         // this box, and granite reads structure, not prose. Same facts as the
         // old # ROLE/# THE MACHINE/… sections, keyed (kernel rides inside).
@@ -1065,7 +1067,7 @@ const SUBAGENTS: SubAgentDef[] = [
         background: true,
         routing: "code, scripts, builds, heavy bash; big-context work (many files, long docs, big logs) even when not code",
         maxIterations: 200,
-        summary: 'coding, scripting, building, and heavy bash work — editing source, running builds and tests, refactoring, and executing complex shell pipelines',
+        summary: 'code, builds, tests, heavy bash, big-context work',
         systemPrompt: `# ROLE
 You are Vulkan. You write and change code. The task states what the user needs; the engineering is yours. Act on the first turn.
 
@@ -1098,7 +1100,7 @@ ${agentKernel('every deliverable exists on disk — the file written, the edit a
         delegate: 'iris',
         label: 'Iris',
         background: false,
-        routing: "email, calendar, reminders, scheduled tasks, digests — anything in the user's mail/calendar, attachments included; brief = one JSON object {intent, ...}, result comes back JSON {result, items}",
+        routing: "email, calendar, reminders, alarms, scheduled tasks, digests — anything in the user's mail/calendar, attachments included; a website page (facebook, social media, forums, news) = the browser-driving tools; brief = one JSON object {intent, ...}, result comes back JSON {result, items}",
         // Up to 3 tool calls per dispatch (was 1, 2026-09-15): iris is a
         // fine-tuned 3b that held list→id→act flows only across separate
         // orchestrator dispatches — the orchestrator had to re-delegate each
@@ -1132,7 +1134,7 @@ ${agentKernel('every deliverable exists on disk — the file written, the edit a
         // (BRIEFING IRIS + the iris delegate tool's `task` description); the
         // time line is prepended by the iris branch of executeXmlTool.
         maxIterations: 3,
-        summary: 'alarms, reminders, calendar, and email — create/list/manage alarms, scheduled tasks (reminders/cron), and calendar events, read/send email, download email attachments. Use for inbox tasks, alarm and scheduling requests.',
+        summary: 'email, calendar, contacts, todos, alarms, tasks, projects',
         systemPrompt: `You are Iris: alarms, reminders, calendar, email.
 
 CONTRACT: one request → up to 3 tool calls → one result line. Each call uses a fact an earlier call returned. Never repeat a call that succeeded.
@@ -1169,7 +1171,7 @@ OUTPUT
         background: true,
         routing: "audit, second opinion, why-a-job-failed diagnosis — reads logs and DBs instead of guessing",
         maxIterations: 200,
-        summary: "a second-opinion audit of the current conversation — reads what the user asked and what the assistant actually said/did, then flags mistakes, wrong assumptions, and oversights. It can read and search files, query Warden's SQLite databases, and inspect the service logs to verify claims, but never changes anything. Runs in the background: calling it returns a job id immediately and the audit arrives in your inbox when it finishes. Call when the user wants a review or sanity-check, asks why a job stalled or failed, why a task never finished, or why a report never came back — or before finalizing something important",
+        summary: "read-only audit: logs, DBs, the conversation — flags mistakes",
         // Dense nested JSON — artemis runs on a local granite seat; granite
         // reads structure, not prose. Same facts as the old # sections, keyed.
         systemPrompt: JSON.stringify({
@@ -1213,7 +1215,7 @@ OUTPUT
         background: true,
         routing: "security scans: ports, connections, services, autostart, crontabs",
         maxIterations: 30,
-        summary: "security scan of the PC — checks network connections, listening ports, and running services (peek), plus autostart entries, user crontab, enabled user units, shell rc files, and a process audit (deep), then reports anything suspicious. Runs with user-level permissions only. Call for 'scan the pc', 'run a security scan', 'what's listening', 'is my machine safe'.",
+        summary: "security scan: ports, services, autostart, persistence",
         // Dense nested JSON — sentry runs on a local granite seat at
         // temperature 0; granite reads structure, not prose.
         systemPrompt: JSON.stringify({
@@ -1250,7 +1252,7 @@ OUTPUT
         background: true,
         routing: "multi-specialist chains — decomposes, tracks, returns one result. REQUEST-ONLY: suggest it; the user decides. Single specialist? call them directly",
         maxIterations: 60,
-        summary: 'decomposing a large or multi-part task and coordinating vulkan (code), iris (email/calendar/tasks), artemis (audit) and sentry (security) to carry it out',
+        summary: 'multi-part tasks: decompose, coordinate the specialists, return one result',
         systemPrompt: ORCH_MANAGER_SYSTEM,
         mcpServers: [],
         // Hands: the fine-tuned orchestrator model keeps real tools, not just
@@ -1342,9 +1344,11 @@ function defaultsSection(): string {
         const connected = skillState.skills.some(s => s.source === 'mcp'
             && s.tools.some(t => String(t?.function?.name || '').startsWith(prefix)));
         if (!connected) continue;
-        entries.push(`${JSON.stringify(cap)}: ${JSON.stringify(`${server} MCP tools`)}`);
+        entries.push(`${JSON.stringify(cap)}: ${JSON.stringify(cap === 'browser'
+            ? { provider: server, does: 'reading and acting on any website page (facebook, social media, forums, news): navigate there, read it, act on it' }
+            : `${server} MCP tools`)}`);
         if (cap === 'browser') {
-            entries.push(`${JSON.stringify('media')}: ${JSON.stringify('music/video (play, pause, skip, seek, now playing) → `youtube` tool: one call, its result is the answer')}`);
+            entries.push(`${JSON.stringify('media')}: ${JSON.stringify({ tool: 'youtube', does: 'music/video: play, pause, resume, skip, seek, now playing; a stop ask = pause', rule: 'one call, its result is the answer' })}`);
         }
     }
     if (entries.length === 0) return '';
@@ -1604,12 +1608,12 @@ function delegateToolDef(s: SubAgentDef) {
             type: 'function',
             function: {
                 name: s.delegate,
-                description: `Delegate to ${s.label} for ${s.summary}. ${s.label} ALWAYS runs in the background. You get a job id back immediately and the full result arrives in your inbox when it finishes — keep working or end your turn in the meantime. Set urgent:true when the result should interrupt whatever you are doing at the time. NEVER use mode:"blocking".`,
+                description: JSON.stringify({ delegate: s.label, does: s.summary, mode: 'background', returns: 'job id; result → inbox', urgent: 'true = interrupt on arrival' }),
                 parameters: {
                     type: 'object',
                     properties: {
-                        task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Intent only — never steps, never where to look, never how to code, never tool names or order.' },
-                        urgent: { type: 'boolean', description: 'Inject the result into your context immediately when it finishes, even mid-task (default false).' },
+                        task: { type: 'string', description: '{"what":"the user goal","include":"only facts the agent cannot guess: paths, urls, names, dates, ids, the exact outcome","omit":"steps, where to look, tool names, order"}' },
+                        urgent: { type: 'boolean', description: '{"what":"true = the result interrupts you on arrival","default":false}' },
                     },
                     required: ['task'],
                 },
@@ -1626,13 +1630,13 @@ function delegateToolDef(s: SubAgentDef) {
             type: 'function',
             function: {
                 name: s.delegate,
-                description: `Delegate to ${s.label} for ${s.summary}. You do NOT have these tools directly — send one JSON brief and you will receive one JSON result.`,
+                description: JSON.stringify({ delegate: s.label, does: s.summary, web: 'a website page = browser-driving tools', brief: 'one JSON object in, one JSON result back' }),
                 parameters: {
                     type: 'object',
                     properties: {
                         task: {
                             type: 'string',
-                            description: 'One JSON object and nothing else — no preamble, no time (the runner prepends the current local time). Keys: intent (read|send|download|schedule|list|create|update|delete), plus every id, address, filename, date and value the intent needs inline. Example:\n{"intent":"download","email_id":"18f2c9ab41","filename":"invoice-2291.pdf"}',
+                            description: '{"what":"one JSON object, nothing else","keys":"intent (read|send|download|schedule|list|create|update|delete) + every id, address, filename, date, value inline","pick_by_user_ask":{"user_names_an_email":{"intent":"read","email_id":"<the id the user named>"},"user_gives_no_id_check_or_recent":{"intent":"read"},"user_wants_a_download":{"intent":"download","email_id":"<id>","filename":"<name>"}},"rule":"email_id or account only when the user gave one; no id = read every connected inbox, recent first","note":"no preamble, no time — the runner prepends local time"}',
                         },
                     },
                     required: ['task'],
@@ -1644,10 +1648,10 @@ function delegateToolDef(s: SubAgentDef) {
         type: 'function',
         function: {
             name: s.delegate,
-            description: `Delegate to ${s.label} for ${s.summary}. You do NOT have these tools directly — call this with a clear plain-language goal and you will receive a short text summary of the result.`,
+            description: JSON.stringify({ delegate: s.label, does: s.summary, brief: 'plain-language goal', returns: 'a short text summary of the result' }),
             parameters: {
                 type: 'object',
-                properties: { task: { type: 'string', description: 'What the USER wants done: the goal plus only the facts the agent cannot guess (names, dates, amounts, IDs). Intent only — never steps, where to look, how to do it, or tool names.' } },
+                properties: { task: { type: 'string', description: '{"what":"the user goal","include":"only facts the agent cannot guess: names, dates, amounts, ids, the exact outcome","omit":"steps, tool names, order"}' } },
                 required: ['task'],
             },
         },
@@ -1667,11 +1671,11 @@ function orchDelegateToolDef(s: SubAgentDef) {
         type: 'function',
         function: {
             name: s.delegate,
-            description: `Call ${s.label} for ${s.summary}. Blocking — the result comes back as this call's result, in this same turn.`,
+            description: JSON.stringify({ delegate: s.label, does: s.summary, mode: 'blocking', returns: 'the result inline, this same turn' }),
             parameters: {
                 type: 'object',
                 properties: {
-                    task: { type: 'string', description: 'What this piece of the task needs done: the goal plus every fact the specialist cannot guess (file paths, URLs, names, dates, IDs, the exact outcome). Self-contained — the specialist cannot ask a follow-up question.' },
+                    task: { type: 'string', description: '{"what":"this piece\'s goal","include":"every fact the specialist cannot guess: paths, urls, names, dates, ids, the exact outcome","note":"self-contained — the specialist cannot ask a follow-up"}' },
                 },
                 required: ['task'],
             },
@@ -2812,8 +2816,10 @@ function graniteSampling(model: string): Record<string, number> {
     if (/toolcall-ft|granite4\.1:3b/i.test(m)) return { temperature: 0 };
     // Conversational granite (the 8b/30b seats): argmax replayed the last
     // successful path verbatim — "play X" came back as chillstep again
-    // (2026-09-19). Use the model card's open-ended profile instead.
-    return { temperature: 0.6, top_p: 0.95 };
+    // (2026-09-19), and at 0.6 the seat kept answering Facebook asks with
+    // YouTube playback (2026-09-21). Granite 4.2's model card specifies
+    // temperature 1.0 / top_p 0.95 for open-ended generation — use those.
+    return { temperature: 1.0, top_p: 0.95 };
 }
 
 // Qwen-documented sampling (Qwen3.5 model card): any qwen model gets these;
@@ -4133,18 +4139,8 @@ async function runNativeOllama(input: ContainerInput) {
             const s = String(v || '').trim();
             return s.startsWith('mcp:') && n.startsWith(`mcp__${s.slice(4).trim()}__`);
         });
-        // Playback/control asks are owned by the core `youtube` tool; the
-        // default browser provider's raw page tools stand down for that turn
-        // from BOTH pools. Given both, the model hand-drives chrome_* into
-        // snapshot-click churn and never picks a video (2026-09-19).
         // The CURRENT ask, not a messages scan. This runs BEFORE this turn's
-        // user message is pushed, so the scan picked up an EARLIER user turn —
-        // and on a fresh runner the permanent first-ask slot still embeds the
-        // whole <chat_history>, so ANY old playback word ("song" in a history
-        // line) stood the browser tools down for pure web asks (2026-09-21:
-        // "open wikipedia" and "close the wikipedia tabs" both stood down, and
-        // the seat pkilled the user's Chrome to close tabs). lastUserAsk is
-        // this turn's ask with the host-injected tag blocks stripped.
+        // user message is pushed, so the scan picked up an EARLIER user turn.
         const lastUserText = lastUserAsk
             || (() => {
                 for (let i = messages.length - 1; i >= 0; i--) {
@@ -4153,21 +4149,18 @@ async function runNativeOllama(input: ContainerInput) {
                 return '';
             })();
         CURRENT_ASK = lastUserText;
-        const browserProvider = providerFor('browser');
-        const providerPrefix = browserProvider && PLAYBACK_ASK_RE.test(lastUserText)
-            ? `mcp__${browserProvider}__`
-            : '';
-        if (providerPrefix) log(`[default-apps] playback ask — ${browserProvider} raw tools stand down (youtube owns it)`);
-        const stoodDown = (n: string) => !!providerPrefix && n.startsWith(providerPrefix);
+        // The playback tool stand-down that used to live here is REMOVED
+        // (2026-09-21): a playback word anywhere in the ask withheld the
+        // browser provider's tools for the whole turn, and web asks that
+        // mentioned music lost the browser entirely — the seat fell back to
+        // youtube and the user's ask went unanswered. The youtube tool
+        // competes on its description like everything else.
         const alwaysIn = skillTools.filter((t) => {
             const n = nameOf(t);
-            if (stoodDown(n)) return false;
             return coreToolNames.has(n) || n.startsWith('mcp__marm__') || isDefaultProvider(n)
                 || isPinnedTool(n); // a pin is always visible — MCP server pins included
         });
-        // Stood-down tools must not fall through into the ranked pool — left
-        // there they simply rank back in and the hand-driving resumes.
-        const ragPool = skillTools.filter((t) => !alwaysIn.includes(t) && !stoodDown(nameOf(t)));
+        const ragPool = skillTools.filter((t) => !alwaysIn.includes(t));
         // Rank once per distinct (history length, pool) pair — mergeSkillTools
         // runs several times per request cycle and extractKeywords on a long
         // history is not free.
@@ -4419,7 +4412,13 @@ const marmRecallSection = marmEnabled
               // question (2026-09-21: play chillstep → 15 now_playing calls,
               // 21 iterations, raw markup leaked as the answer). General
               // rule, positive shape.
-              + ',"results":{"rule":"the result answers the ask → reply with it now, in your own words","same":"one call per fact — the first result carries the fact"}}\n';
+              + ',"results":{"rule":"the result answers the ask → reply with it now, in your own words","same":"one call per fact — the first result carries the fact"}'
+              // Playback control (2026-09-21: "pause youtube" / "stop playing
+              // music" turns answered with ZERO tool calls and a hallucinated
+              // "playback is paused" while the music kept playing — the tool
+              // card read play/search only, so control asks mapped to no tool).
+              // Positive shape: the ask→action mapping + proof rule.
+              + ',"control":{"rule":"youtube or playing-music mention → the youtube tool; pause/stop = action pause, resume/unpause/continue = action resume","proof":"the tool result is the reply — never state a playback change without the call"}}\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is

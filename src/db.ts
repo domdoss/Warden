@@ -656,6 +656,15 @@ export function deleteWhatsappChats(): void {
 }
 
 /**
+ * Delete every stored message in one chat — the dashboard "Clear Conversation"
+ * button. The message log is the only thing touched here; the context-clear
+ * marker, the message cursor and the mercury summary are the host's job.
+ */
+export function clearChatMessages(chatJid: string): void {
+  db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
+}
+
+/**
  * Store a message with full content.
  * Single-user Warden: chat_jid is always OWNER_JID; the msg.chat_jid field
  * is accepted for interface compatibility but ignored.

@@ -170,3 +170,7 @@ security/sentry.md
 CameraWebServer/
 unsloth_compiled_cache/
 training/orchatlas-sft.jsonl
+
+# Training-loop runtime artifacts (audit catalogs, step logs)
+training/loop/catalogs/
+training/loop/logs/

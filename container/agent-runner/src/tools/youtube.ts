@@ -735,14 +735,14 @@ registry.register({
     // JSON one-liner — the orchestrator seat (granite4.1:8b) reads this every
     // turn, and granite reads structure, not prose. Must stay under 200 chars
     // (stripTier clamps longer descriptions to the first line).
-    description: `{"what":"play/search YouTube","query":"artist/genre/title as typed; repeats auto-skipped","rule":"a play ask = ONE call","vals":"see the action param","other_players":"media_control"}`,
+    description: `{"what":"play/search/control YouTube","rule":"youtube mention → this tool; playback ask = one call, its result is the answer","query":"artist/genre/title as typed","other_players":"media_control"}`,
     schema: {
         type: 'object',
         properties: {
             action: {
                 type: 'string',
                 enum: ['play', 'search', 'now_playing', 'pause', 'resume', 'next', 'seek', 'fullscreen'],
-                description: '{"what":"the operation","vals":"play|search|now_playing|pause|resume|next|seek|fullscreen"}',
+                description: '{"what":"the operation","vals":"play|search|now_playing|pause|resume|next|seek|fullscreen","stop":"a stop-the-music ask = action pause"}',
             },
             query: { type: 'string', description: '{"what":"what to play or search, in the user own words","example":"chillstep mix","used_by":"play, search"}' },
             url: { type: 'string', description: '{"what":"exact video","format":"YouTube URL or 11-char id","used_by":"play","when":"you already have the exact video"}' },

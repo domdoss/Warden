@@ -273,6 +273,7 @@
     if (name === 'tasks') refreshTasks();
     else if (name === 'skills') { refreshSkills(); refreshMcp(); }
     else if (name === 'activity') refreshActivity();
+    else if (name === 'training') { refreshTrainingStatus(); refreshTrainingCatalogs(); }
     else if (name === 'security') refreshSecurity();
     else if (name === 'logs') refreshProcessLogs();
     else if (name === 'accounts') refreshAccounts();
@@ -655,6 +656,26 @@
     loadMessages();
     startChatPolling();
     toast('New thought started', 'info');
+  }
+
+  async function clearConversation() {
+    // Delete the actual conversation log (messages in the DB) and reset all
+    // live context + mercury compaction — a true fresh start, unlike New
+    // Thought which only resets the context window. Destructive: confirm.
+    if (!window.confirm('Delete the entire conversation log and start completely fresh? The stored messages and the conversation summary will be permanently removed.')) return;
+    try {
+      await postJson('/api/chat/clear-conversation', { jid: STATE.currentJid });
+    } catch (e) {
+      toast('Clear failed: ' + e.message, 'error');
+      return;
+    }
+    STATE.chatLastTs = '';
+    STATE.waitingForReply = false;
+    waitingForReply = false;
+    hideTypingIndicator();
+    loadMessages();
+    startChatPolling();
+    toast('Conversation cleared', 'info');
   }
 
   // ============================================================= Settings drawer
@@ -1381,9 +1402,9 @@
       const d = await api('/api/process-logs?lines=1');
       const sizes = d.sizes || {};
       el.innerHTML = `
-        <div class="setting-row"><label>Stdout</label><span class="mono"><code>logs/dockbox.log</code> · ${esc(fmtBytes(sizes.stdout))}</span></div>
-        <div class="setting-row"><label>Stderr</label><span class="mono"><code>logs/dockbox.error.log</code> · ${esc(fmtBytes(sizes.stderr))}</span></div>
-        <div class="setting-row"><label>Access</label><span class="dim">Process Logs tab · shell: <code>tail -f logs/dockbox.log</code></span></div>
+        <div class="setting-row"><label>Stdout</label><span class="mono"><code>logs/warden.log</code> · ${esc(fmtBytes(sizes.stdout))}</span></div>
+        <div class="setting-row"><label>Stderr</label><span class="mono"><code>logs/warden.error.log</code> · ${esc(fmtBytes(sizes.stderr))}</span></div>
+        <div class="setting-row"><label>Access</label><span class="dim">Process Logs tab · shell: <code>tail -f logs/warden.log</code></span></div>
         <div class="setting-row"><label>Retention</label><span class="dim">No automatic rotation. Delete manually with the button below when size grows.</span></div>
         <div class="setting-row"><label>Delete</label><span class="dim">Truncates both log files to 0 bytes. Irreversible.</span></div>
       `;
@@ -1393,7 +1414,7 @@
   }
 
   async function truncateLogs() {
-    if (!confirm('Delete both dockbox.log and dockbox.error.log? This cannot be undone.')) return;
+    if (!confirm('Delete both warden.log and warden.error.log? This cannot be undone.')) return;
     try {
       await postJson('/api/process-logs', { action: 'truncate' });
       toast('Logs truncated', 'success');
@@ -2434,6 +2455,70 @@
     }
   }
 
+  // ============================================================= Training loop
+  // audit (parse logs with granite4.2:30b) → modify (write SFT part rows) →
+  // train (1 epoch). Each step runs detached server-side; this polls it.
+  const TRAINING_BTNS = ['btnTrainingAudit', 'btnTrainingModify', 'btnTrainingTrain'];
+  function setTrainingButtons(enabled) {
+    TRAINING_BTNS.forEach(id => { const b = $(id); if (b) b.disabled = !enabled; });
+  }
+  async function startTrainingStep(step, body) {
+    const tail = $('trainingTail'), chip = $('trainingStatus');
+    try {
+      const d = await postJson('/api/training/' + step, body || {});
+      if (!d.ok) {
+        tail.textContent = d.error || 'failed to start';
+        toast(d.error || 'Failed to start ' + step, 'error');
+        return;
+      }
+      chip.textContent = step + ' running';
+      setTrainingButtons(false);
+      if (!STATE.trainingPollTimer) STATE.trainingPollTimer = setInterval(refreshTrainingStatus, 5000);
+      refreshTrainingStatus();
+    } catch (e) {
+      tail.textContent = 'Failed: ' + e.message;
+    }
+  }
+  async function refreshTrainingStatus() {
+    const tail = $('trainingTail'), chip = $('trainingStatus');
+    try {
+      const d = await api('/api/training/status');
+      tail.textContent = d.tail || '(no step has run yet)';
+      tail.scrollTop = tail.scrollHeight;
+      if (d.running) {
+        chip.textContent = d.running + ' running';
+      } else {
+        if (STATE.trainingPollTimer) { clearInterval(STATE.trainingPollTimer); STATE.trainingPollTimer = null; }
+        chip.textContent = 'idle';
+        setTrainingButtons(true);
+        refreshTrainingCatalogs();
+      }
+    } catch (e) {
+      tail.textContent = 'Failed: ' + e.message;
+    }
+  }
+  async function refreshTrainingCatalogs() {
+    const el = $('trainingCatalogs');
+    if (!el) return;
+    try {
+      const d = await api('/api/training/catalogs');
+      if (!d.catalogs || !d.catalogs.length) { el.textContent = 'No catalogs yet — run the audit.'; return; }
+      let html = d.catalogs.map(c =>
+        `<div>${esc(c.file)} · ${c.entries >= 0 ? c.entries + ' failures' : 'unreadable'}${c.ts ? ' · ' + esc(c.ts) : ''}</div>`
+      ).join('');
+      if (d.newest && d.newest.failures && d.newest.failures.length) {
+        html += '<div style="margin-top:10px">Newest catalog findings:</div>' +
+          d.newest.failures.map(f => {
+            const c = f.classification || {};
+            return `<div style="margin-top:6px">• <b>${esc(f.id)}</b> ${esc(c.failure_class || '?')} — ${esc(c.what_went_wrong || '')}</div>`;
+          }).join('');
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      el.textContent = 'Failed: ' + e.message;
+    }
+  }
+
   // ============================================================= Help modal
   function showModal(title, bodyHtml) {
     $('genericModalTitle').textContent = title;
@@ -2712,9 +2797,13 @@
     $('btnRestart').addEventListener('click', restartServer);
     $('btnSwitchUser').addEventListener('click', openSwitchUser);
     $('btnNewThought').addEventListener('click', newThought);
+    const clearConv = $('btnClearConversation');
+    if (clearConv) clearConv.addEventListener('click', clearConversation);
     // Mobile-only relocated buttons. Hidden on desktop via CSS.
     const ntMobile = $('btnNewThoughtMobile');
     if (ntMobile) ntMobile.addEventListener('click', newThought);
+    const clearConvMobile = $('btnClearConversationMobile');
+    if (clearConvMobile) clearConvMobile.addEventListener('click', clearConversation);
     const settingsMobile = $('btnSettingsMobile');
     if (settingsMobile) settingsMobile.addEventListener('click', openSettings);
 
@@ -2811,6 +2900,12 @@
       }
     });
     $('btnRefreshLogs').addEventListener('click', refreshProcessLogs);
+    $('btnTrainingAudit').addEventListener('click', () => startTrainingStep('audit', { days: parseInt($('trainingDays').value, 10) || 3 }));
+    $('btnTrainingModify').addEventListener('click', () => startTrainingStep('modify', {}));
+    $('btnTrainingTrain').addEventListener('click', () => {
+      if (confirm('Train 1 epoch? This clears VRAM and takes a long time.'))
+        startTrainingStep('train', {});
+    });
 
     // Make openHelp / openAuditModal callable from inline onclick handlers
     window.openHelp = openHelp;

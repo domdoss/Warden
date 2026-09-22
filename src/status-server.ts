@@ -187,7 +187,7 @@ import {
   deletePasswordResetToken,
   getUserByEmail,
 } from './db.js';
-import { getDb, getSatelliteIp } from './db.js';
+import { getDb, getSatelliteIp, clearChatMessages } from './db.js';
 import { AgentSessionStore } from './agent-session-store.js';
 import { encryptApiKey } from './encryption.js';
 import httpProxy from 'http-proxy';
@@ -2678,6 +2678,44 @@ async function handleClearContext(
   return json(res, { ok: true });
 }
 
+// Clear the conversation FOR REAL — the "Clear Conversation" button. New
+// Thought only resets the live context window; this additionally deletes the
+// chat's stored message log and wipes the mercury summary (file + state), so
+// the chat starts from zero: nothing in the DB, nothing in compaction,
+// nothing in the runner's window.
+async function handleClearConversation(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const body = parseJson(await parseBody(req)) as any;
+  const jid = body.jid;
+  if (!jid || typeof jid !== 'string') {
+    return error(res, 'jid required');
+  }
+  const now = new Date().toISOString();
+  // Same context-reset semantics as New Thought: the agent-runner drops its
+  // in-memory conversation when the marker changes, and the cursor advance
+  // stops any in-flight batch from being answered under the old context.
+  setRouterState('orchestrator:context_clear_at', now);
+  setRouterState('last_agent_timestamp', now);
+  // Compaction state: both the file (the prompt-rendered summary) and the
+  // raw router-state JSON must go, or the next merge re-seeds from old facts.
+  setRouterState('mercury:state', '');
+  try {
+    const root = String(process.env.WORKSPACE_ROOT || '').replace(/^~(?=\/|$)/, process.env.HOME ?? '');
+    if (root) fs.rmSync(path.join(root, 'MERCURY_MEMORY.md'), { force: true });
+  } catch (err: any) {
+    logger.warn({ err: err?.message ?? err }, 'Mercury summary file not removed on clear-conversation');
+  }
+  try {
+    clearChatMessages(jid);
+  } catch (err: any) {
+    return error(res, `failed to delete messages: ${err?.message ?? err}`);
+  }
+  logger.info({ jid }, 'Conversation cleared (messages deleted, mercury reset)');
+  return json(res, { ok: true });
+}
+
 
 // Rate limiter for authentication-sensitive endpoints (login, signup, password reset)
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -3896,6 +3934,8 @@ export function startStatusServer(d: StatusDeps): void {
         return await handleChatStop(req, res);
       if (pathname === '/api/chat/clear-context' && req.method === 'POST')
         return await handleClearContext(req, res);
+      if (pathname === '/api/chat/clear-conversation' && req.method === 'POST')
+        return await handleClearConversation(req, res);
       if (pathname === '/api/server/restart' && req.method === 'POST') {
         json(res, { ok: true });
         logger.info('Server restart requested via dashboard');
@@ -4003,8 +4043,8 @@ export function startStatusServer(d: StatusDeps): void {
       if (pathname === '/api/process-logs' && req.method === 'GET') {
         try {
           const lines = Math.min(parseInt(params.get('lines') || '200', 10) || 200, 2000);
-          const logFile = path.join(DATA_DIR, '..', 'logs', 'dockbox.log');
-          const errFile = path.join(DATA_DIR, '..', 'logs', 'dockbox.error.log');
+          const logFile = path.join(DATA_DIR, '..', 'logs', 'warden.log');
+          const errFile = path.join(DATA_DIR, '..', 'logs', 'warden.error.log');
           const { execSync: execSyncLocal } = await import('child_process');
           let combined = '';
           try {
@@ -4025,8 +4065,8 @@ export function startStatusServer(d: StatusDeps): void {
         try {
           const body = parseJson(await parseBody(req)) as { action?: string };
           if (body.action === 'truncate') {
-            const logFile = path.join(DATA_DIR, '..', 'logs', 'dockbox.log');
-            const errFile = path.join(DATA_DIR, '..', 'logs', 'dockbox.error.log');
+            const logFile = path.join(DATA_DIR, '..', 'logs', 'warden.log');
+            const errFile = path.join(DATA_DIR, '..', 'logs', 'warden.error.log');
             const { execSync: execSyncLocal } = await import('child_process');
             execSyncLocal(`: > "${logFile}"; : > "${errFile}"`, { timeout: 5000 });
             logger.info('process logs truncated via dashboard');
@@ -4137,6 +4177,111 @@ export function startStatusServer(d: StatusDeps): void {
             running = (r.stdout || '').trim().length > 0;
           } catch {}
           return json(res, { ok: true, running, tail });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      // Training loop (audit → modify → train) — same detached-spawn + pgrep
+      // poll pattern as /api/audit above. Each step's stdout/stderr lands in
+      // training/loop/logs/<step>.log, which /api/training/status tails.
+      // All three steps unload Ollama models (VRAM for granite4.2:30b / the
+      // trainer), so they refuse to start under a live agent turn.
+      if (pathname.startsWith('/api/training/')) {
+        try {
+          const TRAINING_STEPS: Record<string, { cmd: string; script: string; marker: string }> = {
+            audit: { cmd: 'node', script: 'training/loop/audit-failures.mjs', marker: 'loop/audit-failures.mjs' },
+            modify: { cmd: 'node', script: 'training/loop/modify-parts.mjs', marker: 'loop/modify-parts.mjs' },
+            train: { cmd: 'bash', script: 'training/loop/train-1epoch.sh', marker: 'loop/train-1epoch.sh' },
+          };
+          const stepLog = (step: string) => path.join(process.cwd(), 'training', 'loop', 'logs', `${step}.log`);
+          const stepRunning = (step: string) => {
+            const r = spawnSync('pgrep', ['-f', TRAINING_STEPS[step].marker], { encoding: 'utf-8' });
+            return ((r.stdout || '').trim().length > 0);
+          };
+          const startTrainingStep = (step: 'audit' | 'modify' | 'train', extraArgs: string[] = []) => {
+            const def = TRAINING_STEPS[step];
+            const jobs = getLiveJobs();
+            if (jobs.length > 0)
+              return json(res, { ok: false, error: `An agent turn is running (${jobs.length} live job${jobs.length === 1 ? '' : 's'}) — wait for it to finish before clearing VRAM` });
+            for (const other of Object.keys(TRAINING_STEPS)) {
+              if (other !== step && stepRunning(other))
+                return json(res, { ok: false, error: `Training step "${other}" is still running — wait for it` });
+            }
+            const script = path.resolve(process.cwd(), def.script);
+            if (!fs.existsSync(script)) return json(res, { ok: false, error: `${def.script} not found` });
+            try { spawnSync('pkill', ['-f', def.marker], { stdio: 'ignore' }); } catch {}
+            fs.mkdirSync(path.dirname(stepLog(step)), { recursive: true });
+            const out = fs.openSync(stepLog(step), 'w');
+            const errFd = fs.openSync(stepLog(step), 'a');
+            const child = spawn(def.cmd, [script, ...extraArgs], {
+              detached: true,
+              stdio: ['ignore', out, errFd],
+              cwd: process.cwd(),
+              // journalctl --user needs XDG_RUNTIME_DIR or the audit step sees nothing.
+              env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid ? process.getuid() : 1000}` },
+            });
+            child.unref();
+            fs.closeSync(out);
+            fs.closeSync(errFd);
+            logger.info({ pid: child.pid, step, log: stepLog(step) }, 'training step started');
+            return json(res, { ok: true, step, log: stepLog(step), pid: child.pid });
+          };
+          if (pathname === '/api/training/audit' && req.method === 'POST') {
+            const body = parseJson(await parseBody(req)) as { days?: number | string };
+            const days = parseInt(String(body?.days ?? 3), 10);
+            if (![1, 3, 7].includes(days)) return json(res, { ok: false, error: 'days must be 1, 3, or 7' });
+            return startTrainingStep('audit', ['--days', String(days)]);
+          }
+          if (pathname === '/api/training/modify' && req.method === 'POST') {
+            return startTrainingStep('modify');
+          }
+          if (pathname === '/api/training/train' && req.method === 'POST') {
+            return startTrainingStep('train');
+          }
+          if (pathname === '/api/training/status' && req.method === 'GET') {
+            let running: string | null = null;
+            for (const step of Object.keys(TRAINING_STEPS)) {
+              if (stepRunning(step)) { running = step; break; }
+            }
+            // Tail the running step's log, or whichever step ran most recently.
+            let logStep: string | null = running;
+            if (!logStep) {
+              let newest = 0;
+              for (const step of Object.keys(TRAINING_STEPS)) {
+                try {
+                  const m = fs.statSync(stepLog(step)).mtimeMs;
+                  if (m > newest) { newest = m; logStep = step; }
+                } catch {}
+              }
+            }
+            let tail = '';
+            if (logStep) {
+              try { tail = fs.readFileSync(stepLog(logStep), 'utf-8').split('\n').slice(-40).join('\n'); } catch {}
+            }
+            return json(res, { ok: true, running, step: logStep, tail });
+          }
+          if (pathname === '/api/training/catalogs' && req.method === 'GET') {
+            const dir = path.join(process.cwd(), 'training', 'loop', 'catalogs');
+            const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort().reverse() : [];
+            const catalogs = files.map((f) => {
+              try {
+                const cat = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+                return { file: f, ts: cat.generated_at || '', entries: (cat.failures || []).length };
+              } catch {
+                return { file: f, ts: '', entries: -1 };
+              }
+            });
+            let newest: any = null;
+            if (files.length) {
+              try {
+                const cat = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf-8'));
+                if (Array.isArray(cat.failures) && cat.failures.length > 50) cat.failures = cat.failures.slice(0, 50);
+                newest = cat;
+              } catch {}
+            }
+            return json(res, { ok: true, catalogs, newest });
+          }
+          return error(res, 'unknown training route');
         } catch (err: any) {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }

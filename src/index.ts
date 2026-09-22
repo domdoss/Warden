@@ -2995,7 +2995,21 @@ async function warmResidentOllamaModels(): Promise<void> {
   // Re-pin every minute: one token of generation against an already-loaded
   // model, cheaper than any reload.
   const repin = async () => {
+    // Loaded-models snapshot first: the re-pin maintains the TTL of models that
+    // ARE resident — it must never (re)spawn one that was deliberately unloaded.
+    // Unconditionally POSTing resurrected models the training-loop audit had just
+    // cleared from VRAM, and the reload preempted the 17 GB analyst mid-run
+    // ("Stopping...") — every classification then paid a cold 30b reload
+    // (2026-09-21).
+    let loaded = null;
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/ps`);
+      if (res.ok) {
+        loaded = new Set(((await res.json() as any).models || []).map((m: any) => m.name));
+      }
+    } catch { /* ps unreachable — fall through, pin anyway */ }
     for (const model of toWarm) {
+      if (loaded && !loaded.has(model)) continue; // absent = stay unloaded
       try {
         const numCtx = ctxFor(model);
         await fetch(`${OLLAMA_URL}/api/generate`, {
