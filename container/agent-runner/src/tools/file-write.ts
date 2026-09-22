@@ -42,12 +42,21 @@ function appendEvidence(
   }
   const evidence = {
     version: "warden.anthesis-write-evidence/v1",
+    adapter_version: "warden-anthesis-adapter/v1",
+    warden_revision: process.env.WARDEN_REVISION || undefined,
     recorded_at: new Date().toISOString(),
     outcome,
     target: authorization.request.target,
     attempt_id: authorization.request.attemptId,
     request_binding: authorization.request.requestBinding,
     decision: authorization.decision,
+    evaluator: authorization.decision.engine
+      ? {
+          name: authorization.decision.engine.name,
+          version: authorization.decision.engine.version,
+          binary_digest: authorization.decision.engine.binaryDigest,
+        }
+      : undefined,
     pre_state_digest: beforeDigest,
     post_state_digest: afterDigest,
   };

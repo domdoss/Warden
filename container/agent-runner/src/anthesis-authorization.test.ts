@@ -417,6 +417,9 @@ describe("Anthesis trial authorization request binding", () => {
       (await fs.readFile(evidencePath, "utf8")).trim(),
     );
     expect(successEvidence.outcome).toBe("success");
+    expect(successEvidence.adapter_version).toBe("warden-anthesis-adapter/v1");
+    expect(successEvidence.evaluator.name).toBe("anthesis-lab");
+    expect(successEvidence.evaluator.version).toBe("test");
     expect(successEvidence.target).toBe("allowed.txt");
     expect(successEvidence.pre_state_digest).not.toBe(
       successEvidence.post_state_digest,

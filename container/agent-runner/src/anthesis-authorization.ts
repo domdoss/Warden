@@ -17,7 +17,11 @@ export interface AuthorizationDecision {
   scenarioId?: string;
   policy?: string;
   canonicalization?: "rfc8785-json";
-  engine?: { name: "anthesis-lab"; version: string };
+  engine?: {
+    name: "anthesis-lab";
+    version: string;
+    binaryDigest?: string;
+  };
   policyRuleId?: string;
   policyDigest?: string;
 }
@@ -368,8 +372,10 @@ function isValidDecision(raw: Record<string, any>): boolean {
     isDigest(binding.source_digest) &&
     isDigest(binding.dependency_state_digest) &&
     raw.engine?.name === "anthesis-lab" &&
-    typeof raw.engine.version === "string" &&
-    raw.engine.version.length > 0,
+    typeof raw.engine?.version === "string" &&
+    raw.engine.version.length > 0 &&
+    (raw.engine.binary_digest === undefined ||
+      isDigest(raw.engine.binary_digest)),
   );
 }
 
@@ -448,7 +454,13 @@ export async function authorizeFileWrite(
       scenarioId: raw.scenario_id,
       policy: raw.policy,
       canonicalization: raw.canonicalization,
-      engine: raw.engine,
+      engine: raw.engine
+        ? {
+            name: raw.engine.name,
+            version: raw.engine.version,
+            binaryDigest: raw.engine.binary_digest,
+          }
+        : undefined,
       policyRuleId: raw.policy_rule_id,
       policyDigest: raw.policy_digest,
     };
