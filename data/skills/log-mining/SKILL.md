@@ -1,6 +1,6 @@
 ---
 name: log-mining
-description: "Mine the logs for agent failures, sort the fine-tunable ones from the code defects, and write training pairs for the ones a fine-tune can fix."
+description: "Mine the logs for agent failures, sort the fine-tunable ones from the code defects, and flag the fine-tunable ones as training errors for the training loop."
 ---
 
 ## When to use
@@ -32,26 +32,23 @@ Quote the real call. A pair built from a remembered failure teaches a failure th
 
 A pair teaching around a code defect trains the model to work around a bug that should be fixed.
 
-## Writing the pairs
+## Flag each fine-tunable failure
 
-Write **several per failure** — one is an anecdote, a handful is a pattern:
-1. The exact logged case, with the correct call in place of the wrong one.
-2. Two or three near-variants: the same intent in different words, a different target value, the same shape one tool over.
-3. Where the failure was picking between two tools, one pair for the sibling case so the boundary is learned from both sides.
+One `flag_training_error` call per fine-tunable failure you confirm:
+- `failure_class` — the class from the sort above.
+- `log_excerpt` — the verbatim lines: the user ask, the `Executing tool:` call, its result line.
+- `log_timestamp` — the timestamp on the failed call's line.
+- `what_went_wrong` — the model's choice, in one to three sentences.
+- `correct_behavior` — the call and reply the turn should have made, with real tool names and real argument shapes.
+- `role` — `orch` when the failure was in delegation or routing, `seat` otherwise.
 
-Each pair:
-- `messages` + `tools`, matching the seat's live schema.
-- The system message byte-identical to what that seat actually sends — `System prompt: N chars — "..."` in the log names it, and `ORCH_SYSTEM` in `container/agent-runner/src/index.ts` holds it.
-- Real tool names and real argument shapes, taken from the schema the seat is given.
-- Values that exist: a real path, a real id, a timestamp at or before the moment of the call.
-- The assistant turn is the call that should have happened, then the reply that result earns.
+The training loop's modify step turns every pending flag into corrective training rows — the flag is the whole hand-off.
 
 ## What you may write
 
-Two things, and only these: your findings, and the training data under `/opt/Warden/training/`. Every other file and setting stays as you found it.
+Your findings, and your `flag_training_error` flags. Every file and setting stays as you found it.
 
-## Where they go
+## The report
 
-- One JSON object per line, appended to the dataset for that seat under `/opt/Warden/training/`.
-- Say how many pairs you added, which failure each came from, and the log timestamp.
-- List the code-defect failures separately, with the line that proves each.
+- How many failures you flagged, with each flag id, its class and the log timestamp.
+- The code-defect failures listed separately, with the line that proves each.

@@ -17,6 +17,7 @@ import {
 } from './channels/registry.js';
 import { runAgent, killCurrentAgent, cancelCurrentTurn, CallbackMap, runSubAgentBackground, setActivityPublisher, isForegroundTurnActive, getLiveJobs } from './agent-spawn.js';
 import { maybeClassifyMemoryTree } from './memory-tree.js';
+import { addTrainingFlag } from './training-flags.js';
 import {
   createTask,
   getAllTasks,
@@ -1445,6 +1446,19 @@ export function buildAgentCallbacks(): CallbackMap {
         );
         return { ok: true, image: cap.image, mediaType: cap.mediaType, width: cap.width, height: cap.height, path: p };
       } catch (err: any) {
+        return { ok: false, error: String(err?.message ?? err) };
+      }
+    },
+
+    // Artemis's trainable-error flag → training/loop/flags (src/training-flags.ts).
+    // The loop's modify step turns pending flags into corrective SFT rows.
+    flag_training_error: async (args: any) => {
+      try {
+        const r = addTrainingFlag(args);
+        if (r.ok) logger.info({ id: r.id, duplicate: r.duplicate, cls: args?.failure_class }, 'flag_training_error: flagged');
+        return r;
+      } catch (err: any) {
+        logger.warn({ err }, 'flag_training_error: failed');
         return { ok: false, error: String(err?.message ?? err) };
       }
     },

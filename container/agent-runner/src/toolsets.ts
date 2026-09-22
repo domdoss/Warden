@@ -74,6 +74,11 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // bug report / .patch directly instead of only reporting via orchestrator.
     'vulkan-core': { name: 'vulkan-core', tools: ['Read','Write','Edit','Glob','Grep','Bash','email','get_chat_history'], includes: ['capture'] },
     'artemis-core':  { name: 'artemis-core',  tools: ['Read','Grep','Glob','Bash','get_chat_history'] },
+    // Artemis's single write: flag a confirmed fine-tunable failure for the
+    // training loop (host store training/loop/flags). Its own toolset so orch —
+    // which carries artemis-core — never gets it, and SUBAGENT_OWNED keeps it
+    // out of the orchestrator's pool.
+    'artemis-flag':  { name: 'artemis-flag',  tools: ['flag_training_error'] },
     // Iris — single toolcall agent (byte merged in 2026-09-05). 2026-09-09
     // collapse: 4 merged action tools (email/task/calendar/alarm), one per
     // noun with an `action` param. Iris's fine-tune is trained on exactly
