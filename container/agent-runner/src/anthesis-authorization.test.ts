@@ -394,6 +394,8 @@ describe("Anthesis trial authorization request binding", () => {
     vi.stubEnv("ANTHESIS_TRIAL_ROOT", root);
     vi.stubEnv("ANTHESIS_TRIAL_RUNTIME", "warden-agent-runner");
     vi.stubEnv("ANTHESIS_TRIAL_DECISION_FILE", decisionPath);
+    const evidencePath = path.join(root, "evidence.jsonl");
+    vi.stubEnv("ANTHESIS_TRIAL_EVIDENCE_FILE", evidencePath);
 
     await import("./tools/file-write.js");
     const { registry } = await import("./tool-registry.js");
@@ -406,6 +408,14 @@ describe("Anthesis trial authorization request binding", () => {
     expect(await fs.readFile(path.join(root, "allowed.txt"), "utf8")).toBe(
       "after",
     );
+    const successEvidence = JSON.parse(
+      (await fs.readFile(evidencePath, "utf8")).trim(),
+    );
+    expect(successEvidence.outcome).toBe("success");
+    expect(successEvidence.target).toBe("allowed.txt");
+    expect(successEvidence.pre_state_digest).not.toBe(
+      successEvidence.post_state_digest,
+    );
 
     await fs.writeFile(path.join(root, "allowed.txt"), "before");
     const blocked = await registry.dispatch(
@@ -417,5 +427,11 @@ describe("Anthesis trial authorization request binding", () => {
     expect(await fs.readFile(path.join(root, "allowed.txt"), "utf8")).toBe(
       "before",
     );
+    const evidenceRecords = (await fs.readFile(evidencePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(evidenceRecords).toHaveLength(2);
+    expect(evidenceRecords[1].outcome).toBe("denied-before-effect");
   });
 });

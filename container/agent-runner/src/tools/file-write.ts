@@ -2,7 +2,41 @@ import fs from "fs";
 import path from "path";
 import { registry } from "../tool-registry.js";
 import { cleanFilePath, resolveUserPath } from "../ipc-helpers.js";
-import { authorizeFileWrite } from "../anthesis-authorization.js";
+import { authorizeFileWrite, sha256Digest } from "../anthesis-authorization.js";
+
+function stateDigest(filePath: string): string {
+  try {
+    return sha256Digest({
+      exists: true,
+      content: fs.readFileSync(filePath, "utf8"),
+    });
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return sha256Digest({ exists: false });
+    return sha256Digest({ exists: false, error: "unreadable" });
+  }
+}
+
+function appendEvidence(
+  filePath: string | undefined,
+  authorization: Awaited<ReturnType<typeof authorizeFileWrite>>,
+  outcome: "success" | "failure" | "denied-before-effect",
+  beforeDigest?: string,
+  afterDigest?: string,
+): void {
+  if (!filePath || !authorization.request || !authorization.decision) return;
+  const evidence = {
+    version: "warden.anthesis-write-evidence/v1",
+    recorded_at: new Date().toISOString(),
+    outcome,
+    target: authorization.request.target,
+    attempt_id: authorization.request.attemptId,
+    request_binding: authorization.request.requestBinding,
+    decision: authorization.decision,
+    pre_state_digest: beforeDigest,
+    post_state_digest: afterDigest,
+  };
+  fs.appendFileSync(filePath, `${JSON.stringify(evidence)}\n`, "utf8");
+}
 
 registry.register({
   name: "Write",
@@ -35,6 +69,14 @@ registry.register({
       },
     );
     if (!authorization.allowed) {
+      appendEvidence(
+        process.env.ANTHESIS_TRIAL_EVIDENCE_FILE,
+        authorization,
+        "denied-before-effect",
+        authorization.request
+          ? stateDigest(authorization.request.absoluteTarget)
+          : undefined,
+      );
       const reason = authorization.decision?.reason || "authorization_denied";
       return `Error: Anthesis authorization denied: ${reason}`;
     }
@@ -42,6 +84,8 @@ registry.register({
       authorization.mode === "governed" && authorization.request
         ? authorization.request.absoluteTarget
         : resolveUserPath(args.file_path);
+    const beforeDigest =
+      authorization.mode === "governed" ? stateDigest(filePath) : undefined;
     if (
       args.file_path.endsWith(".md") &&
       (!args.content || args.content.trim() === "")
@@ -51,11 +95,25 @@ registry.register({
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, args.content);
+      appendEvidence(
+        process.env.ANTHESIS_TRIAL_EVIDENCE_FILE,
+        authorization,
+        "success",
+        beforeDigest,
+        authorization.mode === "governed" ? stateDigest(filePath) : undefined,
+      );
       // Report the RESOLVED absolute path — the orchestrator's digest
       // confirm step checks claimed paths against the ask, which only
       // works if the claim is real ('~/Desktop/x' resolved, not literal).
       return `File written: ${filePath}`;
     } catch (err: any) {
+      appendEvidence(
+        process.env.ANTHESIS_TRIAL_EVIDENCE_FILE,
+        authorization,
+        "failure",
+        beforeDigest,
+        authorization.mode === "governed" ? stateDigest(filePath) : undefined,
+      );
       return `Error writing file: ${err.message}`;
     }
   },
