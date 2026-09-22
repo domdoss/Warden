@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { ToolContext } from "./tool-registry.js";
+
+const execFileAsync = promisify(execFile);
 
 export type AuthorizationOutcome = "allow" | "deny" | "approval_required";
 
@@ -160,6 +164,31 @@ function engineDeny(reason: string): AuthorizationDecision {
   return { decision: "deny", source: "engine_guard", reason };
 }
 
+async function readDecision(): Promise<Record<string, any>> {
+  const labBinary = process.env.ANTHESIS_LAB_BIN;
+  if (labBinary) {
+    const scenario = process.env.ANTHESIS_TRIAL_SCENARIO_FILE;
+    const repo = process.env.ANTHESIS_LAB_REPO;
+    if (!scenario || !repo) throw new Error("missing_lab_configuration");
+    const { stdout } = await execFileAsync(
+      labBinary,
+      ["evaluate", "--repo", repo, "--scenario", scenario, "--format", "json"],
+      { cwd: repo, maxBuffer: 1024 * 1024 },
+    );
+    const parsed = JSON.parse(stdout.trim()) as Record<string, any>;
+    return parsed.decision && typeof parsed.decision === "object"
+      ? parsed.decision
+      : parsed;
+  }
+
+  const decisionPath = process.env.ANTHESIS_TRIAL_DECISION_FILE;
+  if (!decisionPath) throw new Error("missing_decision");
+  return JSON.parse(await fs.readFile(decisionPath, "utf8")) as Record<
+    string,
+    any
+  >;
+}
+
 function matchesExactRequest(
   raw: Record<string, any>,
   request: FileWriteRequest,
@@ -199,21 +228,8 @@ export async function authorizeFileWrite(
     };
   }
 
-  const decisionPath = process.env.ANTHESIS_TRIAL_DECISION_FILE;
-  if (!decisionPath) {
-    return {
-      allowed: false,
-      mode: "governed",
-      request,
-      decision: engineDeny("missing_decision"),
-    };
-  }
-
   try {
-    const raw = JSON.parse(await fs.readFile(decisionPath, "utf8")) as Record<
-      string,
-      any
-    >;
+    const raw = await readDecision();
     if (!matchesExactRequest(raw, request)) {
       return {
         allowed: false,
