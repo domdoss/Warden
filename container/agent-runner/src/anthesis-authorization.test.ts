@@ -11,6 +11,9 @@ import {
   type AuthorizationDecision,
 } from "./anthesis-authorization.js";
 
+const labBinary = process.env.ANTHESIS_LAB_BIN;
+const labRepo = process.env.ANTHESIS_LAB_REPO;
+
 describe("Anthesis trial authorization request binding", () => {
   afterEach(() => vi.unstubAllEnvs());
 
@@ -129,15 +132,10 @@ describe("Anthesis trial authorization request binding", () => {
   });
 
   it.skipIf(
-    !existsSync("/home/ryjen/.local/bin/anthesis-lab") ||
-      !existsSync(
-        "/tmp/anthesis-governance-lab/.anthesis/policies/local-sdlc.yaml",
-      ),
+    !labBinary || !labRepo || !existsSync(labBinary) || !existsSync(labRepo),
   )("authorizes a generated scenario through Governance Lab", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "warden-lab-"));
     vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
-    vi.stubEnv("ANTHESIS_LAB_BIN", "/home/ryjen/.local/bin/anthesis-lab");
-    vi.stubEnv("ANTHESIS_LAB_REPO", "/tmp/anthesis-governance-lab");
 
     const result = await authorizeFileWrite(
       "docs/onboarding.md",
@@ -242,6 +240,7 @@ describe("Anthesis trial authorization request binding", () => {
     };
     await fs.writeFile(decisionPath, JSON.stringify(decision));
     vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+    vi.stubEnv("ANTHESIS_LAB_BIN", "");
     vi.stubEnv("ANTHESIS_TRIAL_DECISION_FILE", decisionPath);
 
     const allowed = await authorizeFileWrite("allowed.txt", "one", context, {
@@ -308,6 +307,7 @@ describe("Anthesis trial authorization request binding", () => {
       }),
     );
     vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+    vi.stubEnv("ANTHESIS_LAB_BIN", "");
     vi.stubEnv("ANTHESIS_TRIAL_ROOT", root);
     vi.stubEnv("ANTHESIS_TRIAL_RUNTIME", "warden-agent-runner");
     vi.stubEnv("ANTHESIS_TRIAL_DECISION_FILE", decisionPath);
