@@ -131,7 +131,10 @@ async function mediaControl(action: string): Promise<string> {
     if (!has('playerctl')) {
         return 'Error: playerctl is not installed. Install it to control media playback — on Arch: `sudo pacman -S playerctl`; on Debian/Raspberry Pi OS: `sudo apt install -y playerctl`. Then a running player (browser YouTube, Spotify, mpv, VLC) exposes play/pause/next here.';
     }
-    const verb = action === 'play_pause' ? 'play-pause' : action;
+    // `resume` is the verb models reach for (the youtube tool teaches it), but
+    // playerctl has no resume command — it's `play`. Map it or a pause-then-resume
+    // turn dead-ends on "Command not recognized" and the seat flails into a re-deal.
+    const verb = action === 'play_pause' ? 'play-pause' : action === 'resume' ? 'play' : action;
     try {
         const out = run(`playerctl ${verb} 2>&1`);
         // playerctl prints the status or the player name; a fresh status helps.
@@ -183,7 +186,7 @@ registry.register({
     schema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['play', 'pause', 'play_pause', 'next', 'previous', 'stop'], description: '{"what":"the playback operation","vals":"play|pause|play_pause|next|previous|stop"}' },
+            action: { type: 'string', enum: ['play', 'pause', 'resume', 'play_pause', 'next', 'previous', 'stop'], description: '{"what":"the playback operation","vals":"play|pause|resume|play_pause|next|previous|stop","resume":"continues a paused player (same as play)"}' },
         },
         required: ['action'],
     },
