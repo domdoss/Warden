@@ -31,6 +31,7 @@ registry.register({
       {
         trialRoot: process.env.ANTHESIS_TRIAL_ROOT || process.cwd(),
         runtimeId: process.env.ANTHESIS_TRIAL_RUNTIME || "warden-agent-runner",
+        attemptId: process.env.ANTHESIS_TRIAL_ATTEMPT_ID,
       },
     );
     if (!authorization.allowed) {

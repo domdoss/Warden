@@ -106,6 +106,37 @@ describe("Anthesis trial authorization request binding", () => {
     );
   });
 
+  it("binds attempt identity so an approval cannot be replayed", () => {
+    const context = {
+      chatJid: "owner@local",
+      groupFolder: "owner",
+      isMain: true,
+      userId: "owner",
+    };
+    const approvedAttempt = buildFileWriteRequest(
+      "allowed.txt",
+      "one",
+      context,
+      {
+        trialRoot: "/tmp/anthesis-trial",
+        runtimeId: "warden-trial",
+        attemptId: "attempt-a",
+      },
+    );
+    const replayAttempt = buildFileWriteRequest("allowed.txt", "one", context, {
+      trialRoot: "/tmp/anthesis-trial",
+      runtimeId: "warden-trial",
+      attemptId: "attempt-b",
+    });
+
+    expect(replayAttempt.requestBinding.input_digest).not.toBe(
+      approvedAttempt.requestBinding.input_digest,
+    );
+    expect(replayAttempt.requestBinding.request_digest).not.toBe(
+      approvedAttempt.requestBinding.request_digest,
+    );
+  });
+
   it("rejects a symlinked target outside the trial root", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "warden-root-"));
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "warden-outside-"));

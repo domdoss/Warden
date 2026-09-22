@@ -27,6 +27,7 @@ export interface FileWriteRequest {
   target: string;
   absoluteTarget: string;
   contentDigest: string;
+  attemptId: string;
   actor: { role: string };
   runtime: { id: string };
   requestBinding: {
@@ -44,6 +45,7 @@ export interface FileWriteRequest {
 export interface FileWriteRequestOptions {
   trialRoot: string;
   runtimeId: string;
+  attemptId?: string;
   role?: string;
   plan?: unknown;
   source?: unknown;
@@ -111,6 +113,7 @@ export function buildFileWriteRequest(
 
   const actor = { role: options.role || "implementation" };
   const runtime = { id: options.runtimeId };
+  const attemptId = options.attemptId || "default-attempt";
   const contentDigest = sha256Digest(content);
   const caller = {
     userId: context.userId,
@@ -129,7 +132,7 @@ export function buildFileWriteRequest(
     version: "anthesis.request-binding/v1" as const,
     canonicalization: "rfc8785-json" as const,
     algorithm: "sha256" as const,
-    input_digest: sha256Digest({ effect, caller }),
+    input_digest: sha256Digest({ effect, caller, attemptId }),
     plan_digest: sha256Digest(options.plan ?? { action: "file.write", target }),
     source_digest: sha256Digest(options.source ?? { warden: "trial" }),
     dependency_state_digest: sha256Digest(
@@ -140,6 +143,7 @@ export function buildFileWriteRequest(
     action: "file.write",
     target,
     contentDigest,
+    attemptId,
     actor,
     runtime,
     requestBinding,
@@ -150,6 +154,7 @@ export function buildFileWriteRequest(
     target,
     absoluteTarget,
     contentDigest,
+    attemptId,
     actor,
     runtime,
     requestBinding: { ...requestBinding, request_digest: requestDigest },
