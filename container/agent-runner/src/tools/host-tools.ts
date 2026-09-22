@@ -22,6 +22,9 @@ registry.register({
         required: ['app'],
     },
     handler: async (args, _context) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects host callbacks.';
+        }
         writeCallback('open_app', args);
         return `Launching ${args.app}...`;
     },
