@@ -458,5 +458,22 @@ describe("Anthesis trial authorization request binding", () => {
       .map((line) => JSON.parse(line));
     expect(evidenceRecords).toHaveLength(2);
     expect(evidenceRecords[1].outcome).toBe("denied-before-effect");
+
+    const evidenceSchema = JSON.parse(
+      await fs.readFile(
+        path.resolve("docs/anthesis-trial/write-evidence.schema.json"),
+        "utf8",
+      ),
+    );
+    for (const record of evidenceRecords) {
+      for (const field of evidenceSchema.required) {
+        expect(record).toHaveProperty(field);
+      }
+      expect(record.version).toBe(evidenceSchema.properties.version.const);
+      expect(record.adapter_version).toBe(
+        evidenceSchema.properties.adapter_version.const,
+      );
+      expect(evidenceSchema.properties.outcome.enum).toContain(record.outcome);
+    }
   });
 });
