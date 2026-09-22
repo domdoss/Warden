@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeFileWrite,
   buildFileWriteRequest,
@@ -15,6 +15,7 @@ const labBinary = process.env.ANTHESIS_LAB_BIN;
 const labRepo = process.env.ANTHESIS_LAB_REPO;
 
 describe("Anthesis trial authorization request binding", () => {
+  beforeEach(() => vi.stubEnv("ANTHESIS_TRIAL_ATTEMPT_ID", "test-attempt"));
   afterEach(() => vi.unstubAllEnvs());
 
   it("normalizes a relative target and rejects workspace escapes", () => {
@@ -167,6 +168,10 @@ describe("Anthesis trial authorization request binding", () => {
   )("authorizes a generated scenario through Governance Lab", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "warden-lab-"));
     vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_DECISION", "allow");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_SOURCE", "policy_rule");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_RULE", "scoped-docs-and-code-write");
+    vi.stubEnv("ANTHESIS_TRIAL_EXPECTED_REASON", "scoped_write");
 
     const result = await authorizeFileWrite(
       "docs/onboarding.md",
@@ -215,6 +220,25 @@ describe("Anthesis trial authorization request binding", () => {
 
     expect(result.allowed).toBe(true);
     expect(result.mode).toBe("ungoverned");
+  });
+
+  it("fails closed when governed mode has no attempt identity", async () => {
+    vi.stubEnv("ANTHESIS_GOVERNED_WRITES", "true");
+    vi.stubEnv("ANTHESIS_TRIAL_ATTEMPT_ID", "");
+    const result = await authorizeFileWrite(
+      "allowed.txt",
+      "one",
+      {
+        chatJid: "owner@local",
+        groupFolder: "owner",
+        isMain: true,
+        userId: "owner",
+      },
+      { trialRoot: "/tmp/anthesis-trial", runtimeId: "warden-trial" },
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.decision?.reason).toBe("missing_attempt_id");
   });
 
   it("fails closed when enabled without a structured decision", async () => {

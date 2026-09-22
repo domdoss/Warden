@@ -113,7 +113,10 @@ export function buildFileWriteRequest(
 
   const actor = { role: options.role || "implementation" };
   const runtime = { id: options.runtimeId };
-  const attemptId = options.attemptId || "default-attempt";
+  const attemptId =
+    options.attemptId ||
+    process.env.ANTHESIS_TRIAL_ATTEMPT_ID ||
+    "default-attempt";
   const contentDigest = sha256Digest(content);
   const caller = {
     userId: context.userId,
@@ -223,6 +226,23 @@ async function readDecision(
           { cwd: repo, maxBuffer: 1024 * 1024 },
         ));
       } catch (error: any) {
+        if (typeof error?.stdout === "string" && error.stdout.trim()) {
+          try {
+            const parsed = JSON.parse(error.stdout.trim()) as Record<
+              string,
+              any
+            >;
+            return {
+              raw:
+                parsed.decision && typeof parsed.decision === "object"
+                  ? parsed.decision
+                  : parsed,
+              requestDigestIsLocal: false,
+            };
+          } catch {
+            // Fall through to the fail-closed evaluator error.
+          }
+        }
         throw new Error(
           `lab_evaluate_failed:${String(error?.stderr || error?.message || "unknown")}`,
         );
@@ -261,6 +281,18 @@ async function createTrialScenario(
   const scenarioPath = path.join(scenarioDir, "scenario.json");
   const { request_digest: _requestDigest, ...scenarioBinding } =
     request.requestBinding;
+  const expectedDecision = process.env.ANTHESIS_TRIAL_EXPECTED_DECISION;
+  const expectedSource = process.env.ANTHESIS_TRIAL_EXPECTED_SOURCE;
+  const expectedRule = process.env.ANTHESIS_TRIAL_EXPECTED_RULE;
+  const expectedReason = process.env.ANTHESIS_TRIAL_EXPECTED_REASON;
+  if (
+    !expectedDecision ||
+    !expectedSource ||
+    !expectedRule ||
+    !expectedReason
+  ) {
+    throw new Error("missing_trial_expectation");
+  }
   const scenario = {
     version: "anthesis.scenario/v1",
     id: process.env.ANTHESIS_TRIAL_SCENARIO_ID || "warden-file-write",
@@ -273,12 +305,10 @@ async function createTrialScenario(
     request_binding: scenarioBinding,
     attempts: [{ action: "file.write", path: request.target }],
     expected: {
-      decision: process.env.ANTHESIS_TRIAL_EXPECTED_DECISION || "allow",
-      source: process.env.ANTHESIS_TRIAL_EXPECTED_SOURCE || "policy_rule",
-      rule_id:
-        process.env.ANTHESIS_TRIAL_EXPECTED_RULE ||
-        "scoped-docs-and-code-write",
-      reason: process.env.ANTHESIS_TRIAL_EXPECTED_REASON || "scoped_write",
+      decision: expectedDecision,
+      source: expectedSource,
+      rule_id: expectedRule,
+      reason: expectedReason,
       evidence: ["scenario_id", "decision", "decision_source"],
     },
   };
@@ -359,6 +389,13 @@ export async function authorizeFileWrite(
 ): Promise<FileWriteAuthorization> {
   if (process.env.ANTHESIS_GOVERNED_WRITES !== "true") {
     return { allowed: true, mode: "ungoverned" };
+  }
+  if (!options.attemptId && !process.env.ANTHESIS_TRIAL_ATTEMPT_ID) {
+    return {
+      allowed: false,
+      mode: "governed",
+      decision: engineDeny("missing_attempt_id"),
+    };
   }
 
   let request: FileWriteRequest;
