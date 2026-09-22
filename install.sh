@@ -38,6 +38,16 @@ echo ""
 read -r -p "  Type I UNDERSTAND to continue: " ACK
 [ "$ACK" = "I UNDERSTAND" ] || { echo "  Aborted."; exit 1; }
 
+# ── Model choice for Alpha Stack + MARM ──────────────────────────────
+# One answer feeds both: the alpha-stack analysis default (trading/
+# .alpha-stack/state.json settings.model + webapp/config.json
+# default_model) and MARM's concept-graph topic model (the service drop-in
+# MARM_TOPIC_MODEL). Any Ollama tag works — local (granite4.2:30b) or cloud
+# (kimi-k3:cloud). Not validated against `ollama list` here: models can be
+# pulled after install, and a bad tag fails loudly at call time anyway.
+read -r -p "  Ops model — heavy tools/integrations (Alpha Stack + MARM today, more later). Any Ollama tag, local or :cloud [granite4.2:30b]: " WARDEN_OPS_MODEL
+WARDEN_OPS_MODEL="${WARDEN_OPS_MODEL:-granite4.2:30b}"
+
 # ── Pre-flight ───────────────────────────────────────────────────────
 command -v node >/dev/null || { echo "  Node.js >= 20 required: https://nodejs.org"; exit 1; }
 [ "$(node -e 'console.log(process.versions.node.split(".")[0])')" -ge 20 ] || { echo "  Node.js >= 20 required (found $(node -v))"; exit 1; }
@@ -331,16 +341,14 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 MARMEOF
-        # Optional concept-graph topic-model pin: set MARM_TOPIC_MODEL to a
-        # model you actually have (`ollama list`) if the server default is
-        # wrong for your box. Blank = no drop-in, server's own default wins.
-        if [ -n "${MARM_TOPIC_MODEL:-}" ]; then
-            mkdir -p ~/.config/systemd/user/marm-memory.service.d
-            cat > ~/.config/systemd/user/marm-memory.service.d/topic-model.conf <<TMEOF
+        # Concept-graph topic model: explicit MARM_TOPIC_MODEL env overrides,
+        # otherwise the model prompt at the top of this script decides.
+        TOPIC_MODEL="${MARM_TOPIC_MODEL:-$WARDEN_OPS_MODEL}"
+        mkdir -p ~/.config/systemd/user/marm-memory.service.d
+        cat > ~/.config/systemd/user/marm-memory.service.d/topic-model.conf <<TMEOF
 [Service]
-Environment=MARM_TOPIC_MODEL=${MARM_TOPIC_MODEL}
+Environment=MARM_TOPIC_MODEL=${TOPIC_MODEL}
 TMEOF
-        fi
         # Wire it into Warden via a drop-in so the main unit stays stock
         # (and so deleting this drop-in fully reverts the wiring).
         mkdir -p ~/.config/systemd/user/warden.service.d
@@ -358,6 +366,16 @@ DROPEOF
         systemctl --user enable --now marm-memory 2>/dev/null || true
         echo "  MARM memory server enabled on 127.0.0.1:8001 (starts with Warden)"
     fi
+fi
+
+# ── Alpha Stack default model (dev boxes only — trading/ is excluded from
+#    the deploy sync, so a fresh install has no Alpha Stack to configure) ──
+# Applies the model prompt to the stack's own defaults; the Web UI's
+# Fast/Crawl toggle overrides per-run afterward.
+if [ -d "$INSTALL_DIR/trading" ]; then
+    node "$INSTALL_DIR/scripts/alpha-model.mjs" "$INSTALL_DIR/trading" "$WARDEN_OPS_MODEL" \
+        && echo "  Alpha Stack default model: $WARDEN_OPS_MODEL" \
+        || echo "  ! could not write the alpha-stack model default (set it in the webapp UI)"
 fi
 
 echo ""

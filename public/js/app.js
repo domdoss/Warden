@@ -1044,6 +1044,10 @@
             <option value="full">Full — summary + RAG</option>
           </select>
         </div>
+        <div class="setting-row"><label>Ops model</label>
+          <select class="select" id="sOpsModel">${anyModelHtml}</select>
+          <span class="dim mono" style="font-size:10px">model for heavy utility tools &amp; external integrations — Alpha Stack analysis + MARM topic model today; blank = leave each to its own config</span>
+        </div>
         <div class="setting-row"><label>Oculus</label>
           <select class="select" id="sOculusModel">${orchHtml}</select>
         </div>
@@ -1193,6 +1197,7 @@
     setSelect('sMercuryCtx', d.mercuryCtx || '');
     setSelect('sOculusModel', (d.oculusModel || '').replace(/^local:/, ''));
     setSelect('sMercury', d.mercuryMode || 'full');
+    setSelect('sOpsModel', (d.opsModel || '').replace(/^local:/, ''));
     setSelect('sThinking', d.thinking || 'true');
     // Default apps: one row per capability, options = built-in + every
     // installed MCP server. The server list comes from /api/mcp-servers so a
@@ -1462,6 +1467,7 @@
         oculusModel: stripLocal($('sOculusModel').value),
         oculusCtx: $('sOculusCtx').value,
         mercuryMode: $('sMercury').value,
+        opsModel: stripLocal($('sOpsModel').value),
         thinking: $('sThinking').value,
         contextIdleClearMinutes: $('sContextIdleClear').value,
         mercuryIntervalMinutes: $('sMercuryInterval').value,
