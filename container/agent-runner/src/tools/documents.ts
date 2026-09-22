@@ -15,6 +15,9 @@ registry.register({
         required: ['filename', 'content'],
     },
     handler: async (args, _context) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects document writers.';
+        }
         const filename = args.filename || 'document.pdf';
         const content = args.content || '';
         const mdFile = filename.replace(/\.pdf$/i, '') + '.md';
@@ -51,6 +54,9 @@ registry.register({
         required: ['input', 'format'],
     },
     handler: async (args, _context) => {
+        if (process.env.ANTHESIS_GOVERNED_WRITES === 'true') {
+            return 'Error: Anthesis governed mode rejects document writers.';
+        }
         const input = args.input;
         const format = args.format;
         if (!input || !format) return 'Error: input and format are required';

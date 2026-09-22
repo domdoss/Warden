@@ -410,6 +410,7 @@ describe("Anthesis trial authorization request binding", () => {
     await import("./tools/file-edit.js");
     await import("./tools/host-tools.js");
     await import("./tools/terminal.js");
+    await import("./tools/documents.js");
     expect(
       await registry.dispatch(
         "Edit",
@@ -427,6 +428,20 @@ describe("Anthesis trial authorization request binding", () => {
     expect(
       await registry.dispatch("Bash", { command: "touch bypass.txt" }, context),
     ).toContain("governed mode rejects Bash");
+    expect(
+      await registry.dispatch(
+        "generate_pdf",
+        { filename: "bypass.pdf", content: "# bypass" },
+        context,
+      ),
+    ).toContain("governed mode rejects document writers");
+    expect(
+      await registry.dispatch(
+        "convert_file",
+        { input: "input.md", format: "pdf" },
+        context,
+      ),
+    ).toContain("governed mode rejects document writers");
     vi.stubEnv("ANTHESIS_TRIAL_RESTRICT_TOOLS", "true");
     const allowed = await registry.dispatch(
       "Write",
