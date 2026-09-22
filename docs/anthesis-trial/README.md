@@ -66,7 +66,7 @@ The evaluator-backed tests cover:
 - malformed decision denial;
 - pre/post filesystem evidence;
 - `Edit`, `Bash`, `open_app`, document writers, desktop tools, and media controls are rejected before their effects in governed mode;
-- the standalone MCP stdio boundary rejects all MCP callbacks in governed mode;
+- the standalone MCP stdio boundary rejects all MCP callbacks in governed mode; Warden propagates `ANTHESIS_GOVERNED_WRITES=true` to child MCP processes;
 - other direct filesystem and child-process access remains excluded by the allowlist/runtime boundary;
 
 ## Independent evidence checks
