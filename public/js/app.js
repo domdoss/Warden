@@ -2479,8 +2479,26 @@
       toast('Stop failed: ' + e.message, 'error');
     }
   }
+  function setTrainingStatus(text, state) {
+    const chip = $('trainingStatus');
+    if (!chip) return;
+    chip.textContent = text;
+    chip.dataset.state = state;
+  }
+  // Highlight the running step's card; otherwise mark the step whose log is shown as "last run".
+  function paintTrainingSteps(running, logStep) {
+    document.querySelectorAll('#view-training .tr-step').forEach(card => {
+      const step = card.dataset.step;
+      const st = card.querySelector('[data-role="state"]');
+      card.classList.toggle('running', step === running);
+      card.classList.toggle('last', !running && step === logStep);
+      if (st) st.textContent = step === running ? 'running…' : (!running && step === logStep ? 'last run' : '');
+    });
+    const ls = $('trainingLogStep');
+    if (ls) ls.textContent = logStep ? '· ' + logStep : '';
+  }
   async function startTrainingStep(step, body) {
-    const tail = $('trainingTail'), chip = $('trainingStatus');
+    const tail = $('trainingTail');
     try {
       const d = await postJson('/api/training/' + step, body || {});
       if (!d.ok) {
@@ -2488,7 +2506,8 @@
         toast(d.error || 'Failed to start ' + step, 'error');
         return;
       }
-      chip.textContent = step + ' running';
+      setTrainingStatus(step + ' running', 'running');
+      paintTrainingSteps(step, step);
       setTrainingButtons(false);
       if (!STATE.trainingPollTimer) STATE.trainingPollTimer = setInterval(refreshTrainingStatus, 5000);
       refreshTrainingStatus();
@@ -2497,21 +2516,24 @@
     }
   }
   async function refreshTrainingStatus() {
-    const tail = $('trainingTail'), chip = $('trainingStatus');
+    const tail = $('trainingTail');
     try {
       const d = await api('/api/training/status');
+      const atBottom = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 24;
       tail.textContent = d.tail || '(no step has run yet)';
-      tail.scrollTop = tail.scrollHeight;
+      if (atBottom || d.running) tail.scrollTop = tail.scrollHeight;
+      paintTrainingSteps(d.running, d.step);
       if (d.running) {
-        chip.textContent = d.running + ' running';
+        setTrainingStatus(d.running + ' running', 'running');
         setTrainingButtons(false);
       } else {
         if (STATE.trainingPollTimer) { clearInterval(STATE.trainingPollTimer); STATE.trainingPollTimer = null; }
-        chip.textContent = 'idle';
+        setTrainingStatus('idle', 'idle');
         setTrainingButtons(true);
         refreshTrainingCatalogs();
       }
     } catch (e) {
+      setTrainingStatus('error', 'error');
       tail.textContent = 'Failed: ' + e.message;
     }
   }
@@ -2564,23 +2586,124 @@
     }
   }
 
+  // Newest catalog → stat tiles, class filter pills, expandable failure rows;
+  // every catalog → the history list. Filter state survives re-renders.
+  const TRAINING_FILTER = { cls: '', q: '' };
+  let trainingNewest = null;
+  function fmtTrainingTs(ts) {
+    const d = ts ? new Date(ts) : null;
+    return d && !isNaN(d) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : (ts || '');
+  }
+  function renderTrainingStats(cat) {
+    const el = $('trainingStats');
+    if (!cat) { el.innerHTML = '<div class="dim">No catalogs yet — run the audit.</div>'; return; }
+    const fails = cat.failures || [];
+    const real = fails.filter(f => (f.classification || {}).failure_class !== 'not_a_failure').length;
+    const unclassified = (cat.classifiers || {}).unclassified || 0;
+    const tile = (k, v, sub, cls) =>
+      `<div class="tr-stat ${cls || ''}"><div class="k">${esc(k)}</div><div class="v${typeof v === 'string' && v.length > 8 ? ' sm' : ''}" title="${esc(v)}">${esc(v)}</div>${sub ? `<div class="s" title="${esc(sub)}">${esc(sub)}</div>` : ''}</div>`;
+    el.innerHTML =
+      tile('Generated', fmtTrainingTs(cat.generated_at), (cat.days ? cat.days + '-day window' : '') + (cat.source ? ' · ' + cat.source : '')) +
+      tile('Lines scanned', (cat.log_lines_scanned ?? 0).toLocaleString()) +
+      tile('Failure slices', cat.failure_slices_found ?? fails.length, 'detected in logs') +
+      tile('Classified', fails.length, real + ' actionable', real ? 'warn' : 'ok') +
+      tile('Classifier', (cat.classifiers || {}).model || '—', unclassified ? unclassified + ' unclassified' : '') +
+      tile('Status', cat.complete === false ? 'partial' : 'complete', cat.complete === false ? 'audit stopped early' : '', cat.complete === false ? 'warn' : 'ok');
+  }
+  function renderTrainingFailures() {
+    const el = $('trainingCatalogs'), pills = $('trainingClassFilter');
+    const fails = (trainingNewest && trainingNewest.failures) || [];
+    if (!fails.length) { pills.innerHTML = ''; el.innerHTML = '<div class="dim">No failures in the newest catalog.</div>'; return; }
+    const counts = {};
+    fails.forEach(f => { const c = (f.classification || {}).failure_class || '?'; counts[c] = (counts[c] || 0) + 1; });
+    if (TRAINING_FILTER.cls && !counts[TRAINING_FILTER.cls]) TRAINING_FILTER.cls = '';
+    pills.innerHTML = `<span class="tr-class ${TRAINING_FILTER.cls ? '' : 'active'}" data-c="">all <b>${fails.length}</b></span>` +
+      Object.keys(counts).sort((a, b) => counts[b] - counts[a]).map(c =>
+        `<span class="tr-class ${TRAINING_FILTER.cls === c ? 'active' : ''}" data-c="${escAttr(c)}">${esc(c)} <b>${counts[c]}</b></span>`).join('');
+    pills.querySelectorAll('.tr-class').forEach(p => p.onclick = () => { TRAINING_FILTER.cls = p.dataset.c; renderTrainingFailures(); });
+    const q = TRAINING_FILTER.q.toLowerCase();
+    const shown = fails.filter(f => {
+      const c = f.classification || {};
+      if (TRAINING_FILTER.cls && (c.failure_class || '?') !== TRAINING_FILTER.cls) return false;
+      if (!q) return true;
+      return [f.id, c.failure_class, c.what_went_wrong, c.correct_behavior, c.sft_correction_hint, c.candidate_role, (c.tools_relevant || []).join(' ')]
+        .join(' ').toLowerCase().includes(q);
+    });
+    if (!shown.length) { el.innerHTML = '<div class="dim">No failures match the filter.</div>'; return; }
+    const open = new Set([].map.call(el.querySelectorAll('.tr-fail[open]'), d => d.dataset.id));
+    el.innerHTML = shown.map(f => trainingFailRow(f, open)).join('');
+  }
+  // One collapsible failure row — shared by the catalog list and Artemis flags.
+  // extraBadge (optional) is pre-rendered HTML placed after the class badge.
+  function trainingFailRow(f, open, extraBadge, meta) {
+    const c = f.classification || {};
+    const cls = c.failure_class || '?';
+    const block = (lbl, txt) => txt ? `<div><div class="lbl">${lbl}</div><p>${esc(txt)}</p></div>` : '';
+    const tags = (f.detected_by || []).map(t => `<span class="tr-badge">${esc(t)}</span>`)
+      .concat((c.tools_relevant || []).map(t => `<span class="tr-badge" data-c="other">${esc(t)}</span>`)).join('');
+    return `<details class="tr-fail" data-id="${escAttr(f.id)}" ${open.has(f.id) ? 'open' : ''}>
+      <summary><span class="tr-fail-id">${esc(f.id)}</span><span class="tr-badge" data-c="${escAttr(cls)}">${esc(cls)}</span>${extraBadge || ''}
+        <span class="tr-fail-what">${esc(c.what_went_wrong || '(no description)')}</span><span class="tr-fail-role">${esc(c.candidate_role || '')}</span></summary>
+      <div class="tr-fail-body">
+        ${meta ? `<div class="tr-fail-meta">${meta}</div>` : ''}
+        ${block('Correct behavior', c.correct_behavior)}
+        ${block('SFT correction hint', c.sft_correction_hint)}
+        ${tags ? `<div><div class="lbl">Signals &amp; tools</div><div class="tr-tags">${tags}</div></div>` : ''}
+        ${f.log_excerpt ? `<div><div class="lbl">Log excerpt</div><pre class="audit-log">${esc(f.log_excerpt)}</pre></div>` : ''}
+      </div></details>`;
+  }
+  // Artemis-flagged trainable errors (GET /api/training/flags). The section
+  // stays hidden when the route is missing (older server) or errors.
+  function renderTrainingFlags(d) {
+    const el = $('trainingFlaggedErrors');
+    if (!el) return;
+    const flags = (d && d.ok && Array.isArray(d.flags)) ? d.flags : null;
+    if (!flags) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    const counts = d.counts || {};
+    const pending = counts.pending ?? flags.filter(f => f.status === 'pending').length;
+    const consumed = counts.consumed ?? flags.filter(f => f.status === 'consumed').length;
+    const open = new Set([].map.call(el.querySelectorAll('.tr-fail[open]'), x => x.dataset.id));
+    const rows = flags.map(f => {
+      const st = f.status === 'consumed' ? (f.outcome || 'consumed') : 'pending';
+      const meta = [
+        f.flagged_at ? 'flagged ' + esc(fmtTrainingTs(f.flagged_at)) : '',
+        f.log_timestamp ? 'log ' + esc(f.log_timestamp) : '',
+        f.consumed_at ? 'consumed ' + esc(fmtTrainingTs(f.consumed_at)) : '',
+      ].filter(Boolean).join(' · ');
+      return trainingFailRow(f, open, `<span class="tr-flag-st" data-s="${escAttr(st)}">${esc(st.replace('_', ' '))}</span>`, meta);
+    }).join('');
+    el.innerHTML = `<div class="tr-section-head"><div class="section-divider">Flagged by Artemis</div><span class="spacer"></span>
+        <span class="tr-flag-count" data-s="pending"><b>${pending}</b> pending</span>
+        <span class="tr-flag-count"><b>${consumed}</b> consumed</span></div>
+      <div class="tr-fails">${rows || '<div class="dim">No flagged errors yet.</div>'}</div>`;
+    el.classList.remove('hidden');
+  }
+  async function refreshTrainingFlags() {
+    let d = null;
+    try { d = await api('/api/training/flags'); } catch (e) { d = null; }
+    renderTrainingFlags(d);
+  }
   async function refreshTrainingCatalogs() {
     const el = $('trainingCatalogs');
     if (!el) return;
+    refreshTrainingFlags();
     try {
       const d = await api('/api/training/catalogs');
-      if (!d.catalogs || !d.catalogs.length) { el.textContent = 'No catalogs yet — run the audit.'; return; }
-      let html = d.catalogs.map(c =>
-        `<div>${esc(c.file)} · ${c.entries >= 0 ? c.entries + ' failures' : 'unreadable'}${c.ts ? ' · ' + esc(c.ts) : ''}</div>`
-      ).join('');
-      if (d.newest && d.newest.failures && d.newest.failures.length) {
-        html += '<div style="margin-top:10px">Newest catalog findings:</div>' +
-          d.newest.failures.map(f => {
-            const c = f.classification || {};
-            return `<div style="margin-top:6px">• <b>${esc(f.id)}</b> ${esc(c.failure_class || '?')} — ${esc(c.what_went_wrong || '')}</div>`;
-          }).join('');
+      const hist = $('trainingHistory');
+      if (!d.catalogs || !d.catalogs.length) {
+        trainingNewest = null;
+        renderTrainingStats(null);
+        $('trainingClassFilter').innerHTML = '';
+        el.innerHTML = '<div class="dim">No catalogs yet — run the audit.</div>';
+        hist.innerHTML = '<div class="dim">—</div>';
+        return;
       }
-      el.innerHTML = html;
+      hist.innerHTML = d.catalogs.map(c =>
+        `<div><span class="f" title="${escAttr(c.file)}">${esc(c.ts ? fmtTrainingTs(c.ts) : c.file)}</span><span class="n">${c.entries >= 0 ? c.entries + ' failures' : 'unreadable'}</span></div>`
+      ).join('');
+      trainingNewest = d.newest;
+      renderTrainingStats(d.newest);
+      renderTrainingFailures();
     } catch (e) {
       el.textContent = 'Failed: ' + e.message;
     }
@@ -3028,6 +3151,7 @@
     });
     $('btnTrainingAudit').addEventListener('click', () => startTrainingStep('audit', { days: parseInt($('trainingDays').value, 10) || 3 }));
     $('btnTrainingModify').addEventListener('click', () => startTrainingStep('modify', {}));
+    $('trainingFailSearch').addEventListener('input', e => { TRAINING_FILTER.q = e.target.value.trim(); renderTrainingFailures(); });
     $('btnTrainingTrain').addEventListener('click', () => {
       if (confirm('Train 1 epoch? This clears VRAM and takes a long time.'))
         startTrainingStep('train', {});
