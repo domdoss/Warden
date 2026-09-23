@@ -3004,10 +3004,11 @@ const KN_PRESETS = {
          stop_sigma: 1, target_sigma: 2, be_trigger: 1,
          risk_per_trade_pct: 0.25, max_position_pct: 10, max_positions: 2, max_daily_loss_pct: 0.5, max_daily_loss_usd: 50, recoup_risk_mult: 0.25 } },
   balanced: { label: 'Balanced', icon: 'scale', blurb: 'The recommended defaults for every risk, signal and exit setting.', v: null },
-  aggressive: { label: 'Aggressive', icon: 'zap', blurb: 'More trades on thinner signals, double-size bets, and more room to lose in a day.',
-    v: { edge_mult: 0.8,
-         stop_sigma: 1.25, target_sigma: 2.5, be_trigger: 0,
-         risk_per_trade_pct: 1, max_position_pct: 35, max_positions: 5, max_daily_loss_pct: 2, max_daily_loss_usd: 250, recoup_risk_mult: 0.75 } },
+  // The user's known-good setup (2026-09-23): the defaults with wider exits
+  // that let winners run. Replaced an "Aggressive" preset — bigger, more
+  // frequent bets on thinner signals only hit the daily loss limit faster.
+  mine: { label: 'My settings', icon: 'trade', blurb: 'The defaults with wider exits: stop 1.5, target 3, move the stop to breakeven after 1× the risk, trailing $100 profit exit.',
+    v: { stop_sigma: 1.5, target_sigma: 3, be_trigger: 1, take_profit_usd: 0, trail_profit_usd: 100 } },
 };
 const KN_PRESET_SKIP_GROUPS = ['replay'];
 function knPresetVals(id) {
