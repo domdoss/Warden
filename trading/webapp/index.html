@@ -393,6 +393,11 @@ html[data-theme="dark"] .lq-call.buy, html[data-theme="dark"] .lq-call.sell { co
 .dt-replay-lbl, .dt-sub { font-size: 12px; color: var(--muted); }
 .dt-date { font: inherit; font-size: 12.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card, transparent); color: var(--text); color-scheme: light dark; max-width: 150px; }
 .dt-chk, .dt-alerts { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+/* The two unified autotrade switches in the day-trade header: more prominent
+ * than the plain checkboxes — they are the account's master switches. */
+.dt-autotrade { font-weight: 700; color: var(--text); }
+.dt-autotrade .toggle { width: 40px; height: 22px; }
+.dt-autotrade input:checked + .slider { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .dt-live { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 800; letter-spacing: .05em; padding: 4px 11px; border-radius: var(--radius-pill); white-space: nowrap; }
 .dt-live .led { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .dt-live.on { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); }
@@ -875,10 +880,7 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
   .section-title #acctToggle {
     order: 10; flex: 1 1 100%; display: flex;
   }
-  .section-title #srcToggle {
-    order: 11; flex: 1 1 100%; display: flex;
-  }
-  .section-title #acctToggle .acct-opt, .section-title #srcToggle .acct-opt { flex: 1; padding: 9px 6px; }
+  .section-title #acctToggle .acct-opt { flex: 1; padding: 9px 6px; }
 
   /* Density: on a 390px portrait, 24px content + 18px card padding burns
    * ~84px — more than a fifth of the width — as blank gutter. */
@@ -1061,6 +1063,12 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
             <span class="dt-live off" id="dtLive"><span class="led"></span><span id="dtLiveTxt">connecting…</span></span>
             <span class="dt-market" id="dtMarket">—</span>
             <span class="dt-paper" title="Nothing here places real orders — every fill is simulated">PAPER ONLY · no real orders</span>
+            <label class="dt-chk dt-autotrade" title="The day trader trades its BUY/SELL NOW calls in the shared paper account. Off = signals only, you decide.">
+              <span class="toggle"><input type="checkbox" id="atShort"><span class="slider"></span></span> Autotrade short-term
+            </label>
+            <label class="dt-chk dt-autotrade" title="TradingAgents decisions place paper orders that fill at the next market open. Off = decisions are logged only.">
+              <span class="toggle"><input type="checkbox" id="atLong"><span class="slider"></span></span> Autotrade long-term
+            </label>
             <span class="spacer"></span>
             <label class="dt-alerts" title="Sound + desktop notification when a ticker flips to BUY NOW or SELL NOW">
               <input type="checkbox" id="dtAlerts"> Alerts
@@ -1287,15 +1295,11 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
             <div class="acct-toggle" id="acctToggle">
               <button class="acct-opt" data-mode="simulated">Simulated</button><button class="acct-opt" data-mode="live">Live</button>
             </div>
-            <div class="acct-toggle" id="srcToggle" title="Who places trades in this account">
-              <button class="acct-opt" data-src="daytrade">Day trader</button><button class="acct-opt" data-src="longterm">Long-term</button><button class="acct-opt" data-src="both">Both</button>
-            </div>
             <button class="btn btn-ghost btn-sm" id="paperNewTrade">New trade</button>
             <button class="btn btn-ghost btn-sm" id="paperRefresh">Refresh</button>
             <button class="btn btn-ghost btn-sm" id="paperReset">Reset</button>
           </div>
           <div id="acctModeNote" style="display:none;margin:6px 0 0;color:var(--amber)"></div>
-          <div id="srcModeNote" class="info-note" style="margin:6px 0 0">Only the selected sources place trades in this shared account — the others still show their calls and log their decisions. Manual trades always work.</div>
           <div id="paperTradeForm" style="display:none">
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0">
               <div class="field"><label>Ticker</label><input type="text" id="ptTicker" placeholder="MSFT"></div>
@@ -1688,7 +1692,8 @@ function renderDaytrade(d) {
   const mode = d.mode === 'live' ? '<b style="color:var(--up)">LIVE</b>'
              : d.mode === 'replay' ? '<b>replay</b>'
              : d.mode === 'closed' ? 'on · market closed' : 'off';
-  let html = `<div class="dt-sub" style="margin-bottom:8px">Engine ${mode} · ${d.market_open ? 'market open' : 'market closed'} · day trader ${d.auto_execute ? 'is trading' : 'signals only'} · same shared paper account as the holdings above</div>`;
+  const ts = tradeSources();
+  let html = `<div class="dt-sub" style="margin-bottom:8px">Engine ${mode} · ${d.market_open ? 'market open' : 'market closed'} · autotrade: day trader ${ts.daytrade ? 'on' : 'off'}, long-term ${ts.longterm ? 'on' : 'off'} · same shared paper account as the holdings above</div>`;
   if (d.banked || d.killed) {
     html += `<div class="dt-pos" style="color:var(--amber);margin-bottom:8px"><b>${d.banked ? 'Banked for today' : 'Cut for the day'}</b> — ${esc(d.lock_reason || 'flat, no new entries until tomorrow')}</div>`;
   }
@@ -2414,27 +2419,29 @@ document.querySelectorAll('#acctToggle .acct-opt').forEach(b => {
   };
 });
 
-/* ---------- unified trade-source switch ---------- */
+/* ---------- unified autotrade switches (day-trade panel top row) ---------- */
 function tradeSources() {
-  const v = (state.settings && state.settings.trade_sources) || 'both';
-  return { daytrade: v === 'both' || v === 'daytrade', longterm: v === 'both' || v === 'longterm' };
+  const s = state.settings || {};
+  return { daytrade: !!s.autotrade_daytrade, longterm: s.autotrade_longterm !== false };
 }
 function renderTradeSources() {
-  const cur = (state.settings && state.settings.trade_sources) || 'both';
-  document.querySelectorAll('#srcToggle .acct-opt').forEach(b =>
-    b.classList.toggle('active', b.dataset.src === cur));
+  const ts = tradeSources();
+  const sh = $('#atShort'), lg = $('#atLong');
+  if (sh && document.activeElement !== sh) sh.checked = ts.daytrade;
+  if (lg && document.activeElement !== lg) lg.checked = ts.longterm;
 }
-document.querySelectorAll('#srcToggle .acct-opt').forEach(b => {
-  b.onclick = async () => {
-    if (b.dataset.src === ((state.settings || {}).trade_sources || 'both')) return;
-    state.settings = {...(state.settings || {}), trade_sources: b.dataset.src};
-    try { await saveState(); } catch (e) { toast('Save failed: ' + e.message); return; }
-    renderTradeSources();
-    toast({ daytrade: 'Day trader trades the account; long-term calls only log',
-             longterm: 'Long-term calls trade the account; day trader shows signals only',
-             both: 'Both the day trader and long-term calls trade the account' }[b.dataset.src]);
-  };
-});
+async function setAutotrade(key, on, msgs) {
+  state.settings = {...(state.settings || {}), [key]: on};
+  try { await saveState(); } catch (e) { toast('Save failed: ' + e.message); return; }
+  renderTradeSources();
+  toast(msgs[on ? 1 : 0]);
+}
+$('#atShort').onchange = e => setAutotrade('autotrade_daytrade', e.target.checked, [
+  'Day trader shows signals only — you decide',
+  'Day trader now trades its calls in the paper account']);
+$('#atLong').onchange = e => setAutotrade('autotrade_longterm', e.target.checked, [
+  'TradingAgents decisions are logged, not executed',
+  'TradingAgents decisions now place paper orders, filled at the next open']);
 
 /* ---------- paper account ---------- */
 function tradeSide(q, reason) {

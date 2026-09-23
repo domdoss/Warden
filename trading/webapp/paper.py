@@ -80,30 +80,32 @@ def link_cfg() -> dict:
         return {}
 
 
-# ── Unified trade-source switch ──────────────────────────────────────────────
-# One switch, in state.json settings, selecting WHO places trades in this
-# shared account: "daytrade" (day-trade engine), "longterm" (TradingAgents
-# decisions), or "both" (default). A source that isn't selected still shows
-# its calls / logs its decisions — it just doesn't execute. Manual trades
-# are always allowed (the human is not a source).
+# ── Unified autotrade switch ──────────────────────────────────────────────────
+# Two switches, in state.json settings, selecting WHO auto-trades this shared
+# account: autotrade_daytrade (the day-trade engine trades its calls) and
+# autotrade_longterm (TradingAgents decisions place orders that fill at the
+# next market open). A source switched off still shows its calls / logs its
+# decisions — it just doesn't execute. Manual trades are always allowed
+# (the human is not a source). Defaults match the pre-switch behavior:
+# day trader signals only, long-term calls execute.
 _STATE_PATH = Path(CONFIG.get("state_file",
                               str(Path.home() / ".alpha-stack" / "state.json"))).expanduser()
 
 
 def trade_sources() -> set[str]:
-    """The selected trade sources as a set: {"daytrade"}, {"longterm"}
-    or both. Anything missing/unknown reads as both (fail-open, matching
-    the pre-switch behavior where every source traded)."""
+    """The sources allowed to auto-trade, as a set: may contain "daytrade"
+    and/or "longterm" (empty = nothing auto-trades, manual only)."""
     try:
         with _STATE_PATH.open("r", encoding="utf-8") as fh:
-            val = (json.load(fh).get("settings") or {}).get("trade_sources", "both")
+            settings = json.load(fh).get("settings") or {}
     except (OSError, json.JSONDecodeError):
-        return {"daytrade", "longterm"}
-    if val == "daytrade":
-        return {"daytrade"}
-    if val == "longterm":
-        return {"longterm"}
-    return {"daytrade", "longterm"}
+        settings = {}
+    out = set()
+    if settings.get("autotrade_daytrade", False):
+        out.add("daytrade")
+    if settings.get("autotrade_longterm", True):
+        out.add("longterm")
+    return out
 # Serializes read-modify-write cycles on the ledger (broker thread, dashboard
 # requests, run-finish hook) so two writers can't drop each other's changes.
 _PASS_LOCK = threading.Lock()
