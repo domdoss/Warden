@@ -280,6 +280,17 @@ def atr_px(df: pd.DataFrame) -> pd.Series:
     return tr.ewm(alpha=1 / 14, adjust=False).mean()
 
 
+def _day_keys(idx: pd.DatetimeIndex) -> np.ndarray:
+    """Session date of every bar as an int (YYYYMMDD). Membership tests on
+    these are vectorized; on python date objects np.isin/== over 5 years of
+    1-min bars took ~7 s per call under the GIL."""
+    return (idx.year.values * 10000 + idx.month.values * 100 + idx.day.values).astype(np.int64)
+
+
+def _dkey(d) -> int:
+    return d.year * 10000 + d.month * 100 + d.day
+
+
 def forward_return(df: pd.DataFrame, horizon: int) -> np.ndarray:
     lc = np.log(df["Close"].values)
     days = np.array(df.index.date)
@@ -375,10 +386,11 @@ def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: st
     cols = list(cfg["features"])
     feats = (feats_df if feats_df is not None else features(df))[cols].values.astype(np.float64)
     y = forward_return(df, horizon)
-    days = np.array(df.index.date)
+    days = _day_keys(df.index)
     n_val = max(2, int(round(len(train_days) * cfg["val_share_pct"] / 100)))
-    fit_days, val_days = set(train_days[:-n_val]), set(train_days[-n_val:])
-    in_fit = np.isin(days, list(fit_days))
+    fit_days = np.array([_dkey(x) for x in train_days[:-n_val]], dtype=np.int64)
+    val_days = np.array([_dkey(x) for x in train_days[-n_val:]], dtype=np.int64)
+    in_fit = np.isin(days, fit_days)
     mu = feats[in_fit].mean(0)
     sd = feats[in_fit].std(0)
     sd = np.where(sd == 0, 1.0, sd)
@@ -386,8 +398,8 @@ def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: st
     end = np.arange(look_back - 1, len(z))
     y_end = y[end]
     ok = ~np.isnan(y_end)
-    tr = ok & np.isin(days[end], list(fit_days))
-    va = ok & np.isin(days[end], list(val_days))
+    tr = ok & np.isin(days[end], fit_days)
+    va = ok & np.isin(days[end], val_days)
     y_sd = float(np.nanstd(y_end[tr])) or 1e-3
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -923,20 +935,20 @@ def simulate(df: pd.DataFrame, preds: np.ndarray, days: list, ticker: str, cfg: 
             "trail_profit_usd": 0.0}
     book = Book(scfg, {"start_equity": 1e7})
     atr = atr_px(df).values
-    idx_days = np.array(df.index.date)
+    idx_days = _day_keys(df.index)
     o, h, l, c = (df[k].values for k in ("Open", "High", "Low", "Close"))
     force = {"force_edge": True}
     for d in days:
         b = session_bounds(d)
         if not b:
             continue
-        for i in np.where(idx_days == d)[0]:
+        for i in np.where(idx_days == _dkey(d))[0]:
             bt = df.index[i].to_pydatetime()
             bar = {"open": o[i], "high": h[i], "low": l[i], "close": c[i]}
             book.roll_day(d.isoformat(), {ticker: c[i]})
             on_bar(book, ticker, bt, bar, preds[i], atr[i], force, scfg, True, b[1], {ticker: c[i]})
         if ticker in book.positions:   # data ended early — close at the last bar
-            j = np.where(idx_days == d)[0][-1]
+            j = np.where(idx_days == _dkey(d))[0][-1]
             book.close(ticker, c[j], df.index[j].to_pydatetime(), "session end", scfg)
     return book.trades
 
@@ -996,7 +1008,7 @@ def _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev,
         preds = predict(pack, df, feats_all)
         oos_trades += simulate(df, preds, fold, ticker, cfg)
         y = forward_return(df, h) * 1e4
-        m = np.isin(np.array(df.index.date), fold) & ~np.isnan(preds) & ~np.isnan(y) & (y != 0)
+        m = np.isin(_day_keys(df.index), [_dkey(x) for x in fold]) & ~np.isnan(preds) & ~np.isnan(y) & (y != 0)
         hits += int((np.sign(preds[m]) == np.sign(y[m])).sum())
         tot += int(m.sum())
     edge = edge_metrics(oos_trades, len(test_days), h)
