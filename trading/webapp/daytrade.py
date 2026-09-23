@@ -752,6 +752,10 @@ def align_gate(cfg: dict, stance: dict | None) -> tuple[str | None, str]:
     mode = cfg.get("lt_align") or "off"
     if not stance or mode == "off":
         return None, ""
+    if stance.get("stale"):
+        # A stale long-term view neither gates nor steers entries — it is
+        # ignored, exactly like the off setting, rather than acted upon.
+        return None, stance.get("stale_why") or "stale long-term call"
     d = stance.get("direction")
     if mode == "follow":
         # Follow the long-term call: its side only; Hold per the lt_hold setting.
@@ -1819,6 +1823,15 @@ class Engine:
         for ref in dict.fromkeys(o.get("decision_ref") for o in mine):
             rows = [o for o in mine if o.get("decision_ref") == ref]
             side = self._order_side(rows)
+            intent = rows[-1].get("intent") or {}
+            stale, why = paper.is_stale_call(t, rows[-1].get("decided_at"),
+                                             intent.get("action"), intent.get("stop_loss"),
+                                             intent.get("take_profit"))
+            if stale:
+                paper.drop_pending(ref)     # don't time an order whose premise is gone
+                self._lt_cache = None
+                log(f"long-term order {ref} ({t}) dropped: {why}")
+                continue
             agrees = sig.get("call") == ("BUY NOW" if side == "buy" else "SELL NOW")
             if not (agrees or deadline):
                 continue

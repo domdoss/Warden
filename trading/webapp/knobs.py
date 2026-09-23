@@ -149,6 +149,12 @@ KNOBS = [
          "help": "No day trades on that ticker until the call changes."},
      ],
      "help": "Used when day trades follow the call."},
+    {"key": "lt_stale_age_days", "group": "align", "label": "Long-term call expires after", "type": "int",
+     "default": 1, "min": 0, "max": 30, "step": 1, "unit": "day", "retrain": False,
+     "help": "A TradingAgents call or pending long-term order older than this is stale and the autotrader ignores it. 1 = act only on the newest call. 0 = never expire on age alone."},
+    {"key": "lt_stale_move_pct", "group": "align", "label": "Stale if price moved", "type": "float",
+     "default": 3.0, "min": 0.5, "max": 20.0, "step": 0.5, "unit": "% since the call", "retrain": False,
+     "help": "A call is also stale if the price has moved more than this since it was made, or has already traded through its stated stop or target — either way its premise is gone."},
 
     # -- exits ----------------------------------------------------------------
     {"key": "stop_sigma", "group": "exits", "label": "Stop-loss distance", "type": "float", "default": 1.0,

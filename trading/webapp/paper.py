@@ -224,6 +224,87 @@ def _naive_ts(value) -> pd.Timestamp:
 
 
 # ---------------------------------------------------------------------------
+# Staleness — never act on dead advice
+# ---------------------------------------------------------------------------
+# A TradingAgents call (or a pending long-term order it seeded) has a shelf
+# life: once it is too old, or the price has moved too far since it was made,
+# its premise is gone and acting on it is worse than not acting. Both the run
+# hook and the day-trade engine's long-term link call ``is_stale_call`` before
+# anything is booked or filled.
+
+def _call_age_days(decided_at) -> float:
+    """Calendar days since a decision timestamp (inf when absent)."""
+    if not decided_at:
+        return float("inf")
+    ts = pd.Timestamp(decided_at)
+    if ts.tz is not None:
+        ts = ts.tz_localize(None)
+    return max(0.0, (datetime.utcnow() - ts.to_pydatetime()).total_seconds() / 86400.0)
+
+
+def is_stale_call(ticker: str, decided_at, direction="", stop=None, target=None,
+                  cfg: dict | None = None) -> tuple[bool, str]:
+    """(stale, why). A call/order is stale when it is older than
+    ``lt_stale_age_days``, the price has moved more than ``lt_stale_move_pct``
+    since it was made, or it has already traded through its stop (adverse) or
+    target (favorable). Missing data fails open (never stale) — the guard only
+    blocks advice that is demonstrably dead."""
+    cfg = dict(cfg or link_cfg())
+    age_days = float(cfg.get("lt_stale_age_days", 1))
+    move_pct = float(cfg.get("lt_stale_move_pct", 3.0))
+    if not decided_at:
+        return False, ""
+
+    days = _call_age_days(decided_at)
+    if age_days > 0 and days > age_days:
+        return True, f"stale: {days:.1f} days old (limit {age_days:g})"
+
+    if move_pct <= 0:
+        return False, ""
+
+    # Reference price at decision time = the daily close on/before it; current
+    # price = the live close series (falls back to the last daily close).
+    ohlc = daily_ohlc(ticker)
+    cutoff = _naive_ts(decided_at)
+    base = None
+    since = pd.DataFrame()
+    if not ohlc.empty:
+        idx = _naive_index(ohlc.index)
+        before = idx <= cutoff
+        if before.any():
+            base = float(ohlc[before]["Close"].iloc[-1])
+        since = ohlc[~before]
+    cur = last_close(ticker)
+    if cur is None and not ohlc.empty:
+        cur = float(ohlc["Close"].iloc[-1])
+    if base and cur and base > 0:
+        moved = abs(cur / base - 1.0) * 100.0
+        if moved > move_pct:
+            return True, f"stale: price moved {moved:+.1f}% since the call (limit {move_pct:g}%)"
+
+    d = str(direction).lower()
+    long = d in ("buy", "bullish", "long", "overweight")
+    short = d in ("sell", "bearish", "short", "underweight")
+    if long or short:
+        if stop is not None and cur:
+            if (cur <= stop) if long else (cur >= stop):
+                return True, f"stale: traded through stop {stop:g}"
+        if target is not None and cur:
+            if (cur >= target) if long else (cur <= target):
+                return True, f"stale: target {target:g} already reached"
+        if not since.empty:
+            if stop is not None:
+                crossed = (since["Low"] <= stop).any() if long else (since["High"] >= stop).any()
+                if crossed:
+                    return True, f"stale: traded through stop {stop:g}"
+            if target is not None:
+                hit = (since["High"] >= target).any() if long else (since["Low"] <= target).any()
+                if hit:
+                    return True, f"stale: target {target:g} already reached"
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
 # Trade-intent extraction (LLM primary, regex fallback)
 # ---------------------------------------------------------------------------
 
@@ -579,6 +660,12 @@ def execute_run_decisions(record: dict) -> list[dict]:
                 continue
             decision_ref = f"{run_id}:{ticker}"
             intent = extract_intent(t["decision"], ticker)
+            stale, why = is_stale_call(ticker, decided_at, intent.get("action"),
+                                       intent.get("stop_loss"), intent.get("take_profit"))
+            if stale:
+                executed.append({"ticker": ticker, "action": "skip",
+                                 "status": "stale", "note": why})
+                continue
             try:
                 booked = _book_intent(paper, ticker, intent, decision_ref, run_id, decided_at)
             except Exception as exc:
@@ -789,6 +876,12 @@ def resolve_pending(paper: dict) -> int:
     still: list[dict] = []
     filled = 0
     for pending in paper.get("pending_trades", []):
+        intent = pending.get("intent") or {}
+        stale, why = is_stale_call(pending["ticker"], pending.get("decided_at"),
+                                   intent.get("action"), intent.get("stop_loss"),
+                                   intent.get("take_profit"))
+        if stale:                    # never fill (or keep) an order whose premise is gone
+            continue
         try:
             engine_times_it = _ENGINE_FILLS(pending)
         except Exception:
@@ -845,10 +938,25 @@ def fill_pending_now(decision_ref: str, price: float, when: str, how: str) -> di
             "trades": len(paper["trades"]) - n_before, "how": how}
 
 
+def drop_pending(decision_ref: str) -> bool:
+    """Remove one pending order (by decision_ref) without filling it — used to
+    discard stale advice before the day trader would otherwise time it."""
+    with _PASS_LOCK:
+        paper = load_paper()
+        n = len(paper["pending_trades"])
+        paper["pending_trades"] = [p for p in paper["pending_trades"]
+                                   if p.get("decision_ref") != decision_ref]
+        if len(paper["pending_trades"]) == n:
+            return False
+        save_paper(paper)
+        return True
+
+
 def position_context(ticker: str, last_rating: dict | None = None) -> str:
     """One factual line for TradingAgents about where this ticker stands in
-    the paper account: the open position, the pending order, its own last
-    call and what the price did since. Empty when the link is off."""
+    the paper account: the open position, the pending order, its call history,
+    realized trade history and what the price did since. Empty when the link
+    is off."""
     if not link_cfg().get("lt_memory", False):
         return ""
     ticker = ticker.upper()
@@ -880,17 +988,23 @@ def position_context(ticker: str, last_rating: dict | None = None) -> str:
         # Older calls live only in the report folders; the caller passes the newest.
         calls = [{"direction": last_rating["rating"], "date": last_rating.get("date")}]
     if calls:
-        last = calls[-1]
-        s = f"your last call: {str(last.get('direction', '?')).upper()} on {last.get('date')}"
+        hist = ", ".join(f"{str(c.get('direction', '?')).upper()}@{c.get('date')}"
+                         for c in calls[-5:])
+        s = f"your call history: {hist}"
         ohlc = daily_ohlc(ticker)
-        if px and not ohlc.empty and last.get("date"):
+        if px and not ohlc.empty and calls[-1].get("date"):
             idx = _naive_index(ohlc.index)
-            before = ohlc[idx <= pd.Timestamp(last["date"])]
+            before = ohlc[idx <= pd.Timestamp(calls[-1]["date"])]
             if not before.empty:
                 s += f"; price since then {(px / float(before['Close'].iloc[-1]) - 1) * 100:+.1f}%"
         bits.append(s)
     else:
         bits.append("no previous call on record")
+    closed = [t for t in paper.get("trades", []) if t.get("ticker") == ticker and t.get("pnl") is not None]
+    if closed:
+        total = sum(float(t["pnl"]) for t in closed)
+        recent = ", ".join(f"{t.get('reason', 'trade')} {float(t['pnl']):+.2f}" for t in closed[-5:])
+        bits.append(f"realized trades ({len(closed)} closed, total P&L {total:+.2f}): {recent}")
     return ("paper account: " + "; ".join(bits)
             + ". State the target position for this ticker: buy, sell, hold, trim or close, and its size as % of equity.")
 
