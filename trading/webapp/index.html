@@ -862,25 +862,22 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
   .md-chart .bl { max-width: 14ch; }
   .schedule-grid { grid-template-columns: 1fr; }
 
-  /* Topbar: title/status/theme on row 1, Fast·Crawl toggle + Run on row 2.
-   * Without a wrap the five controls compress into one blob in portrait. */
+  /* Topbar: title/status/theme on row 1, account + Fast·Crawl toggles + Run
+   * on row 2. Without a wrap the six controls compress into one blob in portrait. */
   .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
   .topbar::after { content: ''; order: 19; flex-basis: 100%; height: 0; }
+  #acctToggle { order: 20; flex: 1 1 auto; }
+  #acctToggle .acct-opt { flex: 1; padding: 8px 6px; font-size: 12px; }
   #runModeToggle { order: 20; flex: 1 1 auto; }
   #runModeToggle .acct-opt { flex: 1; padding: 8px 6px; font-size: 12px; }
   #runBtn { order: 21; padding: 8px 12px; font-size: 12px; }
   #stopBtn, #resumeBtn, #discardBtn { order: 22; padding: 8px 10px; font-size: 12px; }
   .status-pill { padding: 5px 9px; font-size: 12px; }
 
-  /* Section-title action rows (Paper account: Simulated/Live + New trade +
-   * Refresh + Reset): wrap so the title never crushes the controls into a
-   * blob in portrait. Toggle gets its own full row for tap targets. */
+  /* Section-title action rows (Paper account: New trade + Refresh + Reset):
+   * wrap so the title never crushes the controls into a blob in portrait. */
   .section-title { flex-wrap: wrap; row-gap: 8px; }
   .section-title .spacer { display: none; }
-  .section-title #acctToggle {
-    order: 10; flex: 1 1 100%; display: flex;
-  }
-  .section-title #acctToggle .acct-opt { flex: 1; padding: 9px 6px; }
 
   /* Density: on a 390px portrait, 24px content + 18px card padding burns
    * ~84px — more than a fifth of the width — as blank gutter. */
@@ -958,6 +955,9 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
       <h1 id="pageTitle">Dashboard</h1>
       <div class="spacer"></div>
       <div id="statusPill" class="status-pill"><span class="led"></span><span id="statusText">idle</span></div>
+      <div class="acct-toggle" id="acctToggle" title="Account: Simulated = paper trades, Live = real account (when connected)">
+        <button class="acct-opt" data-mode="simulated">Simulated</button><button class="acct-opt" data-mode="live">Live</button>
+      </div>
       <div class="acct-toggle" id="runModeToggle" title="Analysis model: Fast = granite 8b, Crawl = granite 30b">
         <button class="acct-opt" id="modeFast">Fast · 8b</button><button class="acct-opt" id="modeCrawl">Crawl · 30b</button>
       </div>
@@ -1077,6 +1077,7 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
           <div class="dt-row dt-controls">
             <button class="btn btn-primary btn-sm" id="dtStart">Start live</button>
             <button class="btn btn-sm" id="dtStop" hidden>Stop engine</button>
+            <span class="dt-sub" id="dtModels" hidden></span>
             <label class="dt-replay-lbl" for="dtTrainWin">Train on</label>
             <select id="dtTrainWin" title="How much 1-minute history each model trains and is tested on. Changing it retrains every model.">
               <option value="week">last week</option><option value="month">last month</option><option value="year">last year</option><option value="2years">last 2 years</option><option value="all">all history (~5 yrs)</option>
@@ -1292,9 +1293,6 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
         <div class="card" style="margin-bottom:16px">
           <div class="section-title">Account — trades follow the Portfolio Manager's stated sizing, stops &amp; horizons
             <div class="spacer"></div>
-            <div class="acct-toggle" id="acctToggle">
-              <button class="acct-opt" data-mode="simulated">Simulated</button><button class="acct-opt" data-mode="live">Live</button>
-            </div>
             <button class="btn btn-ghost btn-sm" id="paperNewTrade">New trade</button>
             <button class="btn btn-ghost btn-sm" id="paperRefresh">Refresh</button>
             <button class="btn btn-ghost btn-sm" id="paperReset">Reset</button>
@@ -2743,6 +2741,9 @@ function dtRender(s) {
   $('#dtStop').hidden = !s.engine_on;
   $('#dtReplay').disabled = replaying;
   $('#dtReplayStop').hidden = !replaying;
+  { const ms = $('#dtModels');
+    if (s.loaded_set) { ms.hidden = false; ms.textContent = `models: “${s.loaded_set}” — Start reuses this save (Train models retrains past it)`; }
+    else ms.hidden = true; }
 
   dtRenderTraining(s.training);
   { const busy = !!(s.training && !s.training.finished);
