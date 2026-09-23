@@ -61,7 +61,7 @@ Each `/api/liquid` forecast carries `call: {action: "BUY"|"SELL"|"NO SIGNAL", re
 
 ## Day trading (intraday, PAPER ONLY)
 
-A separate intraday engine (`trading/webapp/daytrade.py`) with its own simulated account — no broker, no real orders. Per ticker, a liquid NN (CfC) reads the last 30 one-minute bars (Yahoo 1m, regular session) and predicts the return over the next `horizon_min` minutes (default 15). Each ticker's edge comes from a walk-forward backtest (3 folds, each trained only on earlier sessions) that trades the exact live rules and charges spread + slippage on every fill (`cost_bps` = round trip).
+An intraday engine (`trading/webapp/daytrade.py`) trading the SAME paper account as the long-term holdings — no broker, no real orders. One account, two uses: TradingAgents positions held for weeks/months, and intraday round trips. Day trades size off the account's equity, are capped by its free cash, and each closed round trip posts its net-of-cost P&L into the account's cash and trade log (`strategy: "intraday"`, reason `intraday <side>: <exit>`). Open day trades live in the engine's book (`/api/daytrade/status` → `positions`), not in `/api/paper` positions. The accuracy scorecard measures only TradingAgents decisions. Replays never touch the account. Per ticker, a liquid NN (CfC) reads the last 30 one-minute bars (regular session; data from Alpaca when `~/.config/alpha-stack/alpaca.env` holds a key — full-market SIP history up to a year, real-time IEX bars live — else Yahoo, ~30 days). Each model trains on the `train_window` (`week` / `month` / `year`) of history and predicts the return over the next `horizon_min` minutes (default 15). Each ticker's edge comes from a walk-forward backtest (3 folds, each trained only on earlier sessions) that trades the exact live rules and charges spread + slippage on every fill (`cost_bps` = round trip).
 
 Calls per ticker: `BUY NOW` / `SELL NOW` (short, or exit a long) / `HOLD` / `STAND ASIDE`. A ticker whose out-of-sample edge net of costs is not positive is always `STAND ASIDE` ("no edge"), whatever the model predicts.
 
@@ -71,7 +71,9 @@ Calls per ticker: `BUY NOW` / `SELL NOW` (short, or exit a long) / `HOLD` / `STA
 | `GET /api/daytrade/signals` | `{asof, tickers:[{ticker, call, reason, confidence, entry, stop, target, pred_return_bps, horizon_min, last_price, bar_time, bar_age_s, edge, model_state}]}` |
 | `GET /api/daytrade/trades` | `trades[]` fills (open/close), `round_trips[]`, `replay_trades[]` |
 | `GET /api/daytrade/stream` | live SSE feed of the same snapshot |
-| `GET/POST /api/daytrade/config` | tickers (empty = portfolio ∪ watchlist), horizon, `cost_bps`, risk limits, `auto_execute` |
+| `GET /api/daytrade/knobs` | every knob with its group, plain-English help, range, default, current value, and whether it retrains (source: `trading/webapp/knobs.py`) |
+| `POST /api/daytrade/config` | partial update of any knob (validated; 400 names the key). Response `retrain_needed` = model knobs changed → models need Train models. `POST /api/daytrade/config/reset {group?}` restores defaults. |
+| `POST /api/daytrade/train` | queues a model for every ticker on the current window (skips current ones). Only start when the user asks — a year of minute bars is GPU-minutes per ticker. Cards show `model_state` `untrained` until then. |
 | `POST /api/daytrade/start` / `stop` | engine on/off (`{"mode":"replay"}` on start = replay) |
 | `POST /api/daytrade/replay` | `{tickers?, speed?, date?, auto?, ignore_edge?}` — reruns a past session through the live rules |
 | `POST /api/daytrade/trade` | `{ticker, action: buy|sell|close}` — a manual paper fill at the live price (market hours only) |
