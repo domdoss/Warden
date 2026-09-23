@@ -1335,6 +1335,25 @@ class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload):
         self._send(status, payload, "application/json")
 
+    def _post_upload(self):
+        """Manual price-data upload: the raw file is the body; options ride in
+        headers (X-Filename, X-Ticker, X-Timezone, X-Overwrite)."""
+        import uploads
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return self._send_json(400, {"ok": False, "error": "empty upload"})
+        if length > 2 * 1024 ** 3:
+            return self._send_json(413, {"ok": False, "error": "file over 2 GB — split it or compress it (zip/gz/xz/zst are accepted)"})
+        data = self.rfile.read(length)
+        name = urllib.parse.unquote(self.headers.get("X-Filename") or "upload.csv")
+        try:
+            res = uploads.ingest(name, data, ticker=self.headers.get("X-Ticker") or None,
+                                 tz_name=self.headers.get("X-Timezone") or "America/New_York",
+                                 overwrite=(self.headers.get("X-Overwrite") or "").lower() in ("1", "true", "yes"))
+        except Exception as exc:
+            return self._send_json(400, {"ok": False, "error": f"{name}: {exc}"})
+        return self._send_json(200 if res["ok"] else 400, res)
+
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -1429,6 +1448,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(200, eng.snapshot())
         if path == "/api/daytrade/overview":
             return self._send_json(200, eng.longterm_payload())
+        if path == "/api/daytrade/uploads":
+            import uploads
+            return self._send_json(200, {"ok": True, "log": uploads.history_log()})
         if path == "/api/daytrade/models/sets":
             return self._send_json(200, eng.list_model_sets())
         if path == "/api/daytrade/knobs":
@@ -1512,6 +1534,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 - stdlib signature
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/daytrade/upload":
+            return self._post_upload()
         if path.startswith("/api/daytrade/"):
             return self._post_daytrade(path)
 
