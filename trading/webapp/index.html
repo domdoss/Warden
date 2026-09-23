@@ -1633,10 +1633,13 @@ function renderLiquid() {
 $('#liquidRefresh').onclick = loadLiquid;
 
 /* ---------- Day-trade engine (short-term brain, on the long-term dashboard) ---------- */
+// The walk-forward edge test only matters in Edge mode; AI mode never shows it.
+const dtEdgeMode = () => (((typeof DT !== 'undefined' && DT.snap && DT.snap.config) || {}).trade_mode === 'edge');
 let daytradeCache = null;
 function daytradeEdgeBadge(t) {
   const e = t.edge || {};
   if (t.model_state === 'untrained') return '<span class="trust low" title="No intraday model trained yet">not trained</span>';
+  if (!dtEdgeMode()) return '';
   if (!e.trades) return '<span class="trust low" title="No walk-forward test result yet">untested</span>';
   const title = `Walk-forward test: ${e.trades} trades over ${e.test_days ?? '?'} sessions · avg ${e.avg_net_bps} bps net of costs · win rate ${e.win_rate_pct ?? '—'}%`;
   return t.has_edge
@@ -2508,7 +2511,7 @@ function dtRenderTraining(tr) {
   }).join('');
   if (tr.queued && tr.queued.length && !tr.finished) cur += `<div class="cur" style="color:var(--muted)">Next: ${esc(tr.queued.join(', '))}</div>`;
   const chips = done.map(d => d.ok
-    ? `<span class="chip ${d.has_edge ? 'edge' : ''}" title="${d.sessions || '?'} sessions · ${d.trades ?? 0} test trades">${esc(d.ticker)} ✓ ${dtDur(d.seconds)} · ${d.has_edge ? 'edge' : 'no edge'} ${d.avg_net_bps != null ? (d.avg_net_bps > 0 ? '+' : '') + dtNum(d.avg_net_bps, 1) + ' bps' : ''}</span>`
+    ? `<span class="chip ${d.has_edge ? 'edge' : ''}" title="${d.sessions || '?'} sessions · ${d.trades ?? 0} test trades">${esc(d.ticker)} ✓ ${dtDur(d.seconds)}${dtEdgeMode() ? ` · ${d.has_edge ? 'edge' : 'no edge'} ${d.avg_net_bps != null ? (d.avg_net_bps > 0 ? '+' : '') + dtNum(d.avg_net_bps, 1) + ' bps' : ''}` : ''}</span>`
     : `<span class="chip err" title="${esc(d.error || '')}">${esc(d.ticker)} ✗ ${esc((d.error || 'failed').slice(0, 60))}</span>`).join('');
   el.innerHTML = head.replace('<b>', '<div class="hd"><b>') + '</div>' +
     `<div class="dt-prog"><div style="width:${tr.finished ? 100 : pct}%"></div></div>${cur}` +
@@ -2676,16 +2679,16 @@ function dtRender(s) {
                      : '<span>no trades</span>';
           const test = e.trades == null ? (pt[t] ? '—' : 'model error')
                      : `${e.avg_net_bps >= 0 ? '+' : ''}${e.avg_net_bps} bps × ${e.trades}`;
-          return `<tr><td><b>${esc(t)}</b></td><td>${test}</td><td>${gate}</td><td>${x.trades}</td>` +
+          return `<tr><td><b>${esc(t)}</b></td>${dtEdgeMode() ? `<td>${test}</td>` : ''}<td>${gate}</td><td>${x.trades}</td>` +
                  `<td style="color:${x.pnl > 0 ? 'var(--up)' : x.pnl < 0 ? 'var(--down)' : 'inherit'}">${dtMoney(x.pnl, true)}</td></tr>`;
         }).join('');
         sum += `<div class="dt-rep-wrap"><table class="dt-rep-tbl"><thead><tr><th>Ticker</th>` +
-               `<th title="Walk-forward test on the sessions before the replayed day, net of costs">Pre-session test</th>` +
+               (dtEdgeMode() ? `<th title="Walk-forward test on the sessions before the replayed day, net of costs">Pre-session test</th>` : '') +
                `<th>Outcome</th><th>Trades</th><th>P&amp;L</th></tr></thead><tbody>${rows}</tbody></table></div>`;
       }
     }
     rb.innerHTML = `Replay of week <b>${esc(r.week || r.session || r.date || 'latest')}</b> · ${r.model === 'fresh' ? 'retrained through ' + esc(r.trained_through || '—') + ' (honest test)' : 'current models' + (r.trained_through ? ' (trained through ' + esc(r.trained_through) + ')' : '')} · ${esc(r.speed || '?')}× — ${phase}` +
-                   `${r.in_sample || (r.summary && r.summary.in_sample) ? '<div class="dt-sub" style="color:var(--amber)">In-sample: these models trained on this week, so results look better than real trading would. The edge badge (walk-forward test) is the honest score.</div>' : ''}` +
+                   `${r.in_sample || (r.summary && r.summary.in_sample) ? '<div class="dt-sub" style="color:var(--amber)">In-sample: these models trained on this week, so results look better than real trading would.</div>' : ''}` +
                    `${r.skipped_untrained && r.skipped_untrained.length ? '<div class="dt-sub">Skipped (not trained): ' + esc(r.skipped_untrained.join(', ')) + '</div>' : ''}` +
                    `<div class="dt-prog"><div style="width:${r.done ? 100 : pct}%"></div></div>${sum}`;
   } else rb.hidden = true;
@@ -2798,7 +2801,7 @@ function dtFillCard(card, t, s) {
   const edgeTitle = e.trades != null
     ? `Walk-forward test: ${e.trades} trades over ${e.test_days ?? '?'} sessions · avg ${e.avg_net_bps} bps net of costs · win rate ${e.win_rate_pct ?? '—'}%`
     : 'Not tested yet';
-  const edgeBadge = hasEdge
+  const edgeBadge = !dtEdgeMode() ? '' : hasEdge
     ? `<span class="trust ok" title="${esc(edgeTitle)}">edge ${e.avg_net_bps > 0 ? '+' : ''}${dtNum(e.avg_net_bps, 1)} bps/trade net</span>`
     : `<span class="trust low" title="${esc(edgeTitle)}">no edge</span>`;
   const ms = t.model_state || '';
