@@ -7,13 +7,15 @@ Pieces:
 - Data: yfinance 1-minute bars (regular session only). Yahoo serves 1m bars
   for the last 30 days, at most ~8 days per request, so history is fetched in
   7-day chunks (~20 sessions). Bar age is measured, never assumed.
-- Signals: there is no predictive model. The signal is the ticker's own move
-  over the horizon window (close now vs close ``horizon_min`` minutes ago,
-  in bps) — computed here, on the bars, in live and replay alike.
-- Decision: purely knob-driven — the move clears the entry bar
-  (round-trip cost × edge_mult) and then stops/targets/timing/alignment
-  rules apply. A future auto bot can still feed its own predictions through
-  ``_evaluate(pred=…)`` to override the move-based signal.
+- Model: per ticker, a liquid time-constant network (ncps CfC, torch) over the
+  last 30 one-minute bars of scale-free features predicting the log return
+  over the next ``horizon_min`` minutes. Default 15 min: long enough that the
+  expected move is several times the round-trip cost on liquid large caps,
+  short enough to stay an intraday call, and tolerant of a delayed feed.
+- Edge: walk-forward (3 chronological folds, each trained only on earlier
+  sessions), trading the exact live rules with spread + slippage charged on
+  every fill. A ticker whose out-of-sample edge net of costs is not positive
+  gets STAND ASIDE regardless of what the model predicts.
 - Engine: one thread. Live mode polls the last price every few seconds,
   re-evaluates on each completed 1m bar, manages stops/targets/time exits,
   a daily-loss kill switch and a flatten before the close. Replay mode runs
@@ -28,6 +30,7 @@ import json
 import math
 import os
 import sys
+import queue
 import threading
 import time
 import traceback
@@ -42,6 +45,7 @@ import yfinance as yf
 ET = ZoneInfo("America/New_York")
 ROOT = Path(__file__).resolve().parent.parent / ".alpha-stack" / "daytrade"
 STATE_FILE = ROOT / "state.json"
+MODEL_DIR = ROOT / "models"
 BARS_DIR = ROOT / "bars"
 
 HISTORY_DAYS = 29          # Yahoo: 1m bars reach back ~30 days
@@ -88,8 +92,17 @@ import knobs
 DEFAULT_CONFIG = {**knobs.defaults(), "start_equity": 25000.0}
 # Bumped when defaults change meaningfully: a saved config from an older
 # version keeps only the user's own choices below and takes the new defaults.
-KNOBS_VERSION = 3
-KEEP_ON_UPGRADE = ("tickers", "extra_tickers", "auto_execute")
+KNOBS_VERSION = 2
+KEEP_ON_UPGRADE = ("tickers", "extra_tickers", "auto_execute", "train_window", "train_workers")
+
+# Calendar days of history per training window. Yahoo (no Alpaca key) caps
+# every window at the ~30 days of 1m bars it serves.
+TRAIN_WINDOWS = {"week": 7, "month": 30, "year": 365, "2years": 730, "all": 3650}
+MIN_SESSIONS = 5
+
+# All computable inputs; each model uses the subset in cfg["features"].
+FEATS = ["r1", "r5", "r15", "vwap_dist", "open_ret", "range_pos", "rsi", "atr",
+         "vol_z", "tod_sin", "tod_cos", "gap"]
 
 
 def log(msg: str) -> None:
@@ -168,12 +181,16 @@ def _session_only(df: pd.DataFrame) -> pd.DataFrame:
     return df[keep]
 
 
-def fetch_history(ticker: str) -> pd.DataFrame:
-    """Training history of 1m bars: a year of Alpaca SIP bars when an Alpaca
-    key is configured, else ~20 sessions from Yahoo (cached per day)."""
+def fetch_history(ticker: str, days: int = ALPACA_HISTORY_DAYS) -> pd.DataFrame:
+    """Training history of 1m bars: ``days`` of Alpaca SIP bars when an Alpaca
+    key is configured (default a year), else ~20 sessions from Yahoo. Beyond a
+    year it uses only what the cache already holds — the deep multi-year
+    caches — so a long window never starts a multi-year download."""
     import alpaca_data
     if alpaca_data.available():
-        return _session_only(alpaca_data.history(ticker, ALPACA_HISTORY_DAYS))
+        if days > ALPACA_HISTORY_DAYS:
+            days = max(ALPACA_HISTORY_DAYS, min(days, alpaca_data.cached_depth_days(ticker)))
+        return _session_only(alpaca_data.history(ticker, days))
     today = datetime.now(ET).date().isoformat()
     cache = BARS_DIR / f"{ticker}_{today}.pkl"
     if cache.exists():
@@ -216,12 +233,231 @@ def fetch_recent(tickers: list[str], period: str = "1d") -> dict[str, pd.DataFra
     return {t: _pick(raw, t) for t in tickers}
 
 
+# ---------------------------------------------------------------------------
+# Features + model
+# ---------------------------------------------------------------------------
+
+def features(df: pd.DataFrame) -> pd.DataFrame:
+    c, o, h, l, v = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
+    day = pd.Series(df.index.date, index=df.index)
+    lc = np.log(c)
+    f = pd.DataFrame(index=df.index)
+    f["r1"] = lc.diff()
+    f["r5"] = lc.diff(5)
+    f["r15"] = lc.diff(15)
+    tp = (h + l + c) / 3
+    vwap = (tp * v).groupby(day).cumsum() / v.groupby(day).cumsum().replace(0, np.nan)
+    f["vwap_dist"] = c / vwap - 1
+    day_open = o.groupby(day).transform("first")
+    f["open_ret"] = c / day_open - 1
+    hi, lo = h.groupby(day).cummax(), l.groupby(day).cummin()
+    f["range_pos"] = ((c - lo) / (hi - lo).replace(0, np.nan) - 0.5).fillna(0)
+    delta = c.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    f["rsi"] = (100 - 100 / (1 + gain / loss.replace(0, np.nan))) / 100 - 0.5
+    prev = c.shift(1)
+    tr = pd.concat([h - l, (h - prev).abs(), (l - prev).abs()], axis=1).max(axis=1)
+    f["atr"] = tr.ewm(alpha=1 / 14, adjust=False).mean() / c
+    lv = np.log1p(v)
+    f["vol_z"] = (lv - lv.rolling(60).mean()) / lv.rolling(60).std()
+    mins = (df.index.hour * 60 + df.index.minute - 570) / 390.0
+    f["tod_sin"] = np.sin(2 * np.pi * mins)
+    f["tod_cos"] = np.cos(2 * np.pi * mins)
+    last_close = c.groupby(day).last()
+    prev_close = last_close.shift(1)
+    f["gap"] = (day_open / day.map(prev_close) - 1).fillna(0)
+    return f.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
 
 def atr_px(df: pd.DataFrame) -> pd.Series:
     c, h, l = df["Close"], df["High"], df["Low"]
     prev = c.shift(1)
     tr = pd.concat([h - l, (h - prev).abs(), (l - prev).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / 14, adjust=False).mean()
+
+
+def forward_return(df: pd.DataFrame, horizon: int) -> np.ndarray:
+    lc = np.log(df["Close"].values)
+    days = np.array(df.index.date)
+    fwd = np.full(len(df), np.nan)
+    if len(df) > horizon:
+        same = days[horizon:] == days[:-horizon]
+        r = lc[horizon:] - lc[:-horizon]
+        fwd[:-horizon] = np.where(same, r, np.nan)
+    return fwd
+
+
+def _net_class(n_feats: int, units: int):
+    import torch
+    from ncps.torch import CfC
+
+    class Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rnn = CfC(n_feats, units, batch_first=True)
+            self.head = torch.nn.Linear(units, 1)
+
+        def forward(self, x):
+            out, _ = self.rnn(x)
+            return self.head(out[:, -1])
+    return Net
+
+
+def _windows(z: np.ndarray, look_back: int) -> np.ndarray:
+    from numpy.lib.stride_tricks import sliding_window_view
+    return sliding_window_view(z, (look_back, z.shape[1]))[:, 0].astype(np.float32)
+
+
+# Training runs several tickers at once (config "train_workers", 1–6): one
+# device slot per worker, dealt round-robin across the GPUs. The model is
+# small, so one ticker per GPU leaves it mostly idle between steps.
+MAX_TRAIN_WORKERS = 6
+_SLOTS: queue.Queue | None = None
+_SLOTS_N = 0
+_SLOTS_LOCK = threading.Lock()
+
+
+def free_gpu_from_ollama() -> None:
+    """Unload every model ollama holds in VRAM (keep_alive 0) so training gets
+    the GPUs. Ollama reloads a model on its next request."""
+    base = "http://127.0.0.1:11434"
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"{base}/api/ps", timeout=5) as r:
+            loaded = [m["name"] for m in json.loads(r.read()).get("models", [])]
+        for name in loaded:
+            req = urllib.request.Request(f"{base}/api/generate", data=json.dumps({"model": name, "keep_alive": 0}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=30).read()
+        if loaded:
+            log(f"unloaded ollama models for training: {', '.join(loaded)}")
+    except Exception as exc:
+        log(f"could not unload ollama models: {exc}")
+
+
+def set_train_workers(n: int) -> None:
+    """Size the slot pool to ``n``. Only rebuilt while every slot is free, so
+    a change made mid-batch takes effect on the next batch."""
+    global _SLOTS, _SLOTS_N
+    with _SLOTS_LOCK:
+        if _SLOTS is not None and (n == _SLOTS_N or _SLOTS.qsize() != _SLOTS_N):
+            return
+        import torch
+        gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        _SLOTS = queue.Queue()
+        for i in range(n):
+            _SLOTS.put(f"cuda:{i % gpus}" if gpus else "cpu")
+        _SLOTS_N = n
+
+
+def _device_slots() -> queue.Queue:
+    if _SLOTS is None:
+        set_train_workers(DEFAULT_CONFIG["train_workers"])
+    return _SLOTS
+
+
+def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: str | None = None) -> dict:
+    """Train on ``train_days`` (the newest val_share_pct of them held out for
+    early stopping). Returns a pack usable by ``predict``."""
+    import torch
+    horizon, look_back, units = int(cfg["horizon_min"]), int(cfg["look_back"]), int(cfg["hidden_units"])
+    cols = list(cfg["features"])
+    feats = features(df)[cols].values.astype(np.float64)
+    y = forward_return(df, horizon)
+    days = np.array(df.index.date)
+    n_val = max(2, int(round(len(train_days) * cfg["val_share_pct"] / 100)))
+    fit_days, val_days = set(train_days[:-n_val]), set(train_days[-n_val:])
+    in_fit = np.isin(days, list(fit_days))
+    mu = feats[in_fit].mean(0)
+    sd = feats[in_fit].std(0)
+    sd = np.where(sd == 0, 1.0, sd)
+    z = np.clip((feats - mu) / sd, -6, 6)
+    X = _windows(z, look_back)
+    end = np.arange(look_back - 1, len(z))
+    y_end = y[end]
+    ok = ~np.isnan(y_end)
+    tr = ok & np.isin(days[end], list(fit_days))
+    va = ok & np.isin(days[end], list(val_days))
+    y_sd = float(np.nanstd(y_end[tr])) or 1e-3
+
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(0)
+    net = _net_class(len(cols), units)().to(dev)
+    opt = torch.optim.Adam(net.parameters(), lr=float(cfg["learning_rate"]), weight_decay=float(cfg["weight_decay"]))
+    batch, epochs, patience = int(cfg["batch_size"]), int(cfg["max_epochs"]), int(cfg["patience"])
+    # Research objective (edge_lab): "sign" trains the output's SIGN toward sign(y),
+    # weighted by move size — decide() trades the sign, so this aligns the loss with
+    # the decision. Default "mse" keeps the live models byte-identical.
+    objective = str(cfg.get("objective") or "mse").lower()
+    loss_fn = torch.nn.MSELoss()
+    xt = torch.from_numpy(X[tr]).to(dev)
+    yt = torch.from_numpy((y_end[tr] / y_sd).astype(np.float32)[:, None]).to(dev)
+    xv = torch.from_numpy(X[va]).to(dev)
+    yv = torch.from_numpy((y_end[va] / y_sd).astype(np.float32)[:, None]).to(dev)
+    if objective == "sign":
+        sg_t = torch.from_numpy(np.sign(y_end[tr]).astype(np.float32)).to(dev)
+        wt_t = torch.from_numpy(np.where(np.sign(y_end[tr]) == 0, 0.0,
+                                         1.0 + np.abs(y_end[tr]) / y_sd).astype(np.float32)).to(dev)
+        sg_v = torch.from_numpy(np.sign(y_end[va]).astype(np.float32)).to(dev)
+        wt_v = torch.from_numpy(np.where(np.sign(y_end[va]) == 0, 0.0,
+                                         1.0 + np.abs(y_end[va]) / y_sd).astype(np.float32)).to(dev)
+
+        def sign_loss(out_b, sg_b, wt_b):
+            return (wt_b * torch.nn.functional.softplus(-sg_b * out_b[:, 0])).mean()
+    best, best_state, bad = float("inf"), None, 0
+    for ep in range(epochs):
+        if on_epoch:
+            on_epoch(ep + 1, epochs)
+        net.train()
+        perm = torch.randperm(len(xt), device=dev)
+        for i in range(0, len(xt), batch):
+            idx = perm[i:i + batch]
+            opt.zero_grad()
+            out = net(xt[idx])
+            if objective == "sign":
+                loss = sign_loss(out, sg_t[idx], wt_t[idx])
+            else:
+                loss = loss_fn(out, yt[idx])
+            loss.backward()
+            opt.step()
+        net.eval()
+        with torch.no_grad():
+            if objective == "sign":
+                vl = float(sign_loss(net(xv), sg_v, wt_v)) if len(xv) else 0.0
+            else:
+                vl = float(loss_fn(net(xv), yv)) if len(xv) else 0.0
+        if vl < best - 1e-5:
+            best, bad = vl, 0
+            best_state = {k: t.detach().clone() for k, t in net.state_dict().items()}
+        else:
+            bad += 1
+            if bad >= patience:
+                break
+    if best_state is not None:
+        net.load_state_dict(best_state)
+    net.eval()
+    return {"net": net, "mu": mu, "sd": sd, "y_sd": y_sd, "dev": dev, "horizon": horizon,
+            "val_loss": best, "features": cols, "look_back": look_back, "units": units}
+
+
+def predict(pack: dict, df: pd.DataFrame) -> np.ndarray:
+    """Predicted forward log return in bps for every bar (NaN before a full window)."""
+    import torch
+    lb = pack["look_back"]
+    feats = features(df)[pack["features"]].values.astype(np.float64)
+    z = np.clip((feats - pack["mu"]) / pack["sd"], -6, 6)
+    out = np.full(len(df), np.nan)
+    if len(z) < lb:
+        return out
+    X = _windows(z, lb)
+    preds = []
+    with torch.no_grad():
+        for i in range(0, len(X), 4096):
+            xb = torch.from_numpy(X[i:i + 4096]).to(pack["dev"])
+            preds.append(pack["net"](xb).cpu().numpy()[:, 0])
+    out[lb - 1:] = np.concatenate(preds) * pack["y_sd"] * 1e4
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +470,10 @@ def cost_per_fill(cfg: dict) -> float:
 
 def round_trip_bps(cfg: dict) -> float:
     return cfg["spread_bps"] + 2 * cfg["slippage_bps"]
+
+
+class TrainingStopped(Exception):
+    """Raised inside a fit (at an epoch boundary) when training is stopped."""
 
 
 class SharedAccount:
@@ -402,7 +642,8 @@ def align_gate(cfg: dict, stance: dict | None) -> tuple[str | None, str]:
     "both" or None. "off" never blocks. "with_stance" holds back entries
     against the stance (shorts on bullish names, longs on bearish ones).
     "with_stance_hold" also stands aside entirely on names whose stance is
-    hold.
+    hold. Walk-forward edge tests and backtests never pass a stance, so a
+    measured edge stays the intraday model's own.
     """
     mode = cfg.get("lt_align") or "off"
     if not stance or mode == "off":
@@ -418,9 +659,9 @@ def align_gate(cfg: dict, stance: dict | None) -> tuple[str | None, str]:
 
 
 def move_bps(done: pd.DataFrame, horizon_min: int) -> float | None:
-    """The signal: the ticker's own move over the horizon window, in bps —
-    close now vs close ``horizon_min`` minutes ago. The knobs then decide
-    when that move is big enough to trade."""
+    """The plain-move signal: the ticker's own move over the horizon window,
+    in bps — close now vs close ``horizon_min`` minutes ago. Used when
+    signal_source is "move"; the knobs then decide when it's a trade."""
     h = int(horizon_min)
     if len(done) < h + 1:
         return None
@@ -430,7 +671,7 @@ def move_bps(done: pd.DataFrame, horizon_min: int) -> float | None:
     return (now / then - 1) * 1e4
 
 
-def decide(pred_bps: float, pos: dict | None, cfg: dict, price: float,
+def decide(pred_bps: float, pos: dict | None, edge: dict, cfg: dict, price: float,
            atr: float, now: datetime, close_dt: datetime,
            lt_stance: dict | None = None) -> dict:
     thr = round_trip_bps(cfg) * cfg["edge_mult"]
@@ -440,16 +681,22 @@ def decide(pred_bps: float, pos: dict | None, cfg: dict, price: float,
     base = {"pred_bps": None if pred_bps is None or math.isnan(pred_bps) else round(pred_bps, 2),
             "threshold_bps": round(thr, 2), "entry": None, "stop": None, "target": None}
     if pred_bps is None or math.isnan(pred_bps):
-        return {**base, "call": "HOLD", "action": "none",
-                "reason": f"no signal yet — not enough price history to read the {h}-min move"}
+        return {**base, "call": "HOLD", "action": "none", "reason": "warming up — not enough bars yet"}
     if pos:
         against = (pos["side"] == "long" and pred_bps < -thr) or (pos["side"] == "short" and pred_bps > thr)
         if against:
             call = "SELL NOW" if pos["side"] == "long" else "BUY NOW"
             return {**base, "call": call, "action": "exit",
-                    "reason": f"exit {pos['side']}: the {h}-min move is now {pred_bps:+.1f} bps, against the position"}
+                    "reason": f"exit {pos['side']}: model now predicts {pred_bps:+.1f} bps over {h} min, against the position"}
         return {**base, "call": "HOLD", "action": "none",
                 "reason": f"in a {pos['side']} position; stop {pos['stop']}, target {pos['target']}, time exit {pos['exit_by'][11:16]}"}
+    if not edge_ok(edge, cfg):
+        dh = edge.get("direction_hit_pct")
+        dir_txt = (f"direction call {dh:.1f}% (needs {cfg['min_direction_pct']:.1f}%)"
+                   if dh is not None else "no direction score")
+        return {**base, "call": "STAND ASIDE", "action": "none",
+                "reason": (f"no edge: out-of-sample {edge.get('avg_net_bps', 0):+.1f} bps/trade net of costs "
+                           f"over {edge.get('trades', 0)} trades, {dir_txt}")}
     mins_left = (close_dt - now).total_seconds() / 60
     if mins_left < cfg["last_entry_min"]:
         return {**base, "call": "HOLD", "action": "none",
@@ -460,24 +707,24 @@ def decide(pred_bps: float, pos: dict | None, cfg: dict, price: float,
     if pred_bps > thr:
         if blocked == "long":
             return {**base, "call": "HOLD", "action": "none",
-                    "reason": f"up {pred_bps:+.1f} bps over the last {h} min — long entry held back by long-term alignment: {why}"}
+                    "reason": f"predicts {pred_bps:+.1f} bps over {h} min — long entry held back by long-term alignment: {why}"}
         return {**base, "call": "BUY NOW", "action": "buy", "entry": round(price, 4),
                 "stop": round(price - cfg["stop_sigma"] * sigma, 4),
                 "target": round(price + cfg["target_sigma"] * sigma, 4),
-                "reason": f"up {pred_bps:+.1f} bps over the last {h} min — beyond the {thr:.1f} bps cost bar"}
+                "reason": f"predicts {pred_bps:+.1f} bps over {h} min, above the {thr:.1f} bps cost bar"}
     if pred_bps < -thr and cfg["allow_short"]:
         if blocked == "short":
             return {**base, "call": "HOLD", "action": "none",
-                    "reason": f"down {pred_bps:+.1f} bps over the last {h} min — short entry held back by long-term alignment: {why}"}
+                    "reason": f"predicts {pred_bps:+.1f} bps over {h} min — short entry held back by long-term alignment: {why}"}
         return {**base, "call": "SELL NOW", "action": "sell", "entry": round(price, 4),
                 "stop": round(price + cfg["stop_sigma"] * sigma, 4),
                 "target": round(price - cfg["target_sigma"] * sigma, 4),
-                "reason": f"down {pred_bps:+.1f} bps over the last {h} min — short, beyond the {thr:.1f} bps cost bar"}
+                "reason": f"predicts {pred_bps:+.1f} bps over {h} min — short, beyond the {thr:.1f} bps cost bar"}
     if pred_bps < -thr:
         return {**base, "call": "HOLD", "action": "none",
-                "reason": f"bearish ({pred_bps:+.1f} bps over the last {h} min) but shorting is off"}
+                "reason": f"bearish ({pred_bps:+.1f} bps) but shorting is off"}
     return {**base, "call": "HOLD", "action": "none",
-            "reason": f"{pred_bps:+.1f} bps over the last {h} min is inside the ±{thr:.1f} bps cost band — wait"}
+            "reason": f"predicted {pred_bps:+.1f} bps is inside the ±{thr:.1f} bps cost band — wait"}
 
 
 def _ratchet_stop(pos: dict, bar: dict, cfg: dict) -> None:
@@ -545,10 +792,11 @@ def _daily_lock(book: "Book", cfg: dict, now: datetime, marks: dict[str, float])
 
 
 def on_bar(book: Book, ticker: str, bar_time: datetime, bar: dict, pred_bps: float, atr: float,
-           cfg: dict, auto: bool, close_dt: datetime, marks: dict[str, float],
+           edge: dict, cfg: dict, auto: bool, close_dt: datetime, marks: dict[str, float],
            lt_stance: dict | None = None) -> tuple[dict, list]:
     """Process one completed 1m bar: exits first, then the decision, then (auto) execution.
-    ``lt_stance`` is the Alpha Stack's long-term stance for this ticker."""
+    ``lt_stance`` is the Alpha Stack's long-term stance for this ticker; the
+    backtests call this without one, so alignment never colors a measured edge."""
     events = []
     now = bar_time + timedelta(minutes=1)
     pos = book.positions.get(ticker)
@@ -588,10 +836,10 @@ def on_bar(book: Book, ticker: str, bar_time: datetime, bar: dict, pred_bps: flo
         _ratchet_stop(pos, bar, cfg)
     events += _daily_lock(book, cfg, now, marks)
     pos = book.positions.get(ticker)
-    sig = decide(pred_bps, pos, cfg, bar["close"], atr, now, close_dt, lt_stance=lt_stance)
+    sig = decide(pred_bps, pos, edge, cfg, bar["close"], atr, now, close_dt, lt_stance=lt_stance)
     if auto:
         if sig["action"] == "exit" and pos:
-            t = book.close(ticker, bar["close"], now, "signal flipped", cfg)
+            t = book.close(ticker, bar["close"], now, "model flipped", cfg)
             events.append({"type": "close", "trade": t})
         elif sig["action"] in ("buy", "sell") and not pos:
             side = "long" if sig["action"] == "buy" else "short"
@@ -602,6 +850,167 @@ def on_bar(book: Book, ticker: str, bar_time: datetime, bar: dict, pred_bps: flo
             if p:
                 events.append({"type": "open", "position": p})
     return sig, events
+
+
+def edge_metrics(trades: list[dict], test_days: int, horizon: int) -> dict:
+    n = len(trades)
+    if not n:
+        return {"trades": 0, "has_edge": False, "avg_net_bps": 0.0, "total_net_bps": 0.0,
+                "win_rate_pct": None, "profit_factor": None, "avg_gross_bps": 0.0,
+                "always_long_avg_net_bps": None, "test_days": test_days, "horizon_min": horizon}
+    net = np.array([t["net_bps"] for t in trades])
+    gross = np.array([t["gross_bps"] for t in trades])
+    longb = np.array([t["long_net_bps"] for t in trades])
+    wins, losses = net[net > 0].sum(), -net[net < 0].sum()
+    return {
+        "trades": n,
+        "avg_net_bps": round(float(net.mean()), 2),
+        "total_net_bps": round(float(net.sum()), 1),
+        "avg_gross_bps": round(float(gross.mean()), 2),
+        "win_rate_pct": round(float((net > 0).mean() * 100), 1),
+        "profit_factor": round(float(wins / losses), 2) if losses > 0 else None,
+        "always_long_avg_net_bps": round(float(longb.mean()), 2),
+        "test_days": test_days,
+        "horizon_min": horizon,
+        "has_edge": None,          # set by edge_metrics' caller via edge_ok (depends on the gate knobs)
+    }
+
+
+def edge_ok(edge: dict, cfg: dict) -> bool:
+    """The trade gate: enough test trades, and an average net result above
+    the required margin. ``force_edge`` marks backtests/research replays."""
+    if edge.get("force_edge"):
+        return True
+    dh = edge.get("direction_hit_pct")
+    return bool((edge.get("trades") or 0) >= cfg["min_edge_trades"]
+                and (edge.get("avg_net_bps") or 0) > cfg["min_edge_bps"]
+                and dh is not None and dh >= cfg["min_direction_pct"])
+
+
+def simulate(df: pd.DataFrame, preds: np.ndarray, days: list, ticker: str, cfg: dict) -> list[dict]:
+    """Backtest the live rules over ``days`` for one ticker (edge gate forced on).
+
+    The book here is a fake $10M account, so the absolute-dollar rules
+    (daily_take_usd / max_daily_loss_usd / take_profit_usd / trail_profit_usd)
+    are disabled: on a $10M book one trade swings more than every one of those
+    thresholds, so they would fire on the FIRST trade and cut every test to one
+    trade a day. Those are live-account risk controls; the edge measurement
+    must see the whole day."""
+    scfg = {**cfg, "max_positions": 1,
+            "daily_take_usd": 0.0, "max_daily_loss_usd": 0.0, "take_profit_usd": 0.0,
+            "trail_profit_usd": 0.0}
+    book = Book(scfg, {"start_equity": 1e7})
+    atr = atr_px(df).values
+    idx_days = np.array(df.index.date)
+    o, h, l, c = (df[k].values for k in ("Open", "High", "Low", "Close"))
+    force = {"force_edge": True}
+    for d in days:
+        b = session_bounds(d)
+        if not b:
+            continue
+        for i in np.where(idx_days == d)[0]:
+            bt = df.index[i].to_pydatetime()
+            bar = {"open": o[i], "high": h[i], "low": l[i], "close": c[i]}
+            book.roll_day(d.isoformat(), {ticker: c[i]})
+            on_bar(book, ticker, bt, bar, preds[i], atr[i], force, scfg, True, b[1], {ticker: c[i]})
+        if ticker in book.positions:   # data ended early — close at the last bar
+            j = np.where(idx_days == d)[0][-1]
+            book.close(ticker, c[j], df.index[j].to_pydatetime(), "session end", scfg)
+    return book.trades
+
+
+def model_key(ticker: str, cfg: dict, through: date) -> str:
+    """Cache key: ticker + a hash of every knob that changes the model + date."""
+    import hashlib
+    spec = json.dumps({k: cfg[k] for k in sorted(knobs.RETRAIN_KEYS)}, sort_keys=True)
+    return f"{ticker}_{hashlib.sha1(spec.encode()).hexdigest()[:10]}_{through.isoformat()}"
+
+
+def train_ticker(ticker: str, through: date, cfg: dict, progress=None, persist: bool = True) -> dict:
+    """Walk-forward edge + a final model trained through ``through``. Cached.
+    ``progress(phase, step, steps, epoch=None, epochs=None)`` reports where it is."""
+    report = progress or (lambda *a, **k: None)
+    key = model_key(ticker, cfg, through)
+    meta_path = MODEL_DIR / f"{key}.json"
+    pt_path = MODEL_DIR / f"{key}.pt"
+    if meta_path.exists() and pt_path.exists():
+        return load_model(key)
+    slots = _device_slots()
+    dev = slots.get()
+    try:
+        return _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev, persist)
+    finally:
+        slots.put(dev)
+
+
+def _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev, persist=True) -> dict:
+    import torch
+    h = int(cfg["horizon_min"])
+    window = cfg.get("train_window", "year")
+    t0 = time.time()
+    report("downloading history", 0, 0)
+    df = fetch_history(ticker, TRAIN_WINDOWS.get(window, 365))
+    if df.empty:
+        raise RuntimeError("no intraday bars returned")
+    since = through - timedelta(days=TRAIN_WINDOWS.get(window, 365))
+    dates = np.array(df.index.date)
+    df = df[(dates <= through) & (dates > since)]
+    days = sorted(set(df.index.date))
+    if len(days) < MIN_SESSIONS:
+        raise RuntimeError(f"only {len(days)} sessions of 1m bars in the {window} window")
+    n_folds = int(cfg["test_folds"])
+    n_test = max(n_folds, int(round(len(days) * cfg["test_share_pct"] / 100)))
+    test_days = days[-n_test:]
+    folds = np.array_split(np.array(test_days, dtype=object), n_folds)
+    oos_trades, hits, tot = [], 0, 0
+    for k, fold in enumerate(folds, 1):
+        fold = list(fold)
+        if not fold:
+            continue
+        prior = [d for d in days if d < fold[0]]
+        pack = fit(df, prior, cfg, on_epoch=lambda e, n, k=k: report("walk-forward test", k, len(folds) + 1, e, n), device=dev)
+        preds = predict(pack, df)
+        oos_trades += simulate(df, preds, fold, ticker, cfg)
+        y = forward_return(df, h) * 1e4
+        m = np.isin(np.array(df.index.date), fold) & ~np.isnan(preds) & ~np.isnan(y) & (y != 0)
+        hits += int((np.sign(preds[m]) == np.sign(y[m])).sum())
+        tot += int(m.sum())
+    edge = edge_metrics(oos_trades, len(test_days), h)
+    edge["direction_hit_pct"] = round(hits / tot * 100, 1) if tot else None
+    edge["has_edge"] = edge_ok(edge, cfg)
+    pack = fit(df, days, cfg, on_epoch=lambda e, n: report("final model", len(folds) + 1, len(folds) + 1, e, n), device=dev)
+    meta = {"ticker": ticker, "key": key, "through": through.isoformat(), "horizon_min": h,
+            "trained_at": datetime.now(ET).isoformat(), "sessions": len(days),
+            "train_window": window,
+            "bars": int(len(df)), "edge": edge, "train_seconds": round(time.time() - t0, 1),
+            "device": pack["dev"], "mu": pack["mu"].tolist(), "sd": pack["sd"].tolist(),
+            "y_sd": pack["y_sd"],
+            "features": pack["features"], "look_back": pack["look_back"], "units": pack["units"],
+            "knobs": {k: cfg[k] for k in sorted(knobs.RETRAIN_KEYS)},
+            "model": f"CfC liquid NN ({pack['units']} units), {pack['look_back']}-bar look-back, {len(pack['features'])} features"}
+    if not persist:
+        # Throwaway model (an honest replay): used in memory, never saved.
+        return {"meta": meta, "pack": pack}
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    torch.save(pack["net"].state_dict(), pt_path)
+    _atomic_write(meta_path, meta)
+    for old in MODEL_DIR.glob(f"{ticker}_*.json"):
+        if old.name != meta_path.name and old.stem.split("_")[-1] < (through - timedelta(days=10)).isoformat():
+            old.unlink(missing_ok=True)
+            old.with_suffix(".pt").unlink(missing_ok=True)
+    return load_model(key)
+
+
+def load_model(key: str) -> dict:
+    import torch
+    meta = json.loads((MODEL_DIR / f"{key}.json").read_text(encoding="utf-8"))
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    net = _net_class(len(meta["features"]), meta["units"])().to(dev)
+    net.load_state_dict(torch.load(MODEL_DIR / f"{key}.pt", map_location=dev))
+    net.eval()
+    return {"meta": meta, "pack": {"net": net, "mu": np.array(meta["mu"]), "sd": np.array(meta["sd"]),
+                                   "y_sd": meta["y_sd"], "dev": dev, "horizon": meta["horizon_min"],
+                                   "features": meta["features"], "look_back": meta["look_back"], "units": meta["units"]}}
 
 
 def last_session(before: date | None = None) -> date:
@@ -665,7 +1074,7 @@ def long_term_stances(tickers: list[str]) -> dict[str, dict | None]:
 
 
 # ---------------------------------------------------------------------------
-# Engine (singleton): state, live loop, replay, stream
+# Engine (singleton): state, trainer queue, live loop, replay, stream
 # ---------------------------------------------------------------------------
 
 class Engine:
@@ -677,6 +1086,8 @@ class Engine:
         self.cfg = dict(DEFAULT_CONFIG)
         self.engine_on = False
         self.book: Book | None = None
+        self.models: dict[str, dict] = {}         # ticker -> loaded model (live)
+        self.model_state: dict[str, str] = {}     # ticker -> ready|queued|training|error:<msg>
         self.hist: dict[str, pd.DataFrame] = {}
         self.last_bar: dict[str, pd.Timestamp] = {}
         self.signals: dict[str, dict] = {}
@@ -687,6 +1098,12 @@ class Engine:
         self.replay_req: dict | None = None
         self.replay_stop = False
         self.wake = threading.Event()
+        self.train_q: list[tuple[str, date]] = []
+        self.training: set[str] = set()
+        self.train_threads: list[threading.Thread] = []
+        # The dashboard's training panel: one run = one batch of queued tickers.
+        self.train_run: dict | None = None
+        self.train_stop = threading.Event()
         self.thread: threading.Thread | None = None
         self.last_error: str | None = None
         self.last_tick: str | None = None
@@ -734,6 +1151,162 @@ class Engine:
                 self.cond.wait(timeout)
             return self.seq
 
+    # -- trainer ----------------------------------------------------------
+    def request_models(self, tickers: list[str], through: date) -> None:
+        with self.lock:
+            for t in tickers:
+                cur = self.models.get(t)
+                if cur and cur["meta"]["key"] == model_key(t, self.cfg, through):
+                    continue
+                if (t, through) not in self.train_q and t not in self.training:
+                    self.train_q.append((t, through))
+                    self.model_state[t] = "queued"
+                    # Track the batch for the dashboard's training panel.
+                    run = self.train_run
+                    if not run or run.get("finished"):
+                        free_gpu_from_ollama()
+                        self.train_stop.clear()
+                        run = self.train_run = {"started": time.time(), "window": self.cfg.get("train_window", "year"),
+                                                "tickers": [], "done": [], "current": {}, "finished": None}
+                    if t not in run["tickers"]:
+                        run["tickers"].append(t)
+            self.train_threads = [th for th in self.train_threads if th.is_alive()]
+            set_train_workers(int(self.cfg["train_workers"]))
+            want = min(len(self.train_q), _SLOTS_N - len(self.train_threads))
+            for _ in range(max(0, want)):
+                th = threading.Thread(target=self._train_loop, name="daytrade-trainer", daemon=True)
+                self.train_threads.append(th)
+                th.start()
+        self._bump()
+
+    def train_all(self) -> tuple[int, dict]:
+        """Dashboard "Train models": queue every ticker (portfolio ∪ watchlist
+        unless overridden) on the current window + horizon. Already-current
+        models are skipped; a ticker that errored earlier is tried again."""
+        if self.mode == "replay":
+            return 409, {"ok": False, "error": "a replay is running — train after it finishes"}
+        tickers = self.tickers()
+        with self.lock:
+            for t in tickers:
+                if str(self.model_state.get(t, "")).startswith("error"):
+                    self.model_state.pop(t, None)
+        self.request_models(tickers, self._model_through())
+        with self.lock:
+            queued = [t for t, _ in self.train_q] + sorted(self.training)
+        return 202, {"ok": True, "tickers": tickers, "queued": queued,
+                     "train_window": self.cfg.get("train_window", "year")}
+
+    def load_saved_models(self) -> None:
+        """After a restart, pick up models already trained on the current
+        settings (loads from disk; never trains)."""
+        through = self._model_through()
+        for t in self.tickers():
+            key = model_key(t, self.cfg, through)
+            if (MODEL_DIR / f"{key}.json").exists() and (MODEL_DIR / f"{key}.pt").exists():
+                try:
+                    m = load_model(key)
+                    with self.lock:
+                        self.models[t] = m
+                        self.model_state[t] = "ready"
+                    self._idle_eval(t)
+                except Exception as exc:
+                    log(f"{t}: could not load saved model: {exc}")
+        self._bump()
+
+    def stop_training(self) -> tuple[int, dict]:
+        """Cancel queued tickers and interrupt running ones at their next
+        epoch. Models that already finished are kept."""
+        with self.lock:
+            if not self.train_q and not self.training:
+                return 409, {"ok": False, "error": "no training is running"}
+            cancelled = [t for t, _ in self.train_q]
+            self.train_q.clear()
+            for t in cancelled:
+                self.model_state.pop(t, None)
+            run = self.train_run
+            if run:
+                run["done"] += [{"ticker": t, "ok": False, "error": "stopped", "seconds": 0} for t in cancelled]
+            interrupted = sorted(self.training)
+            self.train_stop.set()
+        self._bump()
+        return 200, {"ok": True, "cancelled": cancelled, "interrupting": interrupted}
+
+    def clear_models(self) -> tuple[int, dict]:
+        """Delete every saved day-trading model; all tickers go back to untrained."""
+        with self.lock:
+            if self.train_q or self.training:
+                return 409, {"ok": False, "error": "training is running — stop it first"}
+            removed = 0
+            for f in MODEL_DIR.glob("*"):
+                if f.suffix in (".json", ".pt"):
+                    f.unlink(missing_ok=True)
+                    removed += 1
+            self.models.clear()
+            self.model_state.clear()
+            self.signals.clear()
+            self.last_bar.clear()
+            self.train_run = None
+        self._bump()
+        return 200, {"ok": True, "removed_files": removed}
+
+    def _train_loop(self) -> None:
+        while True:
+            with self.lock:
+                if not self.train_q:
+                    return
+                t, through = self.train_q.pop(0)
+                self.training.add(t)
+                self.model_state[t] = "training"
+                run = self.train_run
+                if run:
+                    run["current"][t] = {"ticker": t, "phase": "waiting for a GPU slot", "step": 0, "steps": 0,
+                                         "epoch": None, "epochs": None, "since": time.time()}
+            self._bump()
+
+            def progress(phase, step, steps, epoch=None, epochs=None, t=t, run=run):
+                if self.train_stop.is_set():
+                    raise TrainingStopped()
+                cur = run and run["current"].get(t)
+                if cur:
+                    cur.update(phase=phase, step=step, steps=steps, epoch=epoch, epochs=epochs)
+                    self._bump()
+
+            t_start = time.time()
+            try:
+                m = train_ticker(t, through, dict(self.cfg), progress)
+                with self.lock:
+                    self.models[t] = m
+                    self.model_state[t] = "ready"
+                log(f"{t} model through {through}: {m['meta']['edge']}")
+                if run:
+                    e = m["meta"].get("edge") or {}
+                    run["done"].append({"ticker": t, "ok": True, "seconds": round(time.time() - t_start, 1),
+                                        "sessions": m["meta"].get("sessions"), "has_edge": bool(e.get("has_edge")),
+                                        "avg_net_bps": e.get("avg_net_bps"), "trades": e.get("trades")})
+                if self.mode != "live":
+                    self._idle_eval(t)
+            except TrainingStopped:
+                with self.lock:
+                    self.model_state.pop(t, None)
+                if run:
+                    run["done"].append({"ticker": t, "ok": False, "error": "stopped",
+                                        "seconds": round(time.time() - t_start, 1)})
+            except Exception as exc:
+                log(f"{t} training failed: {exc}\n{traceback.format_exc()}")
+                with self.lock:
+                    self.model_state[t] = f"error: {exc}"
+                if run:
+                    run["done"].append({"ticker": t, "ok": False, "error": str(exc),
+                                        "seconds": round(time.time() - t_start, 1)})
+            with self.lock:
+                self.training.discard(t)
+                if run:
+                    run["current"].pop(t, None)
+                    if not self.train_q and not self.training:
+                        run["finished"] = time.time()
+            self.wake.set()
+            self._bump()
+
     def _idle_eval(self, t: str) -> None:
         """Signal as of the last completed bar while the engine isn't live
         (e.g. after hours). Runs against a scratch copy of the book with
@@ -762,7 +1335,7 @@ class Engine:
     # -- lifecycle --------------------------------------------------------
     def boot(self, tickers_fn) -> None:
         self.tickers_fn = tickers_fn
-        threading.Thread(target=self._idle_pass, name="daytrade-idle-eval", daemon=True).start()
+        threading.Thread(target=self.load_saved_models, name="daytrade-load-models", daemon=True).start()
         self.thread = threading.Thread(target=self._run, name="daytrade-engine", daemon=True)
         self.thread.start()
         if self.engine_on:
@@ -773,6 +1346,7 @@ class Engine:
         with self.lock:
             self.engine_on = True
             self._save()
+        self.request_models(self.tickers(), self._model_through())
         self.wake.set()
         return {"ok": True, "engine_on": True}
 
@@ -786,11 +1360,9 @@ class Engine:
         self._bump()
         return {"ok": True, "engine_on": False}
 
-    def _idle_pass(self) -> None:
-        """After a restart, put a price and a card on every ticker even while
-        the engine is off (after-hours display)."""
-        for t in self.tickers():
-            self._idle_eval(t)
+    def _model_through(self) -> date:
+        """Live models train through the last completed session."""
+        return last_session()
 
     # -- engine thread ----------------------------------------------------
     def _run(self) -> None:
@@ -826,6 +1398,8 @@ class Engine:
         now = datetime.now(ET)
         today = now.date()
         b = session_bounds(today)
+        # Models through the last completed session; queue any missing.
+        self.request_models(tickers, self._model_through())
         need_hist = [t for t in tickers if t not in self.hist
                      or (len(self.hist[t]) and self.hist[t].index[-1].date() < today - timedelta(days=6))]
         if need_hist:
@@ -865,34 +1439,62 @@ class Engine:
         self._bump()
 
     def _evaluate(self, t: str, done: pd.DataFrame, bar_time: datetime, close_dt: datetime,
-                  marks: dict, live: bool, pred: float | None = None,
-                  book: Book | None = None, auto: bool | None = None) -> None:
-        """Process one completed bar: exits and risk locks first, then the
-        decision on the signal. The signal is the ticker's move over the
-        horizon window (``move_bps``), computed from these bars — unless a
-        caller feeds ``pred`` (a future auto bot can override it)."""
+                  marks: dict, live: bool, preds: np.ndarray | None = None, i: int | None = None,
+                  models: dict | None = None, book: Book | None = None, auto: bool | None = None,
+                  ignore_edge: bool = False) -> None:
+        models = models if models is not None else self.models
         book = book or self.book
+        m = models.get(t)
         row = done.iloc[-1]
         bar = {"open": float(row["Open"]), "high": float(row["High"]), "low": float(row["Low"]),
                "close": float(row["Close"])}
-        if pred is None:
+        if self.cfg.get("signal_source") == "move":
+            # Plain move: no model and no edge gate — the knobs are the rulebook.
+            m = {"meta": {"edge": {}}}
+            edge = {}
             pred = move_bps(done, self.cfg["horizon_min"])
-        a = float(atr_px(done.tail(200)).iloc[-1])
-        sig, events = on_bar(book, t, bar_time, bar, pred, a, self.cfg,
-                             self.cfg["auto_execute"] if auto is None else auto, close_dt, marks,
-                             lt_stance=long_term_stances([t]).get(t))
-        for e in events:
-            e["ticker"] = t
-            e["at"] = (bar_time + timedelta(minutes=1)).isoformat()
-            self.events.append(e)
-        self.events = self.events[-50:]
+            a = float(atr_px(done.tail(200)).iloc[-1])
+            sig, events = on_bar(book, t, bar_time, bar, pred, a, {"force_edge": True}, self.cfg,
+                                 self.cfg["auto_execute"] if auto is None else auto, close_dt, marks,
+                                 lt_stance=long_term_stances([t]).get(t))
+            for e in events:
+                e["ticker"] = t
+                e["at"] = (bar_time + timedelta(minutes=1)).isoformat()
+                self.events.append(e)
+            self.events = self.events[-50:]
+        elif m is None:
+            state = self.model_state.get(t, "queued")
+            sig = {"call": "STAND ASIDE", "action": "none", "pred_bps": None, "threshold_bps": None,
+                   "entry": None, "stop": None, "target": None,
+                   "reason": f"model {state}" if not state.startswith("error") else state}
+            edge = {}
+        else:
+            edge = m["meta"]["edge"]
+            # AI mode (default): the net's calls trade on every ticker.
+            # Edge mode: only tickers that passed the edge test trade.
+            gate = edge if self.cfg.get("trade_mode") == "edge" and not ignore_edge else {**edge, "force_edge": True}
+            if preds is not None:
+                pred = preds[i]
+            else:
+                tail = done.tail(600)
+                pred = float(predict(m["pack"], tail)[-1])
+            a = float(atr_px(done.tail(200)).iloc[-1])
+            sig, events = on_bar(book, t, bar_time, bar, pred, a, gate, self.cfg,
+                                 self.cfg["auto_execute"] if auto is None else auto, close_dt, marks,
+                                 lt_stance=long_term_stances([t]).get(t))
+            for e in events:
+                e["ticker"] = t
+                e["at"] = (bar_time + timedelta(minutes=1)).isoformat()
+                self.events.append(e)
+            self.events = self.events[-50:]
         prev = self.signals.get(t, {}).get("call")
         if prev != sig["call"]:
             self.changed_at[t] = (bar_time + timedelta(minutes=1)).isoformat()
         spark = [round(float(x), 4) for x in done["Close"].tail(60).values]
         self.signals[t] = {**sig, "ticker": t, "bar_time": bar_time.isoformat(), "bar_close": bar["close"],
                            "changed_from": prev if prev and prev != sig["call"] else None,
-                           "spark": spark}
+                           "edge": edge, "spark": spark,
+                           "confidence_pct": edge.get("win_rate_pct") if sig["call"] in ("BUY NOW", "SELL NOW") else None}
 
     def _kill_switch(self, marks: dict, now: datetime) -> None:
         book = self.book
@@ -955,8 +1557,8 @@ class Engine:
 
     def set_config(self, body: dict) -> tuple[int, dict]:
         """Partial update, each value validated against its knob in knobs.py.
-        Unknown keys (e.g. from a config saved by an older version) are
-        skipped, so stale saved settings never break an update."""
+        Changing any model knob drops the current models (Train models or the
+        live engine's start retrains them)."""
         try:
             body = self.set_cost(body)
         except (TypeError, ValueError):
@@ -984,10 +1586,21 @@ class Engine:
             return self._apply_config(new)
 
     def _apply_config(self, new: dict) -> tuple[int, dict]:
+        retrain = any(new[k] != self.cfg.get(k) for k in knobs.RETRAIN_KEYS)
         self.cfg = new
+        if retrain:
+            self.models.clear()
+            self.signals.clear()
+            self.last_bar.clear()
+            for t in list(self.model_state):
+                if self.model_state[t] not in ("queued", "training"):
+                    self.model_state.pop(t)
         self._save()
+        engine_on = self.engine_on
+        if retrain and engine_on:
+            self.request_models(self.tickers(), self._model_through())
         self._bump()
-        return 200, {"ok": True, "config": self.cfg}
+        return 200, {"ok": True, "config": self.cfg, "retrain_needed": retrain and not engine_on}
 
     def knob_catalog(self) -> dict:
         with self.lock:
@@ -1023,10 +1636,25 @@ class Engine:
                 return 400, {"ok": False, "error": f"no completed sessions in the week of {monday}"}
             if (datetime.now(ET).date() - sessions[0]).days > history_days() - 7:
                 return 400, {"ok": False, "error": f"that week is outside the {history_days()}-day history"}
+            mode = str(body.get("model") or "current")
+            if mode not in ("current", "fresh"):
+                return 400, {"ok": False, "error": "model must be current or fresh"}
+            if self.cfg.get("signal_source") == "move":
+                missing = []            # plain move: no models needed
+            elif mode == "current":
+                missing = [t for t in tickers if t not in self.models]
+                tickers = [t for t in tickers if t in self.models]
+                if not tickers:
+                    return 409, {"ok": False, "error": "no trained models — press Train models, or replay with model=fresh"}
+            else:
+                missing = []
             iso = monday.isocalendar()
             self.replay_req = {"tickers": tickers, "speed": max(0.5, min(speed, 120.0)),
                                "auto": bool(body.get("auto", True)),
-                               "week": f"{iso[0]}-W{iso[1]:02d}", "sessions": [d.isoformat() for d in sessions]}
+                               "week": f"{iso[0]}-W{iso[1]:02d}", "sessions": [d.isoformat() for d in sessions],
+                               "model": mode, "skipped_untrained": missing,
+                               # research only: trade the model's calls even where it has no edge
+                               "ignore_edge": bool(body.get("ignore_edge", False))}
             self.replay_stop = False
         self.wake.set()
         return 202, {"ok": True, **self.replay_req}
@@ -1039,33 +1667,49 @@ class Engine:
         return 202, {"ok": True}
 
     def _do_replay(self, req: dict) -> None:
-        """Replay one week, session by session, then score the week. Bars run
-        through the same ``_evaluate`` path as live, so the move-based signal
-        fires and the knobs produce real trades to score."""
+        """Replay one week, session by session, then score the week.
+        model="current": the trained live models (fast; the week is usually
+        inside their training data, so results are in-sample). model="fresh":
+        each ticker retrained only on sessions before the week (honest test)."""
         sessions = [date.fromisoformat(d) for d in req["sessions"]]
         tickers = req["tickers"]
+        fresh = req["model"] == "fresh"
+        through = last_session(before=sessions[0])
         self.mode = "replay"
         first_b = session_bounds(sessions[0])
-        rep = {"session": req["week"], "week": req["week"], "sessions": req["sessions"],
+        rep = {"session": req["week"], "week": req["week"], "sessions": req["sessions"], "model": req["model"],
+               "trained_through": through.isoformat() if fresh else None, "in_sample": False,
                "tickers": tickers, "speed": req["speed"], "auto": req["auto"],
-               "phase": "loading",
+               "phase": "training" if fresh else "loading", "skipped_untrained": req.get("skipped_untrained", []),
                "progress": 0.0, "clock": first_b[0].isoformat(), "done": False, "summary": None,
-               "trades": []}
+               "trades": [], "trained": 0, "ignore_edge": req.get("ignore_edge", False)}
         self.replay = rep
         saved = (self.signals, self.events)
         self.signals, self.events = {}, []
         self._bump()
-        data = {}
+        models, data, preds = {}, {}, {}
         for t in tickers:
             if self.replay_stop:
                 break
             try:
                 df = fetch_history(t)
                 df = df[np.array(df.index.date) <= sessions[-1]]
-                data[t] = df
+                if self.cfg.get("signal_source") == "move":
+                    data[t], preds[t] = df, None      # signal computed per bar from the prices
+                else:
+                    m = train_ticker(t, through, dict(self.cfg), persist=False) if fresh else self.models[t]
+                    models[t], data[t] = m, df
+                    preds[t] = predict(m["pack"], df)
             except Exception as exc:
                 log(f"replay {t}: {exc}")
+                if fresh:
+                    self.model_state[t] = f"error: {exc}"
+            rep["trained"] += 1
             self._bump()
+        if not fresh:
+            thr = sorted({m["meta"]["through"] for m in models.values()})
+            rep["trained_through"] = thr[-1] if thr else None
+            rep["in_sample"] = bool(thr and thr[-1] >= sessions[0].isoformat())
         # Replay never touches the shared account, but it sizes from the same
         # money so its dollars mean what live dollars would.
         try:
@@ -1099,7 +1743,8 @@ class Engine:
                     if i is None:
                         continue
                     self._evaluate(t, df.iloc[:i + 1], ts.to_pydatetime(), b[1], marks, live=False,
-                                   book=book, auto=req["auto"])
+                                   preds=preds[t], i=i, models=models, book=book, auto=req["auto"],
+                                   ignore_edge=req.get("ignore_edge", False))
                     c = self.signals[t]["call"]
                     calls[c] = calls.get(c, 0) + 1
                 rep["clock"] = (ts + timedelta(minutes=1)).isoformat()
@@ -1116,15 +1761,19 @@ class Engine:
             "win_rate_pct": round(float(np.mean([x > 0 for x in net]) * 100), 1) if net else None,
             "calls": calls,
             "week": req["week"],
+            "model": req["model"],
+            "in_sample": rep.get("in_sample", False),
             # The week is the unit that's scored; days are shown for context.
             "per_day": [{"date": d, "trades": len([x for x in book.trades if x["closed_at"][:10] == d]),
                          "pnl": round(sum(x["pnl"] for x in book.trades if x["closed_at"][:10] == d), 2)}
                         for d in req["sessions"]],
             "stopped_early": self.replay_stop,
+            "ignore_edge": req.get("ignore_edge", False),
             "per_ticker": {t: {"trades": len([x for x in book.trades if x["ticker"] == t]),
                                "pnl": round(sum(x["pnl"] for x in book.trades if x["ticker"] == t), 2),
                                "net_bps": round(sum(x["net_bps"] for x in book.trades if x["ticker"] == t), 1)}
                            for t in data},
+            "per_ticker_edge": {t: m["meta"]["edge"] for t, m in models.items()},
         }
         rep["trades"] = book.trades[-100:]
         rep["phase"] = "done"
@@ -1134,8 +1783,19 @@ class Engine:
         self.mode = "off"
         log(f"replay {req['week']}: {rep['summary']}")
         self._bump()
+        # Models that finished training while the replay held the board.
+        for t in [t for t in self.models if t not in self.signals]:
+            self._idle_eval(t)
 
     # -- snapshot ---------------------------------------------------------
+    @staticmethod
+    def _edge_out(edge: dict, cfg: dict) -> dict | None:
+        if not edge or "trades" not in edge:
+            return None
+        return {**edge, "net_bps_per_trade": edge.get("avg_net_bps"),
+                "beats_flat": edge_ok(edge, cfg),
+                "cost_bps": round_trip_bps(cfg)}
+
     def snapshot(self) -> dict:
         """Status + signals in one payload (the stream sends this). Contract
         fields (market/engine/positions/…) sit alongside the engine's own."""
@@ -1152,9 +1812,9 @@ class Engine:
             lt_stances = long_term_stances(names)
             for t in names:
                 sig = dict(self.signals.get(t) or {
-                    "ticker": t, "call": "HOLD", "action": "none", "pred_bps": None,
-                    "entry": None, "stop": None, "target": None,
-                    "reason": "waiting for the first bars — the signal is the ticker's own move over the horizon window"})
+                    "ticker": t, "call": "STAND ASIDE", "action": "none", "pred_bps": None,
+                    "entry": None, "stop": None, "target": None, "edge": {},
+                    "reason": f"model {self.model_state.get(t, 'not trained')}"})
                 sig["lt"] = lt_stances.get(t) or None
                 pr = self.prices.get(t)
                 sig["last_price"] = pr["price"] if pr else sig.get("bar_close")
@@ -1170,7 +1830,19 @@ class Engine:
                            "upnl": round((m - pos["entry"]) * pos["qty"] * sgn, 2),
                            "unrealized_pct": round(sgn * (m / pos["entry"] - 1) * 100, 3)}
                 sig["position"] = pos
+                raw_state = "ready" if (replaying or t in self.models) else self.model_state.get(t, "untrained")
+                sig["model_detail"] = raw_state
+                sig["model_state"] = ("ready" if raw_state == "ready"
+                                      else "error" if str(raw_state).startswith("error")
+                                      else "untrained" if raw_state == "untrained" else "training")
+                meta = (self.models.get(t) or {}).get("meta")
+                if meta and not replaying:
+                    sig["model_through"] = meta["through"]
+                sig["edge"] = self._edge_out(sig.get("edge") or (meta or {}).get("edge") or {}, self.cfg)
+                sig["pred_return_bps"] = sig.get("pred_bps")
                 sig["horizon_min"] = self.cfg["horizon_min"]
+                wr = (sig["edge"] or {}).get("win_rate_pct")
+                sig["confidence"] = round(wr / 100, 3) if wr is not None and sig["call"] in ("BUY NOW", "SELL NOW") else None
                 sig["changed_at"] = self.changed_at.get(t)
                 # While the engine is off (never in replay, live or closed)
                 # the cards show prices only — a call appears once the engine
@@ -1220,11 +1892,26 @@ class Engine:
                       "mode": "replay" if replaying else ("live" if self.engine_on else "off"),
                       "replay": ({"date": rep["session"], "speed": rep["speed"],
                                   "progress_pct": round(rep["progress"] * 100, 1), "phase": rep["phase"],
-                                  "clock": rep["clock"],
-                                  "tickers": len(rep["tickers"])} if replaying and rep else None),
+                                  "clock": rep["clock"], "trained": rep["trained"],
+                                  "tickers": len(rep["tickers"]),
+                                  "ignore_edge": rep.get("ignore_edge", False)} if replaying and rep else None),
                       "last_tick": self.last_tick}
             config = {**self.cfg, "cost_bps": round_trip_bps(self.cfg)}
+            tr = self.train_run
+            training = None
+            if tr:
+                running = []
+                for c in tr["current"].values():
+                    c = dict(c)
+                    c["elapsed_s"] = round(time.time() - c.pop("since"), 1)
+                    running.append(c)
+                training = {"window": tr["window"], "total": len(tr["tickers"]), "done": list(tr["done"]),
+                            "running": running, "workers": _SLOTS_N,
+                            "queued": [t for t, _ in self.train_q],
+                            "elapsed_s": round((tr["finished"] or time.time()) - tr["started"], 1),
+                            "finished": bool(tr["finished"])}
             return {
+                "training": training,
                 "seq": self.seq,
                 "asof": now.isoformat(),
                 "mode": self.mode,
@@ -1240,6 +1927,7 @@ class Engine:
                 "tickers": rows,
                 "events": self.events[-20:],
                 "replay": {k: v for k, v in (rep or {}).items() if k != "marks"} or None,
+                "trainer": {"training": sorted(self.training), "queued": [t for t, _ in self.train_q]},
                 "last_error": self.last_error,
                 "paper_only": True,
                 "data_note": ("Yahoo 1-minute bars, regular session. bar_age_s = seconds since the bar closed; "
@@ -1263,8 +1951,8 @@ class Engine:
 
     def longterm_payload(self) -> dict:
         """The engine's state for the Alpha Stack view: today's $-lock status,
-        realized day P&L, open day positions and each watched ticker's call
-        — the intraday half of the shared paper account."""
+        realized day P&L, open day positions and each watched ticker's
+        measured edge — the intraday half of the shared paper account."""
         with self.lock:
             book = self.book
             now = datetime.now(ET)
@@ -1282,6 +1970,9 @@ class Engine:
                         break
             per = []
             for t in self.tickers():
+                meta = (self.models.get(t) or {}).get("meta") or {}
+                edge = self._edge_out(meta.get("edge") or (self.signals.get(t) or {}).get("edge") or {},
+                                      self.cfg)
                 pos = book.positions.get(t)
                 p = None
                 if pos:
@@ -1289,8 +1980,13 @@ class Engine:
                     sgn = 1 if pos["side"] == "long" else -1
                     p = {"side": pos["side"], "qty": pos["qty"],
                          "unrealized": round((m - pos["entry"]) * pos["qty"] * sgn, 2)}
+                state = "ready" if t in self.models else self.model_state.get(t, "untrained")
                 per.append({"ticker": t,
                              "call": (self.signals.get(t) or {}).get("call"),
+                             "model_state": "error" if str(state).startswith("error")
+                                            else "ready" if state == "ready" else "untrained" if state == "untrained" else "training",
+                             "edge": edge,
+                             "has_edge": bool(edge and edge.get("beats_flat")),
                              "position": p})
             return {
                 "asof": now.isoformat(),
@@ -1314,8 +2010,7 @@ class Engine:
 
     def context_line(self, ticker: str) -> str:
         """One factual line about the engine for the TradingAgents quant
-        context: its state today (the engine trades the ticker's own move
-        over the horizon window, knob-gated — no predictive model)."""
+        context: its state today, and this ticker's measured intraday edge."""
         with self.lock:
             book = self.book
             day = book.day
@@ -1328,6 +2023,20 @@ class Engine:
                 bits.append("the day-trade engine is running today")
             else:
                 bits.append("the day-trade engine is off")
+            m = self.models.get(ticker.upper())
+        if m:
+            e = (m.get("meta") or {}).get("edge") or {}
+            if e.get("trades"):
+                if (e.get("avg_net_bps") or 0) > 0:
+                    bits.append(f"its intraday model shows {e['avg_net_bps']:+.1f} bps per trade "
+                                f"after costs over {e['trades']} out-of-sample trades")
+                else:
+                    bits.append(f"its intraday model has no measured edge after costs "
+                                f"({e.get('avg_net_bps') or 0:+.1f} bps per trade over {e['trades']} out-of-sample trades)")
+            else:
+                bits.append("its intraday model is untested")
+        else:
+            bits.append("it has no trained intraday model")
         return "; ".join(bits)
 
     def set_cost(self, body: dict) -> dict:
