@@ -1271,6 +1271,11 @@ class Engine:
         self.train_q: list[tuple[str, date]] = []
         self.training: set[str] = set()
         self.train_threads: list[threading.Thread] = []
+        # The model save the user loaded (None = none pinned). A pinned save's
+        # models stay current whatever the training cut-off date — Start and
+        # the live loop must reuse them, not retrain past them. Only the
+        # explicit Train models button (train_all) trains past a pin.
+        self.loaded_set: str | None = None
         # The dashboard's training panel: one run = one batch of queued tickers.
         self.train_run: dict | None = None
         self.train_stop = threading.Event()
@@ -1293,13 +1298,14 @@ class Engine:
         if data.get("knobs_version") != KNOBS_VERSION:
             saved = {k: v for k, v in saved.items() if k in KEEP_ON_UPGRADE}
         self.cfg = {**DEFAULT_CONFIG, **{k: v for k, v in saved.items() if k in DEFAULT_CONFIG}}
+        self.loaded_set = data.get("loaded_set") or None
         self.engine_on = bool(data.get("engine_on"))
         self.shared = SharedAccount()
         self.book = Book(self.cfg, data.get("account"), shared=self.shared)
 
     def _save(self) -> None:
         _atomic_write(STATE_FILE, {"config": self.cfg, "knobs_version": KNOBS_VERSION, "engine_on": self.engine_on,
-                                   "account": self.book.to_dict()})
+                                   "loaded_set": self.loaded_set, "account": self.book.to_dict()})
 
     def tickers(self) -> list[str]:
         """Override list if set, else portfolio ∪ watchlist plus the extras."""
@@ -1327,6 +1333,14 @@ class Engine:
             for t in tickers:
                 cur = self.models.get(t)
                 if cur and cur["meta"]["key"] == model_key(t, self.cfg, through):
+                    continue
+                # A pinned model save: its models count as current whatever
+                # the training cut-off date (prefix = same ticker + knobs), so
+                # Start / the live loop reuse them instead of retraining past
+                # them the day after the save was trained.
+                if (self.loaded_set and cur
+                        and cur["meta"]["key"].rsplit("_", 1)[0]
+                        == model_key(t, self.cfg, through).rsplit("_", 1)[0]):
                     continue
                 if (t, through) not in self.train_q and t not in self.training:
                     self.train_q.append((t, through))
@@ -1357,6 +1371,10 @@ class Engine:
             return 409, {"ok": False, "error": "a replay is running — train after it finishes"}
         tickers = self.tickers()
         with self.lock:
+            # The explicit button: training past a pinned model save is what
+            # the user just asked for — unpin so the strict key check applies.
+            self.loaded_set = None
+            self._save()
             for t in tickers:
                 if str(self.model_state.get(t, "")).startswith("error"):
                     self.model_state.pop(t, None)
@@ -1483,6 +1501,9 @@ class Engine:
             if with_settings:
                 new.update({k: v for k, v in info.get("settings", {}).items() if k in DEFAULT_CONFIG})
             self.cfg = new
+            # Pin: Start / the live loop reuse exactly these models until the
+            # user explicitly trains again (or loads a different save).
+            self.loaded_set = info.get("name") or name
             self._save()
             self.models.clear()
             self.signals.clear()
@@ -1523,6 +1544,8 @@ class Engine:
             self.signals.clear()
             self.last_bar.clear()
             self.train_run = None
+            self.loaded_set = None      # nothing left for the pin to point at
+            self._save()
         self._bump()
         return 200, {"ok": True, "removed_files": removed}
 
@@ -2268,6 +2291,7 @@ class Engine:
                 "replay": {k: v for k, v in (rep or {}).items() if k != "marks"} or None,
                 "trainer": {"training": sorted(self.training), "queued": [t for t, _ in self.train_q]},
                 "last_error": self.last_error,
+                "loaded_set": self.loaded_set,
                 "paper_only": True,
                 "data_note": ("Yahoo 1-minute bars, regular session. bar_age_s = seconds since the bar closed; "
                               "Yahoo quotes can lag the tape."),
