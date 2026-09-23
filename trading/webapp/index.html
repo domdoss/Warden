@@ -1000,7 +1000,6 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
               <p>Each ticker gets its own <b>liquid time-constant network</b> (a CfC cell, 32 units). Unlike a normal recurrent net, each neuron's "memory speed" changes with the input, so it can react quickly in volatile stretches and hold information longer in quiet ones.</p>
               <p><b>Input:</b> the last 10 trading days of 28 technical indicators (MACD, RSI, ATR, Bollinger bands, OBV, stochastics, Fibonacci levels, momentum…), expressed relative to price so a $50 and a $500 stock look alike. <b>Output:</b> tomorrow's return, shown as a predicted close.</p>
               <p><b>Training:</b> 5 years of daily prices; the oldest 80% trains the model, the newest 20% (~1 year) is held back to score it. Retrained once per ticker per day (~20s on the GPU), and each run feeds the forecast to the TradingAgents analysts as one input.</p>
-              <p><b>How much to trust it:</b> every tile compares it against two dumb baselines on that held-back year — "tomorrow = today" (error) and "always up" (direction). <b>Below baseline</b> means it hasn't beaten them: treat it as a research signal, not a call. Next-day prices are close to a coin flip for any model.</p>
             </details>
             <div id="liquidPanel"><div class="loading">Loading…</div></div>
           </div>
@@ -1570,10 +1569,8 @@ async function fetchLiquid() {
   }
 }
 let taRatings = {};           // ticker → {rating, id, ts} from the newest TradingAgents report
-function liquidTrust(f) {
-  const ev = f.eval || {};
-  return ev.beats_naive ? '<span class="trust ok">beats baseline</span>'
-                        : '<span class="trust low" title="Low confidence: its error is no better than just predicting the last close">below baseline</span>';
+function liquidTrust(f) {   // baseline badge removed: the prediction is used as-is
+  return '';
 }
 // The explicit call. Backend sends f.call; an older backend doesn't, so the
 // same rule is applied here: a direction only when the model beat the
@@ -1581,10 +1578,9 @@ function liquidTrust(f) {
 function liquidCall(f) {
   if (f.call && f.call.action) return { action: String(f.call.action).toUpperCase(), reason: f.call.reason || '' };
   const ev = f.eval || {}, pct = Number(f.predicted_change_pct);
-  if (!ev.beats_naive) return { action: 'NO SIGNAL', reason: "hasn't beaten 'tomorrow = today' on the test year — ignore it" };
   if (!(Math.abs(pct) > 0.1)) return { action: 'NO SIGNAL', reason: `predicted move ${isNaN(pct) ? '—' : pct.toFixed(2) + '%'} is inside trading costs` };
-  return pct > 0 ? { action: 'BUY', reason: `beats the baseline and predicts +${pct.toFixed(2)}% tomorrow` }
-                 : { action: 'SELL', reason: `beats the baseline and predicts ${pct.toFixed(2)}% tomorrow` };
+  return pct > 0 ? { action: 'BUY', reason: `predicts +${pct.toFixed(2)}% tomorrow` }
+                 : { action: 'SELL', reason: `predicts ${pct.toFixed(2)}% tomorrow` };
 }
 function liquidTaRating(f) {
   const r = f.ta_rating;
@@ -1628,7 +1624,7 @@ function renderLiquid() {
   const list = Object.values(liquidCache || {});
   if (!list.length) return;
   $('#liquidPanel').innerHTML = `<div class="lq-grid">${list.map(liquidTile).join('')}</div>
-    <div class="lq-note">BUY / SELL appears only when a ticker's model has beaten the naive baseline and its move clears trading costs; otherwise NO SIGNAL. The TradingAgents rating beside it is what the paper account actually trades.</div>`;
+    <div class="lq-note">BUY / SELL when a ticker's predicted move clears trading costs; otherwise NO SIGNAL. The TradingAgents rating beside it is what the paper account actually trades.</div>`;
 }
 $('#liquidRefresh').onclick = loadLiquid;
 

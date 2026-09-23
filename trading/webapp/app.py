@@ -1084,20 +1084,17 @@ def long_term_stances(tickers: list[str]) -> dict[str, dict]:
 
 
 def liquid_call(f: dict, cost_bps: float) -> dict:
-    """BUY/SELL only when the model beat 'tomorrow = today' on its test year
-    AND the predicted move clears the round-trip cost; else NO SIGNAL."""
+    """BUY/SELL when the predicted move clears the round-trip cost; else
+    NO SIGNAL. (The naive-baseline test no longer gates the call — the
+    prediction is used as-is, like the day-trade engine's AI mode.)"""
     if f.get("pending") or f.get("error"):
         return {"action": "NO SIGNAL", "reason": "no forecast yet" if f.get("pending") else "forecast failed"}
-    ev = f.get("eval") or {}
     pct = f.get("predicted_change_pct") or 0.0
-    if not ev.get("beats_naive"):
-        return {"action": "NO SIGNAL",
-                "reason": "hasn't beaten 'tomorrow = today' on its test year — ignore the prediction"}
     if abs(pct) * 100 <= cost_bps:
         return {"action": "NO SIGNAL",
                 "reason": f"predicted move {pct:+.2f}% is inside the {cost_bps / 100:.2f}% round-trip cost"}
     return {"action": "BUY" if pct > 0 else "SELL",
-            "reason": f"predicts {pct:+.2f}% tomorrow and has beaten the naive baseline"}
+            "reason": f"predicts {pct:+.2f}% tomorrow"}
 
 
 def list_reports(limit: int = 100) -> list[dict]:
