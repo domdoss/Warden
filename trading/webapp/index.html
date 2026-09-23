@@ -1088,6 +1088,15 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
           </div>
           <div id="dtReplayBar" hidden></div>
           <div id="dtTrainBar" class="dt-train" hidden></div>
+          <div id="dtSaves" class="dt-train">
+            <div class="hd"><b>Model saves</b><span>keep a known-good set of models and switch back to it any time</span></div>
+            <div class="dt-row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+              <input id="dtSaveName" class="dt-date" style="max-width:200px" placeholder="name, e.g. good W37" maxlength="60">
+              <input id="dtSaveNote" class="dt-date" style="max-width:260px" placeholder="note (optional)" maxlength="300">
+              <button class="btn btn-sm" id="dtSaveBtn" title="Save every loaded model plus the settings they were trained with">Save current models</button>
+            </div>
+            <div id="dtSaveList" style="margin-top:8px"></div>
+          </div>
           <div id="dtNotice" class="dt-notice" hidden></div>
         </div>
 
@@ -2540,6 +2549,7 @@ function dtOnSnap(raw) {
 function dtActivate() {
   DT.active = true;
   if (!KN.cat) dtLoadKnobs();
+  dtLoadSaves();
   if (!DT.ageTimer) DT.ageTimer = setInterval(dtTickClock, 1000);
   if (document.hidden) return;
   dtConnect();
@@ -2835,6 +2845,41 @@ async function dtLoadTrades(force) {
 }
 
 /* -- controls -- */
+/* -- model saves: named snapshots of the trained model set -- */
+async function dtLoadSaves() {
+  const el = $('#dtSaveList'); if (!el) return;
+  let d;
+  try { d = await api('/api/daytrade/models/sets'); } catch (e) { el.innerHTML = '<div class="dt-sub">Model saves not available on this backend.</div>'; return; }
+  const sets = d.sets || [];
+  if (!sets.length) { el.innerHTML = '<div class="dt-sub">No saves yet. Train or load models you like, then save them here.</div>'; return; }
+  el.innerHTML = `<div class="dt-rep-wrap"><table class="dt-rep-tbl"><thead><tr><th>Name</th><th>Saved</th><th>Models</th><th>Trained on</th><th>Cut-off</th><th></th></tr></thead><tbody>` +
+    sets.map(s => `<tr><td><b>${esc(s.name)}</b>${s.note ? `<div class="dt-sub">${esc(s.note)}</div>` : ''}</td>
+      <td>${esc((s.saved_at || '').replace('T', ' ').slice(0, 16))}</td>
+      <td>${(s.tickers || []).length}</td>
+      <td>${esc(s.train_window || '—')} · ${esc(String(s.horizon_min || '—'))} min</td>
+      <td>${esc(s.trained_through || '—')}</td>
+      <td style="white-space:nowrap"><button class="btn btn-sm" data-load="${esc(s.name)}">Load</button>
+          <button class="btn btn-ghost btn-sm" data-del="${esc(s.name)}">Delete</button></td></tr>`).join('') +
+    `</tbody></table></div>`;
+  el.querySelectorAll('[data-load]').forEach(b => b.onclick = async () => {
+    const name = b.dataset.load;
+    if (!confirm(`Load model save "${name}"?\n\nIts models replace the current ones, and its settings (exits, risk, mode…) are restored too. The current models stay on disk; save them first if you want to come back to them.`)) return;
+    const r = await dtPost('/api/daytrade/models/load', { name, with_settings: true });
+    if (r) { toast(`Loaded "${name}" — ${(r.loaded || []).length} models`); dtLoadSaves(); dtLoadKnobs(); /* refresh the settings form */ }
+  });
+  el.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    const name = b.dataset.del;
+    if (!confirm(`Delete model save "${name}"? This can't be undone.`)) return;
+    if (await dtPost('/api/daytrade/models/delete', { name })) { toast(`Deleted "${name}"`); dtLoadSaves(); }
+  });
+}
+$('#dtSaveBtn').onclick = async () => {
+  const name = $('#dtSaveName').value.trim();
+  if (!name) { toast('Give the save a name'); return; }
+  const r = await dtPost('/api/daytrade/models/save', { name, note: $('#dtSaveNote').value.trim() });
+  if (r) { toast(`Saved "${r.set.name}" — ${r.set.tickers.length} models`); $('#dtSaveName').value = ''; $('#dtSaveNote').value = ''; dtLoadSaves(); }
+};
+
 async function dtPost(path, body, what) {
   try {
     const r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
