@@ -175,9 +175,9 @@ training/orchatlas-sft.jsonl
 training/loop/catalogs/
 training/loop/logs/
 
-# ── Alpha Stack (trading) — machine-local environment, not source ──
-# Copied wholesale from /mnt/old-home/dominic/alpha-stack (2026-09-22).
-# The stack self-ignores via trading/.gitignore (*); this root rule keeps
-# it out even if that file is removed. Warden's integration with it lives
-# in the tracked src/status-server.ts route + dashboard view.
-trading/
+# ── Alpha Stack (trading) ──
+# Machine-local environment (venv, models, data, paper state, secrets) —
+# everything in trading/ is ignored by trading/.gitignore except an
+# allowlist of source files (webapp/*.py, webapp/*.html, scripts/*.py).
+# Warden's integration with it lives in the tracked src/status-server.ts
+# route + dashboard view.
