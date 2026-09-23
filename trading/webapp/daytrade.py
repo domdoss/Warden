@@ -350,6 +350,22 @@ def free_gpu_from_ollama() -> None:
         log(f"could not unload ollama models: {exc}")
 
 
+def free_gpu_memory() -> None:
+    """Release PyTorch's cached GPU memory on every device (kept models stay
+    loaded — they're a few MB). Called when a training batch ends."""
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+    except Exception as exc:
+        log(f"could not release GPU memory: {exc}")
+
+
 def set_train_workers(n: int) -> None:
     """Size the slot pool to ``n``. Only rebuilt while every slot is free, so
     a change made mid-batch takes effect on the next batch."""
@@ -1443,10 +1459,15 @@ class Engine:
                                         "seconds": round(time.time() - t_start, 1)})
             with self.lock:
                 self.training.discard(t)
+                batch_over = not self.train_q and not self.training
                 if run:
                     run["current"].pop(t, None)
-                    if not self.train_q and not self.training:
+                    if batch_over:
                         run["finished"] = time.time()
+            if batch_over:
+                # The batch is over (finished or stopped): hand the GPU memory
+                # PyTorch was caching back to the system, so VRAM drops right away.
+                free_gpu_memory()
             self.wake.set()
             self._bump()
 
