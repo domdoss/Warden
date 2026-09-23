@@ -59,7 +59,7 @@ TICKER_SUGGESTIONS = [
 
 HORIZON_OPTIONS = [
     {"value": 5, "label": "5 min"}, {"value": 15, "label": "15 min"}, {"value": 30, "label": "30 min"},
-    {"value": 60, "label": "60 min"}, {"value": 120, "label": "120 min"},
+    {"value": 60, "label": "60 min"}, {"value": 120, "label": "120 min"}, {"value": 240, "label": "240 min"},
 ]
 
 KNOBS = [
