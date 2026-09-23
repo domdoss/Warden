@@ -1044,10 +1044,10 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
           <div class="dt-row dt-controls">
             <button class="btn btn-primary btn-sm" id="dtStart">Start live</button>
             <button class="btn btn-sm" id="dtStop" hidden>Stop engine</button>
-            <!-- The neural models are gone (2026-09-23): every card reads HOLD
-                 until an auto bot feeds the engine calls. The full stack,
-                 models included, is archived in the sideproject snapshot
-                 (sideproject-full-20260923/). -->
+            <!-- The neural models are gone (2026-09-23): the signal is each
+                 ticker's own move over the horizon window, knob-gated. The
+                 full stack, models included, is archived in the sideproject
+                 snapshot (sideproject-full-20260923/). -->
             <span class="dt-sep"></span>
             <span class="dt-replay-lbl">Replay</span>
             <input type="week" id="dtReplayDate" class="dt-date" title="Week to replay, Monday–Friday (blank = the latest week). The whole week is scored at the end.">
@@ -1095,8 +1095,8 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
             </div>
             <details class="info-note">
               <summary><b>How the calls work</b></summary>
-              <p>There is no predictive model: the cards read <b>HOLD — no signal source</b> until an auto bot is plugged in to feed the engine calls. Meanwhile the panel is a paper-trading harness: set the knobs below, and use a card's Buy / Sell buttons to trade by hand against them.</p>
-              <p>When a signal source exists, <b>BUY NOW / SELL NOW</b> fire when its prediction clears the entry bar (round-trip cost × signal strength) and the stop / target / timing / alignment knobs allow it — the knobs are the whole rulebook. Replay past weeks with your settings to see how they would have done. Prices tick every few seconds between bars.</p>
+              <p>There is no predictive model: the signal is each ticker's <b>own move over the horizon window</b> (Trade horizon, below). The knobs are the whole rulebook — a <b>BUY NOW / SELL NOW</b> fires when that move clears the entry bar (round-trip cost × Signal strength needed) and the stop / target / timing / alignment knobs allow it. Use a card's Buy / Sell buttons to trade by hand against the same knobs.</p>
+              <p>Replay past weeks with your settings to see how they would have done — the same signal and rulebook run over real past bars, then the week is scored. Prices tick every few seconds between bars.</p>
               <p id="dtDataNote">Data: Yahoo 1-minute bars, which can lag the tape — the bar age is shown on every card.</p>
             </details>
           </div>
@@ -1621,7 +1621,7 @@ function renderDaytrade(d) {
       return `<tr><td><b>${esc(t.ticker)}</b></td><td style="color:${col}">${esc(call)}</td><td>${pos}</td></tr>`;
     }).join('')}
   </table></div>` : '<div class="empty">No tickers — the engine watches the portfolio and watchlist.</div>';
-  html += `<div class="dt-sub" style="margin-top:8px">Paper only. Each closed round trip posts into the shared account. Cards read HOLD until an auto bot feeds the engine calls — the knobs below are the whole rulebook it will trade by.</div>`;
+  html += `<div class="dt-sub" style="margin-top:8px">Paper only. Each closed round trip posts into the shared account. The signal is each ticker's own move over the horizon window — the knobs decide when that's tradeable.</div>`;
   el.innerHTML = html;
 }
 async function loadDaytrade() {
@@ -2699,7 +2699,7 @@ function dtFillCard(card, t, s) {
   const lvHtml = lv ? `<div class="dt-lv"><div><small>Entry</small>${dtNum(lv.entry)}</div><div><small>Stop</small>${dtNum(lv.stop)}</div><div><small>Target</small>${dtNum(lv.target)}</div></div>` : '';
   const posHtml = p ? `<div class="dt-pos">In a <b>${esc(p.side)}</b> · ${p.qty} sh @ ${dtNum(p.entry)} · ` +
     `<b style="color:${p.unrealized >= 0 ? 'var(--up)' : 'var(--down)'}">${dtMoney(p.unrealized, true)}</b> (${dtNum(p.unrealized_pct, 2)}%)</div>` : '';
-  const pred = t.pred_bps != null ? `pred ${t.pred_bps > 0 ? '+' : ''}${dtNum(t.pred_bps, 1)} bps vs ±${dtNum(t.threshold_bps, 1)} cost bar` : '';
+  const pred = t.pred_bps != null ? `move ${t.pred_bps > 0 ? '+' : ''}${dtNum(t.pred_bps, 1)} bps over the horizon vs ±${dtNum(t.threshold_bps, 1)} cost bar` : '';
   const manual = s.mode === 'live' && (s.clock || {}).open
     ? `<div class="dt-man"><button class="btn btn-sm" data-act="buy">Buy</button><button class="btn btn-sm" data-act="sell">Sell</button>${p ? '<button class="btn btn-ghost btn-sm" data-act="close">Close</button>' : ''}</div>` : '';
   card.innerHTML = `
@@ -2872,7 +2872,7 @@ const KN_TILES = [
   { key: 'risk_per_trade_pct', icon: 'risk', lbl: 'Risk per trade',
     f: c => ({ big: `${knN(c.n('risk_per_trade_pct'))}% ≈ ${knUsd(c.E * c.n('risk_per_trade_pct') / 100)}`, sub: 'lost if a trade hits its stop-loss' }) },
   { key: 'edge_mult', icon: 'signal', lbl: 'Acts on',
-    f: c => ({ big: `pred > ${knN(c.n('edge_mult') * c.rt, 1)} bps`, sub: `the signal-strength bar = ${knN(c.n('edge_mult'), 1)}× the ${knN(c.rt, 1)} bps round-trip cost` }) },
+    f: c => ({ big: `move > ${knN(c.n('edge_mult') * c.rt, 1)} bps`, sub: `the signal-strength bar = ${knN(c.n('edge_mult'), 1)}× the ${knN(c.rt, 1)} bps round-trip cost` }) },
   { key: 'max_daily_loss_pct', icon: 'risk', lbl: 'Daily stop', keys: ['max_daily_loss_pct', 'max_daily_loss_usd'],
     f: c => {
       const p = c.n('max_daily_loss_pct'), pu = c.E * p / 100, u = c.has('max_daily_loss_usd') ? c.n('max_daily_loss_usd') : 0;
@@ -2890,7 +2890,7 @@ const KN_TILES = [
 
 /* "What this means" line under a knob (text only; {t, warn}). */
 const KN_MEAN = {
-  edge_mult: c => `A prediction must beat ${knN(c.n('edge_mult') * c.rt, 1)} bps (${knN(c.n('edge_mult') * c.rt / 100, 3)}%) before the engine acts.`,
+  edge_mult: c => `The ticker's move must beat ${knN(c.n('edge_mult') * c.rt, 1)} bps (${knN(c.n('edge_mult') * c.rt / 100, 3)}%) over the horizon before the engine acts.`,
   target_sigma: c => { const s = c.n('stop_sigma'), t = c.n('target_sigma');
     return { t: `Reward : risk = ${knN(t / s)} : 1 — break-even needs ${knN(100 * s / (s + t), 0)}% winners (before costs).`, warn: t < s ? 'The target is closer than the stop.' : '' }; },
   take_profit_usd: c => { const v = c.n('take_profit_usd'); return v > 0 ? `A trade up ${knUsd(v)} is closed at once${c.pos ? ` (≈ ${knN(100 * v / c.pos)}% on a full-size trade)` : ''}.` : 'Off — no hard dollar cap on a winner.'; },
@@ -2959,17 +2959,17 @@ function knCostViz(c) {
   return `<div><div class="kn-viz-t">Cost vs. the bar a trade must clear${c.pos ? ` · $ on a full-size ${knUsd(c.pos)} trade` : ''}</div>
     <div class="kn-cr"><div class="kn-cr-l"><span>Every round trip pays</span><b>${knN(rt, 1)} bps = ${knN(rt / 100, 3)}%${usd(rt)}</b></div>
       <div class="kn-bar"><div class="c" style="width:${w(rt)}"></div></div></div>
-    ${c.has('edge_mult') ? `<div class="kn-cr"><div class="kn-cr-l"><span>Each prediction must beat</span><b>${knN(sig, 1)} bps${usd(sig)}</b></div>
+    ${c.has('edge_mult') ? `<div class="kn-cr"><div class="kn-cr-l"><span>Each move must beat</span><b>${knN(sig, 1)} bps${usd(sig)}</b></div>
       <div class="kn-bar"><div class="s" style="width:${w(sig)}"></div></div></div>` : ''}
     <div class="kn-leg"><span><i style="background:var(--down);opacity:.75"></i>cost</span><span><i style="background:var(--accent)"></i>signal bar</span></div></div>`;
 }
 function knGateViz(c) {
   const st = (lbl, val) => `<span class="st"><small>${esc(lbl)}</small><b>${esc(val)}</b></span>`, ar = '<span class="ar">→</span>';
   const steps = [];
-  if (c.has('edge_mult')) steps.push(st('prediction', `> ${knN(c.n('edge_mult') * c.rt, 1)} bps`));
+  if (c.has('edge_mult')) steps.push(st('move', `> ${knN(c.n('edge_mult') * c.rt, 1)} bps`));
   if (!steps.length) return '';
   const dir = c.has('allow_short') ? (knCur('allow_short') ? 'long or short' : 'long only') : 'trade';
-  return `<div><div class="kn-viz-t">A prediction that clears the bar becomes a call</div>
+  return `<div><div class="kn-viz-t">A move that clears the bar becomes a call</div>
     <div class="kn-flow">${steps.join(ar)}${ar}<span class="st go"><small>${knCur('auto_execute') ? 'auto-traded' : 'signal shown'}</small><b>${dir}</b></span></div></div>`;
 }
 function knRiskViz(c) {
