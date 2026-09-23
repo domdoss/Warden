@@ -198,6 +198,15 @@ KNOBS = [
     {"key": "recoup_risk_mult", "group": "risk", "label": "Afternoon risk after a down morning", "type": "float",
      "default": 0.5, "min": 0.1, "max": 1.0, "step": 0.05, "unit": "× normal risk", "retrain": False,
      "help": "From midday on, while the day is down, each new trade risks this fraction of the normal amount — trading smaller to win it back safely. 1 = always normal risk."},
+    {"key": "max_weekly_loss_pct", "group": "risk", "label": "Weekly loss limit", "type": "float",
+     "default": 3.0, "min": 0.1, "max": 50.0, "step": 0.1, "unit": "% of account", "retrain": False,
+     "help": "If day trades lose this much of the account over one week (Monday's open to now), everything is closed and no new trades open until next week. Catches a string of moderate daily losses that each stay under the daily limit. The account also holds long-term positions, so keep it smallish."},
+    {"key": "max_weekly_loss_usd", "group": "risk", "label": "Weekly loss cutoff", "type": "float",
+     "default": 0.0, "min": 0.0, "max": 50000.0, "step": 10.0, "unit": "$", "retrain": False,
+     "help": "Once the week's day trades are down this many dollars below Monday's open, everything is closed and nothing new opens until next week. 0 = off."},
+    {"key": "max_consecutive_loss_days", "group": "risk", "label": "Losing days in a row", "type": "int",
+     "default": 0, "min": 0, "max": 5, "step": 1, "retrain": False,
+     "help": "After this many losing days in a row, the engine stands aside for the rest of the week instead of chasing a bad streak. The count resets each week. 0 = off."},
 
     # -- costs ----------------------------------------------------------------
     {"key": "spread_bps", "group": "costs", "label": "Bid/ask spread", "type": "float", "default": 2.0,

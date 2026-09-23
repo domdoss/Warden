@@ -553,6 +553,12 @@ class SharedAccount:
         self._snap = None
 
 
+def _week_key(d: str) -> str:
+    """ISO week for a date string, e.g. '2026-09-21' -> '2026-W39'."""
+    iso = date.fromisoformat(d).isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
 class Book:
     def __init__(self, cfg: dict, data: dict | None = None, shared: SharedAccount | None = None):
         d = data or {}
@@ -569,6 +575,10 @@ class Book:
         self.realized_today = float(d.get("realized_today", 0.0))
         self.killed_day = d.get("killed_day")
         self.banked_day = d.get("banked_day")
+        self.week = d.get("week") or (_week_key(self.day) if self.day else None)
+        self.week_start_equity = float(d.get("week_start_equity", self.start_equity))
+        self.killed_week = d.get("killed_week")
+        self.loss_streak = int(d.get("loss_streak", 0))
         self.positions: dict[str, dict] = d.get("positions", {})
         self.trades: list[dict] = d.get("trades", [])
         self.fills: list[dict] = d.get("fills", [])
@@ -578,6 +588,8 @@ class Book:
                 "day": self.day, "day_start_equity": self.day_start_equity,
                 "realized_today": self.realized_today, "killed_day": self.killed_day,
                 "banked_day": self.banked_day,
+                "week": self.week, "week_start_equity": self.week_start_equity,
+                "killed_week": self.killed_week, "loss_streak": self.loss_streak,
                 "unposted": self.unposted,
                 "positions": self.positions, "trades": self.trades[-500:],
                 "fills": self.fills[-1000:]}
@@ -607,15 +619,27 @@ class Book:
 
     def roll_day(self, d: str, marks: dict[str, float]) -> None:
         if self.day != d:
+            # Close the books on the day just ended: a losing day extends the
+            # losing streak, any other day (or a flat day) resets it.
+            if self.day is not None:
+                self.loss_streak = self.loss_streak + 1 if self.realized_today < 0 else 0
             self.day = d
             self.day_start_equity = self.equity(marks)
             self.realized_today = 0.0
+            wk = _week_key(d)
+            if wk != self.week:
+                self.week = wk
+                self.week_start_equity = self.equity(marks)
+                self.killed_week = None
+                self.loss_streak = 0
 
     def open(self, ticker: str, side: str, mid: float, when: datetime, stop: float, target: float,
              exit_by: datetime, reason: str, cfg: dict, marks: dict[str, float]) -> dict | None:
         if ticker in self.positions or len(self.positions) >= cfg["max_positions"]:
             return None
         if self.killed_day == self.day or self.banked_day == self.day:
+            return None
+        if self.killed_week == self.week:
             return None
         eq = self.equity(marks)
         per_share_risk = abs(mid - stop)
@@ -841,6 +865,38 @@ def _daily_lock(book: "Book", cfg: dict, now: datetime, marks: dict[str, float])
     return events
 
 
+def _weekly_lock(book: "Book", cfg: dict, now: datetime, marks: dict[str, float]) -> list[dict]:
+    """Weekly circuit breakers, shared by live and replay:
+    - down ``max_weekly_loss_pct``% or ``max_weekly_loss_usd`` dollars since
+      Monday's open → cut the week (flat, no entries until next Monday);
+    - ``max_consecutive_loss_days`` losing days in a row → stand aside for the
+      rest of the week the same way.
+    Each knob at 0 leaves that guard off."""
+    events: list[dict] = []
+    if book.week is None or book.killed_week == book.week:
+        return events
+    pct = float(cfg.get("max_weekly_loss_pct") or 0)
+    usd = float(cfg.get("max_weekly_loss_usd") or 0)
+    streak = int(cfg.get("max_consecutive_loss_days") or 0)
+    week_pnl = book.equity(marks) - book.week_start_equity
+    hit = None
+    if pct and week_pnl <= -book.week_start_equity * pct / 100:
+        hit = f"weekly loss limit {pct:g}% hit"
+    elif usd and week_pnl <= -usd:
+        hit = f"weekly loss cutoff ${usd:g} reached"
+    elif streak and book.loss_streak >= streak:
+        hit = f"{streak} losing days in a row"
+    if hit:
+        book.killed_week = book.week
+        for t in list(book.positions):
+            tr = book.close(t, marks.get(t, book.positions[t]["entry_mid"]), now, "weekly loss cutoff", cfg)
+            if tr:
+                events.append({"type": "close", "trade": tr})
+        events.append({"type": "kill", "at": now.isoformat(),
+                       "reason": f"{hit} — flat, no entries until next week"})
+    return events
+
+
 def on_bar(book: Book, ticker: str, bar_time: datetime, bar: dict, pred_bps: float, atr: float,
            edge: dict, cfg: dict, auto: bool, close_dt: datetime, marks: dict[str, float],
            lt_stance: dict | None = None) -> tuple[dict, list]:
@@ -885,6 +941,7 @@ def on_bar(book: Book, ticker: str, bar_time: datetime, bar: dict, pred_bps: flo
     if pos:
         _ratchet_stop(pos, bar, cfg)
     events += _daily_lock(book, cfg, now, marks)
+    events += _weekly_lock(book, cfg, now, marks)
     pos = book.positions.get(ticker)
     sig = decide(pred_bps, pos, edge, cfg, bar["close"], atr, now, close_dt, lt_stance=lt_stance)
     if auto:
@@ -941,14 +998,16 @@ def simulate(df: pd.DataFrame, preds: np.ndarray, days: list, ticker: str, cfg: 
     """Backtest the live rules over ``days`` for one ticker (edge gate forced on).
 
     The book here is a fake $10M account, so the absolute-dollar rules
-    (daily_take_usd / max_daily_loss_usd / take_profit_usd / trail_profit_usd)
-    are disabled: on a $10M book one trade swings more than every one of those
-    thresholds, so they would fire on the FIRST trade and cut every test to one
-    trade a day. Those are live-account risk controls; the edge measurement
-    must see the whole day."""
+    (daily_take_usd / max_daily_loss_usd / take_profit_usd / trail_profit_usd /
+    max_weekly_loss_usd) are disabled: on a $10M book one trade swings more
+    than every one of those thresholds, so they would fire on the FIRST trade
+    and cut every test to one trade a day. The weekly-loss and losing-day
+    guards are disabled for the same reason — those are live-account risk
+    controls; the edge measurement must see the whole day and week."""
     scfg = {**cfg, "max_positions": 1,
             "daily_take_usd": 0.0, "max_daily_loss_usd": 0.0, "take_profit_usd": 0.0,
-            "trail_profit_usd": 0.0}
+            "trail_profit_usd": 0.0,
+            "max_weekly_loss_pct": 0.0, "max_weekly_loss_usd": 0.0, "max_consecutive_loss_days": 0}
     book = Book(scfg, {"start_equity": 1e7})
     atr = atr_px(df).values
     idx_days = _day_keys(df.index)
@@ -2224,9 +2283,12 @@ class Engine:
                     "open_positions": len(book.positions),
                     "trades_today": len([x for x in book.trades
                                          if (x.get("closed_at") or "")[:10] == day]) if today else 0,
+                    "week_pnl": round(book.equity(marks) - book.week_start_equity, 2) if book.week else 0.0,
                 },
                 "banked": banked,
                 "killed": killed,
+                "week_killed": bool(book.week and book.killed_week == book.week),
+                "loss_streak": book.loss_streak,
                 "lock_reason": lock_reason,
                 "tickers": per,
             }
@@ -2238,7 +2300,9 @@ class Engine:
             book = self.book
             day = book.day
             bits = []
-            if day and book.banked_day == day:
+            if book.week and book.killed_week == book.week:
+                bits.append("the day-trade engine is cut for the week (weekly loss limit reached)")
+            elif day and book.banked_day == day:
                 bits.append("the day-trade engine is banked for today (daily profit lock reached)")
             elif day and book.killed_day == day:
                 bits.append("the day-trade engine is cut for the day (daily loss cutoff reached)")
