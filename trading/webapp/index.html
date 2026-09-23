@@ -1152,8 +1152,26 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
               <summary><b>How the calls work</b></summary>
               <p>Each ticker has its own liquid neural network trained on the chosen window of 1-minute bars, predicting the move over the next <b id="dtHzn">15</b> minutes. It is scored walk-forward on sessions it never saw, trading these exact rules with spread + slippage charged on every fill.</p>
               <p><b>BUY NOW / SELL NOW</b> fire only when that out-of-sample test showed an edge <i>net of costs</i> and the predicted move clears the cost bar. Otherwise the card says <b>STAND ASIDE</b> — the honest answer for most tickers most of the time. Signals re-evaluate on every new 1-minute bar; prices tick every few seconds between bars.</p>
+              <p><b>Why both a model and settings?</b> The neural net answers one narrow question — <i>which way, and roughly how much, will this ticker move over the horizon?</i> — and it answers it as a raw number. It has no idea what money is, how much to bet, or whether the day is already down. The settings are everything else: which tickers to watch, how sure the model must be before a call trades, how big each bet is, where the stop and target sit, and when to stop for the day or week. The model supplies the forecast; the settings are the risk discipline wrapped around it. That split is deliberate — you want the risk rules to be boring and deterministic, not something a model can improvise on the fly.</p>
               <p id="dtDataNote">Data: Yahoo 1-minute bars, which can lag the tape — the bar age is shown on every card.</p>
             </details>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="section-title">Manual price-data upload
+              <div class="spacer"></div>
+              <span class="dt-sub">merge your own bars into the training cache</span>
+            </div>
+            <div class="add-form" style="align-items:center">
+              <div class="field" style="flex:1;max-width:340px"><label>File</label>
+                <input type="file" id="dtUploadFile" accept=".csv,.tsv,.txt,.json,.jsonl,.ndjson,.parquet,.pq,.feather,.arrow,.xlsx,.xlsm,.xls,.ods,.html,.htm,.zip,.gz,.bz2,.xz,.zst"></div>
+              <div class="field" style="max-width:140px"><label>Ticker (optional)</label>
+                <input type="text" id="dtUploadTicker" placeholder="AAPL" autocomplete="off" spellcheck="false"></div>
+              <label class="dt-chk" title="Replace existing bars on overlap instead of keeping them"><span class="toggle"><input type="checkbox" id="dtUploadOverwrite"><span class="slider"></span></span> Overwrite</label>
+              <button class="btn btn-primary btn-sm" id="dtUploadBtn">Upload</button>
+            </div>
+            <div class="info-note" style="margin-top:8px">1-minute bars merge straight into the cache the engine trains and replays on (existing bars win unless <b>Overwrite</b>). Any other interval is stored for reference and reported — the engine trades 1-minute bars. Pickles are refused.</div>
+            <div id="dtUploadLog" style="margin-top:8px"></div>
           </div>
         </div>
       </section>
@@ -2991,6 +3009,42 @@ $('#dtTrain').onclick = async () => {
 };
 $('#dtAuto').onchange = e => dtPost('/api/daytrade/config', { auto_execute: e.target.checked },
   e.target.checked ? 'Auto-execute on' : 'Auto-execute off');
+
+/* -- manual price-data upload -- */
+async function dtUploadLog() {
+  try {
+    const d = await api('/api/daytrade/uploads');
+    const rows = (d && d.log) || [];
+    const one = r => (r.errors && r.errors.length)
+      ? 'errors: ' + r.errors.join('; ')
+      : (r.results || []).map(x => `${x.ticker} +${(x.new_bars != null ? x.new_bars : x.rows) ?? 0} bars${x.used_by_engine === false ? ' (stored, not 1-min)' : ''}`).join(', ');
+    $('#dtUploadLog').innerHTML = rows.length
+      ? `<div class="table-wrap"><table class="dt-tbl"><thead><tr><th>When</th><th>File</th><th>Result</th></tr></thead><tbody>` +
+        rows.map(r => `<tr><td>${esc((r.at || '').replace('T', ' ').slice(0, 16))}</td><td>${esc(r.file)}</td><td>${esc(one(r))}</td></tr>`).join('') +
+        `</tbody></table></div>`
+      : '<div class="empty">No uploads yet.</div>';
+  } catch (e) { $('#dtUploadLog').innerHTML = '<div class="empty">Upload history unavailable on this backend.</div>'; }
+}
+$('#dtUploadBtn').onclick = async () => {
+  const file = $('#dtUploadFile').files[0];
+  if (!file) { toast('Choose a file first'); return; }
+  const ticker = $('#dtUploadTicker').value.trim();
+  const overwrite = $('#dtUploadOverwrite').checked;
+  try {
+    const res = await fetch('/api/daytrade/upload', {
+      method: 'POST',
+      headers: { 'X-Filename': encodeURIComponent(file.name), 'X-Ticker': encodeURIComponent(ticker), 'X-Overwrite': overwrite ? '1' : '0' },
+      body: await file.arrayBuffer(),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
+    toast(`Uploaded ${file.name}`);
+    $('#dtUploadFile').value = '';
+    dtUploadLog();
+  } catch (e) { toast('Upload failed: ' + e.message); }
+};
+if ($('#dtUploadLog')) dtUploadLog();
+
 /* -- settings: generated from the knob catalog (GET /api/daytrade/knobs) --
    KN.values = what the server has; KN.pending = unsaved edits (only keys
    that differ from KN.values); KN.errors = per-key messages (a server 400 or
