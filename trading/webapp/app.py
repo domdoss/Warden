@@ -848,8 +848,22 @@ def _finish_run(run_id: str) -> None:
         if "longterm" in paper.trade_sources():
             try:
                 executed = paper.execute_run_decisions(record)
-                for e in executed:
-                    print(f"[paper] {e.get('ticker')}: {e.get('action')} -> {e.get('status')}", file=sys.stderr)
+                by_ticker = {e.get("ticker"): e for e in executed}
+                for t in record.get("tickers", []):
+                    ticker = t.get("ticker")
+                    e = by_ticker.get(ticker)
+                    if e is None:
+                        print(f"[paper] {ticker}: not-selected (no completed decision)",
+                              file=sys.stderr)
+                    elif e.get("status") == "stale":
+                        print(f"[paper] {ticker}: stale-skipped ({e.get('note')})",
+                              file=sys.stderr)
+                    elif e.get("status") in ("pending_open", "no_trade"):
+                        print(f"[paper] {ticker}: executed ({e.get('action')})",
+                              file=sys.stderr)
+                    else:
+                        print(f"[paper] {ticker}: {e.get('action')} -> {e.get('status')}",
+                              file=sys.stderr)
             except Exception as exc:  # paper trading must never break a run
                 print(f"[paper] execute failed: {exc}\n{traceback.format_exc()}", file=sys.stderr)
         else:
@@ -1097,7 +1111,14 @@ def long_term_stances(tickers: list[str]) -> dict[str, dict]:
         elif f and "error" not in f and not f.get("pending"):
             # A real forecast that adds up to NO SIGNAL = a known, neutral view.
             direction, reason = "hold", "Liquid NN: no signal today"
+        stale = stale_why = ""
+        if r.get("date"):
+            try:
+                stale, stale_why = paper.is_stale_call(t, r["date"], direction or "")
+            except Exception:
+                pass
         out[t] = {"direction": direction, "reason": reason,
+                  "stale": stale, "stale_why": stale_why,
                   "ta_rating": rating, "ta_date": r.get("date"),
                   "liquid_call": lc.get("action"), "liquid_pct": f.get("predicted_change_pct"),
                   "held_qty": held.get(t, 0.0), "entry_price": entry_px.get(t),
