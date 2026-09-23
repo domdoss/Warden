@@ -7,12 +7,13 @@ Pieces:
 - Data: yfinance 1-minute bars (regular session only). Yahoo serves 1m bars
   for the last 30 days, at most ~8 days per request, so history is fetched in
   7-day chunks (~20 sessions). Bar age is measured, never assumed.
-- Signals: there is no predictive model. The engine waits for an external
-  signal source (the future auto bot) to feed predictions; until then every
-  ticker reads HOLD and only manual paper trades move the book.
-- Decision: purely knob-driven — a signal clears the entry bar
+- Signals: there is no predictive model. The signal is the ticker's own move
+  over the horizon window (close now vs close ``horizon_min`` minutes ago,
+  in bps) — computed here, on the bars, in live and replay alike.
+- Decision: purely knob-driven — the move clears the entry bar
   (round-trip cost × edge_mult) and then stops/targets/timing/alignment
-  rules apply.
+  rules apply. A future auto bot can still feed its own predictions through
+  ``_evaluate(pred=…)`` to override the move-based signal.
 - Engine: one thread. Live mode polls the last price every few seconds,
   re-evaluates on each completed 1m bar, manages stops/targets/time exits,
   a daily-loss kill switch and a flatten before the close. Replay mode runs
@@ -416,6 +417,19 @@ def align_gate(cfg: dict, stance: dict | None) -> tuple[str | None, str]:
     return None, ""
 
 
+def move_bps(done: pd.DataFrame, horizon_min: int) -> float | None:
+    """The signal: the ticker's own move over the horizon window, in bps —
+    close now vs close ``horizon_min`` minutes ago. The knobs then decide
+    when that move is big enough to trade."""
+    h = int(horizon_min)
+    if len(done) < h + 1:
+        return None
+    now, then = float(done["Close"].iloc[-1]), float(done["Close"].iloc[-1 - h])
+    if not then > 0:
+        return None
+    return (now / then - 1) * 1e4
+
+
 def decide(pred_bps: float, pos: dict | None, cfg: dict, price: float,
            atr: float, now: datetime, close_dt: datetime,
            lt_stance: dict | None = None) -> dict:
@@ -427,13 +441,13 @@ def decide(pred_bps: float, pos: dict | None, cfg: dict, price: float,
             "threshold_bps": round(thr, 2), "entry": None, "stop": None, "target": None}
     if pred_bps is None or math.isnan(pred_bps):
         return {**base, "call": "HOLD", "action": "none",
-                "reason": "no signal source — the engine waits for the auto bot to feed it calls"}
+                "reason": f"no signal yet — not enough price history to read the {h}-min move"}
     if pos:
         against = (pos["side"] == "long" and pred_bps < -thr) or (pos["side"] == "short" and pred_bps > thr)
         if against:
             call = "SELL NOW" if pos["side"] == "long" else "BUY NOW"
             return {**base, "call": call, "action": "exit",
-                    "reason": f"exit {pos['side']}: the signal now predicts {pred_bps:+.1f} bps over {h} min, against the position"}
+                    "reason": f"exit {pos['side']}: the {h}-min move is now {pred_bps:+.1f} bps, against the position"}
         return {**base, "call": "HOLD", "action": "none",
                 "reason": f"in a {pos['side']} position; stop {pos['stop']}, target {pos['target']}, time exit {pos['exit_by'][11:16]}"}
     mins_left = (close_dt - now).total_seconds() / 60
@@ -446,24 +460,24 @@ def decide(pred_bps: float, pos: dict | None, cfg: dict, price: float,
     if pred_bps > thr:
         if blocked == "long":
             return {**base, "call": "HOLD", "action": "none",
-                    "reason": f"predicts {pred_bps:+.1f} bps over {h} min — long entry held back by long-term alignment: {why}"}
+                    "reason": f"up {pred_bps:+.1f} bps over the last {h} min — long entry held back by long-term alignment: {why}"}
         return {**base, "call": "BUY NOW", "action": "buy", "entry": round(price, 4),
                 "stop": round(price - cfg["stop_sigma"] * sigma, 4),
                 "target": round(price + cfg["target_sigma"] * sigma, 4),
-                "reason": f"predicts {pred_bps:+.1f} bps over {h} min, above the {thr:.1f} bps cost bar"}
+                "reason": f"up {pred_bps:+.1f} bps over the last {h} min — beyond the {thr:.1f} bps cost bar"}
     if pred_bps < -thr and cfg["allow_short"]:
         if blocked == "short":
             return {**base, "call": "HOLD", "action": "none",
-                    "reason": f"predicts {pred_bps:+.1f} bps over {h} min — short entry held back by long-term alignment: {why}"}
+                    "reason": f"down {pred_bps:+.1f} bps over the last {h} min — short entry held back by long-term alignment: {why}"}
         return {**base, "call": "SELL NOW", "action": "sell", "entry": round(price, 4),
                 "stop": round(price + cfg["stop_sigma"] * sigma, 4),
                 "target": round(price - cfg["target_sigma"] * sigma, 4),
-                "reason": f"predicts {pred_bps:+.1f} bps over {h} min — short, beyond the {thr:.1f} bps cost bar"}
+                "reason": f"down {pred_bps:+.1f} bps over the last {h} min — short, beyond the {thr:.1f} bps cost bar"}
     if pred_bps < -thr:
         return {**base, "call": "HOLD", "action": "none",
-                "reason": f"bearish ({pred_bps:+.1f} bps) but shorting is off"}
+                "reason": f"bearish ({pred_bps:+.1f} bps over the last {h} min) but shorting is off"}
     return {**base, "call": "HOLD", "action": "none",
-            "reason": f"predicted {pred_bps:+.1f} bps is inside the ±{thr:.1f} bps cost band — wait"}
+            "reason": f"{pred_bps:+.1f} bps over the last {h} min is inside the ±{thr:.1f} bps cost band — wait"}
 
 
 def _ratchet_stop(pos: dict, bar: dict, cfg: dict) -> None:
@@ -854,12 +868,15 @@ class Engine:
                   marks: dict, live: bool, pred: float | None = None,
                   book: Book | None = None, auto: bool | None = None) -> None:
         """Process one completed bar: exits and risk locks first, then the
-        decision on ``pred``. ``pred`` is None until a signal source feeds
-        calls — the card then reads HOLD / no signal source."""
+        decision on the signal. The signal is the ticker's move over the
+        horizon window (``move_bps``), computed from these bars — unless a
+        caller feeds ``pred`` (a future auto bot can override it)."""
         book = book or self.book
         row = done.iloc[-1]
         bar = {"open": float(row["Open"]), "high": float(row["High"]), "low": float(row["Low"]),
                "close": float(row["Close"])}
+        if pred is None:
+            pred = move_bps(done, self.cfg["horizon_min"])
         a = float(atr_px(done.tail(200)).iloc[-1])
         sig, events = on_bar(book, t, bar_time, bar, pred, a, self.cfg,
                              self.cfg["auto_execute"] if auto is None else auto, close_dt, marks,
@@ -1022,9 +1039,9 @@ class Engine:
         return 202, {"ok": True}
 
     def _do_replay(self, req: dict) -> None:
-        """Replay one week, session by session, then score the week. With no
-        signal source the week replays prices, exits and risk locks — trades
-        only appear once something feeds the engine calls."""
+        """Replay one week, session by session, then score the week. Bars run
+        through the same ``_evaluate`` path as live, so the move-based signal
+        fires and the knobs produce real trades to score."""
         sessions = [date.fromisoformat(d) for d in req["sessions"]]
         tickers = req["tickers"]
         self.mode = "replay"
@@ -1137,7 +1154,7 @@ class Engine:
                 sig = dict(self.signals.get(t) or {
                     "ticker": t, "call": "HOLD", "action": "none", "pred_bps": None,
                     "entry": None, "stop": None, "target": None,
-                    "reason": "no signal source — the engine waits for the auto bot to feed it calls"})
+                    "reason": "waiting for the first bars — the signal is the ticker's own move over the horizon window"})
                 sig["lt"] = lt_stances.get(t) or None
                 pr = self.prices.get(t)
                 sig["last_price"] = pr["price"] if pr else sig.get("bar_close")
@@ -1291,8 +1308,8 @@ class Engine:
 
     def context_line(self, ticker: str) -> str:
         """One factual line about the engine for the TradingAgents quant
-        context: its state today (the engine has no predictive model of its
-        own — it only manages the paper book)."""
+        context: its state today (the engine trades the ticker's own move
+        over the horizon window, knob-gated — no predictive model)."""
         with self.lock:
             book = self.book
             day = book.day
