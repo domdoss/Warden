@@ -130,6 +130,17 @@ def history(ticker: str, days: int) -> pd.DataFrame:
     return full[full.index >= start.astimezone(ET)]
 
 
+def cached_depth_days(ticker: str) -> int:
+    """How many calendar days of history the ticker's cache already holds
+    (0 = no cache). Lets long training windows use deep caches without
+    triggering a multi-year download for tickers that don't have one."""
+    path = CACHE_DIR / f"{ticker}.pkl"
+    if not path.exists():
+        return 0
+    first = pd.read_pickle(path).index[0]
+    return max(0, (datetime.now(timezone.utc) - first.to_pydatetime()).days - 1)
+
+
 def recent(tickers: list[str], days: int = 1) -> dict[str, pd.DataFrame]:
     """Real-time IEX 1m bars covering the last ``days`` calendar days."""
     end = datetime.now(timezone.utc)

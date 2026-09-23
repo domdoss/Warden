@@ -409,6 +409,14 @@ html[data-theme="dark"] .lq-call.buy, html[data-theme="dark"] .lq-call.sell { co
 .dt-rep-tbl td { color: var(--text); }
 .dt-prog { height: 6px; background: var(--accent-weak); border-radius: 3px; overflow: hidden; margin-top: 6px; }
 .dt-prog > div { height: 100%; background: var(--accent); transition: width .4s; }
+.dt-train { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 12.5px; color: var(--muted); }
+.dt-train .hd { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; color: var(--text); }
+.dt-train .hd b { font-size: 13px; }
+.dt-train .cur { margin-top: 8px; color: var(--text); overflow-wrap: anywhere; }
+.dt-train .done { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.dt-train .chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.dt-train .chip.err { border-color: var(--down); color: var(--down); }
+.dt-train .chip.edge { border-color: var(--up); color: var(--up); }
 .dt-summary { margin-top: 8px; color: var(--text); overflow-wrap: anywhere; }
 .dt-kill { background: color-mix(in srgb, var(--down) 12%, var(--card)); border: 1px solid var(--down); color: var(--down); font-weight: 700; border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 14px; }
 #dtAcct .val.up { color: var(--up); } #dtAcct .val.down { color: var(--down); }
@@ -519,6 +527,7 @@ html[data-theme="dark"] .lq-call.buy, html[data-theme="dark"] .lq-call.sell { co
 .kn-pill { font: inherit; font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; line-height: 1.6; border: 1px solid transparent; }
 .kn-pill.unsaved { background: var(--accent); color: #fff; }
 .kn-pill.changed { background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--amber); }
+.kn-pill.retrain { border-color: var(--border); color: var(--muted); }
 .kn-pill.adv { border-color: var(--border); border-style: dashed; color: var(--muted); }
 button.kn-pill { cursor: pointer; }
 button.kn-pill.changed:hover { background: color-mix(in srgb, var(--amber) 26%, transparent); }
@@ -1044,13 +1053,32 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
           <div class="dt-row dt-controls">
             <button class="btn btn-primary btn-sm" id="dtStart">Start live</button>
             <button class="btn btn-sm" id="dtStop" hidden>Stop engine</button>
-            <!-- The neural models are gone (2026-09-23): the signal is each
-                 ticker's own move over the horizon window, knob-gated. The
-                 full stack, models included, is archived in the sideproject
-                 snapshot (sideproject-full-20260923/). -->
+            <label class="dt-replay-lbl" for="dtTrainWin">Train on</label>
+            <select id="dtTrainWin" title="How much 1-minute history each model trains and is tested on. Changing it retrains every model.">
+              <option value="week">last week</option><option value="month">last month</option><option value="year">last year</option><option value="2years">last 2 years</option><option value="all">all history (~5 yrs)</option>
+            </select>
+            <label class="dt-replay-lbl" for="dtHorizon">Horizon</label>
+            <select id="dtHorizon" title="How far ahead each model predicts. Longer horizons mean bigger moves relative to trading costs. Changing it retrains every model.">
+              <option value="5">5 min</option><option value="15" selected>15 min</option><option value="30">30 min</option><option value="60">60 min</option><option value="120">120 min</option>
+            </select>
+            <label class="dt-replay-lbl" for="dtWorkers">Threads</label>
+            <select id="dtWorkers" title="Tickers trained at once, spread across the GPUs. A change applies to the next training batch.">
+              <option>1</option><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option>
+            </select>
+            <label class="dt-replay-lbl" for="dtBatch">Batch</label>
+            <select id="dtBatch" title="Samples per training step. Bigger keeps the GPUs busier (more VRAM); very big can train worse. Retrains models.">
+              <option>1024</option><option>2048</option><option>4096</option><option selected>8192</option><option>16384</option><option>32768</option>
+            </select>
+            <button class="btn btn-sm" id="dtTrain" title="Train a model for every portfolio + watchlist ticker on the chosen window (skips ones already current)">Train models</button>
+            <button class="btn btn-sm" id="dtTrainStop" hidden title="Cancel queued tickers and interrupt running ones; finished models are kept">Stop training</button>
+            <button class="btn btn-ghost btn-sm" id="dtTrainClear" title="Delete every saved day-trading model so all tickers start fresh">Clear models</button>
             <span class="dt-sep"></span>
             <span class="dt-replay-lbl">Replay</span>
             <input type="week" id="dtReplayDate" class="dt-date" title="Week to replay, Monday–Friday (blank = the latest week). The whole week is scored at the end.">
+            <select id="dtReplayModel" title="Which model replays the week">
+              <option value="current">current model (fast, in-sample)</option>
+              <option value="fresh">retrain before the week (honest, slow)</option>
+            </select>
             <select id="dtSpeed" title="Replay speed: simulated minutes per real second">
               <option value="2">2×</option><option value="4" selected>4×</option><option value="10">10×</option><option value="30">30×</option><option value="60">60×</option>
             </select>
@@ -1059,6 +1087,7 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
             <button class="btn btn-ghost btn-sm" id="dtReplayStop" hidden>Stop replay</button>
           </div>
           <div id="dtReplayBar" hidden></div>
+          <div id="dtTrainBar" class="dt-train" hidden></div>
           <div id="dtNotice" class="dt-notice" hidden></div>
         </div>
 
@@ -1084,6 +1113,10 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
               <div class="spacer"></div>
               <label class="dt-chk" title="Book paper trades automatically when a call fires"><span class="toggle"><input type="checkbox" id="dtAuto"><span class="slider"></span></span> Auto-execute</label>
             </div>
+            <div id="dtRetrainBanner" class="dt-banner" hidden>
+              <span><b>Model settings changed</b> — the current models were trained with the old settings. Press Train models to retrain them.</span>
+              <button class="btn btn-primary btn-sm" type="button" id="dtRetrainBtn">Train models</button>
+            </div>
             <div id="dtKnobs" class="dt-knobs"><div class="loading">Loading settings…</div></div>
             <div class="dt-knob-actions" id="dtKnobBar">
               <span id="dtKnobDirty" class="dt-knob-dirty"></span>
@@ -1095,8 +1128,8 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
             </div>
             <details class="info-note">
               <summary><b>How the calls work</b></summary>
-              <p>There is no predictive model: the signal is each ticker's <b>own move over the horizon window</b> (Trade horizon, below). The knobs are the whole rulebook — a <b>BUY NOW / SELL NOW</b> fires when that move clears the entry bar (round-trip cost × Signal strength needed) and the stop / target / timing / alignment knobs allow it. Use a card's Buy / Sell buttons to trade by hand against the same knobs.</p>
-              <p>Replay past weeks with your settings to see how they would have done — the same signal and rulebook run over real past bars, then the week is scored. Prices tick every few seconds between bars.</p>
+              <p>Each ticker has its own liquid neural network trained on the chosen window of 1-minute bars, predicting the move over the next <b id="dtHzn">15</b> minutes. It is scored walk-forward on sessions it never saw, trading these exact rules with spread + slippage charged on every fill.</p>
+              <p><b>BUY NOW / SELL NOW</b> fire only when that out-of-sample test showed an edge <i>net of costs</i> and the predicted move clears the cost bar. Otherwise the card says <b>STAND ASIDE</b> — the honest answer for most tickers most of the time. Signals re-evaluate on every new 1-minute bar; prices tick every few seconds between bars.</p>
               <p id="dtDataNote">Data: Yahoo 1-minute bars, which can lag the tape — the bar age is shown on every card.</p>
             </details>
           </div>
@@ -1592,6 +1625,15 @@ $('#liquidRefresh').onclick = loadLiquid;
 
 /* ---------- Day-trade engine (short-term brain, on the long-term dashboard) ---------- */
 let daytradeCache = null;
+function daytradeEdgeBadge(t) {
+  const e = t.edge || {};
+  if (t.model_state === 'untrained') return '<span class="trust low" title="No intraday model trained yet">not trained</span>';
+  if (!e.trades) return '<span class="trust low" title="No walk-forward test result yet">untested</span>';
+  const title = `Walk-forward test: ${e.trades} trades over ${e.test_days ?? '?'} sessions · avg ${e.avg_net_bps} bps net of costs · win rate ${e.win_rate_pct ?? '—'}%`;
+  return t.has_edge
+    ? `<span class="trust ok" title="${esc(title)}">edge ${e.avg_net_bps > 0 ? '+' : ''}${dtNum(e.avg_net_bps, 1)} bps/trade net</span>`
+    : `<span class="trust low" title="${esc(title)}">no edge</span>`;
+}
 function renderDaytrade(d) {
   daytradeCache = d;
   const el = $('#daytradePanel');
@@ -1611,17 +1653,17 @@ function renderDaytrade(d) {
   ].map(([l, v, c]) => `<div class="card stat-tile"><div class="lbl">${l}</div><div class="val ${c}">${v}</div></div>`).join('') + `</div>`;
   const rows = d.tickers || [];
   html += rows.length ? `<div class="table-wrap"><table class="dt-tbl">
-    <tr><th>Ticker</th><th>Call</th><th>Day position</th></tr>
+    <tr><th>Ticker</th><th>Call</th><th>Intraday edge</th><th>Day position</th></tr>
     ${rows.map(t => {
       const call = t.call || '—';
       const col = call === 'BUY NOW' ? 'var(--up)' : call === 'SELL NOW' ? 'var(--down)' : 'inherit';
       const pos = t.position
         ? `<b>${esc(t.position.side)}</b> ${t.position.qty} sh · <span style="color:${t.position.unrealized >= 0 ? 'var(--up)' : 'var(--down)'}">${dtMoney(t.position.unrealized, true)}</span>`
         : '<span style="color:var(--muted)">—</span>';
-      return `<tr><td><b>${esc(t.ticker)}</b></td><td style="color:${col}">${esc(call)}</td><td>${pos}</td></tr>`;
+      return `<tr><td><b>${esc(t.ticker)}</b></td><td style="color:${col}">${esc(call)}</td><td>${daytradeEdgeBadge(t)}</td><td>${pos}</td></tr>`;
     }).join('')}
   </table></div>` : '<div class="empty">No tickers — the engine watches the portfolio and watchlist.</div>';
-  html += `<div class="dt-sub" style="margin-top:8px">Paper only. Each closed round trip posts into the shared account. The signal is each ticker's own move over the horizon window — the knobs decide when that's tradeable.</div>`;
+  html += `<div class="dt-sub" style="margin-top:8px">Paper only. Each closed round trip posts into the shared account; the edge column is the ticker's own walk-forward test, net of costs.</div>`;
   el.innerHTML = html;
 }
 async function loadDaytrade() {
@@ -2436,8 +2478,33 @@ function dtMoney(v, signed) {
   const s = Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (v < 0 ? '−$' : signed && v > 0 ? '+$' : '$') + s;
 }
-/* Training progress UI removed with the neural models (2026-09-23) — the
-   full version lives in sideproject-full-20260923/webapp/index.html. */
+/* Training progress: one batch of queued tickers, trained one at a time.
+   Overall % counts finished tickers plus the current one's step/epoch. */
+function dtRenderTraining(tr) {
+  const el = $('#dtTrainBar');
+  if (!tr) { el.hidden = true; return; }
+  el.hidden = false;
+  const running = tr.running || (tr.current ? [tr.current] : []), done = tr.done || [], total = tr.total || 1;
+  const frac = c => c.steps ? ((c.step || 1) - 1 + (c.epochs ? (c.epoch || 0) / c.epochs : 0)) / c.steps : 0;
+  const part = running.reduce((a, c) => a + frac(c), 0);
+  const pct = Math.round(Math.min(1, (done.length + part) / total) * 100);
+  const ok = done.filter(d => d.ok).length, bad = done.length - ok;
+  const head = tr.finished
+    ? `<b>Training finished</b><span>${ok}/${total} trained${bad ? ` · ${bad} failed` : ''} · last ${esc(tr.window)} · ${dtDur(tr.elapsed_s)}</span>`
+    : `<b>Training models</b><span>${done.length}/${total} done · ${running.length} running${tr.workers ? ` (up to ${tr.workers} at once)` : ''} · last ${esc(tr.window)} · ${dtDur(tr.elapsed_s)} elapsed · ${pct}%</span>`;
+  let cur = running.map(c => {
+    const step = c.steps ? ` ${c.step}/${c.steps}` : '';
+    const ep = c.epochs ? ` · epoch ${c.epoch}/${c.epochs}` : '';
+    return `<div class="cur"><b>${esc(c.ticker)}</b> — ${esc(c.phase)}${step}${ep} · ${dtDur(c.elapsed_s)}</div>`;
+  }).join('');
+  if (tr.queued && tr.queued.length && !tr.finished) cur += `<div class="cur" style="color:var(--muted)">Next: ${esc(tr.queued.join(', '))}</div>`;
+  const chips = done.map(d => d.ok
+    ? `<span class="chip ${d.has_edge ? 'edge' : ''}" title="${d.sessions || '?'} sessions · ${d.trades ?? 0} test trades">${esc(d.ticker)} ✓ ${dtDur(d.seconds)} · ${d.has_edge ? 'edge' : 'no edge'} ${d.avg_net_bps != null ? (d.avg_net_bps > 0 ? '+' : '') + dtNum(d.avg_net_bps, 1) + ' bps' : ''}</span>`
+    : `<span class="chip err" title="${esc(d.error || '')}">${esc(d.ticker)} ✗ ${esc((d.error || 'failed').slice(0, 60))}</span>`).join('');
+  el.innerHTML = head.replace('<b>', '<div class="hd"><b>') + '</div>' +
+    `<div class="dt-prog"><div style="width:${tr.finished ? 100 : pct}%"></div></div>${cur}` +
+    (chips ? `<div class="done">${chips}</div>` : '');
+}
 function dtDur(sec) {
   sec = Math.max(0, Math.round(sec));
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
@@ -2569,11 +2636,15 @@ function dtRender(s) {
   $('#dtReplay').disabled = replaying;
   $('#dtReplayStop').hidden = !replaying;
 
+  dtRenderTraining(s.training);
+  { const busy = !!(s.training && !s.training.finished);
+    $('#dtTrainStop').hidden = !busy; $('#dtTrainClear').disabled = busy; }
   const r = s.replay, rb = $('#dtReplayBar');
   if (r) {
     rb.hidden = false;
     const pct = Math.round(r.progress != null ? r.progress * 100 : (r.progress_pct || 0));
-    const phase = r.done ? 'finished' : `replaying · ${esc(dtHm(r.clock))} ET · ${pct}%`;
+    const phase = r.phase === 'training' ? `training models ${r.trained || 0}/${(r.tickers || []).length}`
+                : r.done ? 'finished' : `replaying · ${esc(dtHm(r.clock))} ET · ${pct}%`;
     let sum = '';
     if (r.done && r.summary) {
       const m = r.summary;
@@ -2583,20 +2654,29 @@ function dtRender(s) {
         sum += `<div class="dt-sub">Week total above; by day: ` + m.per_day.map(x =>
           `${esc(x.date.slice(5))} <b style="color:${x.pnl > 0 ? 'var(--up)' : x.pnl < 0 ? 'var(--down)' : 'inherit'}">${dtMoney(x.pnl, true)}</b> (${x.trades})`).join(' · ') + '</div>';
       }
-      // Every replayed ticker, not just the ones that traded.
-      const pt = m.per_ticker || {};
-      const names = (r.tickers || []).filter(t => pt[t]);
+      // Every replayed ticker, not just the ones that traded: its pre-session
+      // test result is what decided whether it was allowed to trade at all.
+      const pt = m.per_ticker || {}, pe = m.per_ticker_edge || {};
+      const names = (r.tickers || []).filter(t => pt[t] || pe[t]);
       if (names.length) {
         const rows = names.map(t => {
-          const x = pt[t] || { trades: 0, pnl: 0 };
-          return `<tr><td><b>${esc(t)}</b></td><td>${x.trades}</td>` +
+          const e = pe[t] || {}, x = pt[t] || { trades: 0, pnl: 0 };
+          // What actually happened; the edge test is shown in the column before.
+          const gate = x.trades ? `<span style="color:var(--up)">traded</span>`
+                     : '<span>no trades</span>';
+          const test = e.trades == null ? (pt[t] ? '—' : 'model error')
+                     : `${e.avg_net_bps >= 0 ? '+' : ''}${e.avg_net_bps} bps × ${e.trades}`;
+          return `<tr><td><b>${esc(t)}</b></td><td>${test}</td><td>${gate}</td><td>${x.trades}</td>` +
                  `<td style="color:${x.pnl > 0 ? 'var(--up)' : x.pnl < 0 ? 'var(--down)' : 'inherit'}">${dtMoney(x.pnl, true)}</td></tr>`;
         }).join('');
         sum += `<div class="dt-rep-wrap"><table class="dt-rep-tbl"><thead><tr><th>Ticker</th>` +
-               `<th>Trades</th><th>P&amp;L</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+               `<th title="Walk-forward test on the sessions before the replayed day, net of costs">Pre-session test</th>` +
+               `<th>Outcome</th><th>Trades</th><th>P&amp;L</th></tr></thead><tbody>${rows}</tbody></table></div>`;
       }
     }
-    rb.innerHTML = `Replay of week <b>${esc(r.week || r.session || r.date || 'latest')}</b> · ${esc(r.speed || '?')}× — ${phase}` +
+    rb.innerHTML = `Replay of week <b>${esc(r.week || r.session || r.date || 'latest')}</b> · ${r.model === 'fresh' ? 'retrained through ' + esc(r.trained_through || '—') + ' (honest test)' : 'current models' + (r.trained_through ? ' (trained through ' + esc(r.trained_through) + ')' : '')} · ${esc(r.speed || '?')}× — ${phase}` +
+                   `${r.in_sample || (r.summary && r.summary.in_sample) ? '<div class="dt-sub" style="color:var(--amber)">In-sample: these models trained on this week, so results look better than real trading would. The edge badge (walk-forward test) is the honest score.</div>' : ''}` +
+                   `${r.skipped_untrained && r.skipped_untrained.length ? '<div class="dt-sub">Skipped (not trained): ' + esc(r.skipped_untrained.join(', ')) + '</div>' : ''}` +
                    `<div class="dt-prog"><div style="width:${r.done ? 100 : pct}%"></div></div>${sum}`;
   } else rb.hidden = true;
 
@@ -2651,8 +2731,17 @@ function dtRender(s) {
   }).join('');
 
   knSync(s.config);
+  if (s.config && s.config.horizon_min != null && document.activeElement !== $('#dtHorizon')) {
+    const hs = $('#dtHorizon'), hv = String(s.config.horizon_min);
+    if (![...hs.options].some(o => o.value === hv)) hs.insertAdjacentHTML('beforeend', `<option value="${esc(hv)}">${esc(hv)} min</option>`);
+    hs.value = hv;
+  }
+  if (s.config && s.config.train_window && document.activeElement !== $('#dtTrainWin')) $('#dtTrainWin').value = s.config.train_window;
+  if (s.config && s.config.train_workers && document.activeElement !== $('#dtWorkers')) $('#dtWorkers').value = String(s.config.train_workers);
+  if (s.config && s.config.batch_size && document.activeElement !== $('#dtBatch')) $('#dtBatch').value = String(s.config.batch_size);
   const auto = $('#dtAuto');
   if (document.activeElement !== auto) auto.checked = !!(s.config || {}).auto_execute;
+  $('#dtHzn').textContent = (s.config || {}).horizon_min ?? 15;
   if (s.data_note) $('#dtDataNote').textContent = s.data_note;
 
   const sig = `${a.trades_today}|${(s.events || []).length}|${(s.events || []).slice(-1).map(e => e.at).join('')}|${s.mode}|${r ? r.done : ''}`;
@@ -2694,23 +2783,38 @@ function dtFillCard(card, t, s) {
   const age = t.bar_age_s;
   const ageTxt = age == null ? (s.mode === 'replay' ? esc(dtHm(t.bar_time)) + ' ET' : '')
                : `bar ${age < 120 ? Math.max(0, age) + 's' : dtDur(age)} old`;
+  const e = t.edge || {};
+  const hasEdge = e.has_edge === true || e.beats_flat === true;
+  const edgeTitle = e.trades != null
+    ? `Walk-forward test: ${e.trades} trades over ${e.test_days ?? '?'} sessions · avg ${e.avg_net_bps} bps net of costs · win rate ${e.win_rate_pct ?? '—'}%`
+    : 'Not tested yet';
+  const edgeBadge = hasEdge
+    ? `<span class="trust ok" title="${esc(edgeTitle)}">edge ${e.avg_net_bps > 0 ? '+' : ''}${dtNum(e.avg_net_bps, 1)} bps/trade net</span>`
+    : `<span class="trust low" title="${esc(edgeTitle)}">no edge</span>`;
+  const ms = t.model_state || '';
+  const stateHtml = ms && ms !== 'ready'
+    ? `<span class="dt-state ${/^error/.test(ms) ? 'err' : ''}">${esc(/^error/.test(ms) ? ms : ms === 'untrained' ? 'not trained — press Train models' : 'model ' + ms + (ms === 'training' ? '…' : ''))}</span>` : '';
+  const conf = t.confidence_pct ?? (t.confidence != null ? t.confidence * 100 : null);
+  const confHtml = conf != null && (call === 'BUY NOW' || call === 'SELL NOW')
+    ? `<div class="dt-conf" title="Win rate of this setup in the walk-forward test">confidence <div class="bar"><div style="width:${Math.max(0, Math.min(100, conf))}%"></div></div> ${dtNum(conf, 0)}%</div>` : '';
   const p = t.position;
-  const lv = p ? { entry: p.entry, stop: p.stop, target: p.target } : null;
+  const lv = (t.entry != null || t.stop != null || t.target != null) ? { entry: t.entry, stop: t.stop, target: t.target }
+           : p ? { entry: p.entry, stop: p.stop, target: p.target } : null;
   const lvHtml = lv ? `<div class="dt-lv"><div><small>Entry</small>${dtNum(lv.entry)}</div><div><small>Stop</small>${dtNum(lv.stop)}</div><div><small>Target</small>${dtNum(lv.target)}</div></div>` : '';
   const posHtml = p ? `<div class="dt-pos">In a <b>${esc(p.side)}</b> · ${p.qty} sh @ ${dtNum(p.entry)} · ` +
     `<b style="color:${p.unrealized >= 0 ? 'var(--up)' : 'var(--down)'}">${dtMoney(p.unrealized, true)}</b> (${dtNum(p.unrealized_pct, 2)}%)</div>` : '';
-  const pred = t.pred_bps != null ? `move ${t.pred_bps > 0 ? '+' : ''}${dtNum(t.pred_bps, 1)} bps over the horizon vs ±${dtNum(t.threshold_bps, 1)} cost bar` : '';
+  const pred = t.pred_bps != null ? `pred ${t.pred_bps > 0 ? '+' : ''}${dtNum(t.pred_bps, 1)} bps vs ±${dtNum(t.threshold_bps, 1)} cost bar` : '';
   const manual = s.mode === 'live' && (s.clock || {}).open
     ? `<div class="dt-man"><button class="btn btn-sm" data-act="buy">Buy</button><button class="btn btn-sm" data-act="sell">Sell</button>${p ? '<button class="btn btn-ghost btn-sm" data-act="close">Close</button>' : ''}</div>` : '';
   card.innerHTML = `
     <div class="dt-top"><span class="tk" title="${esc(t.ticker)}">${esc(t.ticker)}</span><span class="px">${dtNum(px)}</span><span class="age ${age > 180 ? 'old' : ''}">${ageTxt}</span></div>
     <div class="dt-call">${esc(call)}</div>
-    ${lvHtml}
+    ${confHtml}${lvHtml}
     <div class="dt-why">${esc(t.reason || '')}</div>
     ${dtLtChip(t.lt)}
     ${dtSpark(t.spark)}
     ${posHtml}
-    <div class="dt-foot"><span>${esc(pred)}</span></div>
+    <div class="dt-foot">${edgeBadge}${stateHtml}<span>${esc(pred)}</span></div>
     ${manual}`;
   $$('.dt-man .btn', card).forEach(b => b.onclick = () => dtPost('/api/daytrade/trade', { ticker: t.ticker, action: b.dataset.act }, `${b.dataset.act} ${t.ticker}`));
 }
@@ -2744,9 +2848,10 @@ async function dtPost(path, body, what) {
 $('#dtStart').onclick = () => dtPost('/api/daytrade/start', {}, 'Engine started');
 $('#dtStop').onclick = () => dtPost('/api/daytrade/stop', {}, 'Engine stopped');
 $('#dtReplay').onclick = () => {
-  const body = { speed: Number($('#dtSpeed').value), auto: $('#dtReplayAuto').checked };
+  const body = { speed: Number($('#dtSpeed').value), auto: $('#dtReplayAuto').checked, ignore_edge: false };  // replays follow the "Only trade tickers with a proven edge" setting
   const wk = $('#dtReplayDate').value;           // 'YYYY-Www'; '' = the latest week
   if (wk) body.week = wk;
+  body.model = $('#dtReplayModel').value;
   dtPost('/api/daytrade/replay', body, `Replay of ${wk || 'the latest week'} started`);
 };
 // Picker bounds: up to a year back (Alpaca history); the server enforces the
@@ -2767,6 +2872,28 @@ $('#dtReplayStop').onclick = () => dtPost('/api/daytrade/replay/stop', {}, 'Repl
 $('#dtReset').onclick = () => {
   if (!confirm('Reset the day-trade book? Open day trades and the intraday history are cleared. P&L already posted to the shared paper account stays there.')) return;
   dtPost('/api/daytrade/reset', {}, 'Day-trading account reset').then(() => dtLoadTrades(true));
+};
+$('#dtTrainWin').onchange = e => dtPost('/api/daytrade/config', { train_window: e.target.value },
+  `Training window: last ${e.target.value} — models need retraining`).then(r => { if (r) $('#dtRetrainBanner').hidden = false; });
+$('#dtWorkers').onchange = e => dtPost('/api/daytrade/config', { train_workers: Number(e.target.value) },
+  `Training threads: ${e.target.value}${DT.snap && DT.snap.training && !DT.snap.training.finished ? ' (from the next batch)' : ''}`);
+$('#dtHorizon').onchange = e => dtPost('/api/daytrade/config', { horizon_min: Number(e.target.value) },
+  `Horizon: ${e.target.value} min — models need retraining`).then(r => { if (r) $('#dtRetrainBanner').hidden = false; });
+$('#dtBatch').onchange = e => dtPost('/api/daytrade/config', { batch_size: Number(e.target.value) },
+  `Batch size ${e.target.value} — press Train models to retrain`);
+$('#dtTrainStop').onclick = async () => {
+  const r = await dtPost('/api/daytrade/train/stop', {});
+  if (r) toast(`Stopping training${r.interrupting && r.interrupting.length ? ' — finishing the current epoch of ' + r.interrupting.join(', ') : ''}`);
+};
+$('#dtTrainClear').onclick = async () => {
+  if (!confirm('Delete every saved day-trading model? All tickers go back to untrained and must be retrained.')) return;
+  const r = await dtPost('/api/daytrade/train/clear', {});
+  if (r) toast(`Cleared ${r.removed_files / 2 | 0} saved model(s)`);
+};
+$('#dtTrain').onclick = async () => {
+  $('#dtRetrainBanner').hidden = true;
+  const r = await dtPost('/api/daytrade/train', {});
+  if (r) toast(r.queued && r.queued.length ? `Training ${r.queued.length} model(s) on the last ${r.train_window}` : 'All models already current');
 };
 $('#dtAuto').onchange = e => dtPost('/api/daytrade/config', { auto_execute: e.target.checked },
   e.target.checked ? 'Auto-execute on' : 'Auto-execute off');
@@ -2844,8 +2971,11 @@ const KN_ICON = {
   exits: '<path d="M10 4H5v16h5"/><path d="M15 8l4 4-4 4"/><path d="M19 12H9"/>',
   risk: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
   costs: '<path d="M19 5L5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/>',
+  model: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+  training: '<path d="M3 20h18"/><path d="M6 20V11M11 20V5M16 20v-6M21 20V9"/>',
   replay: '<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>',
   _: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+  retrain: '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   scale: '<path d="M12 3v18M7 21h10M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z"/>',
@@ -2867,12 +2997,14 @@ function knCtx() {
 
 /* Summary strip: the settings that matter most, as readable sentences. */
 const KN_TILES = [
-  { key: 'horizon_min', icon: 'clock', lbl: 'Trade horizon',
-    f: c => ({ big: `${c.n('horizon_min')} minutes`, sub: 'the longest a trade is held; its stop and target are sized on the typical move over it' }) },
+  { key: 'horizon_min', icon: 'clock', lbl: 'Looks ahead',
+    f: c => ({ big: `${c.n('horizon_min')} minutes`, sub: 'per prediction — and the longest a trade is held' }) },
   { key: 'risk_per_trade_pct', icon: 'risk', lbl: 'Risk per trade',
     f: c => ({ big: `${knN(c.n('risk_per_trade_pct'))}% ≈ ${knUsd(c.E * c.n('risk_per_trade_pct') / 100)}`, sub: 'lost if a trade hits its stop-loss' }) },
-  { key: 'edge_mult', icon: 'signal', lbl: 'Acts on',
-    f: c => ({ big: `move > ${knN(c.n('edge_mult') * c.rt, 1)} bps`, sub: `the signal-strength bar = ${knN(c.n('edge_mult'), 1)}× the ${knN(c.rt, 1)} bps round-trip cost` }) },
+  { key: 'min_edge_bps', icon: 'signal', lbl: 'Trades only with', keys: ['min_edge_bps', 'min_direction_pct', 'min_edge_trades'],
+    f: c => ({ big: `≥ +${knN(c.n('min_edge_bps'))} bps proven edge`,
+               sub: [c.has('min_direction_pct') && `${knN(c.n('min_direction_pct'), 1)}% right on direction`,
+                     c.has('min_edge_trades') && `over ≥ ${c.n('min_edge_trades')} test trades`].filter(Boolean).join(', ') || 'after costs, on days it never saw' }) },
   { key: 'max_daily_loss_pct', icon: 'risk', lbl: 'Daily stop', keys: ['max_daily_loss_pct', 'max_daily_loss_usd'],
     f: c => {
       const p = c.n('max_daily_loss_pct'), pu = c.E * p / 100, u = c.has('max_daily_loss_usd') ? c.n('max_daily_loss_usd') : 0;
@@ -2890,7 +3022,9 @@ const KN_TILES = [
 
 /* "What this means" line under a knob (text only; {t, warn}). */
 const KN_MEAN = {
-  edge_mult: c => `The ticker's move must beat ${knN(c.n('edge_mult') * c.rt, 1)} bps (${knN(c.n('edge_mult') * c.rt / 100, 3)}%) over the horizon before the engine acts.`,
+  min_edge_bps: c => `${knN(c.n('min_edge_bps') / 100, 3)}% of the trade${c.pos ? ` ≈ ${knUsd(c.pos * c.n('min_edge_bps') / 1e4)} on a full-size ${knUsd(c.pos)} trade` : ''}, after costs.`,
+  min_direction_pct: c => { const d = c.n('min_direction_pct') - 50; return d > 0 ? `${knN(d, 1)} point${d === 1 ? '' : 's'} better than a coin flip.` : { t: 'No better than a coin flip.', warn: 'Any model passes this gate.' }; },
+  edge_mult: c => `A prediction must beat ${knN(c.n('edge_mult') * c.rt, 1)} bps (${knN(c.n('edge_mult') * c.rt / 100, 3)}%) before the engine acts.`,
   target_sigma: c => { const s = c.n('stop_sigma'), t = c.n('target_sigma');
     return { t: `Reward : risk = ${knN(t / s)} : 1 — break-even needs ${knN(100 * s / (s + t), 0)}% winners (before costs).`, warn: t < s ? 'The target is closer than the stop.' : '' }; },
   take_profit_usd: c => { const v = c.n('take_profit_usd'); return v > 0 ? `A trade up ${knUsd(v)} is closed at once${c.pos ? ` (≈ ${knN(100 * v / c.pos)}% on a full-size trade)` : ''}.` : 'Off — no hard dollar cap on a winner.'; },
@@ -2953,23 +3087,28 @@ function knDayViz(c) {
     ${h && L < h ? `<div class="kn-viz-note warn">The last-entry window (${L} min) is shorter than the ${h}-min horizon — trades opened late get cut before they can play out.</div>` : ''}</div>`;
 }
 function knCostViz(c) {
-  const rt = c.rt, sig = c.has('edge_mult') ? c.n('edge_mult') * rt : 0;
-  const max = Math.max(rt, sig, 0.5), w = v => (v / max * 100).toFixed(2) + '%';
+  const rt = c.rt, edge = c.has('min_edge_bps') ? c.n('min_edge_bps') : 0, sig = c.has('edge_mult') ? c.n('edge_mult') * rt : 0;
+  const max = Math.max(rt + edge, sig, 0.5), w = v => (v / max * 100).toFixed(2) + '%';
   const usd = v => c.pos ? ` · ${knUsd(c.pos * v / 1e4)}` : '';
   return `<div><div class="kn-viz-t">Cost vs. the bar a trade must clear${c.pos ? ` · $ on a full-size ${knUsd(c.pos)} trade` : ''}</div>
     <div class="kn-cr"><div class="kn-cr-l"><span>Every round trip pays</span><b>${knN(rt, 1)} bps = ${knN(rt / 100, 3)}%${usd(rt)}</b></div>
       <div class="kn-bar"><div class="c" style="width:${w(rt)}"></div></div></div>
-    ${c.has('edge_mult') ? `<div class="kn-cr"><div class="kn-cr-l"><span>Each move must beat</span><b>${knN(sig, 1)} bps${usd(sig)}</b></div>
+    ${c.has('min_edge_bps') ? `<div class="kn-cr"><div class="kn-cr-l"><span>A ticker's test must average</span><b>${knN(rt + edge, 1)} bps gross${usd(rt + edge)}</b></div>
+      <div class="kn-bar"><div class="c" style="width:${w(rt)}"></div><div class="e" style="width:${w(edge)}"></div></div></div>` : ''}
+    ${c.has('edge_mult') ? `<div class="kn-cr"><div class="kn-cr-l"><span>Each prediction must beat</span><b>${knN(sig, 1)} bps${usd(sig)}</b></div>
       <div class="kn-bar"><div class="s" style="width:${w(sig)}"></div></div></div>` : ''}
-    <div class="kn-leg"><span><i style="background:var(--down);opacity:.75"></i>cost</span><span><i style="background:var(--accent)"></i>signal bar</span></div></div>`;
+    <div class="kn-leg"><span><i style="background:var(--down);opacity:.75"></i>cost</span><span><i style="background:var(--up)"></i>required edge</span><span><i style="background:var(--accent)"></i>signal bar</span></div></div>`;
 }
 function knGateViz(c) {
   const st = (lbl, val) => `<span class="st"><small>${esc(lbl)}</small><b>${esc(val)}</b></span>`, ar = '<span class="ar">→</span>';
   const steps = [];
-  if (c.has('edge_mult')) steps.push(st('move', `> ${knN(c.n('edge_mult') * c.rt, 1)} bps`));
+  if (c.has('min_edge_trades')) steps.push(st('tested on', `≥ ${c.n('min_edge_trades')} trades`));
+  if (c.has('min_edge_bps')) steps.push(st('avg profit after costs', `≥ +${knN(c.n('min_edge_bps'))} bps`));
+  if (c.has('min_direction_pct')) steps.push(st('direction right', `≥ ${knN(c.n('min_direction_pct'), 1)}%`));
+  if (c.has('edge_mult')) steps.push(st('then each prediction', `> ${knN(c.n('edge_mult') * c.rt, 1)} bps`));
   if (!steps.length) return '';
   const dir = c.has('allow_short') ? (knCur('allow_short') ? 'long or short' : 'long only') : 'trade';
-  return `<div><div class="kn-viz-t">A move that clears the bar becomes a call</div>
+  return `<div><div class="kn-viz-t">A ticker trades only when it passes every gate</div>
     <div class="kn-flow">${steps.join(ar)}${ar}<span class="st go"><small>${knCur('auto_execute') ? 'auto-traded' : 'signal shown'}</small><b>${dir}</b></span></div></div>`;
 }
 function knRiskViz(c) {
@@ -2988,34 +3127,50 @@ function knRiskViz(c) {
   return `<div><div class="kn-viz-t">In dollars, on ${c.eq ? `the ${knUsd(c.E)} paper account` : 'an assumed $100,000 account'}</div>
     <div class="kn-facts">${rows.map(([l, v, cl]) => `<div class="kn-fact"><span>${esc(l)}</span><b class="${cl}">${esc(v)}</b></div>`).join('')}</div></div>`;
 }
+function knSplitViz(c) {
+  if (!c.has('test_share_pct')) return '';
+  const T = c.n('test_share_pct'), V = c.has('val_share_pct') ? c.n('val_share_pct') : 0, k = c.has('test_folds') ? Math.max(1, c.n('test_folds')) : 1;
+  const tr = (100 - T) * (1 - V / 100), va = (100 - T) * V / 100;
+  const folds = Array.from({ length: k }, (_, i) => `<div class="te" style="width:${(T / k).toFixed(2)}%" title="Test round ${i + 1}"></div>`).join('');
+  return `<div><div class="kn-viz-t">How each ticker's history is used (oldest → newest)</div>
+    <div class="kn-bar split" role="img" aria-label="Learn on ${knN(tr, 1)}%, early-stopping check ${knN(va, 1)}%, test ${T}% in ${k} rounds">
+      <div class="tr" style="width:${tr.toFixed(2)}%"></div>${va ? `<div class="va" style="width:${va.toFixed(2)}%"></div>` : ''}${folds}</div>
+    <div class="kn-leg"><span><i style="background:var(--accent)"></i>learns from ${knN(tr, 1)}%</span>
+      ${va ? `<span><i style="background:color-mix(in srgb, var(--accent) 45%, transparent)"></i>${knN(va, 1)}% decides when to stop</span>` : ''}
+      <span><i style="background:var(--amber)"></i>scored on the newest ${T}% in ${k} walk-forward round${k === 1 ? '' : 's'}</span></div></div>`;
+}
 const KN_VIZ = {
   signal: c => knGateViz(c),
   exits: c => (c.has('stop_sigma') && c.has('target_sigma') ? knPriceViz(c) : '') + (c.has('last_entry_min') && c.has('flatten_min') ? knDayViz(c) : ''),
   risk: c => knRiskViz(c),
   costs: c => knCostViz(c),
+  training: c => knSplitViz(c),
 };
 
-/* Presets: bundles of risk / signal / exit knobs only (never replay knobs).
-   Balanced = the catalog defaults for the same keys. Keys missing from the
-   catalog are skipped; values are clamped to each knob's range. */
+/* Presets: bundles of risk / signal / exit knobs only (never model or
+   training knobs, so applying one never forces a retrain). Balanced = the
+   catalog defaults for the same keys. Keys missing from the catalog are
+   skipped; values are clamped to each knob's range. */
 const KN_PRESETS = {
-  conservative: { label: 'Conservative', icon: 'risk', blurb: 'Fewer trades on stronger signals, half-size bets, and the day stops early.',
-    v: { edge_mult: 1.5,
+  conservative: { label: 'Conservative', icon: 'risk', blurb: 'Fewer trades on stronger evidence, half-size bets, and the day stops early.',
+    v: { min_edge_bps: 2, min_edge_trades: 100, min_direction_pct: 52, edge_mult: 1.5,
          stop_sigma: 1, target_sigma: 2, be_trigger: 1,
          risk_per_trade_pct: 0.25, max_position_pct: 10, max_positions: 2, max_daily_loss_pct: 0.5, max_daily_loss_usd: 50, recoup_risk_mult: 0.25 } },
   balanced: { label: 'Balanced', icon: 'scale', blurb: 'The recommended defaults for every risk, signal and exit setting.', v: null },
   // The user's known-good setup (2026-09-23): the defaults with wider exits
   // that let winners run. Replaced an "Aggressive" preset — bigger, more
   // frequent bets on thinner signals only hit the daily loss limit faster.
-  mine: { label: 'My settings', icon: 'trade', blurb: 'The defaults with wider exits: stop 1.5, target 3, move the stop to breakeven after 1× the risk, trailing $100 profit exit.',
-    v: { stop_sigma: 1.5, target_sigma: 3, be_trigger: 1, take_profit_usd: 0, trail_profit_usd: 100 } },
+  // Reproduces the good week exactly (W37: 196 trades, +$1,254, 2026-09-23).
+  mine: { label: 'My settings', icon: 'trade', blurb: 'The settings from the good weeks: stop 1.5, target 3, stop to breakeven after 1× the risk, take profit at $100, no daily dollar cutoff or profit lock.',
+    v: { stop_sigma: 1.5, target_sigma: 3, be_trigger: 1, take_profit_usd: 100, trail_profit_usd: 0,
+         max_daily_loss_usd: 0, daily_take_usd: 0 } },
 };
-const KN_PRESET_SKIP_GROUPS = ['replay'];
+const KN_PRESET_SKIP_GROUPS = ['model', 'training', 'replay'];
 function knPresetVals(id) {
   const p = KN_PRESETS[id], keys = new Set(Object.values(KN_PRESETS).flatMap(x => Object.keys(x.v || {}))), out = {};
   for (const key of keys) {
     const k = knByKey(key);
-    if (!k || KN_PRESET_SKIP_GROUPS.includes(k.group)) continue;
+    if (!k || k.retrain || KN_PRESET_SKIP_GROUPS.includes(k.group)) continue;
     let v = p.v && key in p.v ? p.v[key] : k.default;
     if (typeof v === 'number' && k.min != null) v = knSnap(k, v);
     out[key] = v;
@@ -3033,7 +3188,7 @@ function knPreviewHtml() {
     (diffs.length
       ? `<div class="kn-pv-list">${diffs.map(([key, v]) => { const k = knByKey(key);
           return `<span class="nm">${esc(k.label)}</span><span class="from">${esc(show(k, knCur(key)))}</span><span class="arr">→</span><span class="to">${esc(show(k, v))}</span>`; }).join('')}</div>
-        <p>These become unsaved edits you can still tweak — nothing is saved until you press Save.</p>
+        <p>These become unsaved edits you can still tweak — nothing is saved until you press Save. Models don't need retraining.</p>
         <div class="kn-pv-acts"><button class="btn btn-primary btn-sm" type="button" data-pv="apply">Use these ${diffs.length} change${diffs.length === 1 ? '' : 's'}</button>
           <button class="btn btn-ghost btn-sm" type="button" data-pv="cancel">Cancel</button></div>`
       : `<p>Your settings already match this preset.</p><div class="kn-pv-acts"><button class="btn btn-ghost btn-sm" type="button" data-pv="cancel">Close</button></div>`);
@@ -3107,6 +3262,7 @@ function knField(k) {
     <div class="kn-head"><span class="kn-label" id="knl-${key}">${esc(k.label)}</span>
       ${dirty ? '<span class="kn-pill unsaved">unsaved</span>' : ''}
       ${changed ? `<button type="button" class="kn-pill changed" data-def="${key}" title="Changed from the default. Click to put the default (${esc(knFmt(k, k.default))}) back.">changed · ↺ ${esc(knFmt(k, k.default))}</button>` : ''}
+      ${k.retrain ? `<span class="kn-pill retrain" title="The models are trained with this setting — after changing it, press Train models">${knIco('retrain', 11)} retrains</span>` : ''}
       ${k.advanced ? '<span class="kn-pill adv">advanced</span>' : ''}</div>
     <div class="kn-ctl ${['int', 'float'].includes(k.type) && k.min != null && k.max != null ? 'num' : ''}">${knControl(k)}</div>
     ${err ? `<div class="kn-err" role="alert">${esc(err)}</div>` : ''}
@@ -3216,11 +3372,13 @@ function knLive() {
 }
 function knActions() {
   const keys = Object.keys(KN.pending), n = keys.length, bad = Object.keys(KN.errors).length;
+  const rt = keys.filter(key => (knByKey(key) || {}).retrain).length;
   const save = $('#dtKnobSave');
   save.disabled = !n; $('#dtKnobDiscard').disabled = !n && !bad;
   save.textContent = n ? `Save ${n} change${n === 1 ? '' : 's'}` : 'Save changes';
   $('#dtKnobDirty').innerHTML = [
     n ? `${n} unsaved change${n === 1 ? '' : 's'}` : '',
+    rt ? `<span class="kn-pill retrain">${knIco('retrain', 11)} ${rt} need${rt === 1 ? 's' : ''} retraining</span>` : '',
     bad ? `<span class="bad">${bad} invalid value${bad === 1 ? '' : 's'} — fix or discard</span>` : '',
   ].filter(Boolean).join('');
   $('#dtKnobBar').classList.toggle('on', !!(n || bad));
@@ -3388,11 +3546,23 @@ function knApplyConfig(cfg) {
 /* Keep the top-row quick controls showing what the server now has. */
 function knSyncQuick() {
   const v = KN.values;
+  const set = (sel, val, lbl) => {
+    const s = $(sel); if (!s || val == null || document.activeElement === s) return;
+    const sv = String(val);
+    if (![...s.options].some(o => o.value === sv)) s.insertAdjacentHTML('beforeend', `<option value="${esc(sv)}">${esc(lbl ? lbl(sv) : sv)}</option>`);
+    s.value = sv;
+  };
+  set('#dtHorizon', v.horizon_min, x => x + ' min'); set('#dtTrainWin', v.train_window);
+  set('#dtWorkers', v.train_workers); set('#dtBatch', v.batch_size);
   const a = $('#dtAuto'); if (a && document.activeElement !== a && 'auto_execute' in v) a.checked = !!v.auto_execute;
+}
+function knRetrainTouched(keys, before) {
+  return keys.some(key => { const k = knByKey(key); return k && k.retrain && !knSame(before[key], KN.values[key]); });
 }
 async function knSave() {
   const body = { ...KN.pending };
   if (!Object.keys(body).length) return;
+  const before = { ...KN.values };
   $('#dtKnobSave').disabled = true;
   try {
     const r = await api('/api/daytrade/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -3400,6 +3570,7 @@ async function knSave() {
     for (const key of Object.keys(body)) delete KN.errors[key];
     if (r && r.config) knApplyConfig(r.config); else Object.assign(KN.values, body);
     KN.pending = {};
+    if ((r && r.retrain_needed) || knRetrainTouched(Object.keys(body), before)) $('#dtRetrainBanner').hidden = false;
     knSyncQuick();
     toast('Settings saved');
     if (!DT.es) dtPollLoop();
@@ -3412,12 +3583,14 @@ async function knSave() {
   knRender();
 }
 async function knReset(group) {
+  const before = { ...KN.values };
   try {
     const r = await api('/api/daytrade/config/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(group ? { group } : {}) });
     if (r && r.ok === false) throw new Error(r.error || 'failed');
     const keys = KN.cat.knobs.filter(k => !group || k.group === group).map(k => k.key);
     for (const key of keys) { delete KN.pending[key]; delete KN.errors[key]; }
     if (r && r.config) knApplyConfig(r.config);
+    if (r && r.retrain_needed || knRetrainTouched(keys, before)) $('#dtRetrainBanner').hidden = false;
     knSyncQuick();
     toast(group ? 'Group reset to defaults' : 'All settings reset to defaults');
     if (!DT.es) dtPollLoop();
@@ -3427,6 +3600,7 @@ async function knReset(group) {
 $('#dtKnobSave').onclick = knSave;
 $('#dtKnobDiscard').onclick = () => { KN.pending = {}; KN.errors = {}; KN.preview = null; knRender(); };
 $('#dtKnobResetAll').onclick = () => { if (confirm('Reset every day-trading setting to its default?')) knReset(null); };
+$('#dtRetrainBtn').onclick = () => $('#dtTrain').click();
 /* Snapshot → form: server values flow in; unsaved edits are never overwritten.
    Equity-based figures refresh on every snapshot (cheap, in place). */
 function knSync(cfg) {
