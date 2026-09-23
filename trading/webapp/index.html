@@ -293,6 +293,11 @@ table.md-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%,
   font-size: 13px; color: var(--muted); margin: 16px 0;
 }
 .info-note b { color: var(--text); }
+.run-pick-wrap { position: relative; display: inline-flex; margin-left: -6px; }
+.run-pick { position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 220px; max-width: min(320px, 90vw);
+  max-height: 60vh; overflow: auto; padding: 10px 12px; }
+.run-pick-hd { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.run-pick label { display: flex; gap: 8px; align-items: center; padding: 3px 0; font-size: 13px; cursor: pointer; }
 .lq-about { margin: 0 0 12px; }
 .lq-about summary { cursor: pointer; }
 .lq-about p { margin: 8px 0 0; line-height: 1.5; }
@@ -958,6 +963,15 @@ html[data-theme="dark"] .heat-md { color: #fbbf24; background: color-mix(in srgb
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="width:15px;height:15px"><path d="M5 3l14 9-14 9V3z"/></svg>
         Run now<span id="runBtnMode"></span>
       </button>
+      <span class="run-pick-wrap">
+        <button class="btn btn-primary btn-sm" id="runPickBtn" title="Choose which tickers Run now analyses" aria-haspopup="true" aria-expanded="false">▾</button>
+        <div id="runPick" class="run-pick card" hidden>
+          <div class="run-pick-hd"><b>Scan these tickers</b>
+            <span><button class="btn btn-ghost btn-sm" id="runPickAll">All</button><button class="btn btn-ghost btn-sm" id="runPickNone">None</button></span></div>
+          <div id="runPickList"></div>
+          <div class="dt-sub" id="runPickSum"></div>
+        </div>
+      </span>
       <button class="btn btn-ghost icon-btn" id="themeBtn" title="Toggle theme">
         <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       </button>
@@ -1778,10 +1792,41 @@ $('#schedSave').onclick = async () => {
 };
 
 /* ---------- run + status ---------- */
+/* Run now scans the tickers ticked in the ▾ picker (all by default). The
+   choice is remembered per browser; a ticker added later is ticked. */
+const runAllTickers = () => [...new Set([...(state.portfolio || []), ...(state.watchlist || [])]
+  .map(x => String((x && x.ticker) || x || '').toUpperCase()).filter(Boolean))];
+function runSkipped() { try { return new Set(JSON.parse(localStorage.getItem('as-run-skip') || '[]')); } catch (e) { return new Set(); } }
+function runSaveSkipped(s) { try { localStorage.setItem('as-run-skip', JSON.stringify([...s])); } catch (e) {} }
+function runSelected() { const skip = runSkipped(); return runAllTickers().filter(t => !skip.has(t)); }
+function runPickRender() {
+  const all = runAllTickers(), skip = runSkipped(), sel = all.filter(t => !skip.has(t));
+  $('#runPickList').innerHTML = all.length ? all.map(t =>
+    `<label><input type="checkbox" data-t="${esc(t)}" ${skip.has(t) ? '' : 'checked'}> ${esc(t)}</label>`).join('')
+    : '<div class="dt-sub">No portfolio or watchlist tickers yet.</div>';
+  $('#runPickSum').textContent = sel.length === all.length ? `All ${all.length} will be scanned` : `${sel.length} of ${all.length} will be scanned`;
+  $('#runPickList').querySelectorAll('input[data-t]').forEach(cb => cb.onchange = () => {
+    const s = runSkipped(); if (cb.checked) s.delete(cb.dataset.t); else s.add(cb.dataset.t); runSaveSkipped(s); runPickRender();
+  });
+  $('#runPickBtn').textContent = sel.length && sel.length < all.length ? `${sel.length}/${all.length} ▾` : '▾';
+}
+$('#runPickBtn').onclick = e => {
+  e.stopPropagation();
+  const p = $('#runPick'); p.hidden = !p.hidden; $('#runPickBtn').setAttribute('aria-expanded', String(!p.hidden));
+  if (!p.hidden) runPickRender();
+};
+setTimeout(() => { try { runPickRender(); } catch (e) {} }, 1500);
+$('#runPickAll').onclick = () => { runSaveSkipped(new Set()); runPickRender(); };
+$('#runPickNone').onclick = () => { runSaveSkipped(new Set(runAllTickers())); runPickRender(); };
+document.addEventListener('click', e => { const p = $('#runPick'); if (p && !p.hidden && !e.target.closest('.run-pick-wrap')) { p.hidden = true; $('#runPickBtn').setAttribute('aria-expanded', 'false'); } });
+
 $('#runBtn').onclick = async () => {
+  const pick = runSelected(), all = runAllTickers();
+  if (all.length && !pick.length) { toast('No tickers ticked — open ▾ and pick at least one'); return; }
   $('#runBtn').disabled = true;
   try {
-    const r = await api('/api/run', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const body = pick.length && pick.length < all.length ? JSON.stringify({ tickers: pick }) : '{}';
+    const r = await api('/api/run', {method:'POST',headers:{'Content-Type':'application/json'},body});
     if (r.ok) {
       toast(`Run started: ${r.tickers.join(', ')}`);
       // Jump straight into the live view unless the user is deep in another panel.
@@ -2767,17 +2812,22 @@ function dtSpark(vals) {
 /* The Alpha Stack's long-term stance on a ticker (annotation only unless the
    Long-term alignment setting is on, in which case a blocked entry says so
    in the card's reason line). */
-function dtLtChip(lt) {
+function dtLtChip(lt, px) {
   if (!lt) return '';
   const bits = [];
   if (lt.ta_rating) bits.push(`TradingAgents ${esc(lt.ta_rating)}${lt.ta_date ? ' · ' + esc(String(lt.ta_date).slice(5)) : ''}`);
   if (lt.liquid_call && lt.liquid_call !== 'NO SIGNAL') bits.push(`Liquid NN ${esc(lt.liquid_call)}`);
-  if (lt.held_qty) bits.push(`held ${lt.held_qty} sh (long-term book)`);
+  if (lt.held_qty) {
+    const q = Number(lt.held_qty), side = q > 0 ? 'LONG' : 'SHORT';
+    const pnl = (px && lt.entry_price) ? ((px / lt.entry_price - 1) * (q > 0 ? 1 : -1) * 100) : null;
+    bits.push(`<b>${side} ${Math.abs(q)} sh</b>${pnl != null ? ` <span style="color:${pnl >= 0 ? 'var(--up)' : 'var(--down)'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%</span>` : ''} (long-term)`);
+  }
+  if (lt.pending_order) bits.push(`<b>${esc(String(lt.pending_order).toUpperCase())} order pending</b> — the day trader places it`);
   if (!bits.length && lt.reason) bits.push(esc(lt.reason));
   if (!bits.length) return '';
   const col = lt.direction === 'bullish' ? 'var(--up)' : lt.direction === 'bearish' ? 'var(--down)' : 'var(--muted)';
   const word = lt.direction === 'bullish' ? 'bullish' : lt.direction === 'bearish' ? 'bearish' : lt.direction === 'hold' ? 'hold' : 'no stance';
-  return `<div class="dt-lt" title="The Alpha Stack's long-term view of this ticker (annotation only unless Long-term alignment, in the settings, says otherwise)"><b style="color:${col}">Alpha Stack · ${word}:</b> ${bits.join(' · ')}</div>`;
+  return `<div class="dt-lt" title="The Alpha Stack's long-term call and position for this ticker. How much it steers the day trader is set in Settings → Long-term link."><b style="color:${col}">Alpha Stack · ${word}:</b> ${bits.join(' · ')}</div>`;
 }
 function dtFillCard(card, t, s) {
   const call = t.call || 'STAND ASIDE';
@@ -2820,7 +2870,7 @@ function dtFillCard(card, t, s) {
     <div class="dt-call">${esc(call)}</div>
     ${confHtml}${lvHtml}
     <div class="dt-why">${esc(t.reason || '')}</div>
-    ${dtLtChip(t.lt)}
+    ${dtLtChip(t.lt, t.last_price ?? t.bar_close)}
     ${dtSpark(t.spark)}
     ${posHtml}
     <div class="dt-foot">${edgeBadge}${stateHtml}<span>${esc(pred)}</span></div>

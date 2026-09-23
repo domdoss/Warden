@@ -59,6 +59,25 @@ _DEFAULT_HORIZON_TRADING_DAYS = 10
 _DEFAULT_SIZE_PCT = 5.0
 
 _PAPER_LOCK = threading.Lock()
+
+# The long-term/day-trade link is configured on the day-trade engine (knobs
+# group "Long-term link"). The engine registers these at boot; without it
+# (engine absent, or a standalone script) everything behaves unlinked — the
+# original next-open fills, fresh analysis, no target sizing.
+_LINK_CFG = lambda: {}          # noqa: E731  -> the engine's live config
+_ENGINE_FILLS = lambda pending: False   # noqa: E731  -> True: the engine times this order
+
+
+def set_link(cfg_fn, engine_fills_fn) -> None:
+    global _LINK_CFG, _ENGINE_FILLS
+    _LINK_CFG, _ENGINE_FILLS = cfg_fn, engine_fills_fn
+
+
+def link_cfg() -> dict:
+    try:
+        return dict(_LINK_CFG() or {})
+    except Exception:
+        return {}
 # Serializes read-modify-write cycles on the ledger (broker thread, dashboard
 # requests, run-finish hook) so two writers can't drop each other's changes.
 _PASS_LOCK = threading.Lock()
@@ -475,8 +494,23 @@ def _book_intent(paper: dict, ticker: str, intent: dict, decision_ref: str,
     if action == "hold":
         return result
 
-    # buy / sell. A sell against an existing long (or buy against a short)
-    # means closing it, per the recommendation.
+    # buy / sell.
+    if link_cfg().get("lt_target", False):
+        # Linked: the call is a TARGET position at its stated size. Same side
+        # → adjust to that size (the delta is worked out at fill); opposite
+        # side → close, then open the reverse at the target size.
+        side = "long" if action == "buy" else "short"
+        if existing and ((existing["qty"] > 0) == (side == "long")):
+            pend(None, target_adjust=True, sized_at_fill=True)
+            result.update({"status": "pending_open", "side": side, "adjust": True})
+            return result
+        if existing:
+            pend(-existing["qty"], close_existing=True)
+        pend(None, sized_at_fill=True)
+        result.update({"status": "pending_open", "side": side, "reverse": bool(existing)})
+        return result
+    # Unlinked (original): a sell against an existing long (or buy against a
+    # short) means closing it, per the recommendation.
     if action == "sell" and existing and existing["qty"] > 0:
         return _book_intent(paper, ticker, {**intent, "action": "close"},
                             decision_ref, run_id, decided_at)
@@ -673,6 +707,34 @@ def _fill_pending(paper: dict, pending: dict, price: float, fill_date: str) -> N
                       pending.get("decided_at"), round(pnl, 2))
         return
 
+    if pending.get("target_adjust"):
+        # Move the existing position to the stated size (% of equity). Within
+        # 1% of equity of the target counts as already there.
+        pos = _find_position(paper, ticker)
+        size_pct = (intent.get("size_pct") or _DEFAULT_SIZE_PCT)
+        target = (_equity(paper) * size_pct / 100.0) / price if price > 0 else 0.0
+        if intent.get("action") == "sell":
+            target = -target
+        if not pos:
+            qty = target
+        else:
+            delta = target - pos["qty"]
+            if abs(delta * price) < _equity(paper) * 0.01:
+                return
+            if (delta > 0) == (pos["qty"] > 0):          # grow: add at a blended entry
+                if delta > 0 and delta * price > paper["cash"]:
+                    delta = paper["cash"] / price if price > 0 else 0.0
+                paper["cash"] -= delta * price
+                new_qty = pos["qty"] + delta
+                pos["entry_price"] = round((pos["entry_price"] * pos["qty"] + price * delta) / new_qty, 4)
+                pos["qty"] = round(new_qty, 4)
+                _append_trade(paper, ticker, delta, price, "decision_topup",
+                              pending.get("decision_ref"), pending.get("run_id"), pending.get("decided_at"))
+            else:                                          # shrink toward the target
+                pending = {**pending, "qty": delta}
+                _fill_pending(paper, {**pending, "target_adjust": False, "partial_close": True}, price, fill_date)
+            return
+
     # Opening trade: size from the stated % of equity if not pre-sized, and
     # honor the sign (sell = short) from the extracted action.
     if pending.get("sized_at_fill") or not qty:
@@ -701,6 +763,13 @@ def resolve_pending(paper: dict) -> int:
     still: list[dict] = []
     filled = 0
     for pending in paper.get("pending_trades", []):
+        try:
+            engine_times_it = _ENGINE_FILLS(pending)
+        except Exception:
+            engine_times_it = False
+        if engine_times_it:          # the day trader fills it intraday (Long-term link)
+            still.append(pending)
+            continue
         ohlc = daily_ohlc(pending["ticker"])
         if ohlc.empty:
             still.append(pending)
@@ -723,6 +792,81 @@ def resolve_pending(paper: dict) -> int:
         filled += 1
     paper["pending_trades"] = still
     return filled
+
+
+def pending_orders() -> list[dict]:
+    """The long-term orders waiting to fill (for the day trader and cards)."""
+    return [dict(p) for p in load_paper().get("pending_trades", [])]
+
+
+def fill_pending_now(decision_ref: str, price: float, when: str, how: str) -> dict | None:
+    """The day trader fills one long-term order now, at ``price``. Every
+    pending row with this decision_ref fills in order (a reversal is a close
+    followed by an open). Returns what filled, or None if already gone."""
+    with _PASS_LOCK:
+        paper = load_paper()
+        rows = [p for p in paper.get("pending_trades", []) if p.get("decision_ref") == decision_ref]
+        if not rows:
+            return None
+        paper["pending_trades"] = [p for p in paper["pending_trades"] if p.get("decision_ref") != decision_ref]
+        n_before = len(paper["trades"])
+        for row in rows:
+            _fill_pending(paper, row, float(price), str(when)[:10])
+        for t in paper["trades"][n_before:]:
+            t["filled_by"] = f"day trader ({how})"
+        save_paper(paper)
+    return {"decision_ref": decision_ref, "ticker": rows[0]["ticker"], "price": round(float(price), 4),
+            "trades": len(paper["trades"]) - n_before, "how": how}
+
+
+def position_context(ticker: str, last_rating: dict | None = None) -> str:
+    """One factual line for TradingAgents about where this ticker stands in
+    the paper account: the open position, the pending order, its own last
+    call and what the price did since. Empty when the link is off."""
+    if not link_cfg().get("lt_memory", False):
+        return ""
+    ticker = ticker.upper()
+    paper = load_paper()
+    bits: list[str] = []
+    pos = _find_position(paper, ticker)
+    px = last_close(ticker)
+    if pos:
+        side = "LONG" if pos["qty"] > 0 else "SHORT"
+        pnl_pct = ((px / pos["entry_price"] - 1) * (1 if pos["qty"] > 0 else -1) * 100) if px and pos["entry_price"] else None
+        eq = _equity(paper)
+        size_pct = abs(pos["qty"]) * (px or pos["entry_price"]) / eq * 100 if eq else None
+        s = f"open paper position: {side} {abs(pos['qty']):g} sh @ {pos['entry_price']:g} since {pos.get('opened_at') or '?'}"
+        if pnl_pct is not None:
+            s += f", unrealized {pnl_pct:+.1f}%"
+        if size_pct is not None:
+            s += f", {size_pct:.1f}% of equity"
+        if pos.get("stop_loss") or pos.get("take_profit"):
+            s += f", stop {pos.get('stop_loss')}, target {pos.get('take_profit')}"
+        bits.append(s)
+    else:
+        bits.append("no open paper position")
+    pend_rows = [p for p in paper.get("pending_trades", []) if p["ticker"] == ticker]
+    if pend_rows:
+        a = (pend_rows[-1].get("intent") or {}).get("action", "?")
+        bits.append(f"order pending: {a}")
+    calls = [s for s in paper.get("pending_scores", []) if s.get("ticker") == ticker]
+    if not calls and last_rating and last_rating.get("rating"):
+        # Older calls live only in the report folders; the caller passes the newest.
+        calls = [{"direction": last_rating["rating"], "date": last_rating.get("date")}]
+    if calls:
+        last = calls[-1]
+        s = f"your last call: {str(last.get('direction', '?')).upper()} on {last.get('date')}"
+        ohlc = daily_ohlc(ticker)
+        if px and not ohlc.empty and last.get("date"):
+            idx = _naive_index(ohlc.index)
+            before = ohlc[idx <= pd.Timestamp(last["date"])]
+            if not before.empty:
+                s += f"; price since then {(px / float(before['Close'].iloc[-1]) - 1) * 100:+.1f}%"
+        bits.append(s)
+    else:
+        bits.append("no previous call on record")
+    return ("paper account: " + "; ".join(bits)
+            + ". State the target position for this ticker: buy, sell, hold, trim or close, and its size as % of equity.")
 
 
 def _check_stops_and_horizons(paper: dict) -> list[str]:

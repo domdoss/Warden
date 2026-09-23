@@ -767,6 +767,15 @@ def _run_worker(run_id: str, tickers: list[str]) -> None:
                 ctx = f"{ctx}; {line}" if ctx else line
         except Exception as exc:
             print(f"[run] {ticker} day-trade context failed: {exc}", file=sys.stderr)
+        # Long-term link: the open paper position, pending order and this
+        # ticker's previous call (empty when "TradingAgents sees positions" is off).
+        try:
+            import paper
+            line = paper.position_context(ticker, latest_ta_ratings().get(ticker))
+            if line:
+                ctx = f"{ctx}; {line}" if ctx else line
+        except Exception as exc:
+            print(f"[run] {ticker} position context failed: {exc}", file=sys.stderr)
         try:
             report_id, decision = _run_for_ticker(
                 ticker, state, ctx, trade_date=RUN_STATUS["trade_date"], resume=resume,
@@ -1034,15 +1043,21 @@ def long_term_stances(tickers: list[str]) -> dict[str, dict]:
     then the Liquid NN daily call, plus whether the long-term book holds it."""
     ratings = latest_ta_ratings()
     held: dict[str, float] = {}
+    entry_px: dict[str, float] = {}
+    orders: dict[str, str] = {}
     try:
         import paper
-        for p in paper.load_paper().get("positions", []):
+        pp = paper.load_paper()
+        for p in pp.get("positions", []):
             try:
                 qty = float(p.get("qty") or 0)
             except (TypeError, ValueError):
                 qty = 0.0
             if qty:
                 held[str(p.get("ticker", "")).upper()] = qty
+                entry_px[str(p.get("ticker", "")).upper()] = float(p.get("entry_price") or 0)
+        for o in pp.get("pending_trades", []):
+            orders[str(o.get("ticker", "")).upper()] = (o.get("intent") or {}).get("action") or "order"
     except Exception as exc:  # holdings are context; a read failure is non-fatal
         print(f"[stance] holdings unavailable: {exc}", file=sys.stderr)
     import liquid
@@ -1079,7 +1094,8 @@ def long_term_stances(tickers: list[str]) -> dict[str, dict]:
         out[t] = {"direction": direction, "reason": reason,
                   "ta_rating": rating, "ta_date": r.get("date"),
                   "liquid_call": lc.get("action"), "liquid_pct": f.get("predicted_change_pct"),
-                  "held_qty": held.get(t, 0.0)}
+                  "held_qty": held.get(t, 0.0), "entry_price": entry_px.get(t),
+                  "pending_order": orders.get(t)}
     return out
 
 
