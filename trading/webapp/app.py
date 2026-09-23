@@ -47,7 +47,11 @@ DEFAULT_STATE = {
     "portfolio": [],
     "watchlist": [],
     "settings": {"model": "granite4.1:30b", "language": "English",
-                 "account_mode": "simulated", "trade_sources": "both"},
+                 "account_mode": "simulated",
+                 # The unified autotrade switches: day trader trades its
+                 # calls / TradingAgents orders fill at the next open.
+                 # Defaults = the pre-switch behavior.
+                 "autotrade_daytrade": False, "autotrade_longterm": True},
     "schedule": {"enabled": False, "time": "06:00", "last_run": None},
 }
 
