@@ -360,13 +360,20 @@ def _device_slots() -> queue.Queue:
     return _SLOTS
 
 
-def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: str | None = None) -> dict:
+def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: str | None = None,
+        feats_df: pd.DataFrame | None = None) -> dict:
     """Train on ``train_days`` (the newest val_share_pct of them held out for
-    early stopping). Returns a pack usable by ``predict``."""
+    early stopping). Returns a pack usable by ``predict``.
+
+    The look-back windows are never materialized in RAM: the normalized
+    feature table goes to the device once and each batch gathers its windows
+    from an ``unfold`` view there. (Building every window on the CPU took
+    ~1.4 GB per ticker for 5 years and pinned one core for minutes.)
+    ``feats_df`` lets a caller compute ``features(df)`` once for many fits."""
     import torch
     horizon, look_back, units = int(cfg["horizon_min"]), int(cfg["look_back"]), int(cfg["hidden_units"])
     cols = list(cfg["features"])
-    feats = features(df)[cols].values.astype(np.float64)
+    feats = (feats_df if feats_df is not None else features(df))[cols].values.astype(np.float64)
     y = forward_return(df, horizon)
     days = np.array(df.index.date)
     n_val = max(2, int(round(len(train_days) * cfg["val_share_pct"] / 100)))
@@ -376,7 +383,6 @@ def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: st
     sd = feats[in_fit].std(0)
     sd = np.where(sd == 0, 1.0, sd)
     z = np.clip((feats - mu) / sd, -6, 6)
-    X = _windows(z, look_back)
     end = np.arange(look_back - 1, len(z))
     y_end = y[end]
     ok = ~np.isnan(y_end)
@@ -394,42 +400,46 @@ def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: st
     # the decision. Default "mse" keeps the live models byte-identical.
     objective = str(cfg.get("objective") or "mse").lower()
     loss_fn = torch.nn.MSELoss()
-    xt = torch.from_numpy(X[tr]).to(dev)
-    yt = torch.from_numpy((y_end[tr] / y_sd).astype(np.float32)[:, None]).to(dev)
-    xv = torch.from_numpy(X[va]).to(dev)
-    yv = torch.from_numpy((y_end[va] / y_sd).astype(np.float32)[:, None]).to(dev)
+    # Windows as a device-side view: W[k] = z[k : k+look_back] (window ending at end[k]).
+    zt = torch.from_numpy(z.astype(np.float32)).to(dev)
+    W = zt.unfold(0, look_back, 1).permute(0, 2, 1)
+    tr_i = torch.from_numpy(np.nonzero(tr)[0]).to(dev)
+    va_i = torch.from_numpy(np.nonzero(va)[0]).to(dev)
+    y0 = np.nan_to_num(y_end)
+    y_all = torch.from_numpy((y0 / y_sd).astype(np.float32)[:, None]).to(dev)
     if objective == "sign":
-        sg_t = torch.from_numpy(np.sign(y_end[tr]).astype(np.float32)).to(dev)
-        wt_t = torch.from_numpy(np.where(np.sign(y_end[tr]) == 0, 0.0,
-                                         1.0 + np.abs(y_end[tr]) / y_sd).astype(np.float32)).to(dev)
-        sg_v = torch.from_numpy(np.sign(y_end[va]).astype(np.float32)).to(dev)
-        wt_v = torch.from_numpy(np.where(np.sign(y_end[va]) == 0, 0.0,
-                                         1.0 + np.abs(y_end[va]) / y_sd).astype(np.float32)).to(dev)
+        sg_all = torch.from_numpy(np.sign(y0).astype(np.float32)).to(dev)
+        wt_all = torch.from_numpy(np.where(np.sign(y0) == 0, 0.0, 1.0 + np.abs(y0) / y_sd).astype(np.float32)).to(dev)
 
         def sign_loss(out_b, sg_b, wt_b):
             return (wt_b * torch.nn.functional.softplus(-sg_b * out_b[:, 0])).mean()
+
+    def batch_loss(idx):
+        out = net(W[idx])
+        if objective == "sign":
+            return sign_loss(out, sg_all[idx], wt_all[idx])
+        return loss_fn(out, y_all[idx])
     best, best_state, bad = float("inf"), None, 0
     for ep in range(epochs):
         if on_epoch:
             on_epoch(ep + 1, epochs)
         net.train()
-        perm = torch.randperm(len(xt), device=dev)
-        for i in range(0, len(xt), batch):
-            idx = perm[i:i + batch]
+        perm = torch.randperm(len(tr_i), device=dev)
+        for i in range(0, len(tr_i), batch):
+            idx = tr_i[perm[i:i + batch]]
             opt.zero_grad()
-            out = net(xt[idx])
-            if objective == "sign":
-                loss = sign_loss(out, sg_t[idx], wt_t[idx])
-            else:
-                loss = loss_fn(out, yt[idx])
+            loss = batch_loss(idx)
             loss.backward()
             opt.step()
         net.eval()
         with torch.no_grad():
-            if objective == "sign":
-                vl = float(sign_loss(net(xv), sg_v, wt_v)) if len(xv) else 0.0
-            else:
-                vl = float(loss_fn(net(xv), yv)) if len(xv) else 0.0
+            # Chunked, count-weighted mean = the same number as one big pass.
+            tot, n = 0.0, 0
+            for i in range(0, len(va_i), batch):
+                idx = va_i[i:i + batch]
+                tot += float(batch_loss(idx)) * len(idx)
+                n += len(idx)
+            vl = tot / n if n else 0.0
         if vl < best - 1e-5:
             best, bad = vl, 0
             best_state = {k: t.detach().clone() for k, t in net.state_dict().items()}
@@ -444,21 +454,21 @@ def fit(df: pd.DataFrame, train_days: list, cfg: dict, on_epoch=None, device: st
             "val_loss": best, "features": cols, "look_back": look_back, "units": units}
 
 
-def predict(pack: dict, df: pd.DataFrame) -> np.ndarray:
-    """Predicted forward log return in bps for every bar (NaN before a full window)."""
+def predict(pack: dict, df: pd.DataFrame, feats_df: pd.DataFrame | None = None) -> np.ndarray:
+    """Predicted forward log return in bps for every bar (NaN before a full
+    window). Windows are cut on the device from an ``unfold`` view."""
     import torch
     lb = pack["look_back"]
-    feats = features(df)[pack["features"]].values.astype(np.float64)
+    feats = (feats_df if feats_df is not None else features(df))[pack["features"]].values.astype(np.float64)
     z = np.clip((feats - pack["mu"]) / pack["sd"], -6, 6)
     out = np.full(len(df), np.nan)
     if len(z) < lb:
         return out
-    X = _windows(z, lb)
+    W = torch.from_numpy(z.astype(np.float32)).to(pack["dev"]).unfold(0, lb, 1).permute(0, 2, 1)
     preds = []
     with torch.no_grad():
-        for i in range(0, len(X), 4096):
-            xb = torch.from_numpy(X[i:i + 4096]).to(pack["dev"])
-            preds.append(pack["net"](xb).cpu().numpy()[:, 0])
+        for i in range(0, W.shape[0], 16384):
+            preds.append(pack["net"](W[i:i + 16384].contiguous()).cpu().numpy()[:, 0])
     out[lb - 1:] = np.concatenate(preds) * pack["y_sd"] * 1e4
     return out
 
@@ -970,6 +980,8 @@ def _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev,
     days = sorted(set(df.index.date))
     if len(days) < MIN_SESSIONS:
         raise RuntimeError(f"only {len(days)} sessions of 1m bars in the {window} window")
+    report("computing indicators", 0, 0)
+    feats_all = features(df)          # once per ticker, shared by every fit/predict below
     n_folds = int(cfg["test_folds"])
     n_test = max(n_folds, int(round(len(days) * cfg["test_share_pct"] / 100)))
     test_days = days[-n_test:]
@@ -980,8 +992,8 @@ def _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev,
         if not fold:
             continue
         prior = [d for d in days if d < fold[0]]
-        pack = fit(df, prior, cfg, on_epoch=lambda e, n, k=k: report("walk-forward test", k, len(folds) + 1, e, n), device=dev)
-        preds = predict(pack, df)
+        pack = fit(df, prior, cfg, feats_df=feats_all, on_epoch=lambda e, n, k=k: report("walk-forward test", k, len(folds) + 1, e, n), device=dev)
+        preds = predict(pack, df, feats_all)
         oos_trades += simulate(df, preds, fold, ticker, cfg)
         y = forward_return(df, h) * 1e4
         m = np.isin(np.array(df.index.date), fold) & ~np.isnan(preds) & ~np.isnan(y) & (y != 0)
@@ -990,7 +1002,7 @@ def _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev,
     edge = edge_metrics(oos_trades, len(test_days), h)
     edge["direction_hit_pct"] = round(hits / tot * 100, 1) if tot else None
     edge["has_edge"] = edge_ok(edge, cfg)
-    pack = fit(df, days, cfg, on_epoch=lambda e, n: report("final model", len(folds) + 1, len(folds) + 1, e, n), device=dev)
+    pack = fit(df, days, cfg, feats_df=feats_all, on_epoch=lambda e, n: report("final model", len(folds) + 1, len(folds) + 1, e, n), device=dev)
     meta = {"ticker": ticker, "key": key, "through": through.isoformat(), "horizon_min": h,
             "trained_at": datetime.now(ET).isoformat(), "sessions": len(days),
             "train_window": window,
