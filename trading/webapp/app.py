@@ -47,7 +47,7 @@ DEFAULT_STATE = {
     "portfolio": [],
     "watchlist": [],
     "settings": {"model": "granite4.1:30b", "language": "English",
-                 "account_mode": "simulated"},
+                 "account_mode": "simulated", "trade_sources": "both"},
     "schedule": {"enabled": False, "time": "06:00", "last_run": None},
 }
 
@@ -840,15 +840,21 @@ def _finish_run(run_id: str) -> None:
     # Execute the run's decisions on the active account. "simulated" is the
     # paper ledger (idempotent per run_id — safe for scheduled and manual
     # runs alike); "live" has no broker connected, so decisions log only.
+    # The unified trade-source switch must also have long-term calls
+    # selected — a deselected source shows/logs but never executes.
     mode = (state.get("settings") or {}).get("account_mode", "simulated")
     if mode == "simulated":
-        try:
-            import paper
-            executed = paper.execute_run_decisions(record)
-            for e in executed:
-                print(f"[paper] {e.get('ticker')}: {e.get('action')} -> {e.get('status')}", file=sys.stderr)
-        except Exception as exc:  # paper trading must never break a run
-            print(f"[paper] execute failed: {exc}\n{traceback.format_exc()}", file=sys.stderr)
+        import paper
+        if "longterm" in paper.trade_sources():
+            try:
+                executed = paper.execute_run_decisions(record)
+                for e in executed:
+                    print(f"[paper] {e.get('ticker')}: {e.get('action')} -> {e.get('status')}", file=sys.stderr)
+            except Exception as exc:  # paper trading must never break a run
+                print(f"[paper] execute failed: {exc}\n{traceback.format_exc()}", file=sys.stderr)
+        else:
+            print("[paper] trade sources: long-term calls not selected — decisions logged, not executed",
+                  file=sys.stderr)
     else:
         print(f"[paper] account mode '{mode}': no broker connected — decisions logged, not executed",
               file=sys.stderr)

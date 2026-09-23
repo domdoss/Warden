@@ -55,9 +55,24 @@ HISTORY_DAYS = 29          # Yahoo: 1m bars reach back ~30 days
 ALPACA_HISTORY_DAYS = 365  # Alpaca (free SIP history): one year of sessions
 
 
-def history_days() -> int:
-    import alpaca_data
-    return ALPACA_HISTORY_DAYS if alpaca_data.available() else HISTORY_DAYS
+def _resolve_source(cfg: dict | None) -> str:
+    """Map cfg["data_source"] to a concrete provider key. 'auto' keeps the
+    historical Alpaca-if-a-key-is-configured-else-Yahoo behavior."""
+    src = (cfg or {}).get("data_source") or "auto"
+    if src == "auto":
+        import alpaca_data
+        return "alpaca" if alpaca_data.available() else "yahoo"
+    return src
+
+
+def history_days(cfg: dict | None = None) -> int:
+    src = _resolve_source(cfg)
+    if src == "alpaca":
+        return ALPACA_HISTORY_DAYS
+    if src == "yahoo":
+        return HISTORY_DAYS
+    import datasources
+    return datasources.depth_days(src)
 PRICE_POLL_S = 5
 
 # NYSE full-day holidays and 1pm early closes. Beyond the listed years the
@@ -96,7 +111,16 @@ DEFAULT_CONFIG = {**knobs.defaults(), "start_equity": 25000.0}
 # Bumped when defaults change meaningfully: a saved config from an older
 # version keeps only the user's own choices below and takes the new defaults.
 KNOBS_VERSION = 2
-KEEP_ON_UPGRADE = ("tickers", "extra_tickers", "auto_execute", "train_window", "train_workers")
+KEEP_ON_UPGRADE = ("tickers", "extra_tickers", "train_window", "train_workers")
+
+
+def _trade_sources() -> set[str]:
+    """The unified trade-source switch (state.json settings, read through
+    paper.py — the shared-account module). Live auto-trading consults this;
+    replay passes its own explicit auto and books into a scratch book, so
+    it never goes through here."""
+    import paper
+    return paper.trade_sources()
 
 # Calendar days of history per training window. Yahoo (no Alpaca key) caps
 # every window at the ~30 days of 1m bars it serves.
@@ -184,16 +208,9 @@ def _session_only(df: pd.DataFrame) -> pd.DataFrame:
     return df[((ts >= op) & (ts < cl)).to_numpy(dtype=bool)]
 
 
-def fetch_history(ticker: str, days: int = ALPACA_HISTORY_DAYS) -> pd.DataFrame:
-    """Training history of 1m bars: ``days`` of Alpaca SIP bars when an Alpaca
-    key is configured (default a year), else ~20 sessions from Yahoo. Beyond a
-    year it uses only what the cache already holds — the deep multi-year
-    caches — so a long window never starts a multi-year download."""
-    import alpaca_data
-    if alpaca_data.available():
-        if days > ALPACA_HISTORY_DAYS:
-            days = max(ALPACA_HISTORY_DAYS, min(days, alpaca_data.cached_depth_days(ticker)))
-        return _session_only(alpaca_data.history(ticker, days))
+def _yahoo_history(ticker: str) -> pd.DataFrame:
+    """Yahoo 1m history (~30 days), fetched in 7-day chunks and cached per
+    ticker for the day. No key required."""
     today = datetime.now(ET).date().isoformat()
     cache = BARS_DIR / f"{ticker}_{today}.pkl"
     if cache.exists():
@@ -224,13 +241,35 @@ def fetch_history(ticker: str, days: int = ALPACA_HISTORY_DAYS) -> pd.DataFrame:
     return df
 
 
-def fetch_recent(tickers: list[str], period: str = "1d") -> dict[str, pd.DataFrame]:
+def fetch_history(ticker: str, days: int = ALPACA_HISTORY_DAYS, cfg: dict | None = None) -> pd.DataFrame:
+    """Training history of 1m bars from the configured data source (knob
+    ``data_source``). 'auto' keeps the historical Alpaca-if-a-key-else-Yahoo
+    behavior; the other providers cache per ticker under
+    ``.alpha-stack/daytrade/<source>/`` and the engine only ever needs OHLCV."""
+    src = _resolve_source(cfg)
+    if src == "yahoo":
+        return _yahoo_history(ticker)
+    if src == "alpaca":
+        import alpaca_data
+        if days > ALPACA_HISTORY_DAYS:
+            days = max(ALPACA_HISTORY_DAYS, min(days, alpaca_data.cached_depth_days(ticker)))
+        return _session_only(alpaca_data.history(ticker, days))
+    import datasources
+    return _session_only(datasources.fetch_history(src, ticker, days))
+
+
+def fetch_recent(tickers: list[str], period: str = "1d", cfg: dict | None = None) -> dict[str, pd.DataFrame]:
     if not tickers:
         return {}
-    import alpaca_data
-    if alpaca_data.available():
+    src = _resolve_source(cfg)
+    days = int(period.rstrip("d"))
+    if src == "alpaca":
         # Live bars: Alpaca's real-time IEX feed (free plan).
-        return {t: _session_only(df) for t, df in alpaca_data.recent(tickers, int(period.rstrip("d"))).items()}
+        import alpaca_data
+        return {t: _session_only(df) for t, df in alpaca_data.recent(tickers, days).items()}
+    if src != "yahoo":
+        import datasources
+        return {t: _session_only(df) for t, df in datasources.fetch_recent(src, tickers, days).items()}
     raw = yf.download(tickers, period=period, interval="1m", progress=False,
                       auto_adjust=True, prepost=False, group_by="ticker", threads=True)
     return {t: _pick(raw, t) for t in tickers}
@@ -835,16 +874,19 @@ def _ratchet_stop(pos: dict, bar: dict, cfg: dict) -> None:
 
 
 def _daily_lock(book: "Book", cfg: dict, now: datetime, marks: dict[str, float]) -> list[dict]:
-    """Daily circuit breakers, shared by live, replay and backtest:
+    """Daily circuit breakers, shared by live and replay (zeroed in the
+    backtest):
     - up ``daily_take_usd`` dollars → bank the day (flatten, no entries till tomorrow);
-    - down ``max_daily_loss_usd`` dollars → cut the day the same way.
-    Either knob at 0 leaves it off."""
+    - down ``max_daily_loss_usd`` dollars, or ``max_daily_loss_pct``% of the
+      account → cut the day the same way.
+    Any knob at 0 leaves it off."""
     events: list[dict] = []
     if book.day is None:
         return events
     day_pnl = book.equity(marks) - book.day_start_equity
     take = float(cfg.get("daily_take_usd") or 0)
     cut = float(cfg.get("max_daily_loss_usd") or 0)
+    pct = float(cfg.get("max_daily_loss_pct") or 0)
     if take and book.banked_day != book.day and day_pnl >= take:
         book.banked_day = book.day
         for t in list(book.positions):
@@ -854,14 +896,20 @@ def _daily_lock(book: "Book", cfg: dict, now: datetime, marks: dict[str, float])
         events.append({"type": "bank", "at": now.isoformat(),
                        "reason": f"daily profit lock ${take:g} reached — flat, no entries until tomorrow"})
         return events
+    hit = None
     if cut and book.killed_day != book.day and day_pnl <= -cut:
+        hit = "daily loss cutoff", f"daily loss cutoff ${cut:g} reached"
+    elif pct and book.killed_day != book.day and book.day_start_equity > 0 \
+            and day_pnl <= -book.day_start_equity * pct / 100:
+        hit = "daily loss limit", f"daily loss limit {pct:g}% hit"
+    if hit:
         book.killed_day = book.day
         for t in list(book.positions):
-            tr = book.close(t, marks.get(t, book.positions[t]["entry_mid"]), now, "daily loss cutoff", cfg)
+            tr = book.close(t, marks.get(t, book.positions[t]["entry_mid"]), now, hit[0], cfg)
             if tr:
                 events.append({"type": "close", "trade": tr})
         events.append({"type": "kill", "at": now.isoformat(),
-                       "reason": f"daily loss cutoff ${cut:g} reached — flat, no entries until tomorrow"})
+                       "reason": f"{hit[1]} — flat, no entries until tomorrow"})
     return events
 
 
@@ -997,18 +1045,25 @@ def edge_ok(edge: dict, cfg: dict) -> bool:
 def simulate(df: pd.DataFrame, preds: np.ndarray, days: list, ticker: str, cfg: dict) -> list[dict]:
     """Backtest the live rules over ``days`` for one ticker (edge gate forced on).
 
-    The book here is a fake $10M account, so the absolute-dollar rules
-    (daily_take_usd / max_daily_loss_usd / take_profit_usd / trail_profit_usd /
-    max_weekly_loss_usd) are disabled: on a $10M book one trade swings more
-    than every one of those thresholds, so they would fire on the FIRST trade
-    and cut every test to one trade a day. The weekly-loss and losing-day
-    guards are disabled for the same reason — those are live-account risk
-    controls; the edge measurement must see the whole day and week."""
+    The book sizes from the shared paper account's current equity, exactly like
+    a replay, so positions and dollars mean what they would live. The
+    account-dollar and account-percent risk rules (daily_take_usd /
+    max_daily_loss_usd / max_daily_loss_pct / take_profit_usd / trail_profit_usd
+    / max_weekly_loss_usd / max_weekly_loss_pct / max_consecutive_loss_days) are
+    disabled here: they are whole-account daily/weekly discipline, and this
+    backtest measures one ticker's signal across the whole day and week. Replay
+    — every ticker together, on the real account — exercises them."""
     scfg = {**cfg, "max_positions": 1,
-            "daily_take_usd": 0.0, "max_daily_loss_usd": 0.0, "take_profit_usd": 0.0,
-            "trail_profit_usd": 0.0,
+            "daily_take_usd": 0.0, "max_daily_loss_usd": 0.0, "max_daily_loss_pct": 0.0,
+            "take_profit_usd": 0.0, "trail_profit_usd": 0.0,
             "max_weekly_loss_pct": 0.0, "max_weekly_loss_usd": 0.0, "max_consecutive_loss_days": 0}
-    book = Book(scfg, {"start_equity": 1e7})
+    try:
+        start = SharedAccount().equity()
+    except Exception:
+        start = 0.0
+    if not math.isfinite(start) or start <= 0:
+        start = float(cfg.get("start_equity", 25000.0))
+    book = Book(scfg, {"start_equity": start})
     atr = atr_px(df).values
     idx_days = _day_keys(df.index)
     o, h, l, c = (df[k].values for k in ("Open", "High", "Low", "Close"))
@@ -1058,7 +1113,7 @@ def _train_ticker_on(ticker, through, cfg, report, key, meta_path, pt_path, dev,
     window = cfg.get("train_window", "year")
     t0 = time.time()
     report("loading price history", 0, 0)
-    df = fetch_history(ticker, TRAIN_WINDOWS.get(window, 365))
+    df = fetch_history(ticker, TRAIN_WINDOWS.get(window, 365), cfg)
     if df.empty:
         raise RuntimeError("no intraday bars returned")
     since = through - timedelta(days=TRAIN_WINDOWS.get(window, 365))
@@ -1535,7 +1590,7 @@ class Engine:
         (e.g. after hours). Runs against a scratch copy of the book with
         auto-execute off, so it never changes the account."""
         try:
-            df = fetch_recent([t], "5d").get(t)
+            df = fetch_recent([t], "5d", self.cfg).get(t)
             if df is None or df.empty:
                 return
             self.hist[t] = df
@@ -1630,9 +1685,9 @@ class Engine:
         need_hist = [t for t in tickers if t not in self.hist
                      or (len(self.hist[t]) and self.hist[t].index[-1].date() < today - timedelta(days=6))]
         if need_hist:
-            for t, df in fetch_recent(need_hist, "5d").items():
+            for t, df in fetch_recent(need_hist, "5d", self.cfg).items():
                 self.hist[t] = df
-        recent = fetch_recent(tickers, "1d")
+        recent = fetch_recent(tickers, "1d", self.cfg)
         self.last_tick = now.isoformat()
         marks = {}
         for t in tickers:
@@ -1661,7 +1716,6 @@ class Engine:
                     continue
                 self.last_bar[t] = last
                 self._evaluate(t, done, last.to_pydatetime(), b[1], marks, live=True)
-            self._kill_switch(marks, now)
             self._save()
         self._bump()
 
@@ -1682,7 +1736,8 @@ class Engine:
             pred = move_bps(done, self.cfg["horizon_min"])
             a = float(atr_px(done.tail(200)).iloc[-1])
             sig, events = on_bar(book, t, bar_time, bar, pred, a, {"force_edge": True}, self.cfg,
-                                 self.cfg["auto_execute"] if auto is None else auto, close_dt, marks,
+                                 auto if auto is not None else "daytrade" in _trade_sources(),
+                                 close_dt, marks,
                                  lt_stance=long_term_stances([t]).get(t))
             for e in events:
                 e["ticker"] = t
@@ -1707,7 +1762,8 @@ class Engine:
                 pred = float(predict(m["pack"], tail)[-1])
             a = float(atr_px(done.tail(200)).iloc[-1])
             sig, events = on_bar(book, t, bar_time, bar, pred, a, gate, self.cfg,
-                                 self.cfg["auto_execute"] if auto is None else auto, close_dt, marks,
+                                 auto if auto is not None else "daytrade" in _trade_sources(),
+                                 close_dt, marks,
                                  lt_stance=long_term_stances([t]).get(t))
             for e in events:
                 e["ticker"] = t
@@ -1777,18 +1833,6 @@ class Engine:
                 self.events.append({"type": "lt_fill", "ticker": t, "at": bar_time.isoformat(),
                                     "reason": f"long-term {side} filled at {price:.2f} — {how}"})
                 log(f"long-term order {ref} ({t} {side}) filled at {price:.2f}: {how}")
-
-    def _kill_switch(self, marks: dict, now: datetime) -> None:
-        book = self.book
-        if book.killed_day == book.day or not book.positions and book.realized_today >= 0:
-            return
-        eq = book.equity(marks)
-        if eq - book.day_start_equity <= -book.day_start_equity * self.cfg["max_daily_loss_pct"] / 100:
-            for t in list(book.positions):
-                book.close(t, marks.get(t, book.positions[t]["entry_mid"]), now, "daily loss limit", self.cfg)
-            book.killed_day = book.day
-            self.events.append({"type": "kill", "at": now.isoformat(),
-                                "reason": f"daily loss limit {self.cfg['max_daily_loss_pct']}% hit — flat, no entries until tomorrow"})
 
     # -- manual actions ---------------------------------------------------
     def manual(self, ticker: str, action: str) -> tuple[int, dict]:
@@ -1916,8 +1960,8 @@ class Engine:
             sessions = [d for d in sessions if session_bounds(d) and d <= last]
             if not sessions:
                 return 400, {"ok": False, "error": f"no completed sessions in the week of {monday}"}
-            if (datetime.now(ET).date() - sessions[0]).days > history_days() - 7:
-                return 400, {"ok": False, "error": f"that week is outside the {history_days()}-day history"}
+            if (datetime.now(ET).date() - sessions[0]).days > history_days(self.cfg) - 7:
+                return 400, {"ok": False, "error": f"that week is outside the {history_days(self.cfg)}-day history"}
             mode = str(body.get("model") or "current")
             if mode not in ("current", "fresh"):
                 return 400, {"ok": False, "error": "model must be current or fresh"}
@@ -1974,7 +2018,7 @@ class Engine:
             if self.replay_stop:
                 break
             try:
-                df = fetch_history(t)
+                df = fetch_history(t, ALPACA_HISTORY_DAYS, self.cfg)
                 df = df[np.array(df.index.date) <= sessions[-1]]
                 if self.cfg.get("signal_source") == "move":
                     data[t], preds[t] = df, None      # signal computed per bar from the prices
@@ -2274,7 +2318,9 @@ class Engine:
                 "asof": now.isoformat(),
                 "engine_on": self.engine_on,
                 "mode": self.mode,
-                "auto_execute": bool(self.cfg.get("auto_execute")),
+                # The unified trade-source switch (replaces the old
+                # auto_execute knob): is the day trader selected to trade?
+                "auto_execute": "daytrade" in _trade_sources(),
                 "market_open": clock["open"],
                 "paper": True,
                 "account": {

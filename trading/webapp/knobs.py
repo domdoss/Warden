@@ -27,6 +27,8 @@ GROUPS = [
      "help": "How the models learn and how they're scored on days they never saw. Changing these retrains every model."},
     {"id": "replay", "label": "Replay",
      "help": "Settings for replaying past sessions."},
+    {"id": "data", "label": "Data source",
+     "help": "Where 1-minute price history and live bars come from. Each source caches per ticker on disk, and its API key lives in ~/.config/alpha-stack/<name>.env (one KEY=VALUE per line). Changing the source retrains every model."},
 ]
 
 FEATURE_OPTIONS = [
@@ -105,8 +107,6 @@ KNOBS = [
      "help": "A prediction must be bigger than this many times the round-trip cost before the engine acts on it. 1 = the predicted move must at least pay for the trade. Higher = fewer, more confident trades."},
     {"key": "allow_short", "group": "signal", "label": "Allow short selling", "type": "bool", "default": True, "retrain": False,
      "help": "Shorting = betting a price will fall (sell first, buy back later). On means the engine can profit from drops as well as rises."},
-    {"key": "auto_execute", "group": "signal", "label": "Auto-trade the signals", "type": "bool", "default": False, "retrain": False,
-     "help": "When on, BUY NOW / SELL NOW calls are traded automatically in the paper account. Off = signals only; you decide."},
 
     # -- long-term alignment ---------------------------------------------------
     {"key": "lt_memory", "group": "align", "label": "TradingAgents sees positions and its last call", "type": "bool",
@@ -271,6 +271,25 @@ KNOBS = [
     {"key": "replay_speed", "group": "replay", "label": "Default replay speed", "type": "float", "default": 10.0,
      "min": 0.5, "max": 120.0, "step": 0.5, "unit": "× real time", "retrain": False,
      "help": "Simulated minutes per real second when replaying a past session."},
+
+    # -- data source -----------------------------------------------------------
+    {"key": "data_source", "group": "data", "label": "Price data source", "type": "select", "default": "auto",
+     "retrain": True,
+     "options": [
+        {"value": "auto", "label": "Auto (Alpaca, else Yahoo)",
+         "help": "Alpaca when an Alpaca key is configured, otherwise Yahoo's ~30 days of 1-minute bars. No setup."},
+        {"value": "alpaca", "label": "Alpaca",
+         "help": "Free Basic plan: about a year of SIP history plus live IEX bars. Key in ~/.config/alpha-stack/alpaca.env."},
+        {"value": "yahoo", "label": "Yahoo",
+         "help": "Free, no key: ~30 days of 1-minute bars, fetched in 7-day chunks."},
+        {"value": "polygon", "label": "Polygon.io",
+         "help": "Paid: up to 10 years of split-adjusted 1-minute bars with VWAP and trade count. Key in ~/.config/alpha-stack/polygon.env (POLYGON_API_KEY)."},
+        {"value": "tiingo", "label": "Tiingo",
+         "help": "Paid: about 5 years of IEX 1-minute bars (thin volume, no VWAP). Key in ~/.config/alpha-stack/tiingo.env (TIINGO_API_KEY)."},
+        {"value": "twelvedata", "label": "Twelve Data",
+         "help": "Paid: up to 2 years of 1-minute bars. Key in ~/.config/alpha-stack/twelvedata.env (TWELVEDATA_API_KEY)."},
+     ],
+     "help": "Where 1-minute price history and live bars come from. Every source caches per ticker in its own directory, so switching never mixes one provider's bars with another's. Each source's API key lives in ~/.config/alpha-stack/<name>.env (one KEY=VALUE per line) or the matching environment variable. Changing the source retrains every model."},
 ]
 
 BY_KEY = {k["key"]: k for k in KNOBS}
