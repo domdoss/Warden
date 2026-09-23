@@ -1172,6 +1172,12 @@ class Engine:
                 sig["position"] = pos
                 sig["horizon_min"] = self.cfg["horizon_min"]
                 sig["changed_at"] = self.changed_at.get(t)
+                # While the engine is off (never in replay, live or closed)
+                # the cards show prices only — a call appears once the engine
+                # runs, not from the idle pass that populates the panel.
+                if self.mode == "off":
+                    sig["call"], sig["action"] = "OFF", "none"
+                    sig["reason"] = "engine off — press Start live; calls appear once the engine runs"
                 rows.append(sig)
             eq = book.equity(marks)
             today_trades = [x for x in book.trades if (x.get("closed_at") or "")[:10] == (book.day or "")]
