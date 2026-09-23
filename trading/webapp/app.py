@@ -1416,6 +1416,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(200, eng.snapshot())
         if path == "/api/daytrade/overview":
             return self._send_json(200, eng.longterm_payload())
+        if path == "/api/daytrade/models/sets":
+            return self._send_json(200, eng.list_model_sets())
         if path == "/api/daytrade/knobs":
             return self._send_json(200, eng.knob_catalog())
         if path == "/api/daytrade/signals":
@@ -1476,6 +1478,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(*eng.set_config(body))
         if path == "/api/daytrade/reset":
             return self._send_json(200, eng.reset())
+        if path == "/api/daytrade/train/stop":
+            return self._send_json(*eng.stop_training())
+        if path == "/api/daytrade/train/clear":
+            return self._send_json(*eng.clear_models())
+        if path == "/api/daytrade/train":
+            return self._send_json(*eng.train_all())
+        if path == "/api/daytrade/models/save":
+            return self._send_json(*eng.save_model_set(body.get("name", ""), body.get("note", "")))
+        if path == "/api/daytrade/models/load":
+            return self._send_json(*eng.load_model_set(body.get("name", ""), body.get("with_settings", True) is not False))
+        if path == "/api/daytrade/models/delete":
+            return self._send_json(*eng.delete_model_set(body.get("name", "")))
         if path == "/api/daytrade/config/reset":
             return self._send_json(*eng.reset_config(body.get("group")))
         if path == "/api/daytrade/trade":

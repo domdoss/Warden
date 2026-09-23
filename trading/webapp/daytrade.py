@@ -46,6 +46,9 @@ ET = ZoneInfo("America/New_York")
 ROOT = Path(__file__).resolve().parent.parent / ".alpha-stack" / "daytrade"
 STATE_FILE = ROOT / "state.json"
 MODEL_DIR = ROOT / "models"
+# Named snapshots of a whole trained model set ("model saves"): each is a
+# folder of model files plus set.json (the settings they were trained with).
+MODEL_SETS_DIR = ROOT / "model_sets"
 BARS_DIR = ROOT / "bars"
 
 HISTORY_DAYS = 29          # Yahoo: 1m bars reach back ~30 days
@@ -1198,19 +1201,24 @@ class Engine:
 
     def load_saved_models(self) -> None:
         """After a restart, pick up models already trained on the current
-        settings (loads from disk; never trains)."""
+        settings (loads from disk; never trains). The newest saved model for
+        those settings is used whatever its training cut-off date — keying on
+        today's cut-off would drop every model the day after it was trained."""
         through = self._model_through()
         for t in self.tickers():
-            key = model_key(t, self.cfg, through)
-            if (MODEL_DIR / f"{key}.json").exists() and (MODEL_DIR / f"{key}.pt").exists():
-                try:
-                    m = load_model(key)
-                    with self.lock:
-                        self.models[t] = m
-                        self.model_state[t] = "ready"
-                    self._idle_eval(t)
-                except Exception as exc:
-                    log(f"{t}: could not load saved model: {exc}")
+            prefix = model_key(t, self.cfg, through).rsplit("_", 1)[0]
+            found = sorted(p for p in MODEL_DIR.glob(f"{prefix}_*.json") if p.with_suffix(".pt").exists())
+            if not found:
+                continue
+            key = found[-1].stem
+            try:
+                m = load_model(key)
+                with self.lock:
+                    self.models[t] = m
+                    self.model_state[t] = "ready"
+                self._idle_eval(t)
+            except Exception as exc:
+                log(f"{t}: could not load saved model: {exc}")
         self._bump()
 
     def stop_training(self) -> tuple[int, dict]:
@@ -1230,6 +1238,108 @@ class Engine:
             self.train_stop.set()
         self._bump()
         return 200, {"ok": True, "cancelled": cancelled, "interrupting": interrupted}
+
+    # -- model saves -------------------------------------------------------
+    @staticmethod
+    def _set_dir(name: str) -> Path | None:
+        import re
+        slug = re.sub(r"[^A-Za-z0-9._ +$-]", "", str(name or "")).strip()[:60]
+        return MODEL_SETS_DIR / slug if slug else None
+
+    def list_model_sets(self) -> dict:
+        sets = []
+        for f in sorted(MODEL_SETS_DIR.glob("*/set.json")):
+            try:
+                sets.append(json.loads(f.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError) as exc:
+                log(f"unreadable model save {f.parent.name}: {exc}")
+        sets.sort(key=lambda s: s.get("saved_at", ""), reverse=True)
+        return {"ok": True, "sets": sets}
+
+    def save_model_set(self, name: str, note: str = "") -> tuple[int, dict]:
+        """Copy every loaded model + the settings it was trained with into a
+        named save, so it can be restored after other models are trained."""
+        import shutil
+        dest = self._set_dir(name)
+        if dest is None:
+            return 400, {"ok": False, "error": "give the save a name"}
+        with self.lock:
+            if not self.models:
+                return 409, {"ok": False, "error": "no trained models to save"}
+            models = {t: m["meta"] for t, m in self.models.items()}
+            cfg = dict(self.cfg)
+        if dest.exists():
+            return 409, {"ok": False, "error": f"a save named '{dest.name}' already exists — pick another name or delete it first"}
+        tmp = dest.with_name(dest.name + ".tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        for t, meta in models.items():
+            for ext in (".json", ".pt"):
+                shutil.copy2(MODEL_DIR / f"{meta['key']}{ext}", tmp / f"{meta['key']}{ext}")
+        info = {
+            "name": dest.name, "note": str(note or "")[:300],
+            "saved_at": datetime.now(ET).isoformat(timespec="seconds"),
+            "tickers": sorted(models),
+            "keys": {t: meta["key"] for t, meta in models.items()},
+            "trained_through": sorted({meta.get("through") for meta in models.values()})[-1],
+            "train_window": cfg.get("train_window"), "horizon_min": cfg.get("horizon_min"),
+            "model_knobs": {k: cfg[k] for k in sorted(knobs.RETRAIN_KEYS)},
+            "settings": {k: v for k, v in cfg.items() if k not in knobs.RETRAIN_KEYS},
+            "edge": {t: {"avg_net_bps": (meta.get("edge") or {}).get("avg_net_bps"),
+                         "trades": (meta.get("edge") or {}).get("trades")} for t, meta in models.items()},
+        }
+        (tmp / "set.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+        tmp.rename(dest)
+        log(f"model save '{dest.name}': {len(models)} models")
+        return 200, {"ok": True, "set": info}
+
+    def load_model_set(self, name: str, with_settings: bool = True) -> tuple[int, dict]:
+        """Put a saved model set back: its model files, the model settings it
+        was trained with (so the keys match), and — unless with_settings is
+        false — the trading settings it was saved with."""
+        import shutil
+        src = self._set_dir(name)
+        if src is None or not (src / "set.json").exists():
+            return 404, {"ok": False, "error": f"no model save named '{name}'"}
+        info = json.loads((src / "set.json").read_text(encoding="utf-8"))
+        with self.lock:
+            if self.train_q or self.training:
+                return 409, {"ok": False, "error": "training is running — stop it first"}
+            if self.mode == "replay":
+                return 409, {"ok": False, "error": "a replay is running — load after it finishes"}
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            for f in src.iterdir():
+                if f.suffix in (".json", ".pt") and f.name != "set.json":
+                    shutil.copy2(f, MODEL_DIR / f.name)
+            new = dict(self.cfg)
+            new.update({k: v for k, v in info.get("model_knobs", {}).items() if k in DEFAULT_CONFIG})
+            if with_settings:
+                new.update({k: v for k, v in info.get("settings", {}).items() if k in DEFAULT_CONFIG})
+            self.cfg = new
+            self._save()
+            self.models.clear()
+            self.signals.clear()
+            self.last_bar.clear()
+            self.model_state.clear()
+            for t, key in info.get("keys", {}).items():
+                try:
+                    self.models[t] = load_model(key)
+                    self.model_state[t] = "ready"
+                except Exception as exc:
+                    self.model_state[t] = f"error: {exc}"
+        for t in list(self.models):
+            self._idle_eval(t)
+        self._bump()
+        log(f"model save '{info['name']}' loaded ({len(self.models)} models, settings={'yes' if with_settings else 'no'})")
+        return 200, {"ok": True, "set": info, "loaded": sorted(self.models)}
+
+    def delete_model_set(self, name: str) -> tuple[int, dict]:
+        import shutil
+        src = self._set_dir(name)
+        if src is None or not src.exists():
+            return 404, {"ok": False, "error": f"no model save named '{name}'"}
+        shutil.rmtree(src)
+        return 200, {"ok": True}
 
     def clear_models(self) -> tuple[int, dict]:
         """Delete every saved day-trading model; all tickers go back to untrained."""
