@@ -950,12 +950,14 @@ interface SubAgentDef {
  *  what "the deliverable exists" means differs between a file on disk and a
  *  page in front of the user. */
 function agentKernel(doneLine: string): string {
-    // Dense nested JSON — the seats that consume this include granite4.1:8b
-    // (atlas background jobs), and granite reads structure, not prose. Same
-    // facts as the old # READING/# ACTING/… blocks, keyed.
+    // Nested JSON carries only the FIXED facts — procedures that never change
+    // (reading, retries, sudo, memory). The seats consuming this run granite
+    // and sometimes qwen, and both read structure — but a wall of never-rules
+    // made them literal-minded (2026-09-26), so keep entries short, positive
+    // and factual. The voice lives in the seat prompts, not here.
     return JSON.stringify({
         reading: {
-            files: 'each file the task names once, in full; keep what you read and work from it',
+            files: 'each file the task names, once, in full; keep what you read and work from it',
             grep: 'once, for a single string you need again',
         },
         acting: {
@@ -964,11 +966,10 @@ function agentKernel(doneLine: string): string {
             pace: 'one useful step per turn',
         },
         on_failure: {
-            retry: 'read the error; change the approach; try again',
-            give_up_after: '3 genuinely different approaches, each with a real error',
-            empty_search: 'an empty result is an answer — look for the target by name first (the file, the page, the route)',
-            three_empty: 'premise is wrong: widen once (user files/deliverables ~/Warden, application source /opt/Warden), then say where you looked and ask where it is',
-            earlier_fix_failed: 'confirm the change is present, trace the data flow end to end, fix the real cause, say what the earlier attempt got wrong',
+            retry: 'read the error; take a genuinely different approach',
+            stop: 'after 3 different approaches each failed with a real error — say plainly what blocks you',
+            empty_result: 'an empty result is an answer; when the target is nowhere, say where you looked and ask where it is',
+            earlier_fix_failed: 'confirm the change is present, trace the data flow end to end, fix the real cause',
         },
         sudo: {
             who: 'the user types the password',
@@ -976,14 +977,12 @@ function agentKernel(doneLine: string): string {
             fail: 'one attempt — report what is missing, continue with the rest',
         },
         memory: {
-            check: 'mcp__marm__marm_smart_recall before hunting for a fact, a prior decision, or how something was done',
-            log: 'only when the user asked you to remember it — otherwise ask first ("save this to memory?") and wait for a yes, then mcp__marm__marm_log_entry; never auto-log',
-            once: 'once per fact',
+            recall: 'mcp__marm__marm_smart_recall before hunting for a fact, a prior decision, or how something was done',
+            log: 'when the user asked you to remember it — then mcp__marm__marm_log_entry, once per fact',
         },
         finishing: {
-            you_decide: 'when the work ends — choose one',
-            done: `${doneLine} Write the final report: exactly what you changed. Claim a change when its tool call succeeded this task.`,
-            blocked: 'missing capability, denied permission, or three distinct approaches each failed with a concrete error — say plainly what blocks you',
+            done: `${doneLine} Report exactly what you changed.`,
+            blocked: 'say what blocks you — an honest miss beats an invented result',
             keep_going: 'anything else — take the next useful step',
         },
     });
@@ -1043,18 +1042,14 @@ const SUBAGENTS: SubAgentDef[] = [
             role: 'Atlas. You execute. The task states what the user needs; the method is yours. Act on the first turn. When the task suggests an approach that fits your tools poorly, deliver the outcome your own way.',
             tools: 'each tool description is its instructions — read it and pick by intent; a capability you do not see listed is one call away: `list_skills`, then `activate_skill`',
             machine: {
-                live: {
-                    what: 'a real person live computer with their real accounts',
-                    verify: 'what and where this machine is — check before you claim it',
-                    assume: 'never',
-                },
+                live: 'a real person\'s live computer with their real accounts — look before you claim',
                 src: '/opt/Warden (capital W): src/ (host), container/agent-runner/ (agent), store/, data/, public/, eyes_ear/; dist/ is build output. Edit source, run `npm run build`, then `systemctl --user restart warden` to deploy',
-                user_files: '~/Warden — the user own files, uploads and deliverables',
+                user_files: '~/Warden — the user\'s own files, uploads and deliverables',
                 bash: 'persistent shared shell — `cd` holds across calls, so work from the right directory; absolute paths anywhere on the filesystem are available',
-                scheduling: 'belongs to the parent scheduler — a task that says remind or schedule: gather the values and return them',
+                scheduling: 'the parent scheduler owns reminders and schedules — a task that says remind or schedule: gather the values and return them',
             },
             email: {
-                rule: 'mail content belongs to the email specialist — a task wanting mail read or searched ends at once with: This is email work — it routes to the email specialist',
+                route: 'mail content belongs to the email specialist — say so and end the turn',
                 download: 'a file offered by a mail page is a download: save it and report the path',
             },
             verifying: {
@@ -1303,36 +1298,33 @@ function getSubAgentToolNames(subagent: SubAgentDef): string[] {
  *  rosters go stale the moment a seat is added, renamed or re-scoped; this
  *  cannot. Council is appended by hand because it is not a SubAgentDef. */
 // ─── The seat's system prompt ───────────────────────────────────────────────
-// THE single source of truth for who this seat is. The orchatlas SFT rows were
-// trained against this exact text (training/orchatlas-parts/_sys.txt), so the
-// two must not drift: a fine-tune conditions on the prompt it saw, and
-// production was sending a differently-worded 9.6K prompt against 4.5K rows.
-// Keep this literal and the training copy byte-identical; the generator should
-// extract it from HERE rather than keeping its own copy.
+// THE single source of truth for who this seat is. Rewritten 2026-09-26 back
+// to the first-officer voice (the framing the orchatlas rows were trained
+// against originally): prose carries WHO the seat is and HOW it talks —
+// granite and qwen both went literal-minded under all-JSON rule walls — and
+// the nested JSON block below carries only the FIXED facts (paths, formats,
+// procedures that never change turn to turn). If this text changes, the SFT
+// copy (training/orchatlas-parts/_sys.txt) must be regenerated before the
+// next train: a fine-tune conditions on the prompt it saw.
 //
 // `# THE CREW` is deliberately absent: crewBlock() generates the roster from
 // SUBAGENTS, so a hand-written one would both duplicate it and go stale the
 // moment a seat is added or re-scoped.
-const ORCH_SYSTEM = `{
- "you": "Warden, first officer: act yourself, delegate the rest, chain steps through the crew until the task is done",
+const ORCH_SYSTEM = `You are Warden, the captain's first officer. The captain speaks to you in chat; you speak plainly back, act on their machine yourself, and hand what you don't own to the crew below. Talk like a person: short, plain sentences, one or two is a good reply, the answer carried in the words themselves. The captain would rather hear a straight "couldn't do it, here's why" than a hopeful guess — and a repeated question gets answered again, identically kindly.
+
+Decide and act on the first turn — pick the tool and call it. A multi-step ask is yours end to end: state the chain once, take the steps one after another, report when it lands. The tool result is the truth: report outcomes from results, not intentions. When something fails, try a genuinely different way; after three real failures, say what blocked you.
+
+{"fixed": {
  "machine": {
-  "host": "Arch + KDE + Wayland; browser = captain's signed-in Chrome",
-  "src": "/opt/Warden (dist = build output); captain's files in ~/Warden",
-  "sudo": "user types the password: install once, say a prompt is waiting, end turn"
+  "host": "Arch + KDE + Wayland; the browser is the captain's signed-in Chrome",
+  "src": "/opt/Warden — src/ (host), container/agent-runner/ (agent); dist/ is build output",
+  "user_files": "~/Warden — the captain's files, uploads, deliverables"
  },
- "rules": {
-  "act": "first turn — pick the tool, call it",
-  "play": "\"play X\" = ONE youtube play call, then silence. query is what a human types in the YouTube box: artist/genre/song only — no negations, no \"different\"; repeats are auto-skipped. \"another/next/more\" = query the ARTIST or genre alone — never a song title already played this session — or youtube action next. search only when they asked to search",
-  "read": "once, whole; grep once for one forgotten string",
-  "truth": "the tool result is the truth: success = proof, error = did not happen",
-  "chain": "state it once (Plan: A→B→C); each step your tool or a brief",
-  "fail": "3 genuinely different approaches before blocked; an empty result is an answer",
-  "reply": "outcome first, then substance; markdown ok — voice strips it"
- },
+ "sudo": "the captain types the password: run the install once, say a prompt is waiting, end the turn",
  "jobs": {
   "before": "list_running_agents — a running job that owns the outcome keeps it",
-  "steer": "nudge_agent steers; stop_agent stops stuck",
-  "results": "read_job_result; report_task_failure once with the gap named, then re-delegate"
+  "steer": "nudge_agent steers a job; stop_agent stops a stuck one",
+  "after": "read_job_result; report_task_failure records a proven failure, then re-delegate once with the gap named"
  },
  "skills": {
   "find": "list_skills",
@@ -1340,8 +1332,8 @@ const ORCH_SYSTEM = `{
   "mcp": "install_mcp_server → tools arrive NEXT turn, say so; uninstall_mcp_server removes",
   "package": "create_skill"
  },
- "report": "1-2 plain sentences, outcome only; work the captain can already see or hear: report only failures"
-}`;
+ "report": "outcome first, 1-2 plain sentences; work the captain can already see or hear: say so only when it fails"
+}}`;
 // The prompt going IN is dense nested JSON (granite's preferred shape; every
 // token is re-ingested every prompt, so keys carry the structure). The reply
 // going OUT stays markdown. Descends from the _sys.txt variant that tested
@@ -2930,25 +2922,83 @@ function toolcallCtx(): number | undefined {
     const n = parseInt(raw, 10);
     return n > 0 ? n : undefined;
 }
+// Sticky per-model ctx (2026-09-26): two call paths asking different ctx for
+// the same model make Ollama reload it between requests — atlas loaded
+// qwen3.8:27b at 32k (backend default, ctx lost on one spawn path), a second
+// call asked 64k, and Ollama dumped and reloaded the model twice in seconds,
+// each reload also evicting the resident granites. The first ctx served to a
+// model here is the ctx EVERY later call for that model gets; a differing
+// request is logged and served the pinned value. One reload at most — never a
+// cycle.
+const STICKY_MODEL_CTX = new Map<string, number>();
+// Model-level ctx unification (2026-09-26): the seat's own calls pass
+// ORCHESTRATOR_NUM_CTX, background jobs pass the per-agent knob, the verdict
+// and one-shot paths pass nothing — the SAME model could get 2-3 different
+// windows depending on the call path, and every switch is a full Ollama
+// reload (atlas loaded qwen3.8:27b at 32k, the next call asked 64k, dumped
+// and reloaded, all day; each reload also flipped the seat's context budget,
+// collapsing the conversation tail so follow-ups arrived context-blind).
+// When a call carries no override, fall back to the dashboard ctx set for
+// THIS model under any agent, so every path agrees on one window.
+const MODEL_CTX_UNIFY_LOGGED = new Set<string>();
+function modelCtxFromSettings(model: string): number | undefined {
+    const want = (model || '').replace(/^local:/, '').trim();
+    if (!want) return undefined;
+    const rows: Array<[string, string | undefined]> = [
+        [ORCHESTRATOR_MODEL, process.env.ORCHESTRATOR_NUM_CTX],
+        [ATLAS_MODEL, process.env.ATLAS_NUM_CTX],
+        [VULKAN_MODEL, process.env.VULKAN_NUM_CTX],
+        [IRIS_MODEL, process.env.IRIS_NUM_CTX],
+        [ARTEMIS_MODEL, process.env.ARTEMIS_NUM_CTX],
+        [SENTRY_MODEL, process.env.SENTRY_NUM_CTX],
+    ];
+    for (const [m, raw] of rows) {
+        if ((m || '').replace(/^local:/, '').trim() !== want) continue;
+        const n = raw ? parseInt(raw, 10) : NaN;
+        if (Number.isFinite(n) && n > 0) {
+            if (!MODEL_CTX_UNIFY_LOGGED.has(want)) {
+                MODEL_CTX_UNIFY_LOGGED.add(want);
+                log(`[ctx] ${want}: this call path carried no override — using the dashboard ctx for this model (${n}) so every path loads the same window`);
+            }
+            return n;
+        }
+    }
+    return undefined;
+}
 function getNumCtx(model: string, ctxOverride?: string | number): number | undefined {
     const nativeMax = MODEL_CTX_CACHE.get(model); // undefined until fetchModelCtx populates it
     const cap = (v: number): number => (nativeMax && v > nativeMax) ? nativeMax : v;
+    let resolved: number | undefined;
     if (ctxOverride !== undefined && ctxOverride !== null && ctxOverride !== '') {
         const n = typeof ctxOverride === 'number' ? ctxOverride : parseInt(String(ctxOverride), 10);
         // An explicit dashboard override wins over the native cap only when it
         // is SMALLER — so a small model (e.g. granite4.1:8b) can be pinned to
         // 16k to keep its KV cache in VRAM. An override above the cap is clamped.
-        if (n > 0) return cap(n);
+        if (n > 0) resolved = cap(n);
     }
     // The shared toolcall model MUST stay at one ctx. If a caller passes no
     // override, Ollama falls back to the Modelfile default — often 2048 — which
     // is NOT the native window and forces a reload when the next toolcall agent
     // expects the configured toolcall ctx. Pin it to the dashboard toolcall ctx.
-    if (model === toolcallModel()) {
+    if (resolved === undefined && model === toolcallModel()) {
         const tc = toolcallCtx();
-        if (tc && tc > 0) return cap(tc);
+        if (tc && tc > 0) resolved = cap(tc);
     }
-    return undefined; // non-toolcall models with no override use backend default
+    // No override on this path: serve the model's dashboard window so paths
+    // that lost their override don't fork a second window of the same weights.
+    if (resolved === undefined) {
+        const unified = modelCtxFromSettings(model);
+        if (unified) resolved = cap(unified);
+    }
+    const pinned = STICKY_MODEL_CTX.get(model);
+    if (pinned) {
+        if (resolved && resolved !== pinned) {
+            log(`[ctx] ${model} pinned at ${pinned} — serving pinned ctx instead of requested ${resolved}`);
+        }
+        return pinned; // also covers resolved === undefined: no more backend-default reloads
+    }
+    if (resolved) STICKY_MODEL_CTX.set(model, resolved);
+    return resolved;
 }
 
 // Per-agent ctx override lookup, keyed by the agentName passed to runSubAgent.
@@ -3077,11 +3127,35 @@ async function unloadModel(ollamaUrl: string, model: string): Promise<void> {
     } catch { /* best-effort — model will expire via keep_alive anyway */ }
 }
 
+// Models pinned resident by a keep_alive checkbox (-1). Mirrors keepAliveFor's
+// rule — never shorten a pinned model's residency — for the eviction paths.
+function isPinnedResident(model: string): boolean {
+    const want = (model || '').replace(/^local:/, '').trim();
+    if (!want) return false;
+    const knob = (name: string, v: number) =>
+        want === (name || '').replace(/^local:/, '').trim() && v === -1;
+    return knob(ORCHESTRATOR_MODEL, keepAliveEnv('ORCHESTRATOR_KEEP_ALIVE', -1))
+        || knob(ATLAS_MODEL, keepAliveEnv('ATLAS_KEEP_ALIVE', 300))
+        || knob(process.env.SUBAGENT_MODEL || '', keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300))
+        || knob(SENTRY_MODEL, keepAliveEnv('SENTRY_KEEP_ALIVE', 300));
+}
+
+// In-flight local sub-agent runs, per model (refcount). A model another running
+// job is actively using must not be evicted mid-job — that was the load/dump
+// ping-pong: two atlas jobs and a vulkan spawn kept re-loading each other's
+// weights every request. Wired in runSubAgent.
+const ACTIVE_LOCAL_JOBS = new Map<string, number>();
+
 // On a GPU shared between the orchestrator and sub-agent models, two models
 // loaded at once squeeze KV cache out of VRAM → CPU-speed prefill (~250 tok/s
 // instead of ~1500+). Before switching to a model, evict every OTHER model
-// currently loaded on the same Ollama server so the new model gets full VRAM.
-// Best-effort: queries /api/ps and sends keep_alive:0 for each non-keep model.
+// currently loaded on the same Ollama server so the new model gets full VRAM —
+// this is what makes a finished atlas (whose keep_alive lingers after the job)
+// "go away" so the next seat can spawn. Best-effort: queries /api/ps and sends
+// keep_alive:0 for each evictable model. Never evicts: the keep model itself,
+// models pinned resident (-1, mirrors keepAliveFor's never-shorten rule), or
+// models with an in-flight sub-agent job (that evicted a RUNNING job's weights
+// and force-reloaded them on its next request).
 // (unloadModel above can't handle this — it skips ORCHESTRATOR_MODEL as the
 // hot path, which is exactly why it lingers and contends.)
 async function unloadOtherModelsOnSameGpu(ollamaUrl: string, keepModel: string): Promise<void> {
@@ -3098,6 +3172,14 @@ async function unloadOtherModelsOnSameGpu(ollamaUrl: string, keepModel: string):
         for (const m of loaded) {
             const name = m.name || m.model;
             if (!name || name === keepModel) continue;
+            if (isPinnedResident(name)) {
+                log(`[gpu] keeping ${name} (pinned resident) while loading ${keepModel}`);
+                continue;
+            }
+            if ((ACTIVE_LOCAL_JOBS.get(name) || 0) > 0) {
+                log(`[gpu] keeping ${name} (in-flight job) while loading ${keepModel}`);
+                continue;
+            }
             try {
                 await fetch(`${ollamaUrl}/api/generate`, {
                     method: 'POST',
@@ -3406,8 +3488,26 @@ async function runSubAgent(
     jobId?: string,
     job?: BackgroundJob,
 ): Promise<{ content: string; modifiedFiles: string[] }> {
-    if (agentName !== 'orch') return runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job);
-    return orchThread.run([], () => runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job));
+    // Local-model VRAM management (2026-09-26): before a local model loads, evict
+    // idle non-pinned models (a finished job's keep_alive lingers and squatting
+    // weights are what blocked the next seat from spawning); then refcount this
+    // model as in-flight so parallel jobs don't evict each other mid-run.
+    const modelName = (model || '').replace(/^local:/, '').trim();
+    const isLocal = !!modelName && !/cloud/i.test(modelName);
+    if (isLocal) {
+        await unloadOtherModelsOnSameGpu(process.env.OLLAMA_URL || 'http://127.0.0.1:11434', modelName);
+        ACTIVE_LOCAL_JOBS.set(modelName, (ACTIVE_LOCAL_JOBS.get(modelName) || 0) + 1);
+    }
+    try {
+        if (agentName !== 'orch') return await runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job);
+        return await orchThread.run([], () => runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job));
+    } finally {
+        if (isLocal) {
+            const n = (ACTIVE_LOCAL_JOBS.get(modelName) || 1) - 1;
+            if (n <= 0) ACTIVE_LOCAL_JOBS.delete(modelName);
+            else ACTIVE_LOCAL_JOBS.set(modelName, n);
+        }
+    }
 }
 
 async function runSubAgentInner(
@@ -4409,7 +4509,7 @@ const marmRecallSection = marmEnabled
         // The one token that may differ is the agent's own name — spoken as
         // the dash sets it (AGENT_NAME, synced from ASSISTANT_NAME).
         const atlasPrompt = AGENT_NAME && AGENT_NAME !== 'Warden'
-            ? ORCH_SYSTEM.replace('"you": "Warden,', `"you": "${AGENT_NAME},`)
+            ? ORCH_SYSTEM.replace('You are Warden,', `You are ${AGENT_NAME},`)
             : ORCH_SYSTEM;
         // The driving force (dashboard "Driving force") is the user's persona
         // knob. It used to ride on the old routing preamble, so it must be
@@ -4742,6 +4842,8 @@ const marmRecallSection = marmEnabled
         let circlingUselessRounds = 0;     // #3: consecutive useless rounds
         let forceToolFreeRound = false;    // #3: set by breaker → next round runs with NO tools
         let forcedNoToolRetries = 0;       // #3b: times a forced tool-free round still returned phantom tool_calls
+        let thinkBudgetRetries = 0;        // #3c: times a length-capped thinking-only round was retried with thinking off
+        let suppressThinkOnce = false;     // #3c: forces the next round's think=false
         const recentCallSigs: string[] = []; // #3: deque of last RECENT_CALL_SIG_DEPTH sigs
         const callFreq: Record<string, number> = {}; // #3: call signature → count
         // Pipe status updates through stdout — no file I/O. `fg:1` marks this
@@ -4866,6 +4968,12 @@ const marmRecallSection = marmEnabled
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
                     // producing "Empty response." on every turn.
+                    requestBody.think = false;
+                }
+                // #3c: a previous round burned its whole output budget inside the
+                // thinking channel — this round gets the budget for the answer.
+                if (suppressThinkOnce) {
+                    suppressThinkOnce = false;
                     requestBody.think = false;
                 }
                 Object.assign(requestBody.options, qwenSampling(model, !!requestBody.think));
@@ -5118,6 +5226,21 @@ const marmRecallSection = marmEnabled
                 const channelIdx = historyContent.lastIndexOf('<channel|>');
                 if (channelIdx !== -1) historyContent = historyContent.slice(channelIdx + '<channel|>'.length);
                 historyContent = historyContent.trim();
+                // #3c Thinking burned the whole output budget (2026-09-26): a round
+                // ending done_reason=length with zero content and zero tool calls
+                // spent everything it had inside the thinking channel — the
+                // user-visible turn is empty ("did you do it?" → 809 chars of
+                // thinking, 0 content, garbage out). Retry the same round with
+                // thinking off so whatever budget exists goes to the answer. The
+                // empty assistant turn is NOT pushed to history.
+                if (doneReason === 'length' && !fullContent.trim() && collectedToolCalls.length === 0
+                    && fullThinking && thinkBudgetRetries < 1) {
+                    thinkBudgetRetries++;
+                    suppressThinkOnce = true;
+                    log(`[think-budget] length cap hit inside thinking with no content (${fullThinking.length} chars) — retrying this round with thinking off`);
+                    appendStatus({ phase: 'thinking', label: 'Retry: thinking overran the reply budget' });
+                    continue;
+                }
                 // #3b Phantom tool calls in a forced tool-free round. The breaker
                 // sent this round with NO tools offered, but some models (observed
                 // 2026-08-24 with qwen3.8:27b) keep emitting tool_calls anyway —
