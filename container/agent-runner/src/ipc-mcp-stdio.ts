@@ -145,7 +145,7 @@ server.tool(
   (isMain ? ' As the main group, you can send to any registered group by specifying target_jid.' : ''),
   {
     text: z.string().describe('The message text to send'),
-    files: z.array(z.string()).optional().describe('File paths relative to /workspace/group to attach (e.g. ["report.zip", "attachments/image.png"]). Each file appears as a clickable download link.'),
+    files: z.array(z.string()).optional().describe('Paths relative to your workspace (e.g. ["report.zip", "attachments/image.png"]). Each file appears as a clickable download link.'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
     target_jid: z.string().optional().describe('(Main group only) JID of the chat to send the message to. Defaults to the current group.'),
   },
