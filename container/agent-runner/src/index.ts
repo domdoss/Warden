@@ -2855,11 +2855,17 @@ function graniteSampling(model: string): Record<string, number> {
 // everything else keeps its own settings. Spread AFTER the existing options
 // so qwen's numbers win; num_ctx is never touched — that knob is the user's.
 // Thinking row where think:true, non-thinking (instruct) row otherwise.
+// NO presence/frequency penalty: it punishes a token for appearing twice, and
+// tool-call XML is built from repeated tags — at 1.5 the sampler was pushed off
+// the correct closing tag and Ollama's parser dropped the whole call
+// ("element <function> closed by </parameter>", 2026-09-26 21:15). Qwen's own
+// docs warn penalties corrupt structured output; repetition risk is already
+// carried by temperature/top_p/top_k.
 function qwenSampling(model: string, thinking = false): Record<string, number> {
     if (!/^qwen/i.test(String(model || ''))) return {};
     return thinking
-        ? { temperature: 1.0, top_p: 0.95, top_k: 20, presence_penalty: 1.5 }
-        : { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5 };
+        ? { temperature: 1.0, top_p: 0.95, top_k: 20 }
+        : { temperature: 0.7, top_p: 0.8, top_k: 20 };
 }
 
 // Per-model native context window, fetched once from Ollama /api/show and
@@ -3053,6 +3059,22 @@ function orchestratorCtxOverride(): string {
     return process.env.ORCHESTRATOR_NUM_CTX || '';
 }
 
+// The SEAT's ctx: Atlas IS the seat, so when the seat's generation model is the
+// atlas model the Atlas row owns the window. The seat's three call sites used
+// to read the orchestrator knob regardless — the seat ran qwen3.8:27b at 32k
+// (local:orchestrator_ctx) while the host warmer and the every-minute re-pin
+// served the same model at 64k (local:atlas_ctx): one full Ollama reload per
+// alternation, all evening (2026-09-26). The budget math rides with the real
+// window too.
+function seatCtxOverride(model: string): string {
+    const bare = (model || '').replace(/^local:/, '').trim();
+    const atlas = (ATLAS_MODEL || '').replace(/^local:/, '').trim();
+    if (bare && atlas && bare === atlas) {
+        return process.env.ATLAS_NUM_CTX || process.env.ORCHESTRATOR_NUM_CTX || '';
+    }
+    return orchestratorCtxOverride();
+}
+
 // Per-agent Ollama keep_alive (seconds). -1 = hold the model in VRAM
 // indefinitely between turns (no reload); a positive N = unload N seconds
 // after the last request. The dashboard exposes a per-agent "Keep alive"
@@ -3233,7 +3255,7 @@ const ORCHESTRATOR_MSG_BUDGET_CHARS = 20000;    // fallback / floor when the mod
  *  every trim drop all but the newest group, which is how immediate context
  *  (the live question and its sub-agent results) gets stripped mid-turn. */
 function orchestratorMsgBudgetChars(model: string, headChars: number, toolsChars: number): number {
-    const ctx = getNumCtx(model, orchestratorCtxOverride());
+    const ctx = getNumCtx(model, seatCtxOverride(model));
     const floor = Math.max(ORCHESTRATOR_MSG_BUDGET_CHARS, headChars + 20000);
     if (!ctx || ctx <= 0) return floor; // window unknown — flat cap, but never below head + working room
     const toolsTokens = Math.ceil(toolsChars / 3.5);
@@ -4942,7 +4964,7 @@ const marmRecallSection = marmEnabled
                     // so reset the phantom-call retry budget for the next one.
                     forcedNoToolRetries = 0;
                 }
-                const _orchCtx = getNumCtx(model, orchestratorCtxOverride());
+                const _orchCtx = getNumCtx(model, seatCtxOverride(model));
                 const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: _orchCtx, ...graniteSampling(model) } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
@@ -5232,12 +5254,19 @@ const marmRecallSection = marmEnabled
                 // user-visible turn is empty ("did you do it?" → 809 chars of
                 // thinking, 0 content, garbage out). Retry the same round with
                 // thinking off so whatever budget exists goes to the answer. The
-                // empty assistant turn is NOT pushed to history.
-                if (doneReason === 'length' && !fullContent.trim() && collectedToolCalls.length === 0
-                    && fullThinking && thinkBudgetRetries < 1) {
+                // empty assistant turn is NOT pushed to history. Thinking may not
+                // survive to the runner at all (stream chunks dropped) — so the
+                // retry covers ANY non-clean termination that delivered nothing:
+                // 'length' (budget), missing/empty reason (qwen emitted a malformed
+                // tool call at 21:15 — Ollama's parser dropped it server-side and
+                // returned 200 with no done_reason, 0 content, 0 tool calls), or
+                // any other dead end. A legitimately empty 'stop' round retries
+                // once too — harmless, capped at one attempt.
+                if (doneReason !== 'stop' && !fullContent.trim() && collectedToolCalls.length === 0
+                    && thinkBudgetRetries < 1) {
                     thinkBudgetRetries++;
                     suppressThinkOnce = true;
-                    log(`[think-budget] length cap hit inside thinking with no content (${fullThinking.length} chars) — retrying this round with thinking off`);
+                    log(`[think-budget] round ended without a clean stop and produced nothing (doneReason=${doneReason || 'none'}, thinking ${fullThinking.length} chars) — retrying this round with thinking off`);
                     appendStatus({ phase: 'thinking', label: 'Retry: thinking overran the reply budget' });
                     continue;
                 }
@@ -5557,7 +5586,7 @@ const marmRecallSection = marmEnabled
                             );
                             const trimmedRetry = trimMessagesToBudget(messages, retryBudget);
                             if (trimmedRetry !== messages) { messages.length = 0; messages.push(...trimmedRetry); }
-                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()), ...graniteSampling(model) } };
+                            const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: getNumCtx(model, seatCtxOverride(model)), ...graniteSampling(model) } };
                             if (showThinking) {
                                 retryBody.think = thinkingAlways || toolIteration <= 1 || modelRequiresThink(model);
                             } else {
@@ -5690,7 +5719,7 @@ const marmRecallSection = marmEnabled
                     messages: forcedMessages,
                     stream: true,
                     keep_alive: orchestratorKeepAlive(),
-                    options: { num_predict: maxOutput('oneshot'), temperature: 0.3, num_ctx: getNumCtx(model, orchestratorCtxOverride()), ...graniteSampling(model) },
+                    options: { num_predict: maxOutput('oneshot'), temperature: 0.3, num_ctx: getNumCtx(model, seatCtxOverride(model)), ...graniteSampling(model) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
                 if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
@@ -5769,12 +5798,16 @@ const marmRecallSection = marmEnabled
                 outputContent = `Done — modified ${[...modifiedFiles].join(', ')}.`;
             }
             else if (finalThinking.trim()) {
-                // Model only produced thinking with no content or tools — extract a summary
-                const lines = finalThinking.trim().split('\n').filter(l => l.trim());
-                const last = lines[lines.length - 1] || '';
-                outputContent = last.length > 200 ? last.slice(0, 197) + '...' : last;
-                if (!outputContent)
-                    outputContent = 'I processed your request but had nothing to add.';
+                // Thinking-only turn that survived the think-budget retry — the
+                // model never produced an answer. NEVER ship the monologue: the
+                // old fallback sliced its last line ("Neither creates") into the
+                // chat as if it were a reply (2026-09-26). State the fact and
+                // end the turn; per the error-text rule this must not read as an
+                // instruction.
+                log(`[output] empty reply on a thinking-only turn — internal monologue withheld (model=${ORCHESTRATOR_MODEL}, thinking ${finalThinking.length} chars)`);
+                outputContent = lastToolSummary
+                    ? `I couldn't produce a clean reply this turn — the model's reasoning overran its reply budget. Last action: ${lastToolSummary}.`
+                    : `I couldn't produce a reply this turn — the model's reasoning overran its reply budget and no answer was generated.`;
             }
         }
         // Thinking stripped from output — not shown to user
