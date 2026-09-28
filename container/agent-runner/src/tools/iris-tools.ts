@@ -30,11 +30,11 @@ const EMAIL_FETCH_MAX = 500;
 // ─── email: read | get | send | refresh | cached ──────────────────────────
 registry.register({
     name: 'email',
-    description: "The user's email. action=read lists recent emails (or a date range via since/before, both ISO 8601); action=get fetches one full email by id (attachment names included when present); action=download saves one attachment to disk and returns the file path; action=send sends from the user's account; action=refresh re-syncs the local cache; action=cached lists from the local cache. For an inbox scan, read with the window the request names and report what you find.",
+    description: "The user's email. For an inbox scan: action=read with the window the request names, then report what you find. Per-action usage: see the action parameter.",
     schema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['read', 'get', 'download', 'send', 'refresh', 'cached'], description: 'Which email operation to perform.' },
+            action: { type: 'string', enum: ['read', 'get', 'download', 'send', 'refresh', 'cached'], description: 'read=recent emails (or a date range via since/before, ISO 8601); get=one full email by id, attachments listed; download=save one attachment, returns the file path; send=from the user\'s account; refresh=re-sync the local cache; cached=list from the local cache.' },
             limit: { type: 'number', description: 'read: max emails to fetch before date filtering (default: 500)' },
             preview_only: { type: 'boolean', description: 'read: return previews only (default: true)' },
             folder: { type: 'string', description: 'read: mail folder (default: INBOX)' },
@@ -127,7 +127,7 @@ registry.register({
 // ─── task: schedule | list | pause | resume | cancel | update ─────────────
 registry.register({
     name: 'task',
-    description: 'Scheduled tasks / reminders — things that fire on a clock. action=schedule creates a recurring or one-time task; action=list lists all scheduled tasks; pause/resume/cancel/update manage one by task_id. For schedule: pass an ISO-8601 duration (e.g. "PT2M") for a relative "in N minutes/hours" once task and the host computes the fire time — do NOT do timestamp arithmetic yourself; for an absolute "at a specific time" once task pass a LOCAL timestamp computed from the current local time in your context.',
+    description: "Scheduled tasks / reminders — things that fire on a clock. action=schedule creates; action=list lists all; pause/resume/cancel/update manage by task_id. Schedule formats: see schedule_value.",
     schema: {
         type: 'object',
         properties: {
@@ -180,7 +180,7 @@ registry.register({
 // ─── calendar: create | list | update | delete ────────────────────────────
 registry.register({
     name: 'calendar',
-    description: 'The local calendar (DB). action=create adds an event; action=list shows events in a date range; action=update changes an existing event by event_id (only provided fields change); action=delete removes one by event_id.',
+    description: 'Local calendar (DB). action=create adds an event; action=list shows events in a date range; action=update changes an event by event_id (only provided fields); action=delete removes one by event_id.',
     schema: {
         type: 'object',
         properties: {

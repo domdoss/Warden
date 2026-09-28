@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'node:child_process';
 
 import {
   AGENT_TIMEOUT,
@@ -487,6 +488,59 @@ function startCalendarReminderLoop(): void {
 
   tick();
   logger.info('calendar reminder loop started');
+}
+
+/**
+ * Smoke-test a stdio MCP server candidate before persisting it: spawn the
+ * command, send a JSON-RPC initialize request, and wait (bounded) for any
+ * stdout response. `npm install` with no package, an npx package that 404s,
+ * or any other command that isn't a live MCP server exits or times out here
+ * instead of being saved and failing to connect on every runner spawn.
+ */
+async function smokeTestMcpServer(command: string, args: string[]): Promise<{ ok: true } | { ok: false; error: string }> {
+  const SMOKE_TIMEOUT_MS = 10_000;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: { ok: true } | { ok: false; error: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      resolve(result);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (err: any) {
+      return resolve({ ok: false, error: `spawn failed: ${String(err?.message ?? err)}` });
+    }
+    const timer = setTimeout(() => {
+      finish({ ok: false, error: `\`${command}${args.length ? ' ' + args.join(' ') : ''}\` did not answer initialize within 10s — it is not saved as an MCP server.` });
+    }, SMOKE_TIMEOUT_MS);
+    child.on('error', (err) => {
+      finish({ ok: false, error: `\`${command}\` could not be launched: ${err.message}` });
+    });
+    child.on('exit', (code, signal) => {
+      finish({ ok: false, error: `\`${command}${args.length ? ' ' + args.join(' ') : ''}\` exited before answering initialize (code ${code ?? 'null'}${signal ? `, ${signal}` : ''}) — it is not an MCP server and was not saved.` });
+    });
+    child.stdout!.on('data', () => {
+      // Any stdout at all means the process is alive and speaking MCP-ish;
+      // the full handshake check happens on the next runner boot connect.
+      finish({ ok: true });
+    });
+    try {
+      child.stdin!.write(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'warden-smoke-test', version: '0.0.0' },
+        },
+      }) + '\n');
+    } catch {
+      // stdin closed already — the exit handler will report it
+    }
+  });
 }
 
 /**
@@ -1173,10 +1227,23 @@ export function buildAgentCallbacks(): CallbackMap {
         if (!name || !command) {
           return { ok: false, error: 'missing name or command' };
         }
+        if (!/^[a-z0-9._-]+$/i.test(name)) {
+          return { ok: false, error: 'invalid server name (a-z 0-9 . _ - only)' };
+        }
+        const serverArgs = Array.isArray(args?.args) ? args.args.map(String) : [];
+        // Smoke-test before persisting: a stdio MCP server must live long
+        // enough to answer an initialize request. Entries are only useful if
+        // they connect on the next runner spawn, and a junk entry (a command
+        // that exits immediately) fails on EVERY spawn forever — so an entry
+        // that cannot handshake is rejected here, not saved and retried.
+        const smoke = await smokeTestMcpServer(command, serverArgs);
+        if (!smoke.ok) {
+          return { ok: false, error: smoke.error };
+        }
         const entry: McpServerConfig = {
           name,
           command,
-          args: Array.isArray(args?.args) ? args.args.map(String) : [],
+          args: serverArgs,
           env: args?.env && typeof args.env === 'object' ? args.env : undefined,
           transport: 'stdio',
           enabled: true,
@@ -2523,6 +2590,17 @@ const SENTRY_TASK_DEFS = [
   { id: 'sentry-deep', mode: 'deep' as const, cron: '17 4 * * *', prompt: 'Run a DEEP (full) security scan of the PC: listening sockets, established connections, running services, autostart entries, user crontab, enabled user units, shell rc files, and a process audit. Collect every category, then submit the inventory once with sentry_report.' },
 ];
 
+// Disabled 2026-09-28: sentry has never run a real scan. The toolcall fine-tune
+// fabricates the inventory instead of running Bash — every sentry_report ever
+// logged carries invented sockets (nginx/mysql/grafana on this arch desktop)
+// or nothing at all, and ~12% of runs the fabrication loop never terminates:
+// it emits an unbounded JSON array, hits the 16384 num_predict cap, ollama
+// drops the unterminated tool call, and the run surfaces as "produced no
+// output and ran no tools". Root cause: zero sentry examples in the SFT data
+// (orchatlas-sft.jsonl) — the model was never taught collect-then-report.
+// Flip this back on only after sentry examples are trained in.
+const SENTRY_SCANS_ENABLED = false;
+
 function seedSentryTasks(): void {
   const existing = new Map((getAllTasks() ?? []).map((t) => [t.id, t]));
   for (const t of SENTRY_TASK_DEFS) {
@@ -2568,6 +2646,10 @@ let sentryBootChecked = false;
  *  orchestrator, no chat pipeline. Used by checkSentryDue() for the scheduled
  *  scans; also exported so an API route / future automation can trigger one. */
 export function runSentryScan(mode: 'peek' | 'deep'): { ok: boolean; error?: string } {
+  if (!SENTRY_SCANS_ENABLED) {
+    logger.info({ mode }, 'runSentryScan: sentry scans are disabled (SENTRY_SCANS_ENABLED=false)');
+    return { ok: false, error: 'sentry scans are disabled (the model fabricates its inventory — see SENTRY_SCANS_ENABLED in src/index.ts)' };
+  }
   const model = resolveSentryModel();
   if (!model) {
     logger.warn({ mode }, 'runSentryScan: no sentry model configured (sentry:model) — skipping');
@@ -2625,6 +2707,7 @@ function wardenBusy(): boolean {
  *  so the user can edit it in the Sched UI) is due. Pause/resume via the row
  *  status. Never throws, never blocks message pickup. */
 function checkSentryDue(): void {
+  if (!SENTRY_SCANS_ENABLED) return;
   if (sentryScanBusy) return;
   sentryScanBusy = true;
   const firstCheck = !sentryBootChecked;

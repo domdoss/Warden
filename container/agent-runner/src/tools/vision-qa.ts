@@ -70,7 +70,7 @@ function loadImageB64(rawPath: string): string | null {
 
 registry.register({
     name: 'query_image',
-    description: 'Ask a vision-capable model a question about an image file and get a textual answer. Use this whenever YOU cannot see images (a visionless model): check what a screenshot shows, whether UI looks right, what text a picture contains, etc. Iterate — ask focused follow-up questions until you fully understand the image. Works on any image file path.',
+    description: 'Ask a vision model about an image file — use when you cannot see images (screenshots, UI checks, text in a picture). Iterate with focused follow-ups until you understand the image.',
     schema: {
         type: 'object',
         properties: {
