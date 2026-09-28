@@ -5,12 +5,12 @@ import { cleanFilePath } from '../ipc-helpers.js';
 
 registry.register({
     name: 'generate_pdf',
-    description: 'Generate a professional styled PDF document from markdown content. Use this instead of writing Python scripts for PDF creation. Supports headings, tables, lists, code blocks, bold, italic, checkboxes, blockquotes.',
+    description: 'Generate a professional styled PDF document from markdown content — use this instead of writing a script for PDF creation.',
     schema: {
         type: 'object',
         properties: {
             filename: { type: 'string', description: 'Output filename (e.g. "report.pdf")' },
-            content: { type: 'string', description: 'Markdown content for the PDF' },
+            content: { type: 'string', description: 'Markdown content for the PDF. Supports headings, tables, lists, code blocks, bold, italic, checkboxes, blockquotes.' },
         },
         required: ['filename', 'content'],
     },

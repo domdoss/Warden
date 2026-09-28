@@ -1101,6 +1101,10 @@ Your tools are source edits, builds and tests. Showing a result on screen is War
 - A successful Edit or Write is applied.
 - A behavioral change is verified by running the build and the relevant test, or a focused reproduction, and reading the output.
 
+# DELIVERABLES
+- Media deliverables (animation, video, image, designed asset) are produced with the installed media/design tools and skills — \`list_skills\` shows what is available, and the Canva MCP covers designed assets.
+- Anything that becomes a file is built with the Write tool; Bash runs single-line commands.
+
 # KERNEL
 The rules below are shared with Atlas and authored once (agentKernel), so they arrive as JSON inside this Markdown brief rather than being restated here — restating them is what lets the two seats drift apart. Read them as the same standing rules, in JSON form.
 
@@ -1731,6 +1735,14 @@ let ARTEMIS_MODEL = '';
 // Sentry (software-security scanner) model — same per-agent pattern: a concrete
 // dashboard-selected value, no fallback, empty errors inside runSubAgent.
 let SENTRY_MODEL = '';
+// Sentry is DISABLED (2026-09-28): the toolcall fine-tune has zero sentry
+// examples in its SFT data, so it fabricates the scan inventory instead of
+// running Bash — invented sockets or nothing, and ~12% of runs an unbounded
+// fabrication loop that hits the num_predict cap and dies as "produced no
+// output". The host gates its scheduled scans (SENTRY_SCANS_ENABLED in
+// src/index.ts); this gates the orchestrator's delegate paths. Re-enable both
+// after sentry examples are trained into the SFT set.
+const SENTRY_ENABLED = false;
 // The vision explainer — the model that answers image questions for visionless
 // seats (askVisionModel / the query_image tool). It used to fall back to the
 // atlas/orchestrator seat, which on this box is granite4.1:8b: a visionless
@@ -2013,8 +2025,21 @@ function goalRetryExhausted(task: string): boolean {
 const VERDICT_NOT_JUDGED = 'not-judged';
 
 function retryGate(task: string): string | null {
-    if (!turnWasInboxDigest) return null; // user turn: always allow
     const goal = goalSig(task);
+    if (!turnWasInboxDigest) {
+        // User turn: fresh user intent outranks the rail for the first two
+        // dispatches of a goal. The third identical dispatch is the churn
+        // signature (2026-09-26: the orchestrator re-delegated the same saga
+        // task on user turns until the user typed "stop calling vulkan we
+        // are done that task"). Aborted jobs don't count — the user stopped
+        // those on purpose and a deliberate re-ask must stay possible.
+        const prior = inbox.all().filter(i => i.status !== 'aborted' && sameGoal(goal, goalSig(String(i.task || ''))));
+        if (prior.length >= 2) {
+            log(`[retry-ledger] blocked dispatch #${prior.length + 1} of the same goal on a user turn: ${taskSig(task)}`);
+            return `STOP — this goal has already been dispatched ${prior.length} times (${prior.map(p => p.jobId).join(', ')} in your inbox) and it is not producing a new result. Do not dispatch it again. Tell the user in plain sentences what was tried, what happened, and what you would need to succeed.`;
+        }
+        return null;
+    }
     const creditUsed = goalRetryExhausted(task);
     const failedBefore = inbox.all().some(i => i.verdict === 'failed' && sameGoal(goal, goalSig(String(i.task || ''))));
     // A digest turn is report-back only: a goal whose result already landed as
@@ -2207,6 +2232,15 @@ function drainJobFollowups(jobRecord: BackgroundJob, jobId: string, context: any
     if (jobRecord.pendingFollowups.length === 0) return;
     const queued = jobRecord.pendingFollowups.splice(0);
     for (const q of queued) {
+        // The drain path spawns directly and so bypasses the handler-layer
+        // gate — re-check the ledger here. Without this, every re-dispatch
+        // the orchestrator made while a job held the file queued up and
+        // auto-spawned gate-free one after another as each job finished
+        // (2026-09-26: the saga task burned six spawns exactly this way).
+        if (goalRetryExhausted(q.task)) {
+            log(`[dedup] dropped queued follow-up after ${jobId} (${q.delegate}): this goal already failed and its retry is used — ${taskSig(q.task)}`);
+            continue;
+        }
         try {
             const spawned = spawnBackgroundJob(q.delegate, q.task, context, q.urgent);
             log(`[dedup] drained follow-up after ${jobId} finished (${q.delegate}): ${spawned.outcome} → ${spawned.jobId}`);
@@ -2367,7 +2401,20 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         })
         .catch(err => {
             if (jobRecord.status === 'running') jobRecord.status = 'errored';
-            inbox.push({ jobId, agent: delegate, task, urgent, status: 'errored', fullResult: `Error: ${err?.message ?? err}` });
+            const errMsg = String(err?.message ?? err);
+            // Stamp the inbox item 'failed' and record it in the retry ledger.
+            // Without this an errored job carried no verdict, so retryGate's
+            // failedBefore check and goalRetryExhausted both read it as "first
+            // dispatch of this goal" forever — every re-dispatch was allowed
+            // (2026-09-26: the same saga task errored and re-spawned all day).
+            // A user-requested abort is exempt: the user stopped it on purpose,
+            // and a later deliberate re-ask must stay possible.
+            if (!jobRecord.abortFlag.aborted) {
+                recordConfirmedFailure(task, `job errored: ${errMsg}`);
+                inbox.push({ jobId, agent: delegate, task, urgent, status: 'errored', fullResult: `Error: ${errMsg}`, verdict: 'failed' });
+            } else {
+                inbox.push({ jobId, agent: delegate, task, urgent, status: 'errored', fullResult: `Error: ${errMsg}` });
+            }
             drainFollowups();
         })
         .finally(() => {
@@ -3168,6 +3215,57 @@ function isPinnedResident(model: string): boolean {
 // weights every request. Wired in runSubAgent.
 const ACTIVE_LOCAL_JOBS = new Map<string, number>();
 
+// ACTIVE_LOCAL_JOBS is per-PROCESS, but sentry/digest scans run as separate
+// runner children with an empty map — every hourly :23 sentry spawn evicted
+// whatever model the MAIN runner's in-flight job was generating on mid-stream
+// (2026-09-27/28: silence-abort → "This operation was aborted" → transient
+// retry → full context re-prefill, 21 aborts across the two days). So the
+// in-flight fact also lives in a shared file, keyed by pid: every process
+// registers the models its sub-agents are actively using, and the eviction
+// guard skips any model with a live foreign holder. Dead-pid entries are
+// pruned lazily on every read; a dead pid never pins a model for long.
+const ACTIVE_MODELS_PATH = '/tmp/warden-active-local-models.json';
+
+function readActiveModels(): Record<string, { pid: number; model: string; ts: number }> {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(ACTIVE_MODELS_PATH, 'utf-8'));
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch { return {}; }
+}
+function pidAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+}
+function pruneActiveModels(map: Record<string, { pid: number; model: string; ts: number }>): void {
+    for (const k of Object.keys(map)) {
+        const e = map[k];
+        if (!e || typeof e.pid !== 'number' || !pidAlive(e.pid)) delete map[k];
+    }
+}
+function registerActiveModel(model: string): void {
+    try {
+        const map = readActiveModels();
+        pruneActiveModels(map);
+        map[`${process.pid}:${model}`] = { pid: process.pid, model, ts: Date.now() };
+        fs.writeFileSync(ACTIVE_MODELS_PATH, JSON.stringify(map), 'utf-8');
+    } catch { /* best-effort — never crash a job over the registry */ }
+}
+function unregisterActiveModel(model: string): void {
+    try {
+        const map = readActiveModels();
+        const key = `${process.pid}:${model}`;
+        if (map[key]) {
+            delete map[key];
+            fs.writeFileSync(ACTIVE_MODELS_PATH, JSON.stringify(map), 'utf-8');
+        }
+    } catch { /* best-effort */ }
+}
+function modelInUseElsewhere(model: string): boolean {
+    for (const e of Object.values(readActiveModels())) {
+        if (e?.model === model && e.pid !== process.pid && pidAlive(e.pid)) return true;
+    }
+    return false;
+}
+
 // On a GPU shared between the orchestrator and sub-agent models, two models
 // loaded at once squeeze KV cache out of VRAM → CPU-speed prefill (~250 tok/s
 // instead of ~1500+). Before switching to a model, evict every OTHER model
@@ -3200,6 +3298,10 @@ async function unloadOtherModelsOnSameGpu(ollamaUrl: string, keepModel: string):
             }
             if ((ACTIVE_LOCAL_JOBS.get(name) || 0) > 0) {
                 log(`[gpu] keeping ${name} (in-flight job) while loading ${keepModel}`);
+                continue;
+            }
+            if (modelInUseElsewhere(name)) {
+                log(`[gpu] keeping ${name} (in-flight job in another runner process) while loading ${keepModel}`);
                 continue;
             }
             try {
@@ -3519,6 +3621,7 @@ async function runSubAgent(
     if (isLocal) {
         await unloadOtherModelsOnSameGpu(process.env.OLLAMA_URL || 'http://127.0.0.1:11434', modelName);
         ACTIVE_LOCAL_JOBS.set(modelName, (ACTIVE_LOCAL_JOBS.get(modelName) || 0) + 1);
+        registerActiveModel(modelName);
     }
     try {
         if (agentName !== 'orch') return await runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job);
@@ -3526,8 +3629,10 @@ async function runSubAgent(
     } finally {
         if (isLocal) {
             const n = (ACTIVE_LOCAL_JOBS.get(modelName) || 1) - 1;
-            if (n <= 0) ACTIVE_LOCAL_JOBS.delete(modelName);
-            else ACTIVE_LOCAL_JOBS.set(modelName, n);
+            if (n <= 0) {
+                ACTIVE_LOCAL_JOBS.delete(modelName);
+                unregisterActiveModel(modelName);
+            } else ACTIVE_LOCAL_JOBS.set(modelName, n);
         }
     }
 }
@@ -3704,10 +3809,16 @@ async function runSubAgentInner(
         let gotFirstChunk = false;
         const resetSilence = () => {
             if (silenceTimer) clearTimeout(silenceTimer);
+            // Snapshot phase/armedAt at ARMING time — gotFirstChunk flips to true
+            // on the arming call itself, so reading it at fire time mislabels a
+            // 300s pre-first-token abort as a 120s post-first-chunk one.
+            const preFirstChunk = !gotFirstChunk;
+            const armedAt = Date.now();
+            const budgetMs = preFirstChunk ? FIRST_TOKEN_MS : SILENCE_MS;
             silenceTimer = setTimeout(() => {
-                log(`[${agentName}] Stream silent for ${(gotFirstChunk ? SILENCE_MS : FIRST_TOKEN_MS) / 1000}s (pre/post first chunk) — aborting fetch`);
+                log(`[${agentName}] Stream silent for ${Math.round((Date.now() - armedAt) / 1000)}s (${preFirstChunk ? 'pre' : 'post'} first chunk, budget ${budgetMs / 1000}s) — aborting fetch`);
                 try { silenceController.abort(); } catch { /* already aborted */ }
-            }, gotFirstChunk ? SILENCE_MS : FIRST_TOKEN_MS);
+            }, budgetMs);
             gotFirstChunk = true;
         };
         // Throttle the per-iteration progress status so a fast stream (~40 t/s)
@@ -6571,7 +6682,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         // Blocking path — orch only (see the vulkan blocking branch above).
         const def = SUBAGENT_BY_DELEGATE.get('sentry')!;
         const task = args.task as string;
-        if (!task) {
+        if (!SENTRY_ENABLED) {
+            result = 'Sentry is offline — its model fabricates scan inventories and no real scan would run. Security scan requests do not happen in this state; report that sentry is disabled.';
+        } else if (!task) {
             result = 'Error: task is required';
         } else {
             const thread = orchThread.getStore();
@@ -6590,7 +6703,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         // callback logs the scan, and the verdict text lands in the inbox.
         const task = args.task as string;
         const urgent = args.urgent === true;
-        if (!task) {
+        if (!SENTRY_ENABLED) {
+            result = 'Sentry is offline — its model fabricates scan inventories and no real scan would run. Security scan requests do not happen in this state; report that sentry is disabled.';
+        } else if (!task) {
             result = 'Error: task is required';
         } else {
             const sp = spawnBackgroundJob('sentry', task, context, urgent);
@@ -6798,9 +6913,20 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         result = JSON.stringify({ ok: true, message: 'Task list requested from parent.' });
     } else if (toolName === 'install_mcp_server' || toolName === 'uninstall_mcp_server') {
         // Parent-routed callback tools: write to disk via the parent's mcp-registry
-        // handlers. The agent-runner emits a CALLBACK block; the parent persists.
-        writeCallback(toolName, args);
-        result = JSON.stringify({ ok: true, message: `${toolName} request emitted to parent. The change takes effect next turn. Do NOT stop and ask the user what to do next — continue routing their original request. If they asked for a task (open a URL, play a video, edit a file, etc.), delegate to atlas NOW. The MCP install is a side effect, not a stopping point.` });
+        // handlers. Async so the parent's REAL result comes back — installs are
+        // smoke-tested parent-side (the server must answer initialize before it
+        // is saved), and the agent must see a rejected install as a failure, not
+        // a fabricated success. 20s covers the parent's 10s smoke-test bound.
+        try {
+            const cbResult = await writeCallbackAsync(toolName, args, 20000);
+            if (cbResult?.ok) {
+                result = JSON.stringify({ ok: true, message: `${toolName} succeeded. The change takes effect next turn. Do NOT stop and ask the user what to do next — continue routing their original request. If they asked for a task (open a URL, play a video, edit a file, etc.), delegate to atlas NOW. The MCP install is a side effect, not a stopping point.` });
+            } else {
+                result = JSON.stringify({ ok: false, error: cbResult?.error || `${toolName} failed in the parent process` });
+            }
+        } catch (err: any) {
+            result = JSON.stringify({ ok: false, error: `${toolName} callback failed: ${err?.message ?? err}` });
+        }
     } else if (toolName === 'create_skill') {
         // Use writeCallbackAsync so we get the parent's actual result back —
         // the parent writes data/skills/<name>/SKILL.md and returns { ok, path }
@@ -6904,48 +7030,6 @@ async function main() {
             error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
         });
         process.exit(1);
-    }
-
-    // Sentry run-mode: the host spawns this process with agent:'sentry' (the
-    // hourly peek / daily deep scheduled scans, fired by the host's sentry
-    // scheduler exactly like the iris-digest rows) to run the software-security
-    // scanner directly — NOT the orchestrator loop. The agent collects the
-    // inventory with Bash and submits once via sentry_report; that host
-    // callback logs the scan row and relays the model's findings
-    // to chat when something's wrong. The child's own output is just the
-    // verdict text, for the log.
-    if (containerInput.agent === 'sentry') {
-        try {
-            const def = SUBAGENT_BY_DELEGATE.get('sentry');
-            if (!def) throw new Error('sentry sub-agent not defined');
-            const tools = SUBAGENT_TOOL_DEFS.get('sentry') || [];
-            const ctx = {
-                chatJid: containerInput.chatJid || 'owner@local',
-                groupFolder: containerInput.groupFolder || 'owner',
-                isMain: containerInput.isMain ?? true,
-                userId: process.env.WARDEN_USER_ID || '',
-            };
-            // The host resolves the model (sentry:model router key, seeded on
-            // first boot) and passes it in containerInput.model. No hardcoded
-            // fallback: an empty model errors out instead of silently running
-            // on a baked-in model.
-            const model = (containerInput.model || '').replace(/^local:/, '');
-            if (!model) {
-                writeOutput({ status: 'error', result: null, error: 'No sentry model configured (set sentryModel in the Agents panel). Refusing to fall back to a hardcoded default.' });
-                if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-                process.exit(0);
-            }
-            ORCHESTRATOR_MODEL = model;
-            log(`[sentry] starting security scan: model=${model}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
-            // temperature 0 — structured inventory collection on a tool-calling model.
-            const sa = await runSubAgent('sentry', model, def.systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations, undefined, undefined, 0);
-            writeOutput({ status: 'success', result: sa.content || 'Sentry: scan complete.', error: null });
-        } catch (err: any) {
-            log(`[sentry] error: ${err.message}`);
-            writeOutput({ status: 'error', result: null, error: `Sentry error: ${err.message}` });
-        }
-        if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
-        process.exit(0);
     }
 
     // Sentry run-mode: the host spawns this process with agent:'sentry' (the
