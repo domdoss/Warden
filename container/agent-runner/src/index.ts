@@ -5917,8 +5917,8 @@ const marmRecallSection = marmEnabled
                 // instruction.
                 log(`[output] empty reply on a thinking-only turn — internal monologue withheld (model=${ORCHESTRATOR_MODEL}, thinking ${finalThinking.length} chars)`);
                 outputContent = lastToolSummary
-                    ? `I couldn't produce a clean reply this turn — the model's reasoning overran its reply budget. Last action: ${lastToolSummary}.`
-                    : `I couldn't produce a reply this turn — the model's reasoning overran its reply budget and no answer was generated.`;
+                    ? `I couldn't produce a clean reply this turn — the model ended its turn without an answer. Last action: ${lastToolSummary}.`
+                    : `I couldn't produce a reply this turn — the model ended its turn without an answer.`;
             }
         }
         // Thinking stripped from output — not shown to user
