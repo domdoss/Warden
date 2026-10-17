@@ -28,7 +28,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // Projects/work-tasks (re-wired 2026-09-11): the 17 flat tools from the
     // 2026-09-09 collapse are ONE merged `project` tool (kind + action).
     projects:  { name: 'projects',  tools: ['project'], tier: 'public' },
-    documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
+    documents: { name: 'documents', tools: ['generate_pdf','convert_file','generate_image'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
     agent:     { name: 'agent',     tools: ['atlas','vulkan','artemis','iris','sentry'], tier: 'public' },

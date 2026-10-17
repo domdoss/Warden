@@ -34,8 +34,8 @@ registry.register({
             },
             role: {
                 type: 'string',
-                enum: ['seat', 'orch'],
-                description: '{"type":"enum","default":"seat","orch":"the failure was in delegation or routing"}',
+                enum: ['seat'],
+                description: '{"type":"enum","default":"seat"}',
             },
             tools_relevant: {
                 type: 'array',

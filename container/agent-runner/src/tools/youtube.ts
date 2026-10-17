@@ -29,14 +29,20 @@ function toWatchUrl(raw: string): string {
     if (!/^https?:\/\//i.test(s)) return '';
     try {
         const u = new URL(s);
+        // The position marker the reference link itself carries (`?t=90`,
+        // `?t=1m30s` on watch pages and youtu.be shares, `?start=` on some
+        // embeds). Kept through the canonical rebuild — dropping it sent a
+        // timestamped reference to 0:00 (2026-10-08).
+        const at = u.searchParams.get('t') || u.searchParams.get('start') || '';
+        const atQ = at ? `&t=${at}` : '';
         if (/(^|\.)youtu\.be$/i.test(u.hostname)) {
             const id = u.pathname.slice(1);
-            return id ? `https://www.youtube.com/watch?v=${id}` : '';
+            return id ? `https://www.youtube.com/watch?v=${id}${atQ}` : '';
         }
         if (!/(^|\.)youtube\.com$/i.test(u.hostname)) return '';
         const id = u.searchParams.get('v');
         // A playlist/shorts/live URL is fine as-is — it still lands on a player.
-        return id ? `https://www.youtube.com/watch?v=${id}` : s;
+        return id ? `https://www.youtube.com/watch?v=${id}${atQ}` : s;
     } catch { return ''; }
 }
 
@@ -282,6 +288,10 @@ class McpPage {
         const out = resultJson(res);
         if (out == null || out === '' || out === 'null' || out === 'undefined') {
             log(`[youtube] eval(${this.js.name}) returned empty — raw: ${resultText(res).slice(0, 300)}`);
+            // Degenerate payloads are "no state", not a state — returning the
+            // literal 'undefined' let callers report success off a stale page
+            // (2026-09-30: "Paused." on a player that never paused).
+            return null;
         }
         return out;
     }
@@ -447,8 +457,9 @@ return out;`, limit);
 /** Read the player's real state — the ground truth for "is it playing".
  *  Reads the PLAYER's video (`#movie_player video`), not the first <video>.
  *  `advancing` is the honest signal — currentTime moving between two samples —
- *  because `paused` reads false during buffering and during an ad. */
-async function playerState(page: McpPage): Promise<{ paused: boolean; title: string; url: string; at: string; ad: boolean } | null> {
+ *  because `paused` reads false during buffering and during an ad. `secs` is
+ *  the live position, so a reference link can point at it. */
+async function playerState(page: McpPage): Promise<{ paused: boolean; title: string; url: string; at: string; ad: boolean; secs: number } | null> {
     try {
         const read = () => page.evaluate(`const v = document.querySelector('#movie_player video') || document.querySelector('video');
 if (!v) return null;
@@ -461,13 +472,27 @@ return { paused: !!(v.paused || v.ended), t: v.currentTime, ad: !!player && Stri
         const a = await read() as any;
         if (!a) return null;
         const url = await page.url();
-        if (a.paused) return { paused: true, title: a.title, at: a.at, ad: a.ad, url };
+        if (a.paused) return { paused: true, title: a.title, at: a.at, ad: a.ad, url, secs: a.t };
         // Not flagged paused — confirm it is actually moving before believing it.
         await page.waitForTimeout(400);
         const b = await read() as any;
         const advancing = !!b && !b.paused && b.t > a.t;
-        return { paused: !advancing, title: (b || a).title, at: (b || a).at, ad: (b || a).ad, url };
+        return { paused: !advancing, title: (b || a).title, at: (b || a).at, ad: (b || a).ad, url, secs: (b || a).t };
     } catch { return null; }
+}
+
+/** The player URL with YouTube's own position marker (`?t=Ns`) — a reference
+ *  link taken mid-video opens where the video actually is, not at 0:00.
+ *  The live tab URL never carries the position on its own, so every
+ *  user-facing URL built from a player state goes through here (2026-10-08).
+ *  During an ad `currentTime` is the AD's clock — the plain URL is honest. */
+function timestampedUrl(url: string, secs: number, ad: boolean): string {
+    if (!url || !Number.isFinite(secs) || secs < 1 || ad) return url;
+    try {
+        const u = new URL(url);
+        u.searchParams.set('t', `${Math.floor(secs)}s`);
+        return u.toString();
+    } catch { return url; }
 }
 
 /** Let it autoplay; only intervene when it demonstrably did not start.
@@ -516,7 +541,7 @@ async function playYouTube(page: McpPage, tabs: Array<{ id?: number; url: string
             const cur = await playerState(player);
             if (cur && !cur.paused) {
                 await player.bringToFront();
-                return `Already playing: ${cur.title} (${cur.at})\n${cur.url}`;
+                return `Already playing: ${cur.title} (${cur.at})\n${timestampedUrl(cur.url, cur.secs, cur.ad)}`;
             }
             // Already on the right video but paused — resume below, no reload.
         }
@@ -672,7 +697,7 @@ async function youtube(args: any): Promise<string> {
     if (action === 'now_playing') {
         const st = await playerState(player);
         if (!st) return 'A YouTube tab is open but has no video element.';
-        return `${st.paused ? 'Paused' : 'Playing'}: ${st.title} (${st.at})\n${st.url}\nThis is the answer to the ask — reply with it now.`;
+        return `${st.paused ? 'Paused' : 'Playing'}: ${st.title} (${st.at})\n${timestampedUrl(st.url, st.secs, st.ad)}\nThis is the answer to the ask — reply with it now.`;
     }
 
     if (action === 'pause' || action === 'resume') {
@@ -683,8 +708,12 @@ async function youtube(args: any): Promise<string> {
         }
         await player.evaluate(`const v = document.querySelector('#movie_player video') || document.querySelector('video');
 if (v) { try { v.pause(); } catch (e) {} }`).catch(() => {});
+        // Report the CONFIRMED post-state — never a stale title with an
+        // unverified "Paused." claim (2026-09-30: pause reported success off
+        // a player whose state never changed).
         const st = await playerState(player);
-        return `Paused: ${st?.title || ''} (${st?.at || ''})`;
+        if (!st) return 'No video element found in the player tab — nothing was paused.';
+        return st.paused ? `Paused: ${st.title} (${st.at})` : `Pause was sent, but ${st.title} (${st.at}) is still playing.`;
     }
 
     if (action === 'next') {
@@ -698,14 +727,14 @@ if (v) { try { v.pause(); } catch (e) {} }`).catch(() => {});
         if (had) {
             await player.waitForTimeout(2500);
             const st = await playerState(player);
-            if (changed(st)) return `Playing: ${st!.title} (${st!.at})\n${st!.url}`;
+            if (changed(st)) return `Playing: ${st!.title} (${st!.at})\n${timestampedUrl(st!.url, st!.secs, st!.ad)}`;
         }
         // Shift+N landed nowhere: click the first suggested item (a mix/radio
         // first, then a plain suggested video).
         await player.evaluate(`const s = document.querySelector('ytd-compact-radio-renderer a#video-title, ytd-compact-video-renderer a#video-title'); if (s) s.click(); return !!s;`).catch(() => {});
         await player.waitForTimeout(2500);
         const st2 = await playerState(player);
-        if (changed(st2)) return `Playing: ${st2!.title} (${st2!.at})\n${st2!.url}`;
+        if (changed(st2)) return `Playing: ${st2!.title} (${st2!.at})\n${timestampedUrl(st2!.url, st2!.secs, st2!.ad)}`;
         return `Could not advance — no playlist next and no suggested video found. ${st2 ? `Still: ${st2.title} (${st2.at})` : ''}`;
     }
 

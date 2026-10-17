@@ -80,47 +80,7 @@ for (const def of GATE_DELEGATES) {
   TOOLS[i] = def;
 }
 
-const GATE_SRC = readFileSync(new URL('../src/browser-mcp-gate.ts', import.meta.url), 'utf8');
-
-// `const NAME<optional TS type annotation> = { … };` from the gate source —
-// bracket-matched (string- and comment-aware), then eval'd exactly like
-// extract_runner_source.mjs evalSlice. Direct eval runs in this module's
-// scope, so PARAM_JSON's `tabId: TAB_PARAM` identifier refs resolve against
-// the consts extracted just below.
-function gateObject(name) {
-  const at = GATE_SRC.indexOf(`const ${name}`);
-  if (at === -1) {
-    throw new Error(`BROWSER-GATE DRIFT: const ${name} not found in src/browser-mcp-gate.ts — update the gate extraction in gen_orchatlas_sft.mjs.`);
-  }
-  const openIdx = GATE_SRC.indexOf('{', at);
-  let depth = 0, i = openIdx, inStr = null, esc = false;
-  while (i < GATE_SRC.length) {
-    const ch = GATE_SRC[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === '\\') esc = true;
-      else if (ch === inStr) inStr = null;
-    } else if (ch === "'" || ch === '"' || ch === '`') inStr = ch;
-    else if (ch === '/' && GATE_SRC[i + 1] === '/') { while (i < GATE_SRC.length && GATE_SRC[i] !== '\n') i++; }
-    else if (ch === '/' && GATE_SRC[i + 1] === '*') { i += 2; while (i < GATE_SRC.length && !(GATE_SRC[i] === '*' && GATE_SRC[i + 1] === '/')) i++; i++; }
-    else if (ch === '{') depth++;
-    else if (ch === '}') { depth--; if (depth === 0) break; }
-    i++;
-  }
-  if (depth !== 0) {
-    throw new Error(`BROWSER-GATE DRIFT: const ${name} in src/browser-mcp-gate.ts has unbalanced braces.`);
-  }
-  try {
-    return eval(`(${GATE_SRC.slice(openIdx, i + 1)})`);
-  } catch (err) {
-    throw new Error(`BROWSER-GATE DRIFT: const ${name} no longer evaluates (${err.message}) — update the gate extraction in gen_orchatlas_sft.mjs.`);
-  }
-}
-
-const TAB_PARAM = gateObject('TAB_PARAM');   // extracted first: PARAM_JSON refs these
-const WIN_PARAM = gateObject('WIN_PARAM');
-const TOOL_JSON = gateObject('TOOL_JSON');
-const PARAM_JSON = gateObject('PARAM_JSON');
+import { TAB_PARAM, WIN_PARAM, TOOL_JSON, PARAM_JSON } from './gate_schemas.mjs';
 
 // patchBrowserSchema's exact logic: description ← JSON.stringify(TOOL_JSON),
 // per-param description ← JSON.stringify(PARAM_JSON entry).

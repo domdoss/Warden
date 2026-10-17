@@ -181,3 +181,4 @@ training/loop/logs/
 # allowlist of source files (webapp/*.py, webapp/*.html, scripts/*.py).
 # Warden's integration with it lives in the tracked src/status-server.ts
 # route + dashboard view.
+imagegen/

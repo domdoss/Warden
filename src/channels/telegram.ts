@@ -9,13 +9,13 @@
  *  - THINKING: from the moment an owner message arrives until Warden's next
  *    reply is delivered, the chat shows the native "typing…" indicator, so
  *    the phone gets the same "it's working" feel as the dashboard. The
- *    orchestrator's task-announcement message arrives mid-turn as its own
+ *    seat's task-announcement message arrives mid-turn as its own
  *    bubble (same double-message pattern as the dashboard).
  *  - MEDIA IN: voice notes are transcribed locally (Whisper) and fed to the
  *    agent as text; photos and documents are downloaded into
  *    WORKSPACE_ROOT/telegram-inbox/ and referenced by path so the agent can
  *    actually open them.
- *  - TEXT OUT: plain text (the orchestrator speaks, it doesn't format),
+ *  - TEXT OUT: plain text (the seat speaks, it doesn't format),
  *    chunked under Telegram's 4096 limit on paragraph boundaries, with 429
  *    retry-after honoured and one retry on transient network errors.
  *  - RESILIENCE: long-polling wrapped in an auto-restart loop with

@@ -1,6 +1,6 @@
-// Orchestrator-side API tools (2026-09-09: these used to live in
+// Seat-side API tools (2026-09-09: these used to live in
 // admin-tools.ts and were shared with iris; the admin cut dropped them from
-// iris — the orchestrator still calls external APIs with them, so they stay
+// iris — the seat still calls external APIs with them, so they stay
 // registered here, owned by nobody in particular).
 import { registry } from '../tool-registry.js';
 import { writeCallbackAsync } from '../index.js';

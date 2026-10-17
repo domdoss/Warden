@@ -287,20 +287,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now warden 2>/dev/null || true
 loginctl enable-linger "$USER" 2>/dev/null || true
 
-# ── Browser bridge repair drop-in (part of the service, like MARM) ────
-# Restarting warden.service also repairs the Chrome MCP bridge chain:
-# doctor --fix re-registers the native host, a stale host gets cleared so
-# the extension respawns it. Leading '-' keeps a down bridge from failing
-# the start job. No-op when the bridge is healthy; harmless when absent.
-if [ -x "$INSTALL_DIR/scripts/restart-browser-bridge.sh" ]; then
-    mkdir -p ~/.config/systemd/user/warden.service.d
-    cat > ~/.config/systemd/user/warden.service.d/browser-bridge.conf <<BREOF
-[Service]
-ExecStartPost=-$INSTALL_DIR/scripts/restart-browser-bridge.sh
-BREOF
-    systemctl --user daemon-reload
-    echo "  Browser-bridge repair drop-in enabled (runs on every Warden start)"
-fi
+# NOTE: no browser-bridge repair drop-in is provisioned. The browser MCP
+# provider was removed (2026-10-15) and nothing should re-provision or
+# block-restart on its behalf — the gate at /mcp/browser fast-fails.
 
 # ── MARM semantic long-term recall (DEFAULT — opt out: INSTALL_MARM=0) ────
 # MARM (https://github.com/Lyellr88/marm-memory, by Lyellr88) gives the

@@ -19,24 +19,28 @@
 // pairing), identical tools array injected into every row, exact-duplicate
 // rejection.
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import path from 'node:path';
-import { extractFewModeSystemPrompt, extractOrchManagerSystem } from './extract_runner_source.mjs';
+import { extractFewModeSystemPrompt } from './extract_runner_source.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const PARTS_DIR = path.join(HERE, 'orchatlas-parts');
+
+// Re-dump the tool schemas from the live registry + runner source BEFORE
+// reading them. The Sep 21 static copy had already drifted from the live
+// descriptions (0a9efd6's clamped generate_pdf/query_image text never reached
+// the corpus) — a stale stamp trains descriptions the runner no longer serves.
+// Same principle as the live system-prompt stamp below.
+execSync('node dump_tool_schemas.mjs', { cwd: HERE, stdio: 'inherit' });
 const SCHEMAS = JSON.parse(readFileSync(path.join(HERE, 'tool_schemas.json'), 'utf8'));
 
-// Two roles train in this dataset — one fine-tune serves both seats:
-//   seat (default): part files NOT named orch-*.jsonl — the atlas seat's
-//     few-mode prompt + the merged 75-tool model-visible universe.
-//   orch: part files named orch-*.jsonl — ORCH_MANAGER_SYSTEM + orch's own
-//     pool (artemis-core + web + both-tier + the four BLOCKING delegate
-//     stubs). Since 8ddc077 orch is a background subagent, not the main
-//     seat: long chains are handed to it whole, and inside a chain it calls
-//     vulkan/iris/artemis/sentry INLINE (never atlas — the recursion guard).
+// One role trains in this dataset — the Atlas seat:
+//   seat (every part file): the atlas seat's few-mode prompt + the merged
+//     75-tool model-visible universe. Multi-specialist work is the seat's
+//     own: it calls vulkan/iris/artemis/sentry directly and verifies each
+//     result with read_job_result (never atlas — the seat IS atlas).
 const ROLES = {
   seat: { system: extractFewModeSystemPrompt(), tools: SCHEMAS.merged },
-  orch: { system: extractOrchManagerSystem(), tools: SCHEMAS.orchPool },
 };
 for (const [name, r] of Object.entries(ROLES)) {
   if (!Array.isArray(r.tools) || r.tools.length === 0) {
@@ -51,9 +55,7 @@ const files = readdirSync(PARTS_DIR).filter((f) => f.endsWith('.jsonl')).sort();
 const out = [];
 const errors = [];
 for (const f of files) {
-  // orch-*.jsonl parts are orch-role rows (manager prompt + orch pool); every
-  // other file is a seat-role row.
-  const role = f.startsWith('orch-') ? ROLES.orch : ROLES.seat;
+  const role = ROLES.seat;
   const lines = readFileSync(path.join(PARTS_DIR, f), 'utf8').split('\n').filter((l) => l.trim());
   lines.forEach((line, i) => {
     const where = `${f}:${i + 1}`;
@@ -94,6 +96,14 @@ for (const f of files) {
     // (assistant tool_calls are always followed by their tool messages in order).
     const pending = [];
     for (const m of msgs) {
+      // Gate: every tool call must be answered before the conversation moves
+      // on. An answer or a new user message arriving with calls still pending
+      // is the answer-without-grounding shape (s7-1, 2026-10-08 audit: 14
+      // rows claimed actions whose results never existed).
+      if (pending.length && (m.role === 'user' || (m.role === 'assistant' && !Array.isArray(m.tool_calls)))) {
+        errors.push(`${where}: ${pending.length} unanswered tool call(s) before the next ${m.role} message (${pending.join(', ')})`);
+        pending.length = 0;
+      }
       if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
         for (const tc of m.tool_calls) {
           if (typeof tc.function?.arguments === 'string') {
@@ -121,12 +131,20 @@ for (const f of files) {
     if (!userMsgs.every((m) => String(m.content).startsWith(ANCHOR))) {
       errors.push(`${where}: user message missing the time anchor`);
     }
+    // Gate: a turn must END with a real answer. An empty final assistant
+    // message trains the model to emit end-of-turn right after the role
+    // header — silent turns (216 merged rows, 9.2% of the corpus, 2026-10-08
+    // audit). Trailing unanswered calls are caught by the drain gate above.
+    const lastMsg = msgs[msgs.length - 1];
+    if (!(lastMsg.role === 'assistant' && typeof lastMsg.content === 'string' && lastMsg.content.trim())) {
+      errors.push(`${where}: final message is not a non-empty assistant answer`);
+    }
     for (const m of msgs) {
       if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
         for (const tc of m.tool_calls) {
           const n = tc.function?.name;
           if (!n || !role.toolNames.has(n)) errors.push(`${where}: unknown tool "${n}"`);
-          if (n === 'atlas') errors.push(`${where}: delegates to atlas (neither role can — the seat IS atlas, orch has the recursion guard)`);
+          if (n === 'atlas') errors.push(`${where}: delegates to atlas (the seat IS atlas — it cannot call itself)`);
           if (typeof tc.function?.arguments !== 'object' || tc.function.arguments === null) {
             errors.push(`${where}: arguments not an object (${n})`);
           }
@@ -161,4 +179,4 @@ const repeatCopies = unique.length - distinct;
 
 writeFileSync(path.join(HERE, 'orchatlas-sft.jsonl'), unique.map((r) => JSON.stringify(r)).join('\n') + '\n');
 console.log(`Merged ${files.length} part files → ${unique.length} rows (${distinct} unique, ${repeatCopies} repeat-upweighted, ${droppedDupes} exact duplicates dropped)`);
-console.log(`seat: ${ROLES.seat.system.length}-char prompt, ${ROLES.seat.tools.length} tools | orch: ${ROLES.orch.system.length}-char prompt, ${ROLES.orch.tools.length} tools — both extracted live from the runner source`);
+console.log(`seat: ${ROLES.seat.system.length}-char prompt, ${ROLES.seat.tools.length} tools — extracted live from the runner source`);

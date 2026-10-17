@@ -94,7 +94,7 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
       params: {
         protocolVersion: '2025-03-26',
         capabilities: {},
-        clientInfo: { name: 'warden-orchestrator-auto-recall', version: '1.0.0' },
+        clientInfo: { name: 'warden-seat-auto-recall', version: '1.0.0' },
       },
     });
     if (!init) return '';
@@ -105,7 +105,7 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
       method: 'tools/call',
       params: {
         name: 'marm_smart_recall',
-        arguments: { query: query.slice(0, 500), limit: MAX_MEMORIES, search_all: true, detail: 1 },
+        arguments: { query: query.slice(0, 500), limit: MAX_MEMORIES, search_all: true, detail: 1, include_logs: true },
       },
     });
     // JSON-RPC error or empty tool result — treat both as "nothing to inject".
@@ -126,6 +126,20 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
       parsed = null;
     }
     const memories: string[] = [];
+    // The log lane (include_logs) is where EVERYTHING Warden saves has lived
+    // since MARM 2.48 stopped dual-writing log entries into the semantic
+    // memories store (2026-09-21): user-asked "remember this" facts and the
+    // writeback distillates all go through marm_log_entry. Without this lane
+    // the auto-recall saw nothing written after 2026-09-22 — an explicit
+    // "remember that I like X" never came back. Machine history rides the same
+    // lane (youtube-play spam, session markers) — keep that out.
+    if (parsed && Array.isArray(parsed.log_results)) {
+      for (const it of parsed.log_results) {
+        if (it?.topic === 'session_start') continue;
+        const c = String(it?.summary ?? '').trim();
+        if (c && !c.startsWith('youtube-play:')) memories.push(c);
+      }
+    }
     if (parsed && Array.isArray(parsed.results)) {
       for (const it of parsed.results) {
         const c = String(it?.content ?? '').trim();
@@ -135,6 +149,12 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
       // Not JSON — a legacy free-text payload: treat each line as a memory.
       memories.push(...raw.split('\n').map((l) => l.trim()).filter(Boolean));
     }
+    // Pre-2026-09-22 entries exist in both lanes (they were dual-written);
+    // dedupe so the same fact is not injected twice.
+    const seen = new Set<string>();
+    const unique = memories.filter((m) => !seen.has(m) && (seen.add(m), true));
+    memories.length = 0;
+    memories.push(...unique);
     if (memories.length === 0) return '';
     // Regions hit — tell the host so the memory galaxy can flare them.
     noteMarmActivity('recall', query);

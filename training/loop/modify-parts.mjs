@@ -16,7 +16,6 @@ import { ANALYST_MODEL, CATALOGS_DIR, clearVram, exitMsg, HERE, log, ollamaChat,
 const PARTS_DIR = path.join(TRAINING_DIR, 'orchatlas-parts');
 const SCHEMAS = JSON.parse(readFileSync(path.join(TRAINING_DIR, 'tool_schemas.json'), 'utf8'));
 const seatTools = SCHEMAS.merged.map((t) => t.function.name);
-const orchTools = SCHEMAS.orchPool.map((t) => t.function.name);
 const FLAGS_FILE = path.join(HERE, 'flags', 'artemis-flags.jsonl');
 
 function readFlags() {
@@ -76,7 +75,6 @@ function exemplarFor(prefix) {
   return null;
 }
 const seatExemplar = exemplarFor('s');
-const orchExemplar = exemplarFor('orch-');
 if (!seatExemplar) exitMsg('No seat exemplar row found in orchatlas-parts');
 log('loaded exemplar rows from existing parts');
 
@@ -84,7 +82,7 @@ log('loaded exemplar rows from existing parts');
 await clearVram();
 
 // --- 4. analyst writes rows per failure ---
-const WRITE_SYSTEM = (role, toolNames, exemplar) => `You write supervised fine-tuning rows for Warden, an autonomous home-agent. You are given a real failure from the agent's log plus its classification, and you write the corrective training example: the turn as it SHOULD have gone.
+const WRITE_SYSTEM = (toolNames, exemplar) => `You write supervised fine-tuning rows for Warden, an autonomous home-agent. You are given a real failure from the agent's log plus its classification, and you write the corrective training example: the turn as it SHOULD have gone.
 
 Reply with ONLY valid JSON — no markdown fences, no prose — a JSON array of 1-2 row objects. Rules, all mandatory:
 1. Each row is {"messages":[...]} — messages[0] is exactly {"role":"system","content":"MERGE-STAMPS-THE-LIVE-PROMPT"} (the merge stamps the real prompt over it).
@@ -100,9 +98,7 @@ const validRows = [];
 for (let i = 0; i < failures.length; i++) {
   const f = failures[i];
   const c = f.classification;
-  const role = c.candidate_role === 'orch' && orchExemplar ? 'orch' : 'seat';
-  const toolNames = role === 'orch' ? orchTools : seatTools;
-  const exemplar = role === 'orch' ? orchExemplar : seatExemplar;
+  const toolNames = seatTools;
   const user = `Failure classification:
 ${JSON.stringify(c, null, 2)}
 
@@ -115,7 +111,7 @@ Write the corrective row(s) now.`;
   while (attempt < 2 && !rows) {
     attempt++;
     const content = await ollamaChat(ANALYST_MODEL, [
-      { role: 'system', content: WRITE_SYSTEM(role, toolNames, exemplar) },
+      { role: 'system', content: WRITE_SYSTEM(seatTools, seatExemplar) },
       { role: 'user', content: attempt === 1 ? user : user + '\n\nYour previous reply was not valid JSON. Reply again with ONLY the JSON array of rows.' },
     ]);
     rows = parseJsonLoose(content);
@@ -152,7 +148,7 @@ Write the corrective row(s) now.`;
     kept++;
   }
   keptById.set(f.id, kept);
-  log(`failure ${f.id} (${c.failure_class}, ${role}): ${kept}/${rows.length} rows kept`);
+  log(`failure ${f.id} (${c.failure_class}): ${kept}/${rows.length} rows kept`);
 }
 
 if (!validRows.length) {
@@ -161,39 +157,20 @@ if (!validRows.length) {
 }
 
 // --- 5. write the part files (next free s-number, scanned numerically) ---
-// Role is determined per row from the tools it actually calls: orch rows must
-// live in an orch-* file or merge validates them against the wrong pool.
-// Seat rows that happen to use only shared tools (e.g. iris) stay seat.
-function rowRole(r) {
-  const names = [];
-  for (const m of r.messages) {
-    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) names.push(...m.tool_calls.map((tc) => tc?.function?.name));
-    if (m.role === 'tool') names.push(m.name);
-  }
-  const orchSet = new Set(orchTools);
-  const allOrch = names.length > 0 && names.every((n) => orchSet.has(n));
-  return allOrch && orchExemplar ? 'orch' : 'seat';
-}
+// Every corrective row is a seat row — one fine-tune, one role.
 let maxS = 0;
 for (const f of readdirSync(PARTS_DIR)) {
   const m = f.match(/^s(\d+)-/);
   if (m) maxS = Math.max(maxS, parseInt(m[1], 10));
 }
 const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-const seatOut = validRows.filter((r) => rowRole(r) === 'seat');
-const orchOut = validRows.filter((r) => rowRole(r) === 'orch');
+const seatOut = validRows;
 const written = [];
 if (seatOut.length) {
   const seatName = `s${maxS + 1}-loop-${date}.jsonl`;
   writeFileSync(path.join(PARTS_DIR, seatName), seatOut.map((r) => JSON.stringify(r)).join('\n') + '\n');
   written.push(seatName);
   log(`wrote ${seatOut.length} seat rows to ${seatName}`);
-}
-if (orchOut.length) {
-  const orchName = `orch-loop-${date}.jsonl`;
-  writeFileSync(path.join(PARTS_DIR, orchName), orchOut.map((r) => JSON.stringify(r)).join('\n') + '\n');
-  written.push(orchName);
-  log(`wrote ${orchOut.length} orch rows to ${orchName}`);
 }
 
 // --- 6. merge as the validation gate ---

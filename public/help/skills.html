@@ -101,13 +101,13 @@ run `systemctl status dockbox`, check for errors in the last
     <div class="help-callout-icon">⧉</div>
     <div>
       <p>Make a skill when you find yourself giving Warden the same multi-step instruction more than once. Don't make skills for one-offs — that's just clutter in the trigger namespace.</p>
-      <p>Skills are best for: deploy checks, weekly reports, recurring audits, "look at this PR and tell me if X", any task with a fixed shape but variable inputs. The orchestrator decides when to activate a skill based on your prompt matching its <code>example_prompt</code> or <code>when_to_use</code> description.</p>
+      <p>Skills are best for: deploy checks, weekly reports, recurring audits, "look at this PR and tell me if X", any task with a fixed shape but variable inputs. The seat decides when to activate a skill based on your prompt matching its <code>example_prompt</code> or <code>when_to_use</code> description.</p>
     </div>
   </div>
 
   <div class="help-section-label"><span>↗</span> See also</div>
   <div class="help-section-label"><span>05</span> Skills vs. agent delegation</div>
-  <p>Skills run <em>inside</em> the orchestrator loop — they parameterize <em>what</em> Warden is trying to do, but they are not new agents. If a skill needs code changes, file edits, or a deep technical implementation, the orchestrator will still delegate that work to Atlas or another agent while using the skill to shape the overall plan.</p>
+  <p>Skills run <em>inside</em> the seat's loop — they parameterize <em>what</em> Warden is trying to do, but they are not new agents. If a skill needs code changes, file edits, or a deep technical implementation, the seat will still call Vulkan or another agent for that work while using the skill to shape the overall plan.</p>
 
   <div class="help-section-label"><span>↗</span> See also</div>
   <div class="see-also-grid">

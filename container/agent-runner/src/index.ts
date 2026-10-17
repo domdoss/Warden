@@ -20,7 +20,6 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import * as inbox from './inbox.js';
 import './tools/index.js';
 import { registry } from './tool-registry.js';
@@ -425,7 +424,7 @@ const STATUS_MARKER = '---WARDEN_STATUS---';
 // check", "I'll verify") but emitting no tool_call. Capped at INTENT_MAX_NUDGES
 // per turn. Triggered only when response is short, has no fenced code, and the
 // regex matches an announcement phrase.
-const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|trigger|pause|resume|skip|seek|mute|unmute|rewind|delegate)\b/i;
+const INTENT_RE = /\b(?:let me|i'll|i will|i need to|i'm going to|going to|gonna|now i|i can(?!['’]?t\b)|let's)\b[\s\S]{0,80}?\b(?:tail|check|verify|run|execute|read|inspect|look|search|find|grep|cat|ls|cd|write|edit|test|debug|install|start|stop|send|fetch|open|close|create|delete|move|copy|list|show|get|set|update|build|deploy|fix|patch|investigate|explore|examine|parse|extract|scan|monitor|kill|spawn|launch|queue|schedule|play|trigger|pause|resume|skip|seek|mute|unmute|rewind|delegate)\b/i;
 const INTENT_MAX_NUDGES = 2;
 
 // Sub-agent version of the same announced-intent defect, on the runSubAgent
@@ -625,6 +624,7 @@ function toolDetailLabel(name, args) {
         case 'schedule_task': return `Schedule ${args.schedule_type || 'task'}`;
         case 'create_calendar_event': return `Calendar: ${short(args.title || '', 40)}`;
         case 'generate_pdf': return `Generate PDF: ${clean(args.filename || '')}`;
+        case 'generate_image': return `Generate image: ${short(args.prompt || '', 50)}`;
         case 'convert_file': return `Convert ${clean(args.input || '')} → ${args.format || '?'}`;
         case 'api_request': return `${args.method || 'GET'} ${args.key_type}${args.path || ''}`;
         case 'atlas': return `🌍 Atlas: ${args.task || ''}`;
@@ -722,18 +722,9 @@ function drainIpcInput() {
  */
 function applySettingsSync(data: any) {
     if (!data || typeof data !== 'object') return;
-    if (data.orchestratorModel !== undefined) {
-        const m = (data.orchestratorModel || '').replace(/^local:/, '');
-        if (m) ORCHESTRATOR_MODEL = m;
-    }
     if (data.model !== undefined) {
         ATLAS_MODEL = (data.model || '').replace(/^local:/, '');
     }
-    // NOTE: ORCHESTRATOR_MODEL is NOT derived from ATLAS_MODEL here. Orchestrator
-    // is its own seat with its own model (used by the `orch` sub-agent) — Atlas
-    // never overwrites it. The chat-seat's own generation model is resolved
-    // separately, at the point it's used (ATLAS_MODEL wins, ORCHESTRATOR_MODEL
-    // only as the fallback when Atlas is blank) without touching this global.
     if (data.vulkanModel !== undefined) {
         VULKAN_MODEL = (data.vulkanModel || '').replace(/^local:/, '');
     }
@@ -776,7 +767,6 @@ function applySettingsSync(data: any) {
         const n = parseInt(String(data.maxOutputTokens || ''), 10);
         MAX_OUTPUT_SETTING = Number.isFinite(n) && n > 0 ? n : 0;
     }
-    if (data.orchestratorCtx !== undefined) process.env.ORCHESTRATOR_NUM_CTX = data.orchestratorCtx ? String(data.orchestratorCtx) : '';
     if (data.subagentCtx !== undefined) process.env.SUBAGENT_NUM_CTX = data.subagentCtx ? String(data.subagentCtx) : '';
     if (data.atlasCtx !== undefined) process.env.ATLAS_NUM_CTX = data.atlasCtx ? String(data.atlasCtx) : '';
     if (data.visionModel !== undefined) process.env.VISION_MODEL = data.visionModel ? String(data.visionModel) : '';
@@ -787,9 +777,8 @@ function applySettingsSync(data: any) {
     if (data.artemisCtx !== undefined) process.env.ARTEMIS_NUM_CTX = data.artemisCtx ? String(data.artemisCtx) : '';
     if (data.vulkanCtx !== undefined) process.env.VULKAN_NUM_CTX = data.vulkanCtx ? String(data.vulkanCtx) : '';
     // Per-agent keep_alive overrides (-1 = resident, 300 = 5 min). The host
-    // seeds ORCHESTRATOR_KEEP_ALIVE='-1' to preserve the historic resident
-    // orchestrator; toolcall/atlas stay unset → runner defaults to 300.
-    if (data.orchestratorKeepAlive !== undefined) process.env.ORCHESTRATOR_KEEP_ALIVE = data.orchestratorKeepAlive ? String(data.orchestratorKeepAlive) : '';
+    // seeds ATLAS_KEEP_ALIVE='-1' (the seat stays resident); toolcall stays
+    // unset → runner defaults to 300.
     if (data.atlasKeepAlive !== undefined) process.env.ATLAS_KEEP_ALIVE = data.atlasKeepAlive ? String(data.atlasKeepAlive) : '';
     if (data.toolcallKeepAlive !== undefined) process.env.TOOLCALL_KEEP_ALIVE = data.toolcallKeepAlive ? String(data.toolcallKeepAlive) : '';
 }
@@ -987,43 +976,6 @@ function agentKernel(doneLine: string): string {
         },
     });
 }
-
-// The manager specialist. Called when a task needs several OTHER specialists
-// coordinated and tracked — not a mode the seat switches into, a job it hands
-// off like any other. Its own toolset (artemis-core) carries no atlas/hands-on
-// spawn: the recursion guard is structural, not a prompt rule — it physically
-// cannot call back into the seat that called it. Declared before SUBAGENTS
-// because the orch entry below references it.
-// Dense nested JSON — orch runs on the orchestrator's model (granite4.1:8b on
-// this box), and granite reads structure, not prose. Same facts as the old
-// # ROLE/# THE CREW/# THE LOOP sections, keyed (kernel rides inside).
-const ORCH_MANAGER_SYSTEM = JSON.stringify({
-    role: 'Orch: delegation and verification manager. A task reaches you because it is too big or too varied for one specialist alone. Break it into pieces, hand each piece to the specialist that owns it, VERIFY what comes back, hand up ONE consolidated result only once every piece checks out. The task states the outcome; the decomposition is yours. Act on the first turn.',
-    gating: 'you run only on a request the user explicitly approved — the orchestrator proposes you and the user decides, so a task in your hands already carries that approval and the work to do is the task as written',
-    crew: {
-        call: 'directly — the result comes back inline, in the same turn, never to an inbox',
-        vulkan: 'coding, scripting, building, heavy bash',
-        iris: 'email, calendar, reminders, scheduled tasks, work-item tracking',
-        artemis: 'read-only audit or sanity-check of the conversation or the codebase',
-        sentry: 'a security scan',
-    },
-    own_hands: {
-        scope: 'small steps and verification, not production',
-        bash: 'a quick check or a one-line command',
-        browser_web: 'confirm a specialist claimed end state on the real page',
-        read_grep: 'check a claim on disk',
-        vision: 'your browser is VISIONLESS — read page state with browser_evaluate, never snapshot or screenshot (you cannot see images)',
-        rule: 'a step that would turn into real work (building, editing source, driving desktop apps) is a piece to delegate, not something you do yourself',
-    },
-    loop: {
-        1: 'decompose the task into pieces, each one a single specialist job — name the pieces once before dispatching any of them',
-        2: 'delegate: call the owning specialist with a clear, self-contained brief — every fact it needs inline, it cannot ask a follow-up',
-        3: 'verify: check the result against what the piece asked for — a claim of "done" is not proof; read what it changed (Bash/Read/Grep) when checkable',
-        4: 'wrong/incomplete/claim does not hold: send it back to the SAME specialist with exactly what was wrong and what is still needed — never silently patch a specialist work, never move on with a bad result baked in',
-        5: 'a piece is done only once it verifies clean; chain dependent pieces, one call at a time; never re-run a piece that already verified',
-    },
-    kernel: JSON.parse(agentKernel('every piece of the task landed AND verified — each specialist result checked against what it was asked, any bad result sent back and re-verified, and the whole assembled into one report.')),
-});
 
 const SUBAGENTS: SubAgentDef[] = [
     // Byte was merged into iris (2026-09-05): one toolcall agent / one
@@ -1249,7 +1201,7 @@ OUTPUT
             // as a finding. Parsed without `new URL`, which throws on a
             // malformed value — this string is built at module load, where a
             // throw would take the whole runner down over a cosmetic detail.
-            known_good: `you scan the machine Warden itself lives on; Warden and its parts are normal here: the Warden orchestrator (node) with its dashboard on port ${process.env.STATUS_PORT || '3200'}, the agent-runner (node), the voice app (port ${process.env.VOICE_CONTROL_PORT || '8767'}), the MARM memory server (port ${process.env.MARM_PORT || '8001'}), and Ollama (port ${(process.env.OLLAMA_URL || '').match(/:(\d+)/)?.[1] || '11434'})`,
+            known_good: `you scan the machine Warden itself lives on; Warden and its parts are normal here: the Warden host (node) with its dashboard on port ${process.env.STATUS_PORT || '3200'}, the agent-runner (node), the voice app (port ${process.env.VOICE_CONTROL_PORT || '8767'}), the MARM memory server (port ${process.env.MARM_PORT || '8001'}), and Ollama (port ${(process.env.OLLAMA_URL || '').match(/:(\d+)/)?.[1] || '11434'})`,
             tools: {
                 bash: 'running commands',
                 sentry_report: 'once, at the end — its schema describes everything it accepts',
@@ -1269,26 +1221,11 @@ OUTPUT
             report: {
                 content: 'what stays unexplained after you checked, saying what you checked and what it turned out to be; something you resolved is understood, whatever it looked like at first; each genuine finding as "what — why"; an empty suspicious list means the machine is clean',
                 submit: 'one sentry_report; it returns the host verdict, and that returned verdict is your final answer, stated as it came back',
-                format: 'one or two sentences; for a scheduled scan the host posts findings itself; for an orchestrator delegation your verdict text is the report it relays — give each finding its own line there',
+                format: 'one or two sentences; for a scheduled scan the host posts findings itself; for a seat delegation your verdict text is the report it relays — give each finding its own line there',
             },
         }),
         toolsets: ['sentry-core'],
         temperature: 0,
-    },
-    {
-        delegate: 'orch',
-        label: 'Orch',
-        background: true,
-        routing: "multi-specialist chains — decomposes, tracks, returns one result. REQUEST-ONLY: suggest it; the user decides. Single specialist? call them directly",
-        maxIterations: 60,
-        summary: 'multi-part tasks: decompose, coordinate the specialists, return one result',
-        systemPrompt: ORCH_MANAGER_SYSTEM,
-        mcpServers: [],
-        // Hands: the fine-tuned orchestrator model keeps real tools, not just
-        // delegation — read-only check work (artemis-core) plus the web tools.
-        // Interactive browsing arrives through the MCP merge (the default
-        // browser provider), NOT the retired CDP 'browser' toolset.
-        toolsets: ['artemis-core', 'web'],
     },
 ];
 
@@ -1620,23 +1557,13 @@ const SUBAGENT_TOOL_DEFS = new Map<string, any[]>(
         ),
     ])
 );
-// Orch's own delegate stubs: vulkan/iris/artemis/sentry, called blocking (no
-// atlas — the recursion guard). Appended after the map above rather than
-// folded into it, since these are synthesized delegate tools (like the
-// seat's own), not real registry tools resolved from a toolset.
-SUBAGENT_TOOL_DEFS.set('orch', [
-    ...SUBAGENT_TOOL_DEFS.get('orch')!,
-    ...SUBAGENTS.filter(s => ['vulkan', 'artemis', 'sentry'].includes(s.delegate)).map(orchDelegateToolDef),
-    ...SUBAGENTS.filter(s => s.delegate === 'iris').map(delegateToolDef),
-]);
-
 // Delegate tool def handed to the main model in place of a sub-agent's raw tools.
 function delegateToolDef(s: SubAgentDef) {
     // Atlas, artemis, vulkan, and sentry run async by default: the call returns a
     // job id immediately and the result lands in the orchestrator's inbox. Blocking
     // mode remains for quick lookups the orchestrator cannot proceed without
     // mid-turn.
-    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry' || s.delegate === 'orch') {
+    if (s.delegate === 'atlas' || s.delegate === 'vulkan' || s.delegate === 'artemis' || s.delegate === 'sentry') {
         return {
             type: 'function',
             function: {
@@ -1691,37 +1618,10 @@ function delegateToolDef(s: SubAgentDef) {
     };
 }
 
-// Blocking delegate stub — orch's own version of the tools above. Orch calls
-// vulkan/iris/artemis/sentry synchronously (result comes back inline, in the
-// same turn) rather than through the seat's background-job/inbox machinery,
-// since orch itself is already running as one background job and has no
-// inbox of its own to deliver into. iris is exempt: its dispatch (executeXmlTool
-// toolName === 'iris') already blocks unconditionally, so its ordinary
-// delegateToolDef stub is correct for orch too and this function is never
-// called for it.
-function orchDelegateToolDef(s: SubAgentDef) {
-    return {
-        type: 'function',
-        function: {
-            name: s.delegate,
-            description: JSON.stringify({ delegate: s.label, does: s.summary, mode: 'blocking', returns: 'the result inline, this same turn' }),
-            parameters: {
-                type: 'object',
-                properties: {
-                    task: { type: 'string', description: '{"what":"this piece\'s goal","include":"every fact the specialist cannot guess: paths, urls, names, dates, ids, the exact outcome","note":"self-contained — the specialist cannot ask a follow-up"}' },
-                },
-                required: ['task'],
-            },
-        },
-    };
-}
-
-// The model the orchestrator is running on — set by runNativeOllama. A sub-agent may
-// share it (e.g. orchestrator=gemma4:latest, iris=granite); unloading a
-// shared model mid-turn crashes the orchestrator's next call (Ollama 500).
-let ORCHESTRATOR_MODEL = '';
-// Atlas model — from its own dashboard dropdown (input.model). No hardcoded
-// fallback: when unset the agent errors (the host seeds it on first boot).
+// Atlas model — the SEAT's model, from its dashboard dropdown (input.model).
+// No hardcoded fallback: when unset the agent errors (the host seeds it on
+// first boot). A sub-agent may share it; unloading a shared model mid-turn
+// crashes the seat's next call (Ollama 500).
 let ATLAS_MODEL = '';
 // Vulkan (coding specialist) model — from its own dashboard dropdown
 // (input.vulkanModel). No hardcoded fallback: when unset the agent errors
@@ -1751,7 +1651,7 @@ const SENTRY_ENABLED = false;
 // one that can actually see; the orchestrator seat is the last resort only
 // because something is better than refusing outright. Resolved lazily per
 // call, so dashboard model changes apply immediately.
-setVisionModelResolver(() => (process.env.VISION_MODEL || VULKAN_MODEL || ORCHESTRATOR_MODEL || '').trim());
+setVisionModelResolver(() => (process.env.VISION_MODEL || VULKAN_MODEL || ATLAS_MODEL || '').trim());
 // Driving force — the orchestrator's selected preamble preset id
 // (data/driving-forces/<id>.md). Empty = built-in default preamble.
 // CONTEXT_CLEAR_AT is a timestamp from the host; when it changes, the
@@ -1973,9 +1873,6 @@ function extractAsk(prompt: unknown): string {
         .trim();
     return text.slice(0, 400);
 }
-// Orch is request-only: a call spawns once lastUserAsk changed after a
-// proposal (the user spoke again). Same-turn retries keep the same ask.
-let orchProposalAsk: string | null = null;
 interface RetryLedgerEntry { failCount: number; lastAt: number; goal: string[]; }
 const retryLedger = new Map<string, RetryLedgerEntry>();
 function taskSig(task: string): string {
@@ -2303,7 +2200,7 @@ function spawnBackgroundJob(delegate: string, task: string, context: any, urgent
         log(`[dedup] target-overlap: queued ${delegate} follow-up behind ${overlap.agent}-${overlap.shortId} (same file(s)); will spawn when it finishes.`);
         return { jobId: `${overlap.agent}-${overlap.shortId}`, outcome: 'queued-file' };
     }
-    const model = delegate === 'vulkan' ? VULKAN_MODEL : (delegate === 'sentry' ? SENTRY_MODEL : (delegate === 'orch' ? ORCHESTRATOR_MODEL : ATLAS_MODEL));
+    const model = delegate === 'vulkan' ? VULKAN_MODEL : (delegate === 'sentry' ? SENTRY_MODEL : ATLAS_MODEL);
     const jobShortId = Math.random().toString(36).slice(2, 6);
     const jobId = `${delegate}-${jobShortId}`;
     let tools = SUBAGENT_TOOL_DEFS.get(delegate)!;
@@ -2684,13 +2581,13 @@ interface CompletionVerdict {
 }
 
 /** If `wanted` is already loaded in Ollama, use it. If it is NOT loaded but the
- *  orchestrator's model IS, return that instead — loading `wanted` would evict
- *  the resident one. Returns null when the check fails or tells us nothing, so
+ *  seat's model IS, return that instead — loading `wanted` would evict the
+ *  resident one. Returns null when the check fails or tells us nothing, so
  *  the caller just keeps its configured model. */
 async function pickResidentVerdictModel(wanted: string): Promise<string | null> {
-    const orch = (ORCHESTRATOR_MODEL || '').trim();
-    if (!orch || orch === wanted) return null;
-    if (/cloud/i.test(wanted) || /cloud/i.test(orch)) return null; // cloud models hold no VRAM
+    const atlas = (ATLAS_MODEL || '').trim();
+    if (!atlas || atlas === wanted) return null;
+    if (/cloud/i.test(wanted) || /cloud/i.test(atlas)) return null; // cloud models hold no VRAM
     try {
         const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
         const res = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(2000) });
@@ -2700,7 +2597,7 @@ async function pickResidentVerdictModel(wanted: string): Promise<string | null> 
         if (loaded.length === 0) return null;
         const has = (n: string) => loaded.some(l => l === n || l.replace(/:latest$/, '') === n.replace(/:latest$/, ''));
         if (has(wanted)) return null;      // already there — no eviction to avoid
-        return has(orch) ? orch : null;    // swap only when the orchestrator's model is the resident one
+        return has(atlas) ? atlas : null;  // swap only when the seat's model is the resident one
     } catch {
         return null;
     }
@@ -2713,8 +2610,8 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     // 2026-09-17), so "supervisor Off" has to mean "no second-reader pass" or
     // the setting controls nothing at all.
     if (!SUPERVISOR_ENABLED) { log('[completion-verdict] supervisor Off — skipping verdict'); return { verdict: 'unverifiable', reason: `${VERDICT_NOT_JUDGED}: supervisor disabled in settings` }; }
-    let model = (SUPERVISOR_MODEL || ORCHESTRATOR_MODEL || '').trim();
-    if (!model) { log('[completion-verdict] no supervisor/orchestrator model — skipping'); return { verdict: 'unverifiable', reason: `${VERDICT_NOT_JUDGED}: no model configured` }; }
+    let model = (SUPERVISOR_MODEL || ATLAS_MODEL || '').trim();
+    if (!model) { log('[completion-verdict] no supervisor/seat model — skipping'); return { verdict: 'unverifiable', reason: `${VERDICT_NOT_JUDGED}: no model configured` }; }
     // Don't evict a resident model to judge a job. The verdict is a two-second
     // read, but when its model is not the one in VRAM, asking for it makes
     // Ollama unload whatever is resident — and on this box that is a 17 GB
@@ -2985,7 +2882,7 @@ function toolcallCtx(): number | undefined {
 // cycle.
 const STICKY_MODEL_CTX = new Map<string, number>();
 // Model-level ctx unification (2026-09-26): the seat's own calls pass
-// ORCHESTRATOR_NUM_CTX, background jobs pass the per-agent knob, the verdict
+// ATLAS_NUM_CTX, background jobs pass the per-agent knob, the verdict
 // and one-shot paths pass nothing — the SAME model could get 2-3 different
 // windows depending on the call path, and every switch is a full Ollama
 // reload (atlas loaded qwen3.8:27b at 32k, the next call asked 64k, dumped
@@ -2998,7 +2895,6 @@ function modelCtxFromSettings(model: string): number | undefined {
     const want = (model || '').replace(/^local:/, '').trim();
     if (!want) return undefined;
     const rows: Array<[string, string | undefined]> = [
-        [ORCHESTRATOR_MODEL, process.env.ORCHESTRATOR_NUM_CTX],
         [ATLAS_MODEL, process.env.ATLAS_NUM_CTX],
         [VULKAN_MODEL, process.env.VULKAN_NUM_CTX],
         [IRIS_MODEL, process.env.IRIS_NUM_CTX],
@@ -3098,28 +2994,12 @@ function subAgentSilenceMs(agentName: string): number {
     return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
 }
 
-// The orchestrator loop serves both the orchestrator and Mercury (same loop,
+// The seat loop serves both the seat and Mercury (same loop,
 // sessionId distinguishes them). Mercury has its own ctx setting distinct from
-// the orchestrator's, so pick the right override.
-function orchestratorCtxOverride(): string {
+// the seat's, so pick the right override.
+function seatCtxOverride(_model?: string): string {
     if ((globalThis as any)._sessionId === 'mercury') return process.env.MERCURY_NUM_CTX || '';
-    return process.env.ORCHESTRATOR_NUM_CTX || '';
-}
-
-// The SEAT's ctx: Atlas IS the seat, so when the seat's generation model is the
-// atlas model the Atlas row owns the window. The seat's three call sites used
-// to read the orchestrator knob regardless — the seat ran qwen3.8:27b at 32k
-// (local:orchestrator_ctx) while the host warmer and the every-minute re-pin
-// served the same model at 64k (local:atlas_ctx): one full Ollama reload per
-// alternation, all evening (2026-09-26). The budget math rides with the real
-// window too.
-function seatCtxOverride(model: string): string {
-    const bare = (model || '').replace(/^local:/, '').trim();
-    const atlas = (ATLAS_MODEL || '').replace(/^local:/, '').trim();
-    if (bare && atlas && bare === atlas) {
-        return process.env.ATLAS_NUM_CTX || process.env.ORCHESTRATOR_NUM_CTX || '';
-    }
-    return orchestratorCtxOverride();
+    return process.env.ATLAS_NUM_CTX || '';
 }
 
 // Per-agent Ollama keep_alive (seconds). -1 = hold the model in VRAM
@@ -3151,7 +3031,6 @@ function keepAliveFor(model: string, desired: number): number {
     if (!want || desired === -1) return desired;
     const pinned = (name: string, v: number) =>
         v === -1 && (name || '').replace(/^local:/, '').trim() === want;
-    if (pinned(ORCHESTRATOR_MODEL, keepAliveEnv('ORCHESTRATOR_KEEP_ALIVE', -1))) return -1;
     if (pinned(ATLAS_MODEL, keepAliveEnv('ATLAS_KEEP_ALIVE', 300))) return -1;
     if (pinned(process.env.SUBAGENT_MODEL || '', keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300))) return -1;
     return desired;
@@ -3170,20 +3049,20 @@ function subAgentKeepAlive(agent: string): number {
     }
     return keepAliveEnv('ATLAS_KEEP_ALIVE', 300);
 }
-// Orchestrator loop: Mercury re-uses this loop but runs on the toolcall model,
-// so it follows the toolcall knob; the orchestrator itself uses ORCHESTRATOR_KEEP_ALIVE.
+// Seat loop: Mercury re-uses this loop but runs on the toolcall model,
+// so it follows the toolcall knob; the seat itself uses ATLAS_KEEP_ALIVE.
 // Historic default for both: -1 (resident).
 function orchestratorKeepAlive(): number {
     if ((globalThis as any)._sessionId === 'mercury') return keepAliveEnv('TOOLCALL_KEEP_ALIVE', -1);
-    return keepAliveEnv('ORCHESTRATOR_KEEP_ALIVE', -1);
+    return keepAliveEnv('ATLAS_KEEP_ALIVE', -1);
 }
 
 // Tell Ollama to unload a model immediately (free VRAM for the next agent's model).
 // Best-effort: a /api/generate call with keep_alive:0 evicts the model right away.
-// Skip the orchestrator's own model — it's the hot path and must stay loaded.
+// Skip the seat's own model — it's the hot path and must stay loaded.
 async function unloadModel(ollamaUrl: string, model: string): Promise<void> {
-    if (model === ORCHESTRATOR_MODEL) {
-        log(`[unload] skipped ${model} — orchestrator model (keep warm)`);
+    if (model === ATLAS_MODEL) {
+        log(`[unload] skipped ${model} — seat model (keep warm)`);
         return;
     }
     try {
@@ -3203,8 +3082,7 @@ function isPinnedResident(model: string): boolean {
     if (!want) return false;
     const knob = (name: string, v: number) =>
         want === (name || '').replace(/^local:/, '').trim() && v === -1;
-    return knob(ORCHESTRATOR_MODEL, keepAliveEnv('ORCHESTRATOR_KEEP_ALIVE', -1))
-        || knob(ATLAS_MODEL, keepAliveEnv('ATLAS_KEEP_ALIVE', 300))
+    return knob(ATLAS_MODEL, keepAliveEnv('ATLAS_KEEP_ALIVE', 300))
         || knob(process.env.SUBAGENT_MODEL || '', keepAliveEnv('TOOLCALL_KEEP_ALIVE', 300))
         || knob(SENTRY_MODEL, keepAliveEnv('SENTRY_KEEP_ALIVE', 300));
 }
@@ -3276,7 +3154,7 @@ function modelInUseElsewhere(model: string): boolean {
 // models pinned resident (-1, mirrors keepAliveFor's never-shorten rule), or
 // models with an in-flight sub-agent job (that evicted a RUNNING job's weights
 // and force-reloaded them on its next request).
-// (unloadModel above can't handle this — it skips ORCHESTRATOR_MODEL as the
+// (unloadModel above can't handle this — it skips ATLAS_MODEL as the
 // hot path, which is exactly why it lingers and contends.)
 async function unloadOtherModelsOnSameGpu(ollamaUrl: string, keepModel: string): Promise<void> {
     if (!keepModel) return;
@@ -3593,10 +3471,6 @@ function collapseToChatHistory(msgs: any[], keepMessages = 6, maxPerMsg = 1000):
     return [system, ...kept];
 }
 
-// Orch's shared piece-thread, scoped to one orch run (concurrent jobs don't
-// cross-contaminate). Specialists read prior pieces; results carry the model.
-const orchThread = new AsyncLocalStorage<string[]>();
-
 async function runSubAgent(
     agentName: string,
     model: string,
@@ -3624,8 +3498,7 @@ async function runSubAgent(
         registerActiveModel(modelName);
     }
     try {
-        if (agentName !== 'orch') return await runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job);
-        return await orchThread.run([], () => runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job));
+        return await runSubAgentInner(agentName, model, systemPrompt, tools, task, toolContext, maxIterations, abortFlag, onToolCall, temperature, format, jobId, job);
     } finally {
         if (isLocal) {
             const n = (ACTIVE_LOCAL_JOBS.get(modelName) || 1) - 1;
@@ -4230,7 +4103,6 @@ interface ContainerInput {
     sentryModel?: string;
     drivingForce?: string;
     contextClearAt?: string;
-    orchestratorModel?: string;
     councilSkepticModel?: string;
     councilPragmatistModel?: string;
     councilSynthesistModel?: string;
@@ -4657,12 +4529,13 @@ const marmRecallSection = marmEnabled
                 log(`Warning: failed to load driving force "${DRIVING_FORCE_ID}" (${err?.message || err})`);
             }
         }
-        // This seat always does the work itself — atlas IS the seat, orch is
-        // a callable specialist for genuinely big/multi-part work, not a mode
-        // the seat switches into. No branch here anymore: one rule set.
+        // This seat always does the work itself — atlas IS the seat, and
+        // multi-specialist chains are its own tool loop now (delegate + verify
+        // with read_job_result), not a manager's. No branch here anymore:
+        // one rule set.
         const modeBlock = '\n\n{"crew":{\n'
               + crewBlock()
-              + '\n},"routing":{"mail":"email/calendar/reminders/tasks → always iris","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → orch, keep talking","long_text":"a long written piece for the user to read (post, document, report) → call vulkan once with the ask inline, then deliver what it returns","else":"do it yourself — one call per intent"}'
+              + '\n},"routing":{"mail":"email/calendar/reminders/tasks → always iris","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → call the specialists directly, one piece at a time, verify each result with read_job_result, keep talking","long_text":"a long written piece for the user to read (post, document, report) → call vulkan once with the ask inline, then deliver what it returns","else":"do it yourself — one call per intent"}'
               // Proactive: the seat owns the machine it sits on — a broken thing
               // it can fix with its own tools is its job, not a report to the
               // user (2026-09-21: "it reports easily fixable things instead of
@@ -4715,21 +4588,17 @@ const marmRecallSection = marmEnabled
     // the first system message is the only one ever composed (it is rebuilt
     // only on a context-clear), so reading the driving force after the push
     // made the selected preamble silently never apply on a fresh child.
-    let model = (input.orchestratorModel || '').replace(/^local:/, '');
+    // The chat seat's own generation model: Atlas IS the seat. No hardcoded
+    // fallback: when atlas:model is unset the agent errors loudly instead of
+    // silently swapping for a baked-in model. The host's db migration moved the
+    // old orchestrator row's value into atlas:model, and seedPerAgentModelSettings
+    // materializes a value on first boot.
+    let model = (input.model || '').replace(/^local:/, '');
     if (!model) {
-        writeOutput({ status: 'error', result: null, error: 'No orchestrator model configured in dashboard settings (set orchestrator:model). Refusing to fall back to a hardcoded default.' });
+        writeOutput({ status: 'error', result: null, error: 'No Atlas model configured in dashboard settings (atlas:model is empty). Refusing to fall back to a hardcoded default.' });
         return;
     }
-    ATLAS_MODEL = (input.model || '').replace(/^local:/, '');
-    // Orchestrator is its OWN seat with its own model (the `orch` sub-agent
-    // runs on this) — never derived from Atlas. Keep the global exactly what
-    // the dashboard's Orchestrator row says.
-    ORCHESTRATOR_MODEL = (input.orchestratorModel || '').replace(/^local:/, '') || model;
-    // The chat seat's own generation model: Atlas wins when set (Atlas IS the
-    // seat); Orchestrator's model is only the fallback for a blank Atlas row.
-    // This resolves into the local `model` var used for the seat's own calls —
-    // it never writes back into ORCHESTRATOR_MODEL.
-    if (ATLAS_MODEL) model = ATLAS_MODEL;
+    ATLAS_MODEL = model;
     VULKAN_MODEL = (input.vulkanModel || '').replace(/^local:/, '');
     SUPERVISOR_MODEL = (input.supervisorModel || '').replace(/^local:/, '');
     SUPERVISOR_ENABLED = input.supervisorEnabled !== false;
@@ -4806,14 +4675,13 @@ const marmRecallSection = marmEnabled
             isFirstUserTurn = true;
             log(`Context cleared — conversation reset, system prompt rebuilt with driving force "${DRIVING_FORCE_ID || 'default'}"`);
         }
-        // Re-sync the SEAT's model each turn from ATLAS_MODEL/ORCHESTRATOR_MODEL,
-        // which applySettingsSync() keeps fresh on every IPC message. Without this
+        // Re-sync the SEAT's model each turn from ATLAS_MODEL, which
+        // applySettingsSync() keeps fresh on every IPC message. Without this
         // the local `model` stays pinned to the first turn's value and dashboard
         // model changes never reach the actual LLM call (the "settings didn't
-        // apply" bug). Atlas wins when set — it IS the seat; Orchestrator is only
-        // the fallback for a blank Atlas row, and is never itself overwritten
-        // here (it's a separate seat with its own model, used by `orch`).
-        model = ATLAS_MODEL || ORCHESTRATOR_MODEL;
+        // apply" bug). Atlas IS the seat; an empty sync value keeps the
+        // last good model rather than blanking the turn.
+        model = ATLAS_MODEL || model;
         // Warm/refresh the native-ctx cache for this turn's model so getNumCtx can
         // cap the dashboard override at the model's real window (and serve it as
         // the default when no override is set). Cheap: cached per model after the
@@ -4967,6 +4835,7 @@ const marmRecallSection = marmEnabled
         let intentNudgesUsed = 0;          // #2: intent-without-action nudge cap
         let pastedCallRuns = 0;            // #2b: pasted <function=…> blocks recovered as real calls
         let delegatedThisTurn = false;     // #2: a delegate ran this turn — closing prose after a hand-off is a completion announcement, not unfulfilled intent (nudging it re-dispatches the same job)
+        let lastToolBatchWasError = false; // #2: the most recent tool batch returned only errors — a following no-tool-call turn is the terminal REPORT of that failure, and nudging it back into action produces forbidden retries and delegations (2026-10-08 browser-offline incident)
         // Names of delegates actually invoked via a tool_call this turn. Used by
         // the narrated-delegation guard to distinguish a genuine "Atlas is doing
         // X now" promise (name mentioned, no call) from "Atlas reported X"
@@ -5485,6 +5354,8 @@ const marmRecallSection = marmEnabled
                         const body = truncateToolResult(result.toolName || 'orchestrator', result.content);
                         messages.push({ role: 'tool', content: TRUSTED_RESULT_TOOLS.has(result.toolName) ? body : untrustedContextMessage(body) });
                     }
+                    lastToolBatchWasError = toolResults.length > 0
+                        && toolResults.every(r => /^Error/i.test(String(r.content).trim()));
                     // #3 Mid-loop breaker tracking: record each call sig, detect
                     // runaway (same sig >= RUNAWAY_CALL_LIMIT) and circling
                     // (repeated recent sig + no answer text). Either forces a
@@ -5540,7 +5411,7 @@ const marmRecallSection = marmEnabled
                             let visionReport = '';
                             if (MODELS_WITHOUT_VISION.has(model)) {
                                 const vision = await askVisionModel(_pi,
-                                    'The Warden orchestrator Read this image but its model cannot see images. Describe factually and concretely what the image shows — layout, colors, any visible text — so the orchestrator can continue. Answer directly, no preamble.');
+                                    'Warden Read this image but its model cannot see images. Describe factually and concretely what the image shows — layout, colors, any visible text — so the seat can continue. Answer directly, no preamble.');
                                 if (vision.ok && vision.answer) {
                                     visionReport = vision.answer;
                                     log(`[orchestrator] Vision report: "${visionReport.slice(0, 120)}"`);
@@ -5611,6 +5482,12 @@ const marmRecallSection = marmEnabled
                             if (PAST_TENSE_MARKER_RE.test(preceding)) continue;
                             const following = historyContent.slice(idx + dn.length, idx + dn.length + 40);
                             if (PAST_TENSE_MARKER_RE.test(following)) continue;
+                            // Scope statement: "iris owns email and calendar"
+                            // names the delegate to state what it IS — not to
+                            // narrate a hand-off. (2026-10-08: a correct routing
+                            // explanation was nudged into a wrong delegation
+                            // exactly this way.)
+                            if (/^\s+(?:owns|handles|covers|means|is\s+the|is\s+a|is\s+not)\b/i.test(following)) continue;
                             narratedDelegation = dn;
                             break;
                         }
@@ -5623,7 +5500,7 @@ const marmRecallSection = marmEnabled
                 // report exactly what's on screen, then I'll summarize…"), so
                 // exempt narratedDelegation from the 400-char cap that bounds
                 // the INTENT_RE path; intent/claimed paths keep the cap.
-                if (intentNudgesUsed < INTENT_MAX_NUDGES && (narratedDelegation || historyContent.length < 400) && !/```/.test(historyContent) && !conversationalReply && !delegatedThisTurn) {
+                if (intentNudgesUsed < INTENT_MAX_NUDGES && (narratedDelegation || historyContent.length < 400) && !/```/.test(historyContent) && !conversationalReply && !delegatedThisTurn && !lastToolBatchWasError) {
                     const intentMatch = historyContent.match(INTENT_RE);
                     if (intentMatch || claimedDelegation || narratedDelegation) {
                         intentNudgesUsed++;
@@ -5795,7 +5672,7 @@ const marmRecallSection = marmEnabled
                     }
                     if (retryOk) continue; // Back to main tool loop
                 }
-                writeOutput({ status: 'error', result: null, error: `Ollama error: ${errMsg}`, spontaneous: turnWasInboxDigest });
+                writeOutput({ status: 'error', result: null, error: errMsg.startsWith('Ollama error:') ? errMsg : `Ollama error: ${errMsg}`, spontaneous: turnWasInboxDigest });
                 errorOutputWritten = true;
                 // Digest read-safety: the digest drained (marked read) these results
                 // before the turn ran; if the digest turn errored, re-queue each ONCE
@@ -5915,7 +5792,7 @@ const marmRecallSection = marmEnabled
                 // chat as if it were a reply (2026-09-26). State the fact and
                 // end the turn; per the error-text rule this must not read as an
                 // instruction.
-                log(`[output] empty reply on a thinking-only turn — internal monologue withheld (model=${ORCHESTRATOR_MODEL}, thinking ${finalThinking.length} chars)`);
+                log(`[output] empty reply on a thinking-only turn — internal monologue withheld (model=${ATLAS_MODEL}, thinking ${finalThinking.length} chars)`);
                 outputContent = lastToolSummary
                     ? `I couldn't produce a clean reply this turn — the model ended its turn without an answer. Last action: ${lastToolSummary}.`
                     : `I couldn't produce a reply this turn — the model ended its turn without an answer.`;
@@ -5928,7 +5805,7 @@ const marmRecallSection = marmEnabled
         if (outputContent && /<unk>|<pad>|<\|[a-z_]+\|>/i.test(outputContent)) {
             const before = outputContent.length;
             outputContent = outputContent.replace(/(?:<unk>|<pad>|<\|[a-z_]+\|>)+/gi, ' ').replace(/\s{2,}/g, ' ').trim();
-            log(`WARNING: control-token garbage stripped from final output (${before} -> ${outputContent.length} chars, model=${ORCHESTRATOR_MODEL}). Degenerate generation — capture this prompt if it recurs.`);
+            log(`WARNING: control-token garbage stripped from final output (${before} -> ${outputContent.length} chars, model=${ATLAS_MODEL}). Degenerate generation — capture this prompt if it recurs.`);
         }
         // Second net: BPE word-mash garbage carries no control tokens (observed
         // 2026-07-03 under kimi: "inistcapebene autwebkitOraCurve LumpDotLAB ...").
@@ -5944,7 +5821,7 @@ const marmRecallSection = marmEnabled
             return mashed / words.length >= 0.25;
         };
         if (outputContent && looksDegenerate(outputContent)) {
-            log(`WARNING: degenerate word-mash output suppressed (${outputContent.length} chars, model=${ORCHESTRATOR_MODEL}). First 200 chars: ${outputContent.slice(0, 200)}`);
+            log(`WARNING: degenerate word-mash output suppressed (${outputContent.length} chars, model=${ATLAS_MODEL}). First 200 chars: ${outputContent.slice(0, 200)}`);
             outputContent = 'Something went wrong generating my answer on this turn — the model produced garbled output. Please send that request again.';
         }
         log(`About to writeOutput. outputContent: "${(outputContent || '').slice(0, 100)}"`)
@@ -6301,7 +6178,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
 
     // Pre-tool hooks — can block execution
     const preResults = await hooks.invoke('pre_tool_call', {
-        toolName, toolArgs: args, sessionId, model: ORCHESTRATOR_MODEL,
+        toolName, toolArgs: args, sessionId, model: ATLAS_MODEL,
     });
     const block = preResults.find(r => r.block);
     if (block) return JSON.stringify({ error: block.block });
@@ -6331,9 +6208,10 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
 
     // Sub-agent delegates: dispatch to runSubAgent with their tool defs
     if (toolName === 'artemis' && !opts?.orchestrator) {
-        // Blocking path — orch only (see the vulkan blocking branch below).
-        // Same history-fetch + prompt shape as the async path, just awaited
-        // inline instead of wrapped in a BackgroundJob/inbox push.
+        // Blocking path — a sub-agent's own tool loop (opts.orchestrator is
+        // unset there). Same history-fetch + prompt shape as the async path,
+        // just awaited inline instead of wrapped in a BackgroundJob/inbox
+        // push — the caller has no inbox of its own.
         const def = SUBAGENT_BY_DELEGATE.get('artemis')!;
         const focus = ((args.task as string) || '').trim();
         if (!focus) {
@@ -6342,18 +6220,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             writeIpcFile(TASKS_DIR, { type: 'get_chat_history', chatJid: context.chatJid, limit: 20, timestamp: new Date().toISOString() });
             const history = await waitForResult('chat-history-');
             const transcript = history ? JSON.stringify(history, null, 2).slice(-12000) : '(conversation history unavailable)';
-            const auditTask = `Focus your audit on: ${focus}\n\nAudit the following conversation (most recent messages last). Each entry has a sender_name and an is_bot_message flag — is_bot_message=1 is the AI assistant, otherwise it's the user.\n\n${transcript}`;
-            const orchThreadStore = orchThread.getStore();
-            const fullAuditTask = orchThreadStore?.length
-                ? `${auditTask}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${orchThreadStore.slice(-6).join('\n---\n').slice(-6000)}`
-                : auditTask;
+            const fullAuditTask = `Focus your audit on: ${focus}\n\nAudit the following conversation (most recent messages last). Each entry has a sender_name and an is_bot_message flag — is_bot_message=1 is the AI assistant, otherwise it's the user.\n\n${transcript}`;
             const artemisResult = await runSubAgent('artemis', ARTEMIS_MODEL, def.systemPrompt, ARTEMIS_TOOL_DEFS, fullAuditTask, context, def.maxIterations);
-            if (orchThreadStore) {
-                orchThreadStore.push(`## artemis (model ${ARTEMIS_MODEL}) — piece: ${focus.slice(0, 160)}\n${(artemisResult.content || '').slice(0, 1200)}`);
-                result = `[artemis · model ${ARTEMIS_MODEL}]\n${artemisResult.content || 'Artemis completed the audit (no text output).'}`;
-            } else {
-                result = artemisResult.content || 'Artemis completed the audit (no text output).';
-            }
+            result = artemisResult.content || 'Artemis completed the audit (no text output).';
         }
     } else if (toolName === 'artemis') {
         // Async artemis: start the audit as a background job (same pattern as
@@ -6620,21 +6489,16 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             }
         }
     } else if (toolName === 'vulkan' && !opts?.orchestrator) {
-        // Blocking path — only orch reaches this (it has this tool name but
-        // is never the seat: opts.orchestrator is unset for a sub-agent's own
-        // tool loop). Orch has no inbox of its own to deliver an async result
-        // into, so it calls vulkan the way iris has always been called: await
-        // the sub-agent run directly and hand back its content inline.
+        // Blocking path — a sub-agent's own tool loop (opts.orchestrator is
+        // unset there, and it is never the seat). The caller has no inbox of
+        // its own to deliver an async result into, so it calls vulkan the way
+        // iris has always been called: await the sub-agent run directly and
+        // hand back its content inline.
         const def = SUBAGENT_BY_DELEGATE.get('vulkan')!;
         const task = args.task as string;
         if (!task) {
             result = 'Error: task is required';
         } else {
-            // Orch-piece wiring: shared thread + model-labeled result.
-            const thread = orchThread.getStore();
-            const fullTask = thread?.length
-                ? `${task}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${thread.slice(-6).join('\n---\n').slice(-6000)}`
-                : task;
             // Vulkan carries mcpServers ['*'], and default apps are global —
             // merge the connected servers' tools and apply the substitution
             // here exactly as the background path does.
@@ -6644,10 +6508,9 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 const seenNames = new Set(vkTools.map((t: any) => t.function?.name));
                 vkTools = applyDefaultApps([...vkTools, ...vkMcp.filter((t: any) => !seenNames.has(t.function?.name))], vkMcp);
             }
-            const saResult = await runSubAgent('vulkan', VULKAN_MODEL, def.systemPrompt, vkTools, fullTask, context, def.maxIterations, undefined, undefined, def.temperature);
-            thread?.push(`## vulkan (model ${VULKAN_MODEL}) — piece: ${task.slice(0, 160)}\n${saResult.content.slice(0, 1200)}`);
+            const saResult = await runSubAgent('vulkan', VULKAN_MODEL, def.systemPrompt, vkTools, task, context, def.maxIterations, undefined, undefined, def.temperature);
             result = `[vulkan · model ${VULKAN_MODEL}]\n${saResult.content}`;
-            if (saResult.modifiedFiles.length > 0) log(`[orch→vulkan] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
+            if (saResult.modifiedFiles.length > 0) log(`[vulkan] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
         }
     } else if (toolName === 'vulkan') {
         // Async coding specialist: start the job, return immediately, result
@@ -6679,7 +6542,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             }
         }
     } else if (toolName === 'sentry' && !opts?.orchestrator) {
-        // Blocking path — orch only (see the vulkan blocking branch above).
+        // Blocking path — a sub-agent's own tool loop (see the vulkan
+        // blocking branch above).
         const def = SUBAGENT_BY_DELEGATE.get('sentry')!;
         const task = args.task as string;
         if (!SENTRY_ENABLED) {
@@ -6687,12 +6551,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         } else if (!task) {
             result = 'Error: task is required';
         } else {
-            const thread = orchThread.getStore();
-            const fullTask = thread?.length
-                ? `${task}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${thread.slice(-6).join('\n---\n').slice(-6000)}`
-                : task;
-            const saResult = await runSubAgent('sentry', SENTRY_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('sentry')!, fullTask, context, def.maxIterations, undefined, undefined, def.temperature);
-            thread?.push(`## sentry (model ${SENTRY_MODEL}) — piece: ${task.slice(0, 160)}\n${saResult.content.slice(0, 1200)}`);
+            const saResult = await runSubAgent('sentry', SENTRY_MODEL, def.systemPrompt, SUBAGENT_TOOL_DEFS.get('sentry')!, task, context, def.maxIterations, undefined, undefined, def.temperature);
             result = `[sentry · model ${SENTRY_MODEL}]\n${saResult.content}`;
         }
     } else if (toolName === 'sentry') {
@@ -6710,21 +6569,6 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
         } else {
             const sp = spawnBackgroundJob('sentry', task, context, urgent);
             result = describeSpawn('Sentry', sp, urgent);
-        }
-    } else if (toolName === 'orch') {
-        // Request-only from the seat: propose first, spawn after the user
-        // replies. Background orch paths are untouched.
-        const task = args.task as string;
-        const urgent = args.urgent === true;
-        if (!task) {
-            result = 'Error: task is required';
-        } else if (orchProposalAsk !== null && orchProposalAsk !== lastUserAsk) {
-            orchProposalAsk = null;
-            const sp = spawnBackgroundJob('orch', task, context, urgent);
-            result = describeSpawn('Orch', sp, urgent);
-        } else {
-            orchProposalAsk = lastUserAsk;
-            result = 'The orchestrator runs only when the user asks for it. Do not start it on your own — tell the user what you would hand it and why, and call this again only after they reply wanting it.';
         }
     } else if (toolName === 'iris') {
         const def = SUBAGENT_BY_DELEGATE.get(toolName)!;
@@ -6764,25 +6608,12 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             // an empty model errors inside runSubAgent rather than swapping in
             // another model.
             const subModel = IRIS_MODEL;
-            // Orch-piece wiring (see the vulkan blocking branch): when ORCH is
-            // the caller, iris sees the orchestration's shared thread and its
-            // result is labeled with the model. The seat's iris path is
-            // untouched — that result format is what its fine-tune expects.
-            const orchThreadStore = orchThread.getStore();
-            const irisTask = orchThreadStore?.length
-                ? `${task}\n\n# THREAD SO FAR — pieces of this orchestration already completed (build on them, never redo them):\n${orchThreadStore.slice(-6).join('\n---\n').slice(-6000)}`
-                : task;
             // Pass def.temperature (10th arg) so iris honors its
             // SubAgentDef temperature override — without it the default `1`
             // applies and e.g. Iris's temperature:0 was inert. abortFlag +
             // onToolCall slots are unused on the synchronous path (undefined).
-            const saResult = await runSubAgent(toolName, subModel, def.systemPrompt, tools, irisTask, context, def.maxIterations, undefined, undefined, def.temperature);
-            if (orchThreadStore) {
-                orchThreadStore.push(`## iris (model ${subModel}) — piece: ${task.slice(0, 160)}\n${saResult.content.slice(0, 1200)}`);
-                result = `[iris · model ${subModel}]\n${saResult.content}`;
-            } else {
-                result = saResult.content;
-            }
+            const saResult = await runSubAgent(toolName, subModel, def.systemPrompt, tools, task, context, def.maxIterations, undefined, undefined, def.temperature);
+            result = saResult.content;
             if (saResult.modifiedFiles.length > 0) log(`[${toolName}] Tracked ${saResult.modifiedFiles.length} modified file(s): ${saResult.modifiedFiles.join(', ')}`);
             writeStatus({ phase: toolName, label: `${def.label} complete`, ts: Date.now() });
         }
@@ -6862,13 +6693,13 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
             }
         }
     } else if (toolName === 'nudge_agent') {
-        // The orchestrator's steering lever for a running job. It decides what
+        // The seat's steering lever for a running job. It decides what
         // to do about a job it judges off-track and, if steering is right,
         // calls this. The message is pushed into the
         // job's abortFlag.nudges, which runSubAgent drains into the job's next
-        // turn. supervisorNudges counts THESE orchestrator-delivered nudges —
-        // informational only (how many times the orchestrator has steered this
-        // job), so the orchestrator can see its own nudge count when deciding
+        // turn. supervisorNudges counts THESE nudges —
+        // informational only (how many times the seat has steered this
+        // job), so the seat can see its own nudge count when deciding
         // whether to stop_agent. There is NO ceiling: the runner never
         // auto-stops on a nudge count. watchdogNudgedAt timestamps the latest
         // nudge so Oversight shows when steering last happened.
@@ -6886,8 +6717,8 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 (job.abortFlag.nudges ||= []).push(message);
                 job.supervisorNudges++;
                 job.watchdogNudgedAt = Date.now();
-                log(`[orchestrator] nudge_agent → ${targetId} (orchestrator nudge #${job.supervisorNudges}): ${message.slice(0, 160)}`);
-                result = `Steering message queued for ${targetId}. It will see this on its next turn: "${message.slice(0, 200)}". The job keeps running. (Orchestrator nudge #${job.supervisorNudges}; the runner never auto-stops on a nudge count — call stop_agent yourself when you decide the job is not recovering.)`;
+                log(`[supervisor] nudge_agent → ${targetId} (supervisor nudge #${job.supervisorNudges}): ${message.slice(0, 160)}`);
+                result = `Steering message queued for ${targetId}. It will see this on its next turn: "${message.slice(0, 200)}". The job keeps running. (Supervisor nudge #${job.supervisorNudges}; the runner never auto-stops on a nudge count — call stop_agent yourself when you decide the job is not recovering.)`;
             }
         }
     } else if (toolName === 'schedule_task' || toolName === 'cancel_task' || toolName === 'pause_task' || toolName === 'resume_task' || toolName === 'update_task') {
@@ -7061,7 +6892,7 @@ async function main() {
                 if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
                 process.exit(0);
             }
-            ORCHESTRATOR_MODEL = model;
+            ATLAS_MODEL = model;
             log(`[sentry] starting security scan: model=${model}, tools=${tools.length}, task="${(containerInput.prompt || '').slice(0, 80)}"`);
             // temperature 0 — structured inventory collection on a tool-calling model.
             const sa = await runSubAgent('sentry', model, def.systemPrompt, tools, containerInput.prompt || '', ctx, def.maxIterations, undefined, undefined, 0);
@@ -7109,7 +6940,7 @@ async function main() {
                 if ((globalThis as any)._keepAlive) clearInterval((globalThis as any)._keepAlive);
                 process.exit(0);
             }
-            ORCHESTRATOR_MODEL = model;
+            ATLAS_MODEL = model;
             const digestSystemPrompt = `Scan the INPUT block (current time, user bio, calendar events, work tasks, weather — pulled from the local DB) and, optionally, recent emails from the email tool. Output the structured JSON object the task specifies.
 
 GROUNDING: Use only facts that appear in INPUT or email tool output. If a section has no data, use the empty-state value the task shows. Something not in INPUT or email output is a bug — do not add it.

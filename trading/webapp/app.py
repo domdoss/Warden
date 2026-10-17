@@ -966,10 +966,9 @@ def discard_run() -> tuple[int, dict]:
 def restore_run() -> None:
     """On startup, reload an unfinished run from RUN_PROGRESS_PATH.
 
-    A scheduled run from today auto-resumes — the scheduler already stamped
-    last_run when it fired, so nothing else would ever finish the morning
-    report. Anything else (manual runs, older runs) is left resumable for the
-    user to resume or discard from the dashboard.
+    Every interrupted run — scheduled or manual, today's or older — is left
+    resumable for the user to resume or discard from the dashboard. Nothing
+    auto-launches on boot: a restart never restarts trading on its own.
     """
     if not RUN_PROGRESS_PATH.exists():
         return
@@ -1007,9 +1006,6 @@ def restore_run() -> None:
     _persist_run()
     done = sum(1 for t in tickers if t.get("status") == "done")
     print(f"[run] restored unfinished run {run_id} ({done}/{len(tickers)} done)", file=sys.stderr)
-    if record.get("trigger") == "schedule" and record.get("trade_date") == datetime.now().strftime("%Y-%m-%d"):
-        print("[run] auto-resuming today's scheduled run", file=sys.stderr)
-        resume_run()
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 // Channel self-registration barrel file.
 // Each import triggers the channel module's registerChannel() call.
-// Channels self-register on import; the orchestrator iterates them via
+// Channels self-register on import; the host iterates them via
 // getRegisteredChannelNames() / getChannelFactory() from ./registry.js.
 // There is no group setup — all channels deliver to OWNER_JID.
 

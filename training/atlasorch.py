@@ -37,6 +37,7 @@ atlasorch.sh do it. The merge + disk writes run on the main process only;
 other ranks wait at the barrier, so no races and no duplicate artifacts.
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -57,6 +58,14 @@ if "LOCAL_RANK" not in os.environ and "CUDA_VISIBLE_DEVICES" not in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
+
+# Pin the rank's GPU before anything else touches CUDA. Without this, rank 1
+# can leave a stray ~170 MiB context on GPU 0 (init order probes device 0
+# first), which is real headroom at 17.9k ctx on a 16 GB card — the
+# 2026-10-10 run OOMed by less than that. Single-process runs are already
+# pinned to cuda:0 by the CUDA_VISIBLE_DEVICES guard above.
+if "LOCAL_RANK" in os.environ:
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments
 from unsloth import FastLanguageModel
@@ -408,6 +417,11 @@ def main():
         load_in_4bit=not args.no_4bit,
         full_finetuning=False,
         attn_implementation="sdpa",
+        # Tiled MLP: the MLP backward holds 4-5 (seq x 12800) fp16
+        # intermediates at once, ~410 MiB each at 16.5k tokens; that alone
+        # OOMed step 0 on the 16 GB cards (2026-10-14). Tiling runs the MLP in
+        # sequence chunks so only one chunk's intermediates are live.
+        unsloth_tiled_mlp=True,
     )
     try:
         model.config._attn_implementation = "sdpa"
@@ -446,6 +460,27 @@ def main():
     print(f"[orchatlas] seq len min/mean/max = {min(lens)}/{sum(lens)//len(lens)}/{max(lens)}"
           + (f" (capped at {args.max_len})" if args.max_len else ""), flush=True)
 
+    # Gradient sync is done here, not by DDP's hooks. The tiled MLP runs one
+    # nested backward per sequence chunk, and the chunk count follows each
+    # row's length: DDP's hooks reject a grad landing more than once ("mark a
+    # variable ready only once"), and static_graph rejects the per-row graph
+    # change. So every micro-step runs under no_sync (the hooks stand down)
+    # and the LoRA grads are all-reduced once, after the micro-step that ends
+    # the optimizer step. That is before Trainer unscales/clips, so both ranks
+    # see the same grads and agree on any fp16 inf-skip.
+    class OrchatlasTrainer(Trainer):
+        def training_step(self, model, inputs, num_items_in_batch=None):
+            ddp = model if isinstance(model, torch.nn.parallel.DistributedDataParallel) else None
+            with (ddp.no_sync() if ddp is not None else contextlib.nullcontext()):
+                loss = super().training_step(model, inputs, num_items_in_batch)
+            if ddp is not None and self.accelerator.sync_gradients:
+                world = torch.distributed.get_world_size()
+                for p in ddp.module.parameters():
+                    if p.requires_grad and p.grad is not None:
+                        torch.distributed.all_reduce(p.grad)
+                        p.grad.div_(world)
+            return loss
+
     targs = TrainingArguments(
         output_dir=args.out,
         num_train_epochs=args.epochs,
@@ -460,11 +495,13 @@ def main():
         report_to=[],
         remove_unused_columns=False,
         dataloader_drop_last=False,
-        optim="adamw_torch",
+        # 8-bit Adam: fp32 m/v for 49.5M LoRA params is ~380 MiB per card,
+        # which 18k-token rows on 16 GB cards cannot spare (2026-10-14 OOM).
+        optim="adamw_8bit",
         ddp_find_unused_parameters=False,
         **({"max_steps": args.max_steps} if args.max_steps else {}),
     )
-    trainer = Trainer(
+    trainer = OrchatlasTrainer(
         model=model,
         args=targs,
         train_dataset=dataset,

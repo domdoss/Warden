@@ -39,7 +39,7 @@ export interface TrainingFlag {
     what_went_wrong: string;
     correct_behavior: string;
     sft_correction_hint: string;
-    candidate_role: 'seat' | 'orch';
+    candidate_role: 'seat';
     tools_relevant: string[];
   };
   // Set by modify-parts.mjs when it processes the flag.
@@ -90,7 +90,7 @@ export function addTrainingFlag(args: any): { ok: true; id: string; duplicate: b
       what_went_wrong: wrong,
       correct_behavior: correct,
       sft_correction_hint: correct,
-      candidate_role: args?.role === 'orch' ? 'orch' : 'seat',
+      candidate_role: 'seat',
       tools_relevant: tools,
     },
   };

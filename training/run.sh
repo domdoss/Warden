@@ -54,6 +54,10 @@ UVPIP=(uv pip install --python "$PY")
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
 # Reduce CUDA fragmentation on the 16 GB cards (set before torch inits).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# GPU-to-GPU P2P over PCIe hangs NCCL on this box since the 2026-10-14 driver
+# update (all_reduce spins forever at 100% util, ~80 W, no memory growth).
+# Routing through host memory works and costs little for LoRA gradients.
+export NCCL_P2P_DISABLE=1
 
 # ---- 2. deps -------------------------------------------------------------
 if [ "$SKIP_DEPS" != "1" ]; then

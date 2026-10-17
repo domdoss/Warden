@@ -475,14 +475,18 @@
       <section class="view" id="view-training">
         <div class="view-header tr-header">
           <div class="tr-title">
-            <span class="view-title">Training loop</span>
-            <span class="tr-sub">Audit logs → modify SFT data → train one epoch</span>
+            <span class="view-title">Training</span>
+            <span class="tr-sub" id="trainingSub">Audit logs → modify SFT data → train one epoch</span>
           </div>
           <span class="spacer"></span>
           <span class="tr-status" id="trainingStatus" data-state="idle">idle</span>
           <button class="btn btn-danger btn-sm" id="btnTrainingStop" disabled>Stop</button>
         </div>
-        <div class="tr-body">
+        <div class="tr-tabs" role="tablist">
+          <button class="tr-tab active" data-trtab="loop" role="tab">Training loop</button>
+          <button class="tr-tab" data-trtab="bot" role="tab">Custom chatbot</button>
+        </div>
+        <div class="tr-body" data-trpanel="loop">
           <!-- pipeline: one card per step, the step's button lives in its card -->
           <div class="tr-pipe">
             <div class="tr-step" id="trainingStepAudit" data-step="audit">
@@ -534,6 +538,53 @@
               <div class="tr-history" id="trainingHistory"><div class="dim">—</div></div>
             </div>
           </div>
+        </div>
+
+        <!-- Custom chatbot: intake form → granite writes persona pairs → LoRA on a granite base -->
+        <div class="tr-body hidden" data-trpanel="bot">
+          <div class="bot-pick">
+            <select class="select" id="botSelect" title="Saved chatbots"><option value="">+ New chatbot</option></select>
+            <span class="bot-model dim mono" id="botTrained"></span>
+          </div>
+
+          <div class="section-divider bot-step"><span class="tr-step-n">1</span>Intake<span class="bot-ready" id="botReady"></span></div>
+          <div class="bot-progress" id="botProgress"></div>
+          <div class="bot-form">
+            <label class="bot-field"><span>Name</span>
+              <input class="input" id="botName" maxlength="60" placeholder="What the chatbot is called"></label>
+            <label class="bot-field"><span>Base model</span>
+              <select class="select" id="botBase"><option value="">Checking…</option></select>
+              <span class="bot-base-note dim mono" id="botBaseNote"></span></label>
+            <label class="bot-field bot-wide"><span>Works for</span>
+              <input class="input" id="botOwner" placeholder="The business, team, or person it represents"></label>
+            <label class="bot-field bot-wide"><span>What it is</span>
+              <textarea id="botWhatItIs" rows="2" placeholder="One line on what kind of assistant it is"></textarea></label>
+            <label class="bot-field bot-wide"><span>What it does</span>
+              <textarea id="botWhatItDoes" rows="3" placeholder="The jobs it handles and the questions it answers"></textarea></label>
+            <label class="bot-field bot-wide"><span>Who it does it for</span>
+              <textarea id="botWhoFor" rows="2" placeholder="The people who talk to it and what they need"></textarea></label>
+            <label class="bot-field bot-wide"><span>Personality &amp; tone</span>
+              <textarea id="botPersonality" rows="2" placeholder="How it sounds: voice, warmth, formality, humor"></textarea></label>
+            <label class="bot-field bot-wide"><span>Outside its scope</span>
+              <textarea id="botHandoff" rows="2" placeholder="What it does when asked for something it doesn't handle"></textarea></label>
+          </div>
+
+          <div class="section-divider bot-step"><span class="tr-step-n">2</span>Pairs</div>
+          <div class="bot-actions">
+            <select class="select" id="botCount" title="How many pairs granite writes">
+              <option value="50">50 pairs</option>
+              <option value="100" selected>100 pairs</option>
+              <option value="200">200 pairs</option>
+            </select>
+            <button class="btn btn-primary btn-sm" id="btnBotGenerate">Save &amp; generate pairs</button>
+            <button class="btn btn-ghost btn-sm" id="btnBotSave">Save intake</button>
+            <span class="spacer"></span>
+            <button class="btn btn-primary btn-sm" id="btnBotTrain" disabled>Train chatbot →</button>
+          </div>
+          <div class="bot-pairs" id="botPairs"><div class="bot-empty">No pairs yet — fill in the intake and generate.</div></div>
+
+          <div class="section-divider">Step log <span class="tr-logstep" id="botLogStep"></span></div>
+          <pre class="audit-log tr-log" id="botTail"></pre>
         </div>
       </section>
 
@@ -1065,9 +1116,8 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
 
       <div class="help-section-label"><span>06</span> Settings worth knowing</div>
       <div class="settings-grid">
-        <div class="settings-tile"><h4>Atlas</h4><p>The model that replies to you — Atlas IS the seat. Blank = falls back to Orchestrator below.</p></div>
-        <div class="settings-tile"><h4>Orchestrator</h4><p>Atlas's fallback when Atlas is blank. Pick a strong one.</p></div>
-        <div class="settings-tile"><h4>Per-agent models</h4><p>Artemis, Iris, Vulkan, Orch, Mercury — each has its own model + ctx. No sharing, no fallback.</p></div>
+        <div class="settings-tile"><h4>Atlas</h4><p>The model that replies to you — Atlas IS the seat. Pick a strong one; it runs every turn.</p></div>
+        <div class="settings-tile"><h4>Per-agent models</h4><p>Artemis, Iris, Vulkan, Mercury — each has its own model + ctx. No sharing, no fallback.</p></div>
         <div class="settings-tile"><h4>Council Seats</h4><p>Skeptic / Pragmatist / Synthesist. Different models = different perspectives.</p></div>
         <div class="settings-tile"><h4>num_ctx overrides</h4><p>Per-agent. Blank = model default (native window).</p></div>
         <div class="settings-tile"><h4>Thinking</h4><p>On / Max / Off. Global default, no per-chat override.</p></div>

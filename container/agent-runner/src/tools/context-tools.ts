@@ -18,7 +18,7 @@ registry.register({
     },
     handler: async (args, context) => {
         globalThis._clearContextRequested = true;
-        // Tell the HOST to record the clear boundary (sets orchestrator:context_clear_at,
+        // Tell the HOST to record the clear boundary (sets atlas:context_clear_at,
         // which gates <chat_history> on the next turn). Without this the host re-injects
         // pre-clear turns every turn — the in-container reset alone isn't enough.
         try {

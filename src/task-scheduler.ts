@@ -482,10 +482,10 @@ async function runTask(
   //
   // 1. REMINDERS (every non-heartbeat task): the chamber prompt — set by iris
   //    at creation time — fires directly into chat as a visible notification.
-  //    No orchestrator turn, no model reply. The message is stored with
+  //    No seat turn, no model reply. The message is stored with
   //    is_bot_message=true + idea='' so getMessagesForDashboard shows it but
   //    getNewMessages/getMessagesSince (which filter is_bot_message=0) skip it,
-  //    so the message loop never routes it to the orchestrator. The user sees
+  //    so the message loop never routes it to the seat. The user sees
   //    exactly what was chambered, the moment it's due — no rephrasing, no
   //    duplicate, no model latency.
   //
@@ -493,7 +493,7 @@ async function runTask(
   //    group's HEARTBEAT.md instructions, not a display notification. It keeps
   //    the inject-and-poke path: idea='scheduled' (hidden from the chat view)
   //    + enqueueMessageCheck so processOwnerMessages → getMessagesSince picks
-  //    it up and the orchestrator runs the instructions. Iris digests are
+  //    it up and the seat runs the instructions. Iris digests are
   //    already skipped in the scheduler loop (fired by checkDigestsDue).
   const isAutomation = task.id.startsWith('heartbeat-');
 
@@ -523,7 +523,7 @@ async function runTask(
     } catch (err) {
       logger.warn({ taskId: task.id, err }, 'Failed to store Automation chat message');
     }
-    // Poke the message queue so the orchestrator runs the instructions now.
+    // Poke the message queue so the seat runs the instructions now.
     deps.queue.enqueueMessageCheck(task.chat_jid);
   } else {
     try {
@@ -537,7 +537,7 @@ async function runTask(
         is_from_me: false,
         // is_bot_message=true so the message loop (getNewMessages /
         // getMessagesSince, both filter is_bot_message=0) NEVER routes this to
-        // the orchestrator — it's a display-only notification, not an
+        // the seat — it's a display-only notification, not an
         // instruction to execute.
         is_bot_message: true,
         // idea='' so getMessagesForDashboard shows it in the chat view.
@@ -548,7 +548,7 @@ async function runTask(
       logger.warn({ taskId: task.id, err }, 'Failed to store reminder chat message');
     }
     // No enqueueMessageCheck — the message is the notification, not a prompt
-    // for the orchestrator. is_bot_message=true keeps the loop off it.
+    // for the seat. is_bot_message=true keeps the loop off it.
   }
 
   logTaskRun({
@@ -579,7 +579,7 @@ async function runTask(
  * digest gets the SAME grounding as a scheduled one: real calendar + work
  * tasks + bio + weather + notes pulled from the DB (not Iris's own tools,
  * which hit Radicale and fail when Kontact isn't provisioned). The prompt is
- * injected into the owner chat and the orchestrator routes it to Iris.
+ * injected into the owner chat and the seat routes it to Iris.
  *
  * runTask reschedules a cron task to computeNextRun (the next cron time
  * after now) — which is exactly where it was headed anyway, so a manual run

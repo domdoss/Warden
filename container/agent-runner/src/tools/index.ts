@@ -6,6 +6,7 @@ import './file-grep.js';
 import './web-tools.js';
 import './terminal.js';
 import './documents.js';
+import './imagegen.js';
 import './chat-tools.js';
 import './iris-tools.js';
 import './api-tools.js';

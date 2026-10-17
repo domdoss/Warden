@@ -7,7 +7,7 @@
  *
  * Always available (no credentials required). Inbound messages from the
  * dashboard are written directly to the DB by the status server; this
- * channel exists only so the orchestrator can call sendMessage() on it.
+ * channel exists only so the seat can call sendMessage() on it.
  */
 import { Channel, OnInboundMessage, OWNER_JID } from '../types.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -22,7 +22,7 @@ class WebChannel implements Channel {
   }
 
   async sendMessage(_jid: string, _text: string): Promise<void> {
-    // No-op: bot responses are stored by the orchestrator (index.ts).
+    // No-op: bot responses are stored by the host (index.ts).
     // The dashboard polls the DB directly. OWNER_JID is the only chat.
   }
 }

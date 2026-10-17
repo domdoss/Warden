@@ -1449,10 +1449,9 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     // Max tokens one reply may generate. NOT ctx — this is the output cap, and
     // a blank row means the built-in default applies.
     maxOutputTokens: getRouterState('local:max_output_tokens') || '',
-    orchestratorModel: getRouterState('orchestrator:model') || '',
     vulkanModel: getRouterState('vulkan:model') || '',
     // Supervisor = the completion verdict on finished jobs. Blank = verdicts
-    // run the orchestrator model. supervisorEnabled toggles the verdict pass.
+    // run the Atlas model. supervisorEnabled toggles the verdict pass.
     supervisorModel: getRouterState('supervisor:model') || '',
     supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
     // Per-agent models — each agent has its own concrete model (no blank/inherit).
@@ -1460,10 +1459,10 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     irisModel: toolcallModel,
     artemisModel: getRouterState('artemis:model') || '',
     // Sentry has its own model wire (sentry:model) — report the real
-    // configured value, inheriting the ORCHESTRATOR model for display when
+    // configured value, inheriting the Atlas model for display when
     // blank (the runner falls back the same way).
-    sentryModel: getRouterState('sentry:model') || getRouterState('orchestrator:model'),
-    drivingForce: getRouterState('orchestrator:driving_force') || '',
+    sentryModel: getRouterState('sentry:model') || getRouterState('atlas:model'),
+    drivingForce: getRouterState('atlas:driving_force') || '',
     drivingForces,
     councilSkepticModel: getRouterState('council:skeptic_model') || '',
     councilPragmatistModel: getRouterState('council:pragmatist_model') || '',
@@ -1477,7 +1476,6 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     transcriptionApiUrl: getRouterState('transcription:whisper_api_url') || process.env.WHISPER_API_URL || '',
     ollamaServers: readOllamaServers(),
     ollamaDefaultServerId: getRouterState('ollama:default_server') || '',
-    orchestratorOllamaServer: getRouterState('orchestrator:ollama_server') || '',
     vulkanOllamaServer: getRouterState('vulkan:ollama_server') || '',
     ollamaEnabled: getRouterState('ollama_enabled') === 'true',
     hybridPrivacy: getRouterState('hybrid_privacy') || '',
@@ -1487,11 +1485,8 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     microsoft_client_id: msId,
     google_configured: !!(googleId && googleSecret),
     microsoft_configured: !!(msId && msSecret),
-    orchestratorCtx: getRouterState('local:orchestrator_ctx') || '',
-    // Atlas (background jobs) — blank = inherit the Warden (orchestrator)
-    // model and ctx. Restored 2026-09-18: the merged seat made background
-    // atlas a copy of itself, but the dashboard still needs a row to pick a
-    // different model for background work.
+    // Atlas (background jobs) — the dashboard row picks a different model for
+    // background work than the chat seat uses.
     atlasModel: (getRouterState('atlas:model') || '').replace(/^local:/, ''),
     atlasCtx: getRouterState('local:atlas_ctx') || '',
     subagentCtx: getRouterState('local:subagent_ctx') || '',
@@ -1502,8 +1497,8 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     artemisCtx: getRouterState('local:artemis_ctx') || '',
     vulkanCtx: getRouterState('local:vulkan_ctx') || '',
     // Sentry ctx: real per-agent key (local:sentry_ctx), inheriting the
-    // orchestrator ctx for display (the runner falls back the same way).
-    sentryCtx: getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx'),
+    // Atlas ctx for display (the runner falls back the same way).
+    sentryCtx: getRouterState('local:sentry_ctx') || getRouterState('local:atlas_ctx'),
     mercuryMode: getRouterState('mercury:mode') || 'full',
     // Ops model — the ONE model choice for heavy utility tools and external
     // integrations (today: Alpha Stack analysis + MARM topic model). Saved to
@@ -1514,8 +1509,7 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     mercuryModel: getRouterState('mercury:model') || '',
     mercuryCtx: getRouterState('local:mercury_ctx') || toolcallCtx,
     // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min). Set by the
-    // dashboard "Keep alive" checkboxes on the Orchestrator/Atlas/Toolcall rows.
-    orchestratorKeepAlive: getRouterState('local:orch_keep_alive') || '',
+    // dashboard "Keep alive" checkboxes on the Atlas/Toolcall rows.
     atlasKeepAlive: getRouterState('local:atlas_keep_alive') || '',
     toolcallKeepAlive: getRouterState('local:toolcall_keep_alive') || '',
     // Default apps: capability -> 'builtin' | 'mcp:<server>'. One row per
@@ -1530,11 +1524,11 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
       || getRouterState(`thinking:${WEB_DASHBOARD_JID}`)
       || 'true',
     verbose: true,
-    // Minutes of user-message idle before the orchestrator context auto-clears.
+    // Minutes of user-message idle before the Atlas context auto-clears.
     // 0 = never. Default 0 (off) — see src/index.ts idle-context-clear block for
     // why a desktop assistant must not auto-clear on idle. Set by the Model
     // Configuration card.
-    contextIdleClearMinutes: getRouterState('orchestrator:context_idle_clear_minutes') || '0',
+    contextIdleClearMinutes: getRouterState('atlas:context_idle_clear_minutes') || '0',
     // Mercury compaction schedule (runs on the 2s poll loop, idle-gated).
     // interval: compact at least this often (default 30, 0 = off).
     // downtime: also compact after this long with no user activity (default 5, 0 = off).
@@ -1568,9 +1562,6 @@ async function handleSettingsSave(
   };
 
   // Router-state settings (not env vars)
-  if (body.globalDefaultModel !== undefined) {
-    setRouterState('orchestrator:model', String(body.globalDefaultModel));
-  }
   if (body.hybridPrivacy !== undefined) {
     setRouterState('hybrid_privacy', String(body.hybridPrivacy));
   }
@@ -1603,21 +1594,21 @@ async function handleSettingsSave(
   }
   if (body.drivingForce !== undefined) {
     const newForce = String(body.drivingForce || '');
-    const prevForce = getRouterState('orchestrator:driving_force') || '';
-    setRouterState('orchestrator:driving_force', newForce);
-    // Switching the driving force clears the orchestrator's context: mark the
+    const prevForce = getRouterState('atlas:driving_force') || '';
+    setRouterState('atlas:driving_force', newForce);
+    // Switching the driving force clears the seat's context: mark the
     // clear time (the host gates <chat_history> on it, and the agent-runner
     // resets its in-memory conversation when it sees the marker change) and
     // advance the message cursor so nothing retries under the old persona.
     if (newForce !== prevForce) {
       const now = new Date().toISOString();
-      setRouterState('orchestrator:context_clear_at', now);
+      setRouterState('atlas:context_clear_at', now);
       setRouterState('last_agent_timestamp', now);
-      logger.info({ prev: prevForce, next: newForce }, 'Driving force changed — orchestrator context cleared');
+      logger.info({ prev: prevForce, next: newForce }, 'Driving force changed — Atlas context cleared');
     }
   }
   if (body.contextIdleClearMinutes !== undefined) {
-    setRouterState('orchestrator:context_idle_clear_minutes', String(body.contextIdleClearMinutes));
+    setRouterState('atlas:context_idle_clear_minutes', String(body.contextIdleClearMinutes));
   }
   if (body.mercuryIntervalMinutes !== undefined) {
     setRouterState('mercury:interval_minutes', String(body.mercuryIntervalMinutes));
@@ -1673,9 +1664,6 @@ async function handleSettingsSave(
     setRouterState('ollama:default_server', String(body.ollamaDefaultServerId || ''));
   }
   // Per-headline-agent Ollama server assignment (server id; '' = default).
-  if (body.orchestratorOllamaServer !== undefined) {
-    setRouterState('orchestrator:ollama_server', String(body.orchestratorOllamaServer || ''));
-  }
   if (body.vulkanOllamaServer !== undefined) {
     setRouterState('vulkan:ollama_server', String(body.vulkanOllamaServer || ''));
   }
@@ -1686,12 +1674,9 @@ async function handleSettingsSave(
     if (mdl) process.env.SUBAGENT_MODEL = mdl;
   }
   // Per-agent num_ctx overrides — stored in router_state, read by src/index.ts
-  // and passed to the agent-runner via env (ORCHESTRATOR_NUM_CTX, etc.).
+  // and passed to the agent-runner via env (ATLAS_NUM_CTX, etc.).
   // Empty string clears the override (agent-runner treats falsy as "use default").
-  if (body.orchestratorCtx !== undefined) {
-    setRouterState('local:orchestrator_ctx', String(body.orchestratorCtx || ''));
-  }
-  // Atlas (background jobs) — blank = inherit the Warden model/ctx.
+  // Atlas (background jobs) — its own model/ctx, distinct from the chat seat's.
   if (body.atlasModel !== undefined) {
     setRouterState('atlas:model', String(body.atlasModel || ''));
   }
@@ -1702,10 +1687,7 @@ async function handleSettingsSave(
     setRouterState('local:subagent_ctx', String(body.subagentCtx || ''));
   }
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min) — set by the
-  // dashboard "Keep alive" checkboxes (Orchestrator / Atlas / Toolcall model).
-  if (body.orchestratorKeepAlive !== undefined) {
-    setRouterState('local:orch_keep_alive', String(body.orchestratorKeepAlive || ''));
-  }
+  // dashboard "Keep alive" checkboxes (Atlas / Toolcall model).
   if (body.atlasKeepAlive !== undefined) {
     setRouterState('local:atlas_keep_alive', String(body.atlasKeepAlive || ''));
   }
@@ -1751,7 +1733,7 @@ async function handleSettingsSave(
   // 2048 ctx with 300s keep_alive instead of the configured toolcall ctx / -1.
   syncAgentCtxEnv();
   // Thinking default — stored globally and mirrored to owner JID so the
-  // orchestrator picks it up on the next turn without requiring a restart.
+  // seat picks it up on the next turn without requiring a restart.
   if (body.pinned_tools !== undefined) {
     const v = Array.isArray(body.pinned_tools) ? body.pinned_tools.join(',') : String(body.pinned_tools || '');
     setRouterState('local:pinned_tools', v);
@@ -1772,8 +1754,7 @@ async function handleSettingsSave(
     setRouterState(`thinking:${WEB_DASHBOARD_JID}`, normalized);
   }
   // Track whether any router-state settings were saved
-  const hadRouterState = body.globalDefaultModel !== undefined ||
-    body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
+  const hadRouterState = body.hybridPrivacy !== undefined || body.localPrivateModel !== undefined ||
     body.vulkanModel !== undefined || body.supervisorModel !== undefined || body.drivingForce !== undefined ||
     body.irisModel !== undefined || body.artemisModel !== undefined ||
     body.sentryModel !== undefined ||
@@ -1797,7 +1778,6 @@ async function handleSettingsSave(
     body.transcriptionUrl !== undefined || body.transcriptionApiUrl !== undefined ||
     body.ollamaServers !== undefined ||
     body.ollamaDefaultServerId !== undefined ||
-    body.orchestratorOllamaServer !== undefined ||
     body.vulkanOllamaServer !== undefined;
 
   const vars: Record<string, string> = {};
@@ -2481,7 +2461,7 @@ async function handleChatStop(
   return json(res, { ok: true, killed });
 }
 
-// Clear the orchestrator's context — the "New Thought" button. Sets the
+// Clear the Atlas context — the "New Thought" button. Sets the
 // context-clear marker (the agent-runner resets its in-memory conversation
 // when it sees this timestamp change, and the host gates <chat_history> on
 // it) so the next message starts fresh, and advances the message cursor so
@@ -2497,7 +2477,7 @@ async function handleClearContext(
     return error(res, 'jid required');
   }
   const now = new Date().toISOString();
-  setRouterState('orchestrator:context_clear_at', now);
+  setRouterState('atlas:context_clear_at', now);
   setRouterState('last_agent_timestamp', now);
   logger.info({ jid }, 'Context cleared (New Thought)');
   return json(res, { ok: true });
@@ -2521,7 +2501,7 @@ async function handleClearConversation(
   // Same context-reset semantics as New Thought: the agent-runner drops its
   // in-memory conversation when the marker changes, and the cursor advance
   // stops any in-flight batch from being answered under the old context.
-  setRouterState('orchestrator:context_clear_at', now);
+  setRouterState('atlas:context_clear_at', now);
   setRouterState('last_agent_timestamp', now);
   // Compaction state: both the file (the prompt-rendered summary) and the
   // raw router-state JSON must go, or the next merge re-seeds from old facts.
@@ -3611,7 +3591,7 @@ export function startStatusServer(d: StatusDeps): void {
           const body = parseJson(await parseBody(req)) as { span?: string; text?: string };
           // Accept the span from either the JSON body or the ?span= query param.
           // The Iris digest tasks put it in the URL path (?span=hourly) so the
-          // orchestrator can't drop it; older callers put it in the body.
+          // seat can't drop it; older callers put it in the body.
           const span = body.span || params.get('span') || 'daily';
           const text = body.text || '';
           if (!text.trim()) return json(res, { error: 'text required' }, 400);
@@ -3851,27 +3831,43 @@ export function startStatusServer(d: StatusDeps): void {
       // trainer), so they refuse to start under a live agent turn.
       if (pathname.startsWith('/api/training/')) {
         try {
-          const TRAINING_STEPS: Record<string, { cmd: string; script: string; marker: string }> = {
-            audit: { cmd: 'node', script: 'training/loop/audit-failures.mjs', marker: 'loop/audit-failures.mjs' },
-            modify: { cmd: 'node', script: 'training/loop/modify-parts.mjs', marker: 'loop/modify-parts.mjs' },
-            train: { cmd: 'bash', script: 'training/loop/train-1epoch.sh', marker: 'loop/train-1epoch.sh' },
+          // group: which Training sub-tab the step belongs to (its log dir and
+          // status tail). clearsVram: the step unloads Ollama models, so it
+          // refuses to start under a live agent turn. Steps from both groups
+          // are mutually exclusive — one GPU job at a time — except the
+          // parallel ones (HF base downloads: network only, one per base, run
+          // alongside anything).
+          type TrainingStep = { cmd: string; script: string; marker: string; group: 'loop' | 'bot'; clearsVram: boolean; parallel?: boolean };
+          const botBases = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'training', 'chatbot', 'bases.json'), 'utf-8')) as Record<string, { label: string; hf: string; ollama: string }>;
+          const TRAINING_STEPS: Record<string, TrainingStep> = {
+            ...Object.fromEntries(Object.keys(botBases).map((k) => [`bot-pull-${k}`, {
+              cmd: 'bash', script: 'training/chatbot/pull-base.sh', marker: `chatbot/pull-base.sh ${k}`, group: 'bot' as const, clearsVram: false, parallel: true,
+            }])),
+            audit: { cmd: 'node', script: 'training/loop/audit-failures.mjs', marker: 'loop/audit-failures.mjs', group: 'loop', clearsVram: true },
+            modify: { cmd: 'node', script: 'training/loop/modify-parts.mjs', marker: 'loop/modify-parts.mjs', group: 'loop', clearsVram: true },
+            train: { cmd: 'bash', script: 'training/loop/train-1epoch.sh', marker: 'loop/train-1epoch.sh', group: 'loop', clearsVram: true },
+            'bot-generate': { cmd: 'node', script: 'training/chatbot/gen-pairs.mjs', marker: 'chatbot/gen-pairs.mjs', group: 'bot', clearsVram: false },
+            'bot-train': { cmd: 'bash', script: 'training/chatbot/train.sh', marker: 'chatbot/train.sh', group: 'bot', clearsVram: true },
           };
-          const stepLog = (step: string) => path.join(process.cwd(), 'training', 'loop', 'logs', `${step}.log`);
+          const stepLog = (step: string) => TRAINING_STEPS[step].group === 'bot'
+            ? path.join(process.cwd(), 'training', 'chatbot', 'logs', `${step}.log`)
+            : path.join(process.cwd(), 'training', 'loop', 'logs', `${step}.log`);
           const stepRunning = (step: string) => {
             const r = spawnSync('pgrep', ['-f', TRAINING_STEPS[step].marker], { encoding: 'utf-8' });
             return ((r.stdout || '').trim().length > 0);
           };
-          const startTrainingStep = (step: 'audit' | 'modify' | 'train', extraArgs: string[] = []) => {
+          const launchStep = (step: keyof typeof TRAINING_STEPS, extraArgs: string[] = []): { ok: boolean; error?: string; step?: string; log?: string; pid?: number } => {
             const def = TRAINING_STEPS[step];
-            const jobs = getLiveJobs();
+            const jobs = def.clearsVram ? getLiveJobs() : [];
             if (jobs.length > 0)
-              return json(res, { ok: false, error: `An agent turn is running (${jobs.length} live job${jobs.length === 1 ? '' : 's'}) — wait for it to finish before clearing VRAM` });
+              return { ok: false, error: `An agent turn is running (${jobs.length} live job${jobs.length === 1 ? '' : 's'}) — wait for it to finish before clearing VRAM` };
             for (const other of Object.keys(TRAINING_STEPS)) {
-              if (other !== step && stepRunning(other))
-                return json(res, { ok: false, error: `Training step "${other}" is still running — wait for it` });
+              if (!def.parallel && !TRAINING_STEPS[other].parallel && other !== step && stepRunning(other))
+                return { ok: false, error: `Training step "${other}" is still running — wait for it` };
             }
             const script = path.resolve(process.cwd(), def.script);
-            if (!fs.existsSync(script)) return json(res, { ok: false, error: `${def.script} not found` });
+            if (!fs.existsSync(script)) return { ok: false, error: `${def.script} not found` };
+            if (def.parallel && stepRunning(step)) return { ok: false, error: `${step} is already running` };
             try { spawnSync('pkill', ['-f', def.marker], { stdio: 'ignore' }); } catch {}
             fs.mkdirSync(path.dirname(stepLog(step)), { recursive: true });
             const out = fs.openSync(stepLog(step), 'w');
@@ -3887,8 +3883,9 @@ export function startStatusServer(d: StatusDeps): void {
             fs.closeSync(out);
             fs.closeSync(errFd);
             logger.info({ pid: child.pid, step, log: stepLog(step) }, 'training step started');
-            return json(res, { ok: true, step, log: stepLog(step), pid: child.pid });
+            return { ok: true, step, log: stepLog(step), pid: child.pid };
           };
+          const startTrainingStep = (step: keyof typeof TRAINING_STEPS, extraArgs: string[] = []) => json(res, launchStep(step, extraArgs));
           if (pathname === '/api/training/audit' && req.method === 'POST') {
             const body = parseJson(await parseBody(req)) as { days?: number | string };
             const days = parseInt(String(body?.days ?? 3), 10);
@@ -3902,9 +3899,16 @@ export function startStatusServer(d: StatusDeps): void {
             return startTrainingStep('train');
           }
           if (pathname === '/api/training/stop' && req.method === 'POST') {
+            // {step} stops that step (e.g. one base download); no step = the
+            // running exclusive (GPU) step.
+            const body = parseJson(await parseBody(req)) as { step?: string };
             let running: string | null = null;
-            for (const step of Object.keys(TRAINING_STEPS)) {
-              if (stepRunning(step)) { running = step; break; }
+            if (body?.step && TRAINING_STEPS[body.step]) {
+              if (stepRunning(body.step)) running = body.step;
+            } else {
+              for (const step of Object.keys(TRAINING_STEPS)) {
+                if (!TRAINING_STEPS[step].parallel && stepRunning(step)) { running = step; break; }
+              }
             }
             if (!running) return json(res, { ok: false, error: 'No training step is running' });
             // The step was spawned detached (own session), so its pid IS the
@@ -3920,15 +3924,17 @@ export function startStatusServer(d: StatusDeps): void {
             return json(res, { ok: true, stopped: running });
           }
           if (pathname === '/api/training/status' && req.method === 'GET') {
+            const group = params.get('group') === 'bot' ? 'bot' : 'loop';
             let running: string | null = null;
             for (const step of Object.keys(TRAINING_STEPS)) {
-              if (stepRunning(step)) { running = step; break; }
+              if (!TRAINING_STEPS[step].parallel && stepRunning(step)) { running = step; break; }
             }
-            // Tail the running step's log, or whichever step ran most recently.
-            let logStep: string | null = running;
+            const pulls = Object.keys(TRAINING_STEPS).filter((st) => TRAINING_STEPS[st].parallel && stepRunning(st));
+            // Tail the group's running step, or whichever of its steps ran most recently.
+            let logStep: string | null = running && TRAINING_STEPS[running].group === group ? running : null;
             if (!logStep) {
               let newest = 0;
-              for (const step of Object.keys(TRAINING_STEPS)) {
+              for (const step of Object.keys(TRAINING_STEPS).filter((st) => TRAINING_STEPS[st].group === group && !TRAINING_STEPS[st].parallel)) {
                 try {
                   const m = fs.statSync(stepLog(step)).mtimeMs;
                   if (m > newest) { newest = m; logStep = step; }
@@ -3939,7 +3945,14 @@ export function startStatusServer(d: StatusDeps): void {
             if (logStep) {
               try { tail = fs.readFileSync(stepLog(logStep), 'utf-8').split('\n').slice(-40).join('\n'); } catch {}
             }
-            return json(res, { ok: true, running, step: logStep, tail });
+            // Download tails ride along separately so a pull never hides the GPU step's log.
+            const pullTails: Record<string, string> = {};
+            if (group === 'bot') {
+              for (const st of Object.keys(TRAINING_STEPS).filter((x) => TRAINING_STEPS[x].parallel)) {
+                try { pullTails[st.replace('bot-pull-', '')] = fs.readFileSync(stepLog(st), 'utf-8').trim().split('\n').slice(-1)[0] || ''; } catch {}
+              }
+            }
+            return json(res, { ok: true, running, pulls: pulls.map((st) => st.replace('bot-pull-', '')), step: logStep, tail, pullTails });
           }
           if (pathname === '/api/training/catalogs' && req.method === 'GET') {
             const dir = path.join(process.cwd(), 'training', 'loop', 'catalogs');
@@ -3968,6 +3981,121 @@ export function startStatusServer(d: StatusDeps): void {
             const flags = listTrainingFlags().reverse();
             const pending = flags.filter((f) => f.status === 'pending').length;
             return json(res, { ok: true, flags, counts: { pending, consumed: flags.length - pending, total: flags.length } });
+          }
+          // Custom chatbot sub-tab: an intake form (who the bot is, what it
+          // does, who it does it for) → granite writes persona pairs
+          // (bot-generate) → LoRA on a granite base from the HF cache
+          // (bot-pull-<base> installs it on save) → Ollama model "<slug>-bot" (bot-train).
+          // Each bot lives in training/chatbot/bots/<slug>/.
+          if (pathname.startsWith('/api/training/chatbot')) {
+            const botRoot = path.join(process.cwd(), 'training', 'chatbot');
+            const botsDir = path.join(botRoot, 'bots');
+            const bases = botBases;
+            const validSlug = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9][a-z0-9-]{0,40}$/.test(v);
+            const readJsonFile = (f: string) => { try { return JSON.parse(fs.readFileSync(f, 'utf-8')); } catch { return null; } };
+            const readPairs = (slug: string) => {
+              try {
+                return fs.readFileSync(path.join(botsDir, slug, 'pairs.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+              } catch { return []; }
+            };
+            // HF cache layout: <hub>/models--org--name/{snapshots/<rev>/…, blobs/…}.
+            // Cached = a snapshot with config.json, every weight shard the index
+            // names present, and no half-downloaded blob.
+            const hubDir = process.env.HF_HUB_CACHE || path.join(process.env.HF_HOME || path.join(os.homedir(), '.cache', 'huggingface'), 'hub');
+            const baseCache = (hf: string) => {
+              const repo = path.join(hubDir, 'models--' + hf.replace('/', '--'));
+              let cached = false, bytes = 0;
+              try {
+                for (const b of fs.readdirSync(path.join(repo, 'blobs'))) {
+                  if (b.endsWith('.incomplete')) return { cached: false, bytes: 0 };
+                  bytes += fs.statSync(path.join(repo, 'blobs', b)).size;
+                }
+                for (const rev of fs.readdirSync(path.join(repo, 'snapshots'))) {
+                  const snap = path.join(repo, 'snapshots', rev);
+                  if (!fs.existsSync(path.join(snap, 'config.json'))) continue;
+                  const idx = readJsonFile(path.join(snap, 'model.safetensors.index.json'));
+                  const shards: string[] = idx ? [...new Set(Object.values(idx.weight_map || {}) as string[])] : ['model.safetensors'];
+                  if (shards.every((sh) => fs.existsSync(path.join(snap, sh)))) cached = true;
+                }
+              } catch {}
+              return { cached, bytes };
+            };
+
+            if (pathname === '/api/training/chatbot' && req.method === 'GET') {
+              const bots = fs.existsSync(botsDir) ? fs.readdirSync(botsDir).filter(validSlug).sort().map((slug) => {
+                const intake = readJsonFile(path.join(botsDir, slug, 'intake.json'));
+                return { slug, name: intake?.fields?.name || slug, trained: readJsonFile(path.join(botsDir, slug, 'trained.json')) };
+              }) : [];
+              const slug = params.get('slug');
+              let bot = null;
+              if (validSlug(slug) && fs.existsSync(path.join(botsDir, slug, 'intake.json'))) {
+                bot = {
+                  slug,
+                  intake: readJsonFile(path.join(botsDir, slug, 'intake.json')),
+                  pairs: readPairs(slug).map((r: any) => ({
+                    category: r.category || '',
+                    user: r.messages?.find((m: any) => m.role === 'user')?.content || '',
+                    assistant: r.messages?.find((m: any) => m.role === 'assistant')?.content || '',
+                  })),
+                  trained: readJsonFile(path.join(botsDir, slug, 'trained.json')),
+                };
+              }
+              return json(res, {
+                ok: true,
+                bots,
+                bases: Object.entries(bases).map(([key, b]) => ({ key, label: b.label, hf: b.hf, ...baseCache(b.hf), installing: stepRunning(`bot-pull-${key}`) })),
+                bot,
+              });
+            }
+            if (pathname === '/api/training/chatbot/save' && req.method === 'POST') {
+              const body = parseJson(await parseBody(req)) as { slug?: string; fields?: Record<string, unknown>; base?: string };
+              const FIELDS = ['name', 'owner', 'what_it_is', 'what_it_does', 'who_for', 'personality', 'handoff'];
+              const fields: Record<string, string> = {};
+              for (const k of FIELDS) fields[k] = String(body?.fields?.[k] ?? '').slice(0, 4000);
+              if (!fields.name.trim()) return json(res, { ok: false, error: 'Give the bot a name' });
+              if (!body?.base || !bases[body.base]) return json(res, { ok: false, error: 'Pick a base model' });
+              const slug = validSlug(body.slug) ? body.slug
+                : fields.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'bot';
+              fs.mkdirSync(path.join(botsDir, slug), { recursive: true });
+              fs.writeFileSync(path.join(botsDir, slug, 'intake.json'),
+                JSON.stringify({ fields, base: body.base, saved_at: new Date().toISOString() }, null, 2));
+              // A base that isn't in the HF cache yet installs on save, in the
+              // background — pair generation runs on Ollama and doesn't need it.
+              let installing = stepRunning(`bot-pull-${body.base}`);
+              if (!installing && !baseCache(bases[body.base].hf).cached) {
+                const r = launchStep(`bot-pull-${body.base}`, [body.base]);
+                if (!r.ok) return json(res, { ok: false, slug, error: `Saved, but the ${bases[body.base].label} install did not start: ${r.error}` });
+                installing = true;
+              }
+              return json(res, { ok: true, slug, installing });
+            }
+            if (pathname === '/api/training/chatbot/pairs' && req.method === 'POST') {
+              const body = parseJson(await parseBody(req)) as { slug?: string; remove?: number[] };
+              if (!validSlug(body?.slug)) return json(res, { ok: false, error: 'bad slug' });
+              const drop = new Set((body.remove || []).map(Number));
+              const kept = readPairs(body.slug).filter((_r: unknown, i: number) => !drop.has(i));
+              fs.writeFileSync(path.join(botsDir, body.slug, 'pairs.jsonl'), kept.map((r: unknown) => JSON.stringify(r)).join('\n') + (kept.length ? '\n' : ''));
+              return json(res, { ok: true, pairs: kept.length });
+            }
+            if (pathname === '/api/training/chatbot/generate' && req.method === 'POST') {
+              const body = parseJson(await parseBody(req)) as { slug?: string; count?: number };
+              if (!validSlug(body?.slug) || !fs.existsSync(path.join(botsDir, body.slug, 'intake.json')))
+                return json(res, { ok: false, error: 'Save the intake form first' });
+              const count = [50, 100, 200].includes(Number(body.count)) ? Number(body.count) : 100;
+              return startTrainingStep('bot-generate', ['--slug', body.slug, '--count', String(count)]);
+            }
+            if (pathname === '/api/training/chatbot/train' && req.method === 'POST') {
+              const body = parseJson(await parseBody(req)) as { slug?: string };
+              if (!validSlug(body?.slug)) return json(res, { ok: false, error: 'bad slug' });
+              const intake = readJsonFile(path.join(botsDir, body.slug, 'intake.json'));
+              const base = intake && bases[intake.base];
+              if (!base) return json(res, { ok: false, error: 'Save the intake form with a base model first' });
+              if (!baseCache(base.hf).cached)
+                return json(res, { ok: false, error: stepRunning(`bot-pull-${intake.base}`) ? `${base.label} is still installing` : `${base.label} is not installed — save the form to install it` });
+              if (!readPairs(body.slug).length) return json(res, { ok: false, error: 'No pairs yet — generate them first' });
+              return startTrainingStep('bot-train', [body.slug]);
+            }
+            return error(res, 'unknown chatbot route');
           }
           return error(res, 'unknown training route');
         } catch (err: any) {
@@ -5010,7 +5138,7 @@ export function startStatusServer(d: StatusDeps): void {
       // Fire the alarm DIRECTLY into chat as a visible bot message (the same
       // path reminders use in task-scheduler.ts) so the voice app speaks it.
       // is_bot_message=true + idea='' → shown in the chat view but never routed
-      // to the orchestrator (getNewMessages/getMessagesSince filter
+      // to the seat (getNewMessages/getMessagesSince filter
       // is_bot_message=0), so there's no model reply, no duplicate, no latency —
       // the user hears the alarm label the moment it's due.
       try {

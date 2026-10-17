@@ -98,7 +98,7 @@ import { captureScreenshotFromSecurityApp, captureWebcamFromSecurityApp, readHos
 export { escapeXml, formatMessages } from './router.js';
 
 /**
- * Single-chat orchestrator (Warden).
+ * Single-user Warden host (the Atlas seat's chat loop).
  *
  * All inbound messages from every channel land in the `messages` table with
  * `chat_jid = OWNER_JID`. The message loop polls that single chat, builds an
@@ -253,7 +253,7 @@ function loadMercurySummary(clearAt = ''): string | undefined {
     const text = fs.readFileSync(path.join(root, MERCURY_MEMORY_FILE), 'utf-8').trim();
     if (!text) return undefined;
     // A context clear (New Thought / driving-force switch / idle auto-clear /
-    // clear_context tool) sets orchestrator:context_clear_at. The summary file
+    // clear_context tool) sets atlas:context_clear_at. The summary file
     // carries its own write timestamp on its first line; if it predates the
     // clear boundary, ignore it — otherwise pre-clear topics (e.g. an old
     // TaskPoints scope draft) keep bleeding into the fresh conversation even
@@ -338,7 +338,7 @@ function buildPrompt(newMessages: NewMessage[]): string {
   const mode = mercuryMode();
   // Resolved once, up front, so both the Mercury summary/RAG injection and the
   // <chat_history> gate share the same clear boundary this turn.
-  const clearAt = getRouterState('orchestrator:context_clear_at') || '';
+  const clearAt = getRouterState('atlas:context_clear_at') || '';
 
   // Mercury rolling memory — compacted context from older conversation turns.
   if (mode === 'summary' || mode === 'full') {
@@ -596,8 +596,8 @@ export function buildAgentCallbacks(): CallbackMap {
         );
 
         // Push a chat_complete notification so the voice client can speak the
-        // reply. The orchestrator's own runAgent reply also emits one, so a
-        // direct orchestrator reply may double-speak if the agent also calls
+        // reply. The seat's own runAgent reply also emits one, so a
+        // direct seat reply may double-speak if the agent also calls
         // send_message. The voice client deduplicates by content to handle this.
         pushNotification('owner', { type: 'chat_complete', message: finalText, from: OWNER_JID });
         return { ok: true, messageId };
@@ -1437,7 +1437,7 @@ export function buildAgentCallbacks(): CallbackMap {
 
     // ─── Host-side image capture ───────────────────────────────────────────
     // Screenshots, webcam frames, and arbitrary host image files are captured
-    // here in the orchestrator process (which has the host display + devices),
+    // here in the host process (which has the host display + devices),
     // not inside the container. The container tool pushes the returned base64
     // into its vision-context queue.
 
@@ -1618,7 +1618,7 @@ export function buildAgentCallbacks(): CallbackMap {
     clear_context: async (args: any) => {
       try {
         const now = new Date().toISOString();
-        setRouterState('orchestrator:context_clear_at', now);
+        setRouterState('atlas:context_clear_at', now);
         setRouterState('last_agent_timestamp', now);
         logger.info({ reason: args?.reason }, 'clear_context tool: host boundary recorded');
         return { ok: true, clearedAt: now };
@@ -1814,7 +1814,7 @@ export function buildAgentCallbacks(): CallbackMap {
 // those compacted mid-conversation and folded fresh turns into the summary
 // while the model was still reading them live in <chat_history>. Idle-gated
 // (agent:processing !== 'true') so a compaction never contends with an
-// in-flight orchestrator turn. cleanerBusy is the shared stagger lock (see
+// in-flight seat turn. cleanerBusy is the shared stagger lock (see
 // digestMonitorBusy): Mercury compaction, the Iris digests, and memory
 // writeback all acquire it so no two cleaners run at once.
 // mercury:interval_minutes / mercury:downtime_minutes are no longer read; the
@@ -1870,7 +1870,7 @@ function maybeScheduleMercury(): void {
  */
 async function updateMercurySummary(): Promise<void> {
   try {
-    const clearAt = getRouterState('orchestrator:context_clear_at') || '';
+    const clearAt = getRouterState('atlas:context_clear_at') || '';
     const allRaw = getChatHistory(OWNER_JID, 45) as unknown as NewMessage[];
     // Gate by the clear boundary so a context clear also stops Mercury from
     // compacting pre-clear turns into the rolling summary — otherwise the next
@@ -1979,7 +1979,7 @@ async function updateMercurySummary(): Promise<void> {
     const root = WORKSPACE_ROOT.replace(/^~(?=\/|$)/, process.env.HOME ?? '');
     const mercuryPath = path.join(root, MERCURY_MEMORY_FILE);
     const stamp = new Date().toISOString();
-    // The file holds the human/orchestrator-readable rendering (its header
+    // The file holds the human-readable rendering (its header
     // stamp is the clearAt invalidation marker); router state holds the raw
     // JSON, which is what the next compaction's STATE input needs.
     const rendered = renderMercuryState(merged);
@@ -2011,9 +2011,9 @@ async function processOwnerMessages(): Promise<void> {
   // back to it so that turn's text is answered alongside the new message. Only
   // when something newer is actually pending; a bare stop must not retrigger.
   if (pending.length > 0) {
-    const stoppedSince = getRouterState('orchestrator:stopped_turn_since');
+    const stoppedSince = getRouterState('atlas:stopped_turn_since');
     if (stoppedSince && stoppedSince < since) {
-      setRouterState('orchestrator:stopped_turn_since', '');
+      setRouterState('atlas:stopped_turn_since', '');
       pending = getMessagesSince(OWNER_JID, stoppedSince, ASSISTANT_NAME);
       logger.info({ stoppedSince }, 'Re-including messages from the stopped turn');
     }
@@ -2022,9 +2022,9 @@ async function processOwnerMessages(): Promise<void> {
 
   // ── Idle context clear ──────────────────────────────────────────────────
   // If the user's last message was older than the configured threshold (Model
-  // Configuration → Idle clear; default OFF), drop the orchestrator's
+  // Configuration → Idle clear; default OFF), drop the seat's
   // accumulated context before this turn so testing chatter can't bloat the
-  // working window. Setting orchestrator:context_clear_at to the latest pending
+  // working window. Setting atlas:context_clear_at to the latest pending
   // timestamp makes the agent-runner reset its in-memory conversation (it
   // resets when the marker changes) and gates <chat_history> to messages after
   // it. 0 = disabled.
@@ -2033,23 +2033,23 @@ async function processOwnerMessages(): Promise<void> {
   // the normal pattern is to walk away for an hour and come back with "yes" to a
   // pending question. A 30-min idle auto-clear ate exactly that — it gated
   // <chat_history> to after the "yes", so the question the "yes" was answering
-  // vanished and the orchestrator replied "I don't see a pending question in
+  // vanished and the seat replied "I don't see a pending question in
   // front of me" (2026-08-29). Context bloat is already handled by Mercury
   // compaction (mercury:interval_minutes), so this idle-clear is redundant for
   // bloat and harmful for continuity. The dashboard dropdown still lets the
   // user opt back in (15/30/60/120/240 min) if they ever want it.
   const latestUserTs = pending[pending.length - 1]!.timestamp;
-  const idleRaw = getRouterState('orchestrator:context_idle_clear_minutes') || '';
+  const idleRaw = getRouterState('atlas:context_idle_clear_minutes') || '';
   const idleMin = idleRaw === '' ? 0 : (parseInt(idleRaw, 10) || 0);
-  const prevUserTs = getRouterState('orchestrator:last_user_message_at') || '';
+  const prevUserTs = getRouterState('atlas:last_user_message_at') || '';
   if (idleMin > 0 && prevUserTs) {
     const gapMin = (Date.parse(latestUserTs) - Date.parse(prevUserTs)) / 60000;
     if (gapMin > idleMin) {
-      setRouterState('orchestrator:context_clear_at', latestUserTs);
-      logger.info({ idleMin: Math.round(gapMin) }, 'Orchestrator context auto-cleared after user idle');
+      setRouterState('atlas:context_clear_at', latestUserTs);
+      logger.info({ idleMin: Math.round(gapMin) }, 'Atlas context auto-cleared after user idle');
     }
   }
-  setRouterState('orchestrator:last_user_message_at', latestUserTs);
+  setRouterState('atlas:last_user_message_at', latestUserTs);
 
   const prompt = buildPrompt(pending);
 
@@ -2100,14 +2100,13 @@ async function processOwnerMessages(): Promise<void> {
     memoryContext,
     // Output cap straight from settings (blank = the runner's default).
     maxOutputTokens: (getRouterState('local:max_output_tokens') || '').trim(),
-    orchestratorModel: (getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
-    // Atlas is the orchestrator seat, so a background atlas job is a background
-    // copy of it — but the dashboard "Atlas" row can pick a DIFFERENT model
-    // for background work (atlas:model). Blank = inherit the Warden model,
-    // so nothing drifts unless the user explicitly splits them.
-    model: (getRouterState('atlas:model') || getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
+    // Atlas IS the chat seat; this is the model that replies and runs
+    // background copies of itself (atlas:model). No fallback: the db
+    // migration moved the retired orchestrator row's value here, and the
+    // runner errors loudly if it is ever empty.
+    model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
     vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
-    // Supervisor (completion-verdict) model — blank inherits the orchestrator model in
+    // Supervisor (completion-verdict) model — blank inherits the Atlas model in
     // the runner. No ctx row: cloud/small models use their native window.
     supervisorModel: (getRouterState('supervisor:model') || '').replace(/^local:/, '') || undefined,
     // Supervisor completion verdict on/off (dashboard "Supervisor" row).
@@ -2118,11 +2117,11 @@ async function processOwnerMessages(): Promise<void> {
     irisModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
     artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
     // Sentry (software-security scanner) has its own model row; blank inherits
-    // the ORCHESTRATOR model (not the shared toolcall wire — Sentry is meant
+    // the Atlas model (not the shared toolcall wire — Sentry is meant
     // to run on the big resident model, and only diverges if explicitly set).
-    sentryModel: (getRouterState('sentry:model') || getRouterState('orchestrator:model') || '').replace(/^local:/, '') || undefined,
-    drivingForce: getRouterState('orchestrator:driving_force') || '',
-    contextClearAt: getRouterState('orchestrator:context_clear_at') || '',
+    sentryModel: (getRouterState('sentry:model') || getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
+    drivingForce: getRouterState('atlas:driving_force') || '',
+    contextClearAt: getRouterState('atlas:context_clear_at') || '',
     councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
     councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
     councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,
@@ -2154,7 +2153,7 @@ async function processOwnerMessages(): Promise<void> {
     // Mark the window BEFORE this turn's first message so the next real message
     // re-includes the stopped turn's text (see the extension above). `since`
     // still holds the pre-turn cursor value at this point.
-    setRouterState('orchestrator:stopped_turn_since', since);
+    setRouterState('atlas:stopped_turn_since', since);
     logger.info('Agent run stopped by user; no reply delivered — turn marked for requeue on next message');
     return;
   }
@@ -2164,6 +2163,7 @@ async function processOwnerMessages(): Promise<void> {
   // If result is null/empty/non-string, the agent produced no user-facing reply — drop it
   // rather than forwarding the raw envelope (e.g. '{"status":"success","result":null}') to the chat.
   let spontaneousDigest = false;
+  let turnError = '';
   try {
     const parsed = JSON.parse(rawText);
     if (parsed && typeof parsed === 'object') {
@@ -2171,6 +2171,14 @@ async function processOwnerMessages(): Promise<void> {
         rawText = cleanAgentText(parsed.result);
       } else {
         rawText = '';
+      }
+      // An error envelope ({"status":"error","result":null,"error":"…"}) is the
+      // turn's only voice — the runner already ended it. Deliver the failure as
+      // a plain fact; swallowing the `error` field left the user with total
+      // silence on every dead turn (model not found, aborted streams —
+      // 2026-09-29 / 2026-10-08: "hello" turns produced nothing at all).
+      if (parsed.status === 'error' && typeof parsed.error === 'string' && parsed.error.trim()) {
+        turnError = parsed.error.trim();
       }
       // Digest turns (inbox draining — no user message prompted them) deliver
       // through the runner's send_message path. If a user message arrived
@@ -2185,6 +2193,11 @@ async function processOwnerMessages(): Promise<void> {
     return;
   }
   if (!text) {
+    if (turnError) {
+      logger.warn({ error: turnError }, 'Agent turn errored — delivering the failure to the chat');
+      await deliverReply(`No reply was generated — the turn failed with: ${turnError}`.slice(0, 300));
+      return;
+    }
     if (output.error) {
       logger.warn(
         { error: output.error, exitCode: output.exitCode },
@@ -2201,7 +2214,7 @@ async function processOwnerMessages(): Promise<void> {
 
   // Memory writeback (Mercury's durable-memory half): distill durable facts
   // + a journal entry from this turn's conversation and append them to
-  // MEMORY.md / JOURNAL.md at WORKSPACE_ROOT — which the orchestrator loads
+  // MEMORY.md / JOURNAL.md at WORKSPACE_ROOT — which the seat loads
   // next turn. Fire-and-forget; self-throttled (15-min cooldown, ≥4 new
   // messages) and non-fatal so it can never break the message loop. Skips this
   // turn if another cleaner (Mercury compaction / an Iris digest) is running,
@@ -2229,7 +2242,7 @@ const STOP_COMMAND_RE = /^\s*(stop|cancel|abort|halt|never\s?mind|nvm|shut up)[\
 // ── Iris digest task seeding ──────────────────────────────────────────────
 // Three recurring tasks (hourly/daily/weekly) that ask Iris to compile a
 // digest and POST it to /api/summaries, feeding the dashboard digest panel.
-// The scheduler injects each prompt into the owner chat; the orchestrator
+// The scheduler injects each prompt into the owner chat; the seat
 // routes it to Iris. Cron times are deliberately off the :00 mark so the
 // fleet-wide API doesn't all hit at once. Idempotent via stable ids.
 const IRIS_DIGEST_TASKS = [
@@ -2254,8 +2267,8 @@ function seedIrisDigestTasks(): void {
   const existing = new Map((getAllTasks() ?? []).map((t) => [t.id, t]));
   for (const t of IRIS_DIGEST_TASKS) {
     const found = existing.get(t.id);
-    // The span belongs in the URL path (?span=hourly) so the orchestrator
-    // can't drop it — the first cut put it in the body and the orchestrator
+    // The span belongs in the URL path (?span=hourly) so the seat
+    // can't drop it — the first cut put it in the body and the seat
     // posted hourly digests tagged "daily", leaving the Hourly tab empty.
     // Re-sync only the PROMPT on already-seeded tasks so prompt fixes
     // propagate without deleting/recreating the task. The cron is NOT
@@ -2290,11 +2303,11 @@ function seedIrisDigestTasks(): void {
   }
 }
 
-// ── Iris digest: direct Iris spawn (no orchestrator, no chat pipeline) ──────
+// ── Iris digest: direct Iris spawn (no chat pipeline) ──────
 // runDigest(span) spawns the Iris sub-agent DIRECTLY with a grounded prompt
 // (buildDigestContext + the baked digest prompt). Iris compiles the digest and
 // publishes it to the dashboard via post_summary (keyless loopback to
-// /api/summaries). Nothing is written to the chat and the orchestrator model is
+// /api/summaries). Nothing is written to the chat and the seat model is
 // never involved — this is a hardcoded function, not a routed task. Fired by
 // checkDigestsDue() (the host poll loop's schedule monitor) and by the dashboard
 // "Generate" button (deps.triggerDigest). The three schedules + prompts live in
@@ -2568,7 +2581,7 @@ async function checkDigestsDue(): Promise<void> {
 // (adds autostart, user crontab, enabled user units, rc-file/process audit).
 // It runs with NO elevated permissions — every scan command is user-readable.
 // The agent runs the commands, JUDGES the output itself (it's an
-// orchestrator-class model that knows what a normal Linux desktop looks like),
+// agent-class model that knows what a normal Linux desktop looks like),
 // and submits once via sentry_report with its suspicious flags; THAT HOST
 // CALLBACK logs the scan row to sentry_scans and relays the flags, posting a
 // chat message ONLY when something's wrong. No baseline, no host-side diff.
@@ -2579,9 +2592,9 @@ async function checkDigestsDue(): Promise<void> {
 
 function resolveSentryModel(): string {
   // Sentry has its own model wire (sentry:model — the dashboard Sentry row).
-  // Unset, it inherits the ORCHESTRATOR model — never the shared toolcall
+  // Unset, it inherits the Atlas model — never the shared toolcall
   // wire, which is the small model this setting exists to get away from.
-  return (getRouterState('sentry:model') || getRouterState('orchestrator:model') || '')
+  return (getRouterState('sentry:model') || getRouterState('atlas:model') || '')
     .trim().replace(/^local:/, '');
 }
 
@@ -2642,8 +2655,8 @@ let sentryScanBusy = false;
 // restart made every mid-hour restart trigger an immediate scan.
 let sentryBootChecked = false;
 
-/** Fire a Sentry scan (peek or deep) as a direct background child spawn — no
- *  orchestrator, no chat pipeline. Used by checkSentryDue() for the scheduled
+/** Fire a Sentry scan (peek or deep) as a direct background child spawn —
+ *  no chat pipeline. Used by checkSentryDue() for the scheduled
  *  scans; also exported so an API route / future automation can trigger one. */
 export function runSentryScan(mode: 'peek' | 'deep'): { ok: boolean; error?: string } {
   if (!SENTRY_SCANS_ENABLED) {
@@ -2692,10 +2705,10 @@ export function runSentryScan(mode: 'peek' | 'deep'): { ok: boolean; error?: str
   return { ok: true };
 }
 
-/** True while any agent run is in flight — an orchestrator turn, a spontaneous
+/** True while any agent run is in flight — a seat turn, a spontaneous
  *  digest report-back, or a background job (atlas/vulkan/…). Sentry is
  *  deferred while this is true: its scan loads a whole second big model
- *  (sentry:model, ~17 GB) which evicts the resident orchestrator/atlas model
+ *  (sentry:model, ~17 GB) which evicts the resident Atlas model
  *  from VRAM mid-work — `keep_alive=-1` only stops idle-timeout unloads, not
  *  VRAM eviction. So Sentry waits until the machine is actually idle. */
 function wardenBusy(): boolean {
@@ -2959,7 +2972,7 @@ async function startMessageLoop(): Promise<void> {
       void checkDigestsDue();
       // Sentry schedule monitor: same poll-loop pattern — fires the hourly
       // peek / daily deep security scans directly as background sentry
-      // spawns (no chat, no orchestrator turn) when their cron is due.
+      // spawns (no chat, no seat turn) when their cron is due.
       void checkSentryDue();
       // Mercury compaction scheduler: same poll loop, time/downtime trigger.
       // Fire-and-forget; idle-gated + shared cleaner lock so it never overlaps
@@ -3005,43 +3018,37 @@ function recoverPendingMessages(): void {
  * loudly instead of falling back.
  */
 function seedPerAgentModelSettings(): void {
-  const orch = getRouterState('orchestrator:model') || '';
+  const atlas = getRouterState('atlas:model') || '';
   // MODELS ONLY. num_ctx is NEVER seeded or hardcoded here — every ctx value
   // lives in the settings (router_state local:*_ctx, written by the Agents
   // panel) and syncAgentCtxEnv copies it to the env verbatim. Baking a ctx
   // "default" here has repeatedly overridden the user's chosen settings.
   const toolcall = getRouterState('local:subagent_model')
     || getRouterState('iris:model')
-    || orch;
-  const atlas = orch; // atlas is the orchestrator seat
+    || atlas;
   const seed = (key: string, value: string) => {
     if (!getRouterState(key) && value) setRouterState(key, value);
   };
   // Seed the shared toolcall model (the real runtime source for the toolcall
   // agents: Iris, Sentry). ctx is NOT seeded — settings only.
   seed('local:subagent_model', toolcall);
-  // Orchestrator has historically been resident (keep_alive -1); materialize that
-  // as the default so the checkbox reflects reality. Atlas IS the seat now, so
-  // it gets the same resident default (it used to silently mirror orchestrator's
-  // value instead of having its own — fixed 2026-09-19). Orchestrator is a
-  // callable manager, not a resident: pinning it -1 burned a multi-minute boot
-  // load it could not keep anyway once the seat's model warmed (30b + 8b do
-  // not co-reside on this GPU) — blank → Ollama's 5-minute default. Toolcall
-  // stays unset → the runner defaults to 300 (its historic sub-agent TTL).
-  seed('local:orch_keep_alive', '');
+  // Atlas IS the seat and has historically been resident (keep_alive -1);
+  // materialize that as the default so the checkbox reflects reality.
+  // Toolcall stays unset → the runner defaults to 300 (its historic
+  // sub-agent TTL).
   seed('local:atlas_keep_alive', '-1');
   seed('local:sentry_keep_alive', '300');
   // New per-agent model keys inherit the legacy shared value.
   seed('iris:model', toolcall);
   seed('artemis:model', atlas);
-  // Existing keys that previously fell back to orchestrator at runtime — seed
+  // Existing keys that previously fell back to the seat at runtime — seed
   // them too so that runtime fallback can be removed without breaking agents.
-  seed('vulkan:model', orch);
-  seed('mercury:model', orch);
-  // Supervisor (completion-verdict) model inherits the orchestrator on first boot —
-  // no blank anywhere: every dashboard model dropdown always shows a concrete
-  // model. The user picks a small/cloud one afterward if they want.
-  seed('supervisor:model', orch);
+  seed('vulkan:model', atlas);
+  seed('mercury:model', atlas);
+  // Supervisor (completion-verdict) model inherits the seat model on first
+  // boot — no blank anywhere: every dashboard model dropdown always shows a
+  // concrete model. The user picks a small/cloud one afterward if they want.
+  seed('supervisor:model', atlas);
   // Supervisor completion verdict: on by default. Large local models
   // routinely spend 10-30 min on one task. The user can toggle it off in settings.
   seed('supervisor:enabled', 'true');
@@ -3055,10 +3062,8 @@ function seedPerAgentModelSettings(): void {
  * and again per turn (so dashboard changes take effect immediately).
  */
 export function syncAgentCtxEnv(): void {
-  process.env.ORCHESTRATOR_NUM_CTX = getRouterState('local:orchestrator_ctx') || '';
   process.env.SUBAGENT_NUM_CTX = getRouterState('local:subagent_ctx') || '';
-  process.env.ATLAS_NUM_CTX =
-    getRouterState('local:atlas_ctx') || getRouterState('local:orchestrator_ctx') || '';
+  process.env.ATLAS_NUM_CTX = getRouterState('local:atlas_ctx') || '';
   process.env.TOOLS_NUM_CTX = getRouterState('local:tools_ctx') || '';
   // Iris has its own ctx row in Settings (local:iris_ctx). Until a per-agent
   // value is saved it inherits the shared toolcall ctx (local:subagent_ctx)
@@ -3074,10 +3079,9 @@ export function syncAgentCtxEnv(): void {
   process.env.MERCURY_NUM_CTX =
     getRouterState('local:mercury_ctx') || getRouterState('local:subagent_ctx') || '';
   process.env.SENTRY_NUM_CTX =
-    getRouterState('local:sentry_ctx') || getRouterState('local:orchestrator_ctx') || '';
+    getRouterState('local:sentry_ctx') || getRouterState('local:atlas_ctx') || '';
   process.env.VISION_MODEL = getRouterState('vision:model') || '';
   // Per-agent Ollama keep_alive (-1 = resident, 300 = 5 min).
-  process.env.ORCHESTRATOR_KEEP_ALIVE = getRouterState('local:orch_keep_alive') || '';
   process.env.ATLAS_KEEP_ALIVE = getRouterState('local:atlas_keep_alive') || '';
   process.env.TOOLCALL_KEEP_ALIVE = getRouterState('local:toolcall_keep_alive') || '';
   process.env.SENTRY_KEEP_ALIVE = getRouterState('local:sentry_keep_alive') || '';
@@ -3087,7 +3091,7 @@ export function syncAgentCtxEnv(): void {
  * Fire-and-forget Ollama model warmup at boot. Every model configured to stay
  * resident (keep_alive = -1) gets a trivial /api/generate so the first real
  * message doesn't pay a multi-minute cold load. Only the models that should
- * stay resident: orchestrator, atlas, and the shared toolcall model when
+ * stay resident: atlas (the seat) and the shared toolcall model when
  * local:toolcall_keep_alive is -1. Cloud models are excluded (no VRAM to warm).
  * Retries /api/ps until Ollama is reachable (it may still be starting).
  */
@@ -3107,16 +3111,8 @@ async function warmResidentOllamaModels(): Promise<void> {
   }
 
   const candidates = [
-    // Gated on its own keep_alive like atlas/toolcall below. Pinning the
-    // orchestrator unconditionally made boot burn a multi-minute load on a
-    // manager model that the seat's warm (or plain VRAM limits) immediately
-    // evicted — the user watches 30b load and unload before anything happens
-    // (2026-09-19, granite4.2:30b + atlas 8b).
-    getRouterState('local:orch_keep_alive') === '-1' ? getRouterState('orchestrator:model') : '',
-    // Atlas IS the chat seat — it needs warming too, or the first real message
-    // pays a cold load while Orchestrator's model (which never replies unless
-    // Atlas is blank) sits resident instead. Gated on its own keep-alive like
-    // toolcall below, not unconditional like Orchestrator's.
+    // Atlas IS the chat seat — it needs warming or the first real message pays
+    // a cold load. Gated on its own keep-alive like toolcall below.
     getRouterState('local:atlas_keep_alive') === '-1'
       ? getRouterState('atlas:model')
       : '',
@@ -3136,12 +3132,8 @@ async function warmResidentOllamaModels(): Promise<void> {
       const n = parseInt(getRouterState('local:subagent_ctx') || '', 10);
       return n > 0 ? n : undefined;
     }
-    if (m === (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim()) {
-      const n = parseInt(getRouterState('local:orchestrator_ctx') || '', 10);
-      return n > 0 ? n : undefined;
-    }
     if (m === (getRouterState('atlas:model') || '').replace(/^local:/, '').trim()) {
-      const n = parseInt(getRouterState('local:atlas_ctx') || getRouterState('local:orchestrator_ctx') || '', 10);
+      const n = parseInt(getRouterState('local:atlas_ctx') || '', 10);
       return n > 0 ? n : undefined;
     }
     return undefined;

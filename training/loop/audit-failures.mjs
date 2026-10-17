@@ -86,7 +86,7 @@ log(`VRAM cleared (${unloaded.length} models unloaded, still loaded: ${stillLoad
 const CLASSIFY_SYSTEM = `You are a log analyst for Warden, an autonomous home-agent. You get a failure excerpt from the agent's run log (timestamps, tool calls, tool results). Classify the failure.
 
 Reply with ONLY valid JSON — no markdown fences, no prose — exactly this shape:
-{"failure_class":"<one of: tool_error_unrecovered | dead_end_no_tools | refusal | hallucinated_answer | infra_error | not_a_failure | other>","what_went_wrong":"<1-3 sentences>","correct_behavior":"<what the ideal assistant turn would have done>","sft_correction_hint":"<one sentence describing the corrective training example>","candidate_role":"seat or orch — orch only if the failure was in delegation/orchestration","tools_relevant":["<tool names involved>"]}
+{"failure_class":"<one of: tool_error_unrecovered | dead_end_no_tools | refusal | hallucinated_answer | infra_error | not_a_failure | other>","what_went_wrong":"<1-3 sentences>","correct_behavior":"<what the ideal assistant turn would have done>","sft_correction_hint":"<one sentence describing the corrective training example>","candidate_role":"seat — the Atlas seat owns every turn, including delegation","tools_relevant":["<tool names involved>"]}
 
 Classes:
 - tool_error_unrecovered: a tool returned an error and the turn never recovered into a correct result

@@ -45,7 +45,7 @@ export type AgentRunInput = AgentInput & {
   executableArgs?: string[];
   callbacks?: CallbackMap;
   /** When set (e.g. 'sentry'), runSubAgentBackground spawns the named sub-agent
-   *  directly instead of the orchestrator. */
+   *  directly instead of the seat. */
   agent?: string;
   chatJid?: string;
   groupFolder?: string;
@@ -55,7 +55,7 @@ export type AgentRunInput = AgentInput & {
 /**
  * Spawn a background sub-agent (e.g. Sentry, the security scanner) in a
  * FRESH child process with its OWN self-contained CALLBACK pump — it does NOT
- * touch the global `agentState`/persistent orchestrator child, so it runs
+ * touch the global `agentState`/persistent seat child, so it runs
  * alongside the main loop without clashing. Fire-and-forget: the host does not
  * await it; the child runs the sub-agent, its tool calls are handled by
  * `input.callbacks`, and it exits when done. User-facing output goes via its
@@ -68,10 +68,10 @@ export function runSubAgentBackground(input: AgentRunInput): void {
   // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
   // (the code/repo dir). The agent's file tools resolve relative paths against
   // process.cwd(); without this the child inherits the repo cwd and writes
-  // MEMORY.md / notes / uploads into the code tree where the orchestrator never
+  // MEMORY.md / notes / uploads into the code tree where the seat never
   // reads them — so conversational remembrances (Atlas appending to MEMORY.md)
   // silently vanished. Cwd-ing to WORKSPACE_ROOT keeps all agent data writes in
-  // ~/warden, matching what the orchestrator loads each turn.
+  // ~/warden, matching what the seat loads each turn.
   const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
   const callbacks = input.callbacks ?? {};
   const agentName = input.agent;
@@ -120,7 +120,7 @@ export function runSubAgentBackground(input: AgentRunInput): void {
       }
       if (line === 'CALLBACK_START') { insideCallback = true; callbackLines = []; continue; }
       // Live status from the background agent → surface in the dashboard's
-      // progress bar (shared with the orchestrator's, but labeled by phase).
+      // progress bar (shared with the seat's, but labeled by phase).
       if (line.startsWith('---WARDEN_STATUS---')) {
         try {
           const e = JSON.parse(line.slice('---WARDEN_STATUS---'.length).trim());
@@ -186,10 +186,10 @@ export function runSubAgentSync(input: AgentRunInput): Promise<{ content: string
     // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
   // (the code/repo dir). The agent's file tools resolve relative paths against
   // process.cwd(); without this the child inherits the repo cwd and writes
-  // MEMORY.md / notes / uploads into the code tree where the orchestrator never
+  // MEMORY.md / notes / uploads into the code tree where the seat never
   // reads them — so conversational remembrances (Atlas appending to MEMORY.md)
   // silently vanished. Cwd-ing to WORKSPACE_ROOT keeps all agent data writes in
-  // ~/warden, matching what the orchestrator loads each turn.
+  // ~/warden, matching what the seat loads each turn.
   const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
     const callbacks = input.callbacks ?? {};
     const agentName = input.agent;
@@ -514,7 +514,7 @@ export const liveStatus = {
   ts: 0,
 };
 
-// True while the runner child is executing an orchestrator turn — including
+// True while the runner child is executing a seat turn — including
 // SPONTANEOUS digest turns (the report-back reply after a background job
 // finishes), which run inside the persistent child with no host runAgent
 // wrapper, so agent:processing never goes true for them. Set by the first
@@ -665,7 +665,7 @@ async function handleCallback(raw: string) {
       logger.warn({ tool, error: (result as any).error }, 'agent-spawn: callback handler returned error');
     }
     // Note: a sub-agent's send_message callback must NOT suppress the
-    // orchestrator's own captured final reply — the host delivers both. So we
+    // seat's own captured final reply — the host delivers both. So we
     // no longer flip a sentMessageCallback flag here.
     writeCallbackResponse({ id, ...result });
   } catch (err: any) {
@@ -704,10 +704,10 @@ function onPersistentStdoutData(chunk: Buffer) {
       try {
         const json = line.slice('---WARDEN_STATUS---'.length).trim();
         const entry = JSON.parse(json);
-        // fg:1 marks the ORCHESTRATOR'S OWN turn status. Only fg entries drive
+        // fg:1 marks the SEAT'S OWN turn status. Only fg entries drive
         // the dashboard live label — background-job heartbeats share this
         // stdout stream and used to clobber the foreground label mid-turn
-        // (e.g. "atlas: iteration 44" showing while the orchestrator composed
+        // (e.g. "atlas: iteration 44" showing while the seat composed
         // its reply). fg entries also flag a turn in flight: spontaneous
         // digest turns (report-back replies) have no runAgent wrapper, so
         // this is the only in-flight signal the host gets for them.
@@ -760,7 +760,7 @@ function onPersistentStdoutData(chunk: Buffer) {
           return;
         }
         // Always deliver the captured output. Sub-agent send_message callbacks
-        // must not suppress the orchestrator's final reply.
+        // must not suppress the seat's final reply.
         r({ text: agentState.captured, exitCode: 0, durationMs: Date.now() - agentState.startedAt });
       }
       // Keep child alive for next turn — do NOT end stdin or kill
@@ -906,9 +906,9 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
         mkdirSync(IPC_INPUT_DIR, { recursive: true });
         // Re-sync ALL dashboard model/ctx settings to the persistent child every turn.
         // The child captured env at spawn and only got models on its first stdin payload;
-        // without this, dashboard changes never reach the running orchestrator (the
+        // without this, dashboard changes never reach the running seat (the
         // "settings didn't apply" bug). Models come from AgentInput (the host already
-        // resolved orchestrator:model); ctx overrides live in process.env, which the
+        // resolved atlas:model); ctx overrides live in process.env, which the
         // host refreshes per turn before calling runAgent.
         writeFileSync(
           `${IPC_INPUT_DIR}/msg-${Date.now()}.json`,
@@ -921,7 +921,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             pinnedTools: input.pinnedTools,
             verbose: input.verbose,
             maxOutputTokens: input.maxOutputTokens || '',
-            orchestratorModel: input.orchestratorModel,
             model: input.model,
             vulkanModel: input.vulkanModel,
             supervisorModel: input.supervisorModel,
@@ -935,7 +934,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             drivingForce: input.drivingForce || '',
             contextClearAt: input.contextClearAt || '',
             subagentModel: process.env.SUBAGENT_MODEL || '',
-            orchestratorCtx: process.env.ORCHESTRATOR_NUM_CTX || '',
             subagentCtx: process.env.SUBAGENT_NUM_CTX || '',
             atlasCtx: process.env.ATLAS_NUM_CTX || '',
             visionModel: process.env.VISION_MODEL || '',
@@ -944,7 +942,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             irisCtx: process.env.IRIS_NUM_CTX || '',
             artemisCtx: process.env.ARTEMIS_NUM_CTX || '',
             vulkanCtx: process.env.VULKAN_NUM_CTX || '',
-            orchestratorKeepAlive: process.env.ORCHESTRATOR_KEEP_ALIVE || '',
             atlasKeepAlive: process.env.ATLAS_KEEP_ALIVE || '',
             toolcallKeepAlive: process.env.TOOLCALL_KEEP_ALIVE || '',
           }),
@@ -968,10 +965,10 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
     // Run the agent in WORKSPACE_ROOT (the data dir), NOT the host's WorkingDirectory
   // (the code/repo dir). The agent's file tools resolve relative paths against
   // process.cwd(); without this the child inherits the repo cwd and writes
-  // MEMORY.md / notes / uploads into the code tree where the orchestrator never
+  // MEMORY.md / notes / uploads into the code tree where the seat never
   // reads them — so conversational remembrances (Atlas appending to MEMORY.md)
   // silently vanished. Cwd-ing to WORKSPACE_ROOT keeps all agent data writes in
-  // ~/warden, matching what the orchestrator loads each turn.
+  // ~/warden, matching what the seat loads each turn.
   const child = spawn(exe, exeArgs, { env, cwd: input.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
 
     (resolve as any).chatJid = input.chatJid || 'owner@local';
@@ -981,7 +978,6 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
     const payload = JSON.stringify({
       prompt: input.prompt,
       maxOutputTokens: input.maxOutputTokens || '',
-      orchestratorModel: input.orchestratorModel,
       model: input.model,
       vulkanModel: input.vulkanModel,
       supervisorModel: input.supervisorModel,

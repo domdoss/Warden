@@ -1,8 +1,8 @@
 /**
- * Orchestrator inbox for async sub-agent results.
+ * Seat inbox for async sub-agent results.
  *
  * Background jobs push their full results here instead of messaging the user
- * directly. The orchestrator drains unread items at turn end (or immediately
+ * directly. The seat drains unread items at turn end (or immediately
  * for urgent ones, injected mid-turn), digests them in its own voice, and can
  * chain follow-up tasks. Raw outputs stay retrievable via read_job_result.
  *

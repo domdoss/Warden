@@ -34,7 +34,7 @@ const PLASMA_SERVER_PATH = path.join(
 // playwright MCP server in the seed.
 const DEFAULT_SEED: McpServerConfig[] = [
   {
-    // MARM is a default component (since 2026-09-22): the orchestrator's
+    // MARM is a default component (since 2026-09-22): the seat's
     // long-term semantic memory. Install.sh provisions the server + service;
     // on a box without it the boot-connect failure is caught per server and
     // only this entry is skipped — Warden runs identically.

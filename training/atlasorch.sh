@@ -2,7 +2,7 @@
 # Full ORCHATLAS fine-tune run, end to end:
 #   venv check  →  seq-length measure  →  train (both RTX 5000s)  →  pack to Ollama ("orchatlas-ft")
 #
-# One LoRA on granite-4.2-8b for the MERGED orchestrator+atlas seat: the seat
+# One LoRA on granite-4.2-8b for the orchatlas seat: the seat that talks to
 # that talks to the captain, drives the machine with its own hands, and hands
 # the rest to the crew (iris, vulkan, artemis, sentry, the Council). Data is
 # training/orchatlas-sft.jsonl — the hand-written part files under
@@ -69,6 +69,10 @@ if [ ! -x "$PY" ]; then
 fi
 # Reduce CUDA fragmentation on the 16 GB cards (set before torch inits).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# GPU-to-GPU P2P over PCIe hangs NCCL on this box since the 2026-10-14 driver
+# update (all_reduce spins forever at 100% util, ~80 W, no memory growth).
+# Routing through host memory works and costs little for LoRA gradients.
+export NCCL_P2P_DISABLE=1
 
 # ---- GPU sanity ----------------------------------------------------------
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -201,11 +205,9 @@ phase "packing → Ollama model $OLLAMA_NAME"
 # ---- done ----------------------------------------------------------------
 phase "DONE"
 cat <<EOF
-Next: point the merged seat at the fine-tune and try it.
-  1. Dashboard model settings → set the Warden (orchestrator) model to
-     "$OLLAMA_NAME". In Few mode the chat runs directly on the Atlas model, so
-     set that row too if you are testing Few. Models are dashboard-selected in
-     memory, never env — see memory feedback-models-not-in-env.
+Next: point the seat at the fine-tune and try it.
+  1. Dashboard model settings → set the Atlas model to
+     "$OLLAMA_NAME" — Atlas is the seat, so this row is the chat model.
   2. Watch the first few turns in /opt/Warden/logs/warden.log: the things this
      dataset trains that stock granite does not know are the internal ones —
      artemis for "what went wrong", the Council for a hard call, MCP installs

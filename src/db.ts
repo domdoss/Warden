@@ -435,6 +435,42 @@ export function initDatabase(): void {
     }
     db.prepare('DELETE FROM router_state WHERE key = ?').run('global:default_model');
   }
+
+  // Orchestrator retirement (2026-10-13): the `orch` sub-agent and its
+  // `orchestrator:*` settings namespace are gone — Atlas is the seat. One-shot
+  // value moves, then the old keys are deleted so there is a single source of
+  // truth. Copies only when the new key is empty, so nothing the user already
+  // set is lost.
+  const orchModel = getRouterState('orchestrator:model');
+  if (orchModel !== undefined) {
+    if (!getRouterState('atlas:model')) setRouterState('atlas:model', orchModel);
+    db.prepare('DELETE FROM router_state WHERE key = ?').run('orchestrator:model');
+  }
+  const orchCtx = getRouterState('local:orchestrator_ctx');
+  if (orchCtx !== undefined) {
+    if (!getRouterState('local:atlas_ctx')) setRouterState('local:atlas_ctx', orchCtx);
+    db.prepare('DELETE FROM router_state WHERE key = ?').run('local:orchestrator_ctx');
+  }
+  // Dead knobs: the orch residency knob (orch was never pinned) and a
+  // write-only ollama-server setting no code ever read.
+  db.prepare('DELETE FROM router_state WHERE key = ?').run('local:orch_keep_alive');
+  db.prepare('DELETE FROM router_state WHERE key = ?').run('orchestrator:ollama_server');
+  // Seat-context lifecycle keys renamed to the atlas: namespace (Atlas is the
+  // seat; the orchestrator name is retired). Same shape: copy the value across
+  // only when the new key is empty, then delete the old key.
+  for (const [oldKey, newKey] of [
+    ['orchestrator:driving_force', 'atlas:driving_force'],
+    ['orchestrator:context_idle_clear_minutes', 'atlas:context_idle_clear_minutes'],
+    ['orchestrator:context_clear_at', 'atlas:context_clear_at'],
+    ['orchestrator:last_user_message_at', 'atlas:last_user_message_at'],
+    ['orchestrator:stopped_turn_since', 'atlas:stopped_turn_since'],
+  ] as const) {
+    const v = getRouterState(oldKey);
+    if (v !== undefined) {
+      if (!getRouterState(newKey)) setRouterState(newKey, v);
+      db.prepare('DELETE FROM router_state WHERE key = ?').run(oldKey);
+    }
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */

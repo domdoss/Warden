@@ -40,10 +40,9 @@ export interface AgentInput {
   prompt: string;
   /** Max tokens one model reply may generate (settings: local:max_output_tokens). Blank = the runner's default. */
   maxOutputTokens?: string;
-  orchestratorModel?: string; // Warden (orchestrator) model
-  model?: string;             // Atlas model
+  model?: string;             // Atlas — the chat seat's model
   vulkanModel?: string;    // Vulkan (coding) model
-  supervisorModel?: string; // Supervisor (completion-verdict) model; blank = inherit orchestrator
+  supervisorModel?: string; // Supervisor (completion-verdict) model; blank = inherit Atlas
   supervisorEnabled?: boolean; // Supervisor completion verdict on/off (default true)
   // Per-agent models — every agent has its own concrete model selected from the
   // Agents-panel dropdown (no blank, no runtime fallback). The host resolves each
@@ -51,8 +50,8 @@ export interface AgentInput {
   irisModel?: string;
   artemisModel?: string;
   sentryModel?: string;
-  drivingForce?: string;        // orchestrator preamble preset id (data/driving-forces/)
-  contextClearAt?: string;      // ISO timestamp; orchestrator history before this is dropped
+  drivingForce?: string;        // seat preamble preset id (data/driving-forces/)
+  contextClearAt?: string;      // ISO timestamp; seat history before this is dropped
   councilSkepticModel?: string;     // Council Skeptic seat model (optional, falls back to model)
   councilPragmatistModel?: string;   // Council Pragmatist seat model
   councilSynthesistModel?: string;  // Council Synthesist seat model

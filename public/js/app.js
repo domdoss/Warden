@@ -4,7 +4,7 @@
  * single-user Warden dashboard:
  *   GET    /api/status              — verbose bar, agent activity, metrics
  *   GET    /api/settings           — load settings
- *   POST   /api/settings           — save settings (orchestrator/atlas/council/ctx/...)
+ *   POST   /api/settings           — save settings (atlas/agents/council/ctx/...)
  *   GET    /api/messages?jid&since&limit&idea
  *   POST   /api/messages            — { text, jid, sender_name, model, thinking, idea, verbose }
  *   GET    /api/ollama/test         — list of local models, friendly names, cloud models, thinking
@@ -273,7 +273,7 @@
     if (name === 'tasks') refreshTasks();
     else if (name === 'skills') { refreshSkills(); refreshMcp(); }
     else if (name === 'activity') refreshActivity();
-    else if (name === 'training') { refreshTrainingStatus(); refreshTrainingCatalogs(); }
+    else if (name === 'training') setTrainingTab(STATE.trainingTab || 'loop');
     else if (name === 'alphastack') refreshAlphaStack();
     else if (name === 'security') refreshSecurity();
     else if (name === 'logs') refreshProcessLogs();
@@ -359,7 +359,7 @@
   // ── Oversight window ──
   // Structured view of what is happening right now — one row per running
   // background job (from /api/status.jobs, emitted by the runner's
-  // emitJobsStatus heartbeat), one row for the foreground orchestrator while
+  // emitJobsStatus heartbeat), one row for the foreground seat while
   // a user turn runs, and the supervisor's latest note. Nothing spews raw
   // "iteration N — thinking" events; when nothing runs it's a single quiet
   // line. Poll-driven (pollStatus every 5s).
@@ -382,7 +382,7 @@
       dot = $('oversightDot'), countEl = $('oversightCount');
     if (!panel || !rowsEl) return;
     const rows = [];
-    // Foreground: the orchestrator working on a user message right now.
+    // Foreground: the seat working on a user message right now.
     const fg = (d.groups || []).find(g => g.active && !g.idle);
     if (fg) {
       const label = (fg.liveLabel || fg.livePhase || 'working on your message').replace(/^Warden is (generating|thinking)[.…]*$/i, 'composing a reply…');
@@ -642,7 +642,7 @@
   }
 
   async function newThought() {
-    // Tell the server to drop the orchestrator's in-memory context so the
+    // Tell the server to drop the seat's in-memory context so the
     // next message starts fresh (the agent-runner resets when it sees the
     // context-clear marker change), then reset the chat view.
     try {
@@ -901,7 +901,7 @@
     // Cloud tags end in :cloud; everything else is local. No hardcoded cloud list.
     const orchHtml = buildModelOptions(models, fn, m => m);
     const anyModelHtml = buildModelOptions(models, fn, m => m, { inherit: true });
-    // Driving-force presets (orchestrator preamble) — from data/driving-forces/.
+    // Driving-force presets (seat preamble) — from data/driving-forces/.
     // '' = Warden default (the built-in preamble, preserves the dynamic name).
     const drivingForceHtml = '<option value="">Warden (default)</option>' +
       (d.drivingForces || []).map(p => modelOption(p.id, p.label)).join('');
@@ -949,28 +949,14 @@
 
       <div class="setting-card">
         <h3>Model Configuration</h3>
-        <div class="hint"><b>Atlas</b> is the one seat you talk to: it replies <em>and</em> does the work itself — browser, desktop, files, shell, web. Long jobs run as a background copy of it, on these same settings. Orchestrator is Atlas's fallback model when Atlas is left blank. Supervisor runs the checks on background jobs (small/cloud model recommended). Artemis is the read-only audit seat. Vulkan codes. Orch is the manager: coordinates specialists for a big or multi-part task. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management, and email always routes there. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
-        <div class="setting-row"><label>Orchestrator</label>
-          <select class="select" id="sOrchestrator">${orchHtml}</select>
-        </div>
-        <div class="setting-row"><label>Orchestrator Ollama</label>
-          <select class="select" id="sOrchestratorOllamaServer"></select>
-          <span class="dim mono" style="font-size:10px">blank = default server</span>
-        </div>
-        <div class="setting-row"><label>Orchestrator ctx</label>
-          <select class="select small" id="sOrchestratorCtx">${buildCtxOptions(d.orchestratorCtx)}</select>
-          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
-        </div>
-        <div class="setting-row"><label>Orchestrator keep alive</label>
-          <label class="check"><input type="checkbox" id="sOrchKeepAlive"> hold model in VRAM between turns (no reload)</label>
-        </div>
+        <div class="hint"><b>Atlas</b> is the one seat you talk to: it replies <em>and</em> does the work itself — browser, desktop, files, shell, web — and it owns multi-specialist chains: it calls the specialists directly (Vulkan, Iris, Artemis, Sentry) and verifies each result. Long jobs run as a background copy of it, on these same settings. Supervisor runs the checks on background jobs (small/cloud model recommended). Artemis is the read-only audit seat. Vulkan codes. The Council uses three separate seats. Iris is the single <b>Toolcall agent</b> — the fast local agent for email, scheduling, and work management, and email always routes there. Mercury (memory) and Oculus (awareness) have their own rows below.</div>
         <div class="setting-row"><label>Atlas</label>
-          <select class="select" id="sAtlas"><option value="">— inherit Orchestrator —</option>${orchHtml}</select>
-          <span class="dim mono" style="font-size:10px">Atlas IS the seat — set this and it's the model that replies to you. Blank = the Orchestrator row above replies instead.</span>
+          <select class="select" id="sAtlas">${orchHtml}</select>
+          <span class="dim mono" style="font-size:10px">Atlas IS the seat — this model replies to you and runs every turn.</span>
         </div>
         <div class="setting-row"><label>Atlas ctx</label>
           <select class="select small" id="sAtlasCtx">${buildCtxOptions(d.atlasCtx)}</select>
-          <span class="dim mono" style="font-size:10px">blank = inherit Orchestrator ctx</span>
+          <span class="dim mono" style="font-size:10px">common values; blank = model default</span>
         </div>
         <div class="setting-row"><label>Atlas keep alive</label>
           <label class="check"><input type="checkbox" id="sAtlasKeepAlive"> hold model in VRAM between turns (no reload)</label>
@@ -981,7 +967,7 @@
         </div>
         <div class="setting-row"><label>Driving force</label>
           <select class="select" id="sDrivingForce">${drivingForceHtml}</select>
-          <span class="dim mono" style="font-size:10px">orchestrator persona; switching clears context</span>
+          <span class="dim mono" style="font-size:10px">seat persona; switching clears context</span>
         </div>
         <div class="setting-row"><label>Artemis</label>
           <select class="select" id="sArtemis">${orchHtml}</select>
@@ -1182,7 +1168,6 @@
         sel.value = v;
       }
     };
-    setSelect('sOrchestrator', d.orchestratorModel || d.globalDefaultModel || '');
     setSelect('sArtemis', (d.artemisModel || '').replace(/^local:/, ''));
     setSelect('sSentry', (d.sentryModel || '').replace(/^local:/, ''));
     setSelect('sSentryCtx', d.sentryCtx || '');
@@ -1285,7 +1270,6 @@
       };
     })();
     // Keep-alive checkboxes: -1 = resident (checked), 300 = 5 min (unchecked).
-    $('sOrchKeepAlive').checked = d.orchestratorKeepAlive === '-1';
     $('sAtlasKeepAlive').checked = d.atlasKeepAlive === '-1';
     $('sToolcallKeepAlive').checked = d.toolcallKeepAlive === '-1';
     setSelect('sContextIdleClear', d.contextIdleClearMinutes || '0');
@@ -1302,7 +1286,6 @@
       }
       _sel.value = _tz;
     })();
-    setSelect('sOrchestratorCtx', d.orchestratorCtx || '');
     setSelect('sAtlas', (d.atlasModel || '').replace(/^local:/, ''));
     setSelect('sAtlasCtx', d.atlasCtx || '');
     setSelect('sMaxOutput', d.maxOutputTokens || '');
@@ -1344,7 +1327,6 @@
       const opt = Array.from(sel.options).find(o => o.value === v);
       if (opt) sel.value = v;
     };
-    fillAgentServerSelect('sOrchestratorOllamaServer', d.orchestratorOllamaServer || '');
     fillAgentServerSelect('sVulkanOllamaServer', d.vulkanOllamaServer || '');
     fillAgentServerSelect('sOculusOllamaServer', d.oculusOllamaServer || '');
 
@@ -1452,7 +1434,6 @@
       const stripLocal = (v) => (v || '').replace(/^local:/, '');
       const prevDrivingForce = (STATE.cachedSettings && STATE.cachedSettings.drivingForce) || '';
       const body = {
-        globalDefaultModel: stripLocal($('sOrchestrator').value),
         artemisModel: stripLocal($('sArtemis').value),
         sentryModel: stripLocal($('sSentry').value),
         sentryCtx: $('sSentryCtx').value,
@@ -1472,7 +1453,6 @@
         contextIdleClearMinutes: $('sContextIdleClear').value,
         mercuryIntervalMinutes: $('sMercuryInterval').value,
         mercuryDowntimeMinutes: $('sMercuryDowntime').value,
-        orchestratorCtx: $('sOrchestratorCtx').value,
         atlasModel: stripLocal($('sAtlas').value),
         atlasCtx: $('sAtlasCtx').value,
         maxOutputTokens: $('sMaxOutput').value,
@@ -1480,17 +1460,15 @@
         vulkanCtx: $('sVulkanCtx').value,
         subagentCtx: $('sToolcallCtx').value,
         ollamaUrl: $('sOllamaUrl').value,
-        orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
         oculusOllamaServer: $('sOculusOllamaServer').value,
-        orchestratorKeepAlive: $('sOrchKeepAlive').checked ? '-1' : '300',
         atlasKeepAlive: $('sAtlasKeepAlive').checked ? '-1' : '300',
         toolcallKeepAlive: $('sToolcallKeepAlive').checked ? '-1' : '300',
       };
       await postJson('/api/settings', body);
       st.textContent = 'saved'; st.className = 'status ok';
       toast('Model configuration saved', 'success');
-      // Switching the driving force clears the orchestrator's context on the
+      // Switching the driving force clears the seat's context on the
       // server; reset the chat view to reflect the fresh conversation.
       if (body.drivingForce !== prevDrivingForce) {
         try { await loadSettingsValues(); } catch (e) { /* settings will reload next open */ }
@@ -1524,7 +1502,6 @@
         transcriptionApiUrl: $('sTranscriptionApiUrl').value.trim(),
         ollamaDefaultServerId: defIdx >= 1 && defIdx <= 3 ? slotIds[defIdx - 1] : '',
         ollamaServers,
-        orchestratorOllamaServer: $('sOrchestratorOllamaServer').value,
         vulkanOllamaServer: $('sVulkanOllamaServer').value,
         oculusOllamaServer: $('sOculusOllamaServer').value,
       };
@@ -2474,7 +2451,7 @@
       const d = await postJson('/api/training/stop', {});
       if (!d.ok) { toast(d.error || 'Stop failed', 'error'); return; }
       toast('Stopped ' + d.stopped, 'info');
-      refreshTrainingStatus();
+      if (STATE.trainingTab === 'bot') refreshBotStatus(); else refreshTrainingStatus();
     } catch (e) {
       toast('Stop failed: ' + e.message, 'error');
     }
@@ -2709,6 +2686,177 @@
     }
   }
 
+  // ============================================================= Custom chatbot
+  // Intake form → Save (installs the chosen granite base into the HF cache in
+  // the background when it's missing) → granite writes persona pairs → Train
+  // packs a LoRA as the Ollama model "<slug>-bot". Steps run server-side.
+  const BOT_FIELDS = { name: 'botName', owner: 'botOwner', what_it_is: 'botWhatItIs', what_it_does: 'botWhatItDoes', who_for: 'botWhoFor', personality: 'botPersonality', handoff: 'botHandoff' };
+  const BOT = { slug: '', pairs: [], bases: [], running: null, pulls: [], pullTails: {}, timer: null };
+  function setTrainingTab(tab) {
+    STATE.trainingTab = tab;
+    qsa('#view-training .tr-tab').forEach(b => b.classList.toggle('active', b.dataset.trtab === tab));
+    qsa('#view-training [data-trpanel]').forEach(p => p.classList.toggle('hidden', p.dataset.trpanel !== tab));
+    $('trainingSub').textContent = tab === 'bot'
+      ? 'Intake form → granite writes persona pairs → LoRA on a granite base'
+      : 'Audit logs → modify SFT data → train one epoch';
+    if (tab === 'bot') refreshBot(!$('botName').value && !BOT.slug);
+    else { refreshTrainingStatus(); refreshTrainingCatalogs(); }
+  }
+  function renderBotBases(selected) {
+    const sel = $('botBase');
+    const cur = selected || sel.value || (BOT.bases[0] && BOT.bases[0].key) || '';
+    sel.innerHTML = BOT.bases.map(b =>
+      `<option value="${escAttr(b.key)}">${esc(b.label)}${b.cached ? '' : b.installing ? ' — installing…' : ' — not installed'}</option>`).join('');
+    sel.value = cur;
+    paintBotBaseNote();
+  }
+  function paintBotBaseNote() {
+    const b = BOT.bases.find(x => x.key === $('botBase').value);
+    const note = $('botBaseNote');
+    note.dataset.state = !b ? '' : b.cached ? 'ok' : b.installing ? 'running' : 'warn';
+    note.textContent = !b ? ''
+      : b.cached ? `${b.hf} · installed (${(b.bytes / 1e9).toFixed(1)} GB)`
+      : b.installing ? `${b.hf} · installing${BOT.pullTails[b.key] ? ' — ' + BOT.pullTails[b.key] : ''}`
+      : `${b.hf} · installs when you save`;
+    paintBotButtons();
+  }
+  function paintBotButtons() {
+    const base = BOT.bases.find(x => x.key === $('botBase').value);
+    const train = $('btnBotTrain');
+    $('btnBotGenerate').disabled = !!BOT.running;
+    const panel = document.querySelector('[data-trpanel="bot"]');
+    if (panel) panel.classList.toggle('bot-busy', !!(BOT.running || (BOT.pulls && BOT.pulls.length)));
+    paintBotReady();
+    train.disabled = !!BOT.running || !BOT.slug || !BOT.pairs.length || !(base && base.cached);
+    train.title = !base || base.cached ? '' : base.label + (base.installing ? ' is still installing' : ' is not installed — save to install it');
+  }
+  function paintBotReady() {
+    const el = $('botReady');
+    if (!el) return;
+    const ids = Object.values(BOT_FIELDS);
+    const n = ids.filter(id => $(id).value.trim()).length;
+    el.textContent = `${n}/${ids.length} filled`;
+    el.dataset.state = n === ids.length ? 'ok' : n ? 'warn' : '';
+  }
+  function botCatClass(c) {
+    let h = 0;
+    for (const ch of String(c)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return 'bc' + (h % 5);
+  }
+  function renderBotPairs() {
+    const el = $('botPairs');
+    if (!BOT.pairs.length) {
+      el.innerHTML = '<div class="bot-empty">No pairs yet — fill in the intake and generate.</div>';
+    } else {
+      el.innerHTML = `<div class="bot-pairs-head">${BOT.pairs.length} pairs</div>` + BOT.pairs.map((p, i) =>
+        `<div class="bot-pair"><div class="u"><b>USER</b>${esc(p.user)}</div><div class="a"><b>BOT</b>${esc(p.assistant)}</div>` +
+        `<div class="x">${p.category ? `<span class="tr-badge bot-cat ${botCatClass(p.category)}">${esc(p.category)}</span>` : ''}` +
+        `<button class="btn btn-ghost btn-sm" data-drop="${i}" title="Remove this pair">✕</button></div></div>`).join('');
+      el.querySelectorAll('[data-drop]').forEach(b => b.onclick = () => dropBotPair(parseInt(b.dataset.drop, 10)));
+    }
+    paintBotButtons();
+  }
+  Object.values(BOT_FIELDS).forEach(id => { const el = $(id); if (el) el.addEventListener('input', paintBotReady); });
+  async function dropBotPair(i) {
+    try {
+      const d = await postJson('/api/training/chatbot/pairs', { slug: BOT.slug, remove: [i] });
+      if (!d.ok) { toast(d.error || 'Remove failed', 'error'); return; }
+      BOT.pairs.splice(i, 1);
+      renderBotPairs();
+    } catch (e) { toast('Remove failed: ' + e.message, 'error'); }
+  }
+  // fillForm: load the selected bot's saved intake into the form (on bot
+  // switch); polling refreshes leave the fields alone so typing isn't clobbered.
+  async function refreshBot(fillForm) {
+    try {
+      const d = await api('/api/training/chatbot' + (BOT.slug ? '?slug=' + encodeURIComponent(BOT.slug) : ''));
+      if (!d.ok) { toast(d.error || 'Chatbot load failed', 'error'); return; }
+      BOT.bases = d.bases || [];
+      const sel = $('botSelect');
+      sel.innerHTML = '<option value="">+ New chatbot</option>' +
+        (d.bots || []).map(b => `<option value="${escAttr(b.slug)}">${esc(b.name)}</option>`).join('');
+      sel.value = BOT.slug;
+      const bot = d.bot;
+      if (fillForm) {
+        const f = (bot && bot.intake && bot.intake.fields) || {};
+        for (const [k, id] of Object.entries(BOT_FIELDS)) $(id).value = f[k] || '';
+        paintBotReady();
+      }
+      renderBotBases(fillForm && bot && bot.intake ? bot.intake.base : null);
+      BOT.pairs = (bot && bot.pairs) || [];
+      renderBotPairs();
+      const t = bot && bot.trained;
+      $('botTrained').textContent = t ? `trained → ollama ${t.model} · ${t.base} · ${t.pairs} pairs · ${fmtTrainingTs(t.trained_at)}` : '';
+      refreshBotStatus();
+    } catch (e) {
+      toast('Chatbot load failed: ' + e.message, 'error');
+    }
+  }
+  async function refreshBotStatus() {
+    const tail = $('botTail');
+    try {
+      const d = await api('/api/training/status?group=bot');
+      const atBottom = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 24;
+      tail.textContent = d.tail || '(no step has run yet)';
+      if (atBottom || d.running) tail.scrollTop = tail.scrollHeight;
+      $('botLogStep').textContent = d.step ? '· ' + d.step.replace(/^bot-/, '') : '';
+      const pulls = d.pulls || [];
+      // A step or an install just ended → reload pairs / install state.
+      const finished = (BOT.running && BOT.running !== d.running) || BOT.pulls.some(k => !pulls.includes(k));
+      BOT.running = d.running;
+      BOT.pulls = pulls;
+      BOT.pullTails = d.pullTails || {};
+      BOT.bases.forEach(b => { b.installing = pulls.includes(b.key); });
+      renderBotBases();
+      setTrainingStatus(d.running ? d.running + ' running' : pulls.length ? 'installing ' + pulls.join(', ') : 'idle',
+        d.running || pulls.length ? 'running' : 'idle');
+      $('btnTrainingStop').disabled = !d.running;
+      if (finished) refreshBot(false);
+      if ((d.running || pulls.length) && !BOT.timer) BOT.timer = setInterval(refreshBotStatus, 4000);
+      if (!d.running && !pulls.length && BOT.timer) { clearInterval(BOT.timer); BOT.timer = null; }
+    } catch (e) {
+      tail.textContent = 'Failed: ' + e.message;
+    }
+  }
+  async function saveBot() {
+    const fields = {};
+    for (const [k, id] of Object.entries(BOT_FIELDS)) fields[k] = $(id).value;
+    const d = await postJson('/api/training/chatbot/save', { slug: BOT.slug || undefined, fields, base: $('botBase').value });
+    if (d.slug) BOT.slug = d.slug;
+    if (!d.ok) { toast(d.error || 'Save failed', 'error'); return null; }
+    const base = BOT.bases.find(x => x.key === $('botBase').value);
+    if (d.installing && base && !base.installing) toast(`Installing ${base.label} in the background`, 'info');
+    return d;
+  }
+  async function startBotStep(route, body) {
+    const d = await postJson('/api/training/chatbot/' + route, body);
+    if (!d.ok) {
+      $('botTail').textContent = d.error || 'failed to start';
+      toast(d.error || 'Failed to start', 'error');
+      return;
+    }
+    BOT.running = d.step;
+    paintBotButtons();
+    refreshBotStatus();
+  }
+  async function onBotSave() {
+    try { if (await saveBot()) { toast('Intake saved', 'info'); refreshBot(false); } }
+    catch (e) { toast('Save failed: ' + e.message, 'error'); }
+  }
+  async function onBotGenerate() {
+    try {
+      if (!(await saveBot())) return;
+      await startBotStep('generate', { slug: BOT.slug, count: parseInt($('botCount').value, 10) || 100 });
+    } catch (e) { toast('Generate failed: ' + e.message, 'error'); }
+  }
+  async function onBotTrain() {
+    if (!confirm('Train this chatbot? This clears VRAM and takes a while.')) return;
+    try {
+      if (!(await saveBot())) return;
+      await startBotStep('train', { slug: BOT.slug });
+    } catch (e) { toast('Train failed: ' + e.message, 'error'); }
+  }
+
   // ============================================================= Help modal
   function showModal(title, bodyHtml) {
     $('genericModalTitle').textContent = title;
@@ -2802,7 +2950,7 @@
       title: 'Welcome',
       body: `
         <h2>This is Warden.</h2>
-        <p>Warden is a <strong>personal hybrid agent</strong> — one orchestrator model that replies to you, plus a fleet of specialist sub-agents (Atlas, Iris, Artemis, The Council) it can delegate to. It can read files, run code, open browsers, send email, and schedule tasks on your machine.</p>
+        <p>Warden is a <strong>personal hybrid agent</strong> — one seat, <strong>Atlas</strong>, that replies to you and does the work itself, plus a fleet of specialist sub-agents (Vulkan, Iris, Artemis, Sentry, The Council) it can call on. It can read files, run code, open browsers, send email, and schedule tasks on your machine.</p>
         <p>There's a learning curve. Warden responds best to <em>actionable requests</em>, not conversation. The next few screens cover the essentials. You can also read the standalone guides:</p>
         <div class="topics">
           <a href="/help/not-a-chatbot.html" target="_blank">Not a chatbot</a>
@@ -2819,9 +2967,8 @@
       title: 'The agents',
       body: `
         <h2>Atlas is the seat, several specialists on call.</h2>
-        <p>Atlas is the model you're chatting with — it does the work itself (browser, desktop, files, shell, web) and only hands off what isn't its lane. A specialist reports back as a chat message when it lands.</p>
+        <p>Atlas is the model you're chatting with — it does the work itself (browser, desktop, files, shell, web) and runs multi-part tasks its own way: it calls the specialists one piece at a time and checks each result. A specialist reports back as a chat message when it lands.</p>
         <ul>
-          <li><strong>Orch</strong> — the manager: for a big or multi-part task, decomposes it and coordinates the other specialists.</li>
           <li><strong>Vulkan</strong> — coding, scripting, building, heavy bash.</li>
           <li><strong>Iris</strong> — email (read; send if enabled) + scheduling (reminders, calendar) + work management (tasks, projects, blockers, financials).</li>
           <li><strong>Artemis</strong> — read-only auditor / reviewer.</li>
@@ -3156,6 +3303,12 @@
       if (confirm('Train 1 epoch? This clears VRAM and takes a long time.'))
         startTrainingStep('train', {});
     });
+    qsa('#view-training .tr-tab').forEach(b => b.addEventListener('click', () => setTrainingTab(b.dataset.trtab)));
+    $('botSelect').addEventListener('change', e => { BOT.slug = e.target.value; refreshBot(true); });
+    $('botBase').addEventListener('change', paintBotBaseNote);
+    $('btnBotSave').addEventListener('click', onBotSave);
+    $('btnBotGenerate').addEventListener('click', onBotGenerate);
+    $('btnBotTrain').addEventListener('click', onBotTrain);
     $('btnTrainingStop').addEventListener('click', () => {
       if (confirm('Stop the running training step? An aborted train leaves a partial adapter.'))
         stopTraining();

@@ -7,7 +7,7 @@
  * session-store scaffolding with something small that actually runs.
  *
  * MEMORY.md and JOURNAL.md live at WORKSPACE_ROOT — the same place the
- * orchestrator loads them from every turn (host memoryContext + agent-runner
+ * the seat loads them from every turn (host memoryContext + agent-runner
  * journalSection) and the same place Mercury writes MERCURY_MEMORY.md. So the
  * distilled facts are visible to the agent on the very next turn. (An earlier
  * version wrote to groups/<folder>/, which the agent never reads — that was a
@@ -44,12 +44,12 @@ const lastWriteback: Record<string, { ts: number; lastMessageTs: string }> = {};
 /**
  * Resolve the distill model. The dashboard Settings rows are the ONLY source
  * of model selection — no env override, no hardcoded fallback. Falls back from
- * the Mercury row to the Orchestrator row (both are user-set settings), and if
+ * the Mercury row to the Atlas row (both are user-set settings), and if
  * both are blank writeback no-ops rather than silently distilling on a model
  * the user never chose.
  */
 function resolveMemoryModel(): string {
-  return (getRouterState('mercury:model') || getRouterState('orchestrator:model') || '')
+  return (getRouterState('mercury:model') || getRouterState('atlas:model') || '')
     .replace(/^local:/, '')
     .trim();
 }
@@ -57,17 +57,17 @@ function resolveMemoryModel(): string {
 /**
  * Don't evict a resident model to distill memory. Writeback is background
  * housekeeping, but its model (the toolcall fine-tune) is not the one in VRAM,
- * so asking for it makes Ollama unload the 17 GB orchestrator/atlas model —
+ * so asking for it makes Ollama unload the 17 GB atlas model —
  * and the next user turn pays an ~85s cold reload. Measured 2026-09-18 13:16:
  * atlas finishes a song, writeback pulls the small model in, granite is gone.
- * When the configured model is not already loaded and the orchestrator's IS,
+ * When the configured model is not already loaded and the seat's IS,
  * distill on the resident one instead. Same work, no eviction. Settings are
  * untouched — this only picks which of the user's own models answers now.
  */
 async function residentOrConfiguredModel(wanted: string): Promise<string> {
-  const orch = (getRouterState('orchestrator:model') || '').replace(/^local:/, '').trim();
-  if (!orch || orch === wanted) return wanted;
-  if (/cloud/i.test(wanted) || /cloud/i.test(orch)) return wanted; // cloud holds no VRAM
+  const atlas = (getRouterState('atlas:model') || '').replace(/^local:/, '').trim();
+  if (!atlas || atlas === wanted) return wanted;
+  if (/cloud/i.test(wanted) || /cloud/i.test(atlas)) return wanted; // cloud holds no VRAM
   try {
     const res = await fetch(`${OLLAMA_URL}/api/ps`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) return wanted;
@@ -76,9 +76,9 @@ async function residentOrConfiguredModel(wanted: string): Promise<string> {
     if (loaded.length === 0) return wanted;
     const has = (n: string) => loaded.some((l) => l === n || l.replace(/:latest$/, '') === n.replace(/:latest$/, ''));
     if (has(wanted)) return wanted;
-    if (has(orch)) {
-      logger.info({ wanted, using: orch }, 'Memory writeback: configured model not resident — distilling on the loaded model instead of evicting it');
-      return orch;
+    if (has(atlas)) {
+      logger.info({ wanted, using: atlas }, 'Memory writeback: configured model not resident — distilling on the loaded model instead of evicting it');
+      return atlas;
     }
     return wanted;
   } catch {
@@ -196,7 +196,7 @@ interface Distilled {
 //
 // Every fact the distiller appends to MEMORY.md is also logged into the MARM
 // memory server (hybrid BM25+semantic recall + concept graph) so the
-// orchestrator can retrieve it later via the marm_smart_recall MCP tool.
+// the seat can retrieve it later via the marm_smart_recall MCP tool.
 // MARM speaks MCP streamable-HTTP on loopback:8001 — one initialize, one
 // tools/call. The whole mirror is fire-and-forget with a short timeout: if
 // MARM is down or slow, writeback is completely unaffected. Only the first
@@ -429,7 +429,7 @@ async function compactJournalFile(journalPath: string, model: string): Promise<v
 /**
  * Distill the recent conversation into MEMORY.md / JOURNAL.md appends.
  * Call after a successful chat turn; safe to fire-and-forget. Writes to
- * WORKSPACE_ROOT so the orchestrator sees the new facts next turn.
+ * WORKSPACE_ROOT so the seat sees the new facts next turn.
  */
 export async function runMemoryWriteback(chatJid: string): Promise<void> {
   try {
@@ -452,7 +452,7 @@ export async function runMemoryWriteback(chatJid: string): Promise<void> {
     lastWriteback[chatJid] = { ts: Date.now(), lastMessageTs: newest };
 
     const configured = resolveMemoryModel();
-    if (!configured) return; // no Mercury/Orchestrator model set in Settings — never fall back to a hardcoded model
+    if (!configured) return; // no Mercury/Atlas model set in Settings — never fall back to a hardcoded model
     const model = await residentOrConfiguredModel(configured);
     const memoryPath = path.join(WORKSPACE_ROOT, 'MEMORY.md');
     const journalPath = path.join(WORKSPACE_ROOT, 'JOURNAL.md');

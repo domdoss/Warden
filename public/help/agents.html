@@ -107,7 +107,7 @@
     text-align: center; font-family: var(--font-mono); font-size: 12px;
     border: 1px solid var(--border-hi);
   }
-  .flow-node.orch { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .flow-node.seat { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
   .flow-node.sub { background: var(--surface-2); color: var(--text-dim); }
   .flow-node strong { display: block; font-size: 14px; color: var(--text); margin-bottom: 2px; font-family: var(--font); }
   .flow-arrow { color: var(--text-faint); font-size: 22px; font-family: var(--font-mono); }
@@ -144,39 +144,39 @@
     </div>
     <div>
       <h1>The agents</h1>
-      <p>Warden is one orchestrator plus a handful of specialist sub-agents. The orchestrator is the model you're talking to, but it is explicitly a <strong>router and prompt engineer</strong> — it does not write code, edit files, or do research itself. Instead it understands what you want and delegates to the right sub-agent. Each sub-agent runs in its own context window and reports back as a chat message.</p>
+      <p>Warden is one seat plus a handful of specialist sub-agents. <strong>Atlas</strong> is the model you're talking to — it does the work itself (browser, desktop, files, shell, web) and calls in a specialist when something isn't its lane. Each specialist runs in its own context window and reports back as a chat message.</p>
     </div>
   </header>
 
   <div class="help-section-label"><span>01</span> The delegation flow</div>
   <div class="flow-diagram">
-    <div class="flow-node orch"><strong>You</strong>chat message</div>
+    <div class="flow-node seat"><strong>You</strong>chat message</div>
     <div class="flow-arrow">→</div>
-    <div class="flow-node orch"><strong>Orchestrator</strong>plans + delegates</div>
+    <div class="flow-node seat"><strong>Atlas</strong>the seat — does it or delegates it</div>
   </div>
   <div class="flow-diagram">
-    <div class="flow-node orch"><strong>Orchestrator</strong>tool call</div>
+    <div class="flow-node seat"><strong>Atlas</strong>tool call</div>
     <div class="flow-arrow">→</div>
     <div class="flow-sub-list">
-      <div class="flow-node">Atlas</div>
       <div class="flow-node">Iris</div>
       <div class="flow-node">Artemis</div>
+      <div class="flow-node">Vulkan</div>
       <div class="flow-node">The Council</div>
     </div>
   </div>
   <p style="margin: 4px 0 0; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono);">Multiple sub-agent calls in the same turn run in parallel. The verbose bar below the composer shows which one is live.</p>
 
-  <div class="help-section-label"><span>02</span> The sub-agents</div>
-  <p style="margin: -8px 0 14px; color: var(--text-faint); font-size: 13px; line-height: 1.6;">Iris, Mercury, and Oculus share one <strong>Toolcall model</strong> (a single model + ctx override in Settings). Atlas, Vulkan, Artemis, and each Council seat keep their own model.</p>
+  <div class="help-section-label"><span>02</span> The specialists</div>
+  <p style="margin: -8px 0 14px; color: var(--text-faint); font-size: 13px; line-height: 1.6;">Iris, Mercury, and Oculus share one <strong>Toolcall model</strong> (a single model + ctx override in Settings). Vulkan, Artemis, and each Council seat keep their own model.</p>
   <div class="agent-grid">
     <div class="agent-tile" style="--tile-accent: var(--info);">
       <div class="agent-tile-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
       </div>
       <div>
-        <h3>Atlas <small>browser + research</small></h3>
-        <p>Opens URLs, takes screenshots, fetches HTML, clicks buttons, reads pages. Multiple Atlas jobs in one turn run in parallel.</p>
-        <pre>Open example.com and take a screenshot.</pre>
+        <h3>Atlas <small>long background jobs</small></h3>
+        <p>The seat runs in the foreground for everything short; a long job (deep research, big browser task) can run as a background copy of the seat itself, on the same settings. Multiple background jobs in one turn run in parallel.</p>
+        <pre>Research example.com's pricing and take a screenshot of the plans page.</pre>
       </div>
     </div>
     <div class="agent-tile" style="--tile-accent: var(--ok);">
@@ -225,7 +225,7 @@
       </div>
       <div>
         <h3>Mercury <small>memory (toolcall)</small></h3>
-        <p>Distills conversation history and memory into a compact summary/RAG injection that is fed back into the orchestrator each turn.</p>
+        <p>Distills conversation history and memory into a compact summary/RAG injection that is fed back into the seat each turn.</p>
         <pre>Remember that I prefer Python over TypeScript.</pre>
       </div>
     </div>
@@ -241,12 +241,12 @@
     </div>
   </div>
 
-  <div class="help-section-label"><span>03</span> The orchestrator's job</div>
+  <div class="help-section-label"><span>03</span> The seat's job</div>
   <div class="help-callout help-callout-info">
     <div class="help-callout-icon" aria-hidden="true">i</div>
     <div>
-      <p>The orchestrator is a prompt engineer and delegator. You describe the task; it picks the right specialist, writes a precise instruction (including file paths, URLs, and expected output), and emits the tool call. The matching sub-agent runs and posts its result back.</p>
-      <p>Delegation is supervised: the orchestrator checks in on running Atlas jobs every 45 seconds (elapsed time, tool calls, last action), stops any that are stuck or looping, and when a job fails it reads the output and automatically retries with a reworked instruction — you only hear about failures it can't recover. The verbose bar at the bottom of the chat shows which agent is live and which tools are running right now.</p>
+      <p>Atlas is the seat: it replies to you and does the work itself — browser, desktop, files, shell, web. For anything that needs a specialist it writes a precise instruction (including file paths, URLs, and expected output) and calls the specialist directly, one piece at a time, verifying each result as it comes back.</p>
+      <p>Delegation is supervised: the seat checks in on running background jobs every 45 seconds (elapsed time, tool calls, last action), stops any that are stuck or looping, and when a job fails it reads the output and automatically retries with a reworked instruction — you only hear about failures it can't recover. The verbose bar at the bottom of the chat shows which agent is live and which tools are running right now.</p>
     </div>
   </div>
 

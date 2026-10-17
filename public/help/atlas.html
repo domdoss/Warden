@@ -47,14 +47,14 @@
   <nav class="help-nav"><a href="/index.html">← Dashboard</a><span class="crumb">/ help / atlas</span></nav>
   <header class="help-hero">
     <div class="help-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-    <div><h1>Asking Atlas</h1><p>Atlas is the browser + research sub-agent. It opens URLs, takes screenshots, fetches HTML, clicks buttons, and reads pages. Multiple Atlas calls in the same turn run in <strong>parallel</strong>.</p></div>
+    <div><h1>Asking Atlas</h1><p>Atlas is the seat — the model you're talking to. It opens URLs, takes screenshots, fetches HTML, clicks buttons, reads pages, and runs shell work itself. Long jobs run in the background as copies of it; multiple background jobs in the same turn run in <strong>parallel</strong>.</p></div>
   </header>
 
   <div class="help-section-label"><span>01</span> The basic pattern</div>
   <div class="help-callout help-callout-info">
     <div class="help-callout-icon">⌘</div>
     <div>
-      <p>Just describe what you want — the orchestrator recognizes browser, web, and shell work and hands it to Atlas on its own. There's no magic phrase (saying <code>Delegate to Atlas:</code> works, but it's never required). Atlas runs <strong>in the background</strong> in its own context window — the orchestrator gets a job ID back immediately and stays free for your next message. When Atlas finishes, the result lands in the orchestrator's inbox and it reports back in the chat.</p>
+      <p>Just describe what you want — Atlas does browser, web, and shell work itself, right in the turn. There's no magic phrase and no delegation hop to remember. Long jobs run <strong>in the background</strong> as a copy of the seat in its own context window — the seat gets a job ID back immediately and stays free for your next message. When the job finishes, the result lands in the seat's inbox and it reports back in the chat.</p>
       <pre>Open example.com and take a screenshot.</pre>
     </div>
   </div>
@@ -77,15 +77,15 @@
     <div class="pattern-card"><h4>Click + screenshot</h4><pre>Open the app, click "Sign in", screenshot the result.</pre><p>Atlas can interact with the page, not just read it.</p></div>
     <div class="pattern-card"><h4>Compare two pages</h4><pre>In parallel:
 (1) screenshot competitor-a.com, AND
-(2) screenshot competitor-b.com.</pre><p>Then ask the orchestrator to compare them.</p></div>
+(2) screenshot competitor-b.com.</pre><p>Then ask Atlas to compare them.</p></div>
   </div>
 
   <div class="help-section-label"><span>04</span> Supervised while it runs</div>
   <div class="help-callout help-callout-info">
     <div class="help-callout-icon">👁</div>
     <div>
-      <p>Atlas is never fire-and-forget. While a job runs, the orchestrator checks in on it every 45 seconds — elapsed time, tool-call count, and what it last did — and decides: leave it alone, <strong>stop it</strong> if it's stuck or looping, or redirect it.</p>
-      <p>If a job fails or gets stopped, the orchestrator reads the full output, works out what went wrong, and <strong>automatically retries with a reworked task</strong>. You only hear about a failure when it can't be recovered.</p>
+      <p>Background jobs are never fire-and-forget. While a job runs, the seat checks in on it every 45 seconds — elapsed time, tool-call count, and what it last did — and decides: leave it alone, <strong>stop it</strong> if it's stuck or looping, or redirect it.</p>
+      <p>If a job fails or gets stopped, the seat reads the full output, works out what went wrong, and <strong>automatically retries with a reworked task</strong>. You only hear about a failure when it can't be recovered.</p>
     </div>
   </div>
 
@@ -94,7 +94,7 @@
     <div class="help-callout-icon">⚠</div>
     <div>
       <p>Atlas can't reach pages on private networks unless the host can. Pages behind login walls need credentials configured. Pages that block bots may return empty results — Atlas reports this honestly rather than fabricating.</p>
-      <p>The orchestrator <strong>does not code or edit files itself</strong> — it delegates those to Atlas. If you ask "fix the bug" without a file path, Atlas will have to guess; give it the path and the expected outcome.</p>
+      <p>For coding and file edits Atlas calls Vulkan. If you ask "fix the bug" without a file path, Vulkan will have to guess; give it the path and the expected outcome.</p>
     </div>
   </div>
 

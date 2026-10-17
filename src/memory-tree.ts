@@ -7,7 +7,7 @@
  * preferences — plus the system/Warden side), 2-3 branches deep. The
  * STRUCTURE is curated; the DETAILS are picked up from the logs: when
  * nothing is happening (no agent run in flight and nothing big loaded in
- * Ollama — the orchestrator model has been unloaded) or on request
+ * Ollama — the seat model has been unloaded) or on request
  * (POST /api/memory/classify), this job loads granite4.1:30b, reads the
  * warden.log backlog the classifier hasn't processed yet, and classifies
  * durable facts out of it into the taxonomy, filing each one into MARM as

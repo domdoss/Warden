@@ -51,14 +51,16 @@ export function readJournal(days) {
   return { lines: file.split('\n'), source: 'warden.log' };
 }
 
-/** Ollama chat, no streaming, temperature 0 (analysis, not creativity).
+/** Ollama chat, no streaming, temperature 0 by default (analysis, not creativity).
  * node:http with `agent: false` — one fresh connection per request, closed
  * after the response. No pooled keep-alive socket for ollama to close under us
  * (the 2026-09-21 crash: undici reused a connection ollama had just closed —
  * ECONNRESET with the server fine and nothing in its log). No pool, no race. */
-export function ollamaChat(model, messages) {
+export function ollamaChat(model, messages, extra = {}) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 } });
+    // extra merges into the request body (e.g. { options, format } — a JSON
+    // schema in `format` makes Ollama constrain the reply to that shape).
+    const body = JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 }, ...extra });
     const req = http.request(
       `${OLLAMA_URL}/api/chat`,
       { method: 'POST', agent: false, headers: { 'Content-Type': 'application/json' } },
