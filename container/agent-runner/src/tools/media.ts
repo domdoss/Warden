@@ -139,8 +139,17 @@ async function mediaControl(action: string): Promise<string> {
         const out = run(`playerctl ${verb} 2>&1`);
         // playerctl prints the status or the player name; a fresh status helps.
         let status = '';
-        try { status = run(`playerctl status 2>/dev/null`); } catch { /* no player */ }
-        return `Media ${verb}${status ? ` — ${status}` : ''}${out ? ` (${out})` : ''}.`;
+        try { status = run(`playerctl status 2>/dev/null`).trim(); } catch { /* no player */ }
+        // The confirmed post-state IS the fact. "Media play — Stopped." reads as
+        // a completed action with a decoration, and got reported as "it's playing"
+        // (2026-10-17: the seat claimed a restart succeeded off this string).
+        if (!status) {
+            return `${verb} was sent, but no player reported a status${out ? ` (playerctl said: ${out.trim()})` : ''}. Nothing is confirmed playing. This is the answer — report this state.`;
+        }
+        if (/^playing$/i.test(status)) {
+            return `Playing — the player reports Playing after ${verb}. This is the answer — report this state.`;
+        }
+        return `${verb} was sent, but the player reports ${status} — nothing is playing. This is the answer — report this state.`;
     } catch (err: any) {
         const msg = (err.message || '').toString();
         if (/no.*player|No players/i.test(msg)) return 'No media player is running right now — nothing to control.';
