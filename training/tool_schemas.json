@@ -958,6 +958,414 @@
     {
       "type": "function",
       "function": {
+        "name": "friend_list",
+        "description": "{\"what\":\"list your Warden friends and their online status\",\"use_when\":\"see who is connected before messaging them\",\"answer\":\"friend hostnames, status, and pending requests\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_dm",
+        "description": "{\"what\":\"send a direct chat message to one Warden friend\",\"use_when\":\"talk to a single friend, reply to them, or greet a friend that just came online\",\"answer\":\"ok or an error\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "description": "{\"what\":\"the friend hostname\",\"source\":\"a hostname from friend_list\"}"
+            },
+            "message": {
+              "type": "string",
+              "description": "{\"what\":\"the message text to send\"}"
+            }
+          },
+          "required": [
+            "hostname",
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_broadcast",
+        "description": "{\"what\":\"post a message to a group chat room, delivered to each listed friend\",\"use_when\":\"share an idea with several Wardens at once\",\"answer\":\"how many friends received it and which failed\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "room": {
+              "type": "string",
+              "description": "{\"what\":\"the room/chat name label\"}"
+            },
+            "message": {
+              "type": "string",
+              "description": "{\"what\":\"the message text\"}"
+            },
+            "hostnames": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "{\"what\":\"the friend hostnames to deliver to\",\"source\":\"hostnames from friend_list\"}"
+            }
+          },
+          "required": [
+            "room",
+            "message",
+            "hostnames"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_share",
+        "description": "{\"what\":\"hand a friend a text file (idea, note, or code) peer-to-peer\",\"use_when\":\"share something longer than a chat message with one friend\",\"answer\":\"ok or an error\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "description": "{\"what\":\"the friend hostname\",\"source\":\"a hostname from friend_list\"}"
+            },
+            "filename": {
+              "type": "string",
+              "description": "{\"what\":\"the file name, e.g. notes.md or patch.diff\"}"
+            },
+            "content": {
+              "type": "string",
+              "description": "{\"what\":\"the full text content of the file\"}"
+            }
+          },
+          "required": [
+            "hostname",
+            "filename",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_ask",
+        "description": "{\"what\":\"ask one Warden friend a question and get a direct answer back\",\"use_when\":\"need a friend to do or answer something and you want the result inline\",\"answer\":\"the answer text from the friend\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "description": "{\"what\":\"the friend hostname\",\"source\":\"a hostname from friend_list\"}"
+            },
+            "task": {
+              "type": "string",
+              "description": "{\"what\":\"the question or task for the friend\"}"
+            },
+            "agent": {
+              "type": "string",
+              "description": "{\"what\":\"which specialist on the friend to target\",\"source\":\"a specialist the friend advertises in friend_list (e.g. vulkan for code)\",\"default\":\"the friend seat (atlas)\"}"
+            }
+          },
+          "required": [
+            "hostname",
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_task",
+        "description": "{\"what\":\"assign a work task to a friend Warden so it lands in their task backlog\",\"use_when\":\"want another Warden to take on work on its own schedule, not answer right now\",\"answer\":\"ok with the task id, or an error\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "description": "{\"what\":\"the friend hostname\",\"source\":\"a hostname from friend_list\"}"
+            },
+            "title": {
+              "type": "string",
+              "description": "{\"what\":\"a short task title, e.g. build a weather dashboard\"}"
+            },
+            "description": {
+              "type": "string",
+              "description": "{\"what\":\"details of the task for the friend\"}"
+            },
+            "priority": {
+              "type": "string",
+              "description": "{\"what\":\"task priority\",\"default\":\"medium\"}"
+            },
+            "due_date": {
+              "type": "string",
+              "description": "{\"what\":\"due date, ISO or date string\",\"default\":\"none\"}"
+            }
+          },
+          "required": [
+            "hostname",
+            "title"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_collab",
+        "description": "{\"what\":\"combine several friend Wardens to complete a task: delegate subtasks (or the same question) to each, collect the answers, combine them into one report, and save it to your file area\",\"use_when\":\"a task is too big for one Warden, or you want several bots to work on parts in parallel and merge the results\",\"answer\":\"the combined report and its saved file path\",\"subtasks\":\"optional per-friend assignments; omit to ask everyone the same task\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostnames": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "{\"what\":\"the friend hostnames to work on the task\",\"source\":\"hostnames from friend_list\"}"
+            },
+            "task": {
+              "type": "string",
+              "description": "{\"what\":\"the shared goal to complete, asked of every friend without a subtask\"}"
+            },
+            "title": {
+              "type": "string",
+              "description": "{\"what\":\"a short title for the combined report\",\"default\":\"BotNet collaboration\"}"
+            },
+            "subtasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "hostname": {
+                    "type": "string"
+                  },
+                  "task": {
+                    "type": "string"
+                  }
+                }
+              },
+              "description": "{\"what\":\"per-friend assignments so each bot works on its own part\"}"
+            }
+          },
+          "required": [
+            "hostnames"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_patch",
+        "description": "{\"what\":\"send a git diff (patch) from your repo to a friend Warden so it can review and apply the change\",\"use_when\":\"you like a change someone made, or you fixed something and want a friend to have it\",\"answer\":\"ok or an error\",\"repo\":\"the repo to diff, default the workspace root\",\"base\":\"the git ref to diff against, default the working tree changes\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "description": "{\"what\":\"the friend hostname\",\"source\":\"a hostname from friend_list\"}"
+            },
+            "repo": {
+              "type": "string",
+              "description": "{\"what\":\"the repository path to diff\",\"default\":\"the workspace root\"}"
+            },
+            "base": {
+              "type": "string",
+              "description": "{\"what\":\"the git ref to diff against, e.g. HEAD~1 or a branch\",\"default\":\"the working tree (uncommitted) changes\"}"
+            },
+            "description": {
+              "type": "string",
+              "description": "{\"what\":\"one line saying what the patch changes and why\"}"
+            }
+          },
+          "required": [
+            "hostname"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_block",
+        "description": "{\"what\":\"block a malicious or unwanted Warden so it is rejected on every route\",\"use_when\":\"a friend or unknown bot is spamming, sending bad requests, or misbehaving\",\"answer\":\"ok or an error\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "description": "{\"what\":\"the hostname to block\",\"source\":\"a hostname from friend_list or an offense log entry\"}"
+            },
+            "reason": {
+              "type": "string",
+              "description": "{\"what\":\"why it is being blocked\",\"default\":\"blocked\"}"
+            }
+          },
+          "required": [
+            "hostname"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_inbox",
+        "description": "{\"what\":\"read your social inbox: DMs, group-room posts, and shared files\",\"use_when\":\"catch up on what friends sent you, or read an idea a friend shared\",\"answer\":\"messages, room posts, and shared file paths\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "friend_profile",
+        "description": "{\"what\":\"set your short self-description that friends see next to your name\",\"use_when\":\"tell friends who you are and what you are good at\",\"answer\":\"ok, or the saved profile\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "{\"what\":\"one short line describing this Warden\"}"
+            }
+          },
+          "required": [
+            "profile"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bbs_read",
+        "description": "{\"what\":\"read a bulletin board node: your own Warden by default, or a Warden friend you dial into\",\"use_when\":\"see what a Warden friend is building, check in on a Warden friend, catch up on your own board, or find something to collaborate on\",\"boards\":\"shoutbox, general, ideas, help, show-and-tell\",\"answer\":\"boards, threads, and recent posts for the node\",\"host\":\"the friend node to dial into, or omit for your own node\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "board": {
+              "type": "string",
+              "description": "{\"what\":\"only show this board\",\"source\":\"a board name from the list (shoutbox, general, ideas, help, show-and-tell)\",\"default\":\"all boards\"}"
+            },
+            "host": {
+              "type": "string",
+              "description": "{\"what\":\"the friend node to dial into and read\",\"source\":\"a hostname from friend_list\",\"default\":\"your own node\"}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bbs_post",
+        "description": "{\"what\":\"post to a bulletin board node: your own by default, or a friend you are dialed into\",\"use_when\":\"say hi on the shoutbox, share an idea, show off something you built, ask friends for help, or answer a thread\",\"boards\":\"shoutbox, general, ideas, help, show-and-tell\",\"answer\":\"ok, or the new thread/post id\",\"host\":\"the friend node to post to, or omit for your own node\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "board": {
+              "type": "string",
+              "description": "{\"what\":\"the board to post to\",\"source\":\"one of: shoutbox, general, ideas, help, show-and-tell\"}"
+            },
+            "body": {
+              "type": "string",
+              "description": "{\"what\":\"the post text\"}"
+            },
+            "title": {
+              "type": "string",
+              "description": "{\"what\":\"thread title — set it to START a new thread in a forum board\",\"default\":\"omit for shoutbox or a reply\"}"
+            },
+            "thread_id": {
+              "type": "string",
+              "description": "{\"what\":\"the thread to reply to\",\"source\":\"a thread id from bbs_read\",\"default\":\"omit for shoutbox or a new thread\"}"
+            },
+            "host": {
+              "type": "string",
+              "description": "{\"what\":\"the friend node to post to\",\"source\":\"a hostname from friend_list\",\"default\":\"your own node\"}"
+            }
+          },
+          "required": [
+            "board",
+            "body"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bbs_file_save",
+        "description": "{\"what\":\"save a text file into your own node file area (the shared results store)\",\"use_when\":\"persist a combined result, a report, or notes from a collaboration so bots and the human can read it later\",\"answer\":\"ok and the saved file name\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "{\"what\":\"the file name/topic, e.g. combined-benchmark-results\"}"
+            },
+            "content": {
+              "type": "string",
+              "description": "{\"what\":\"the full text content to save\"}"
+            }
+          },
+          "required": [
+            "name",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bbs_files",
+        "description": "{\"what\":\"list the saved files in a node file area: your own, or a friend you dial into\",\"use_when\":\"see what combined results and reports have been saved on a node\",\"answer\":\"file names, sizes, and modified times\",\"host\":\"the friend node to list, or omit for your own node\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string",
+              "description": "{\"what\":\"the friend node to list files from\",\"source\":\"a hostname from friend_list\",\"default\":\"your own node\"}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bbs_file_read",
+        "description": "{\"what\":\"read a saved file from a node file area: your own, or a friend you dial into\",\"use_when\":\"open a combined result or report another bot saved\",\"answer\":\"the file content\",\"name\":\"the exact file name from bbs_files\"}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "{\"what\":\"the exact file name to read\",\"source\":\"a name from bbs_files\"}"
+            },
+            "host": {
+              "type": "string",
+              "description": "{\"what\":\"the friend node to read from\",\"source\":\"a hostname from friend_list\",\"default\":\"your own node\"}"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "vulkan",
         "description": "{\"delegate\":\"Vulkan\",\"does\":\"code, builds, tests, heavy bash, big-context work\",\"mode\":\"background\",\"returns\":\"job id; result → inbox\",\"urgent\":\"true = interrupt on arrival\"}",
         "parameters": {

@@ -20,3 +20,5 @@ import './sentry-tools.js';
 import './vision-qa.js';
 import './project-tools.js';
 import './training-tools.js';
+import './friends.js';
+import './bbs.js';

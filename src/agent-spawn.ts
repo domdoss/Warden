@@ -920,6 +920,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
             assistantName: input.assistantName,
             pinnedTools: input.pinnedTools,
             verbose: input.verbose,
+            sideTurn: input.sideTurn === true,
             maxOutputTokens: input.maxOutputTokens || '',
             model: input.model,
             vulkanModel: input.vulkanModel,
@@ -1000,6 +1001,7 @@ export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
       assistantName: input.assistantName,
       pinnedTools: input.pinnedTools,
       verbose: input.verbose,
+      sideTurn: input.sideTurn === true,
     });
     logger.info({ payloadLen: payload.length, historyLen: input.history?.length ?? 0 }, 'agent-spawn: writing payload to child stdin');
     try {

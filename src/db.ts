@@ -357,6 +357,130 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_user_api_keys_user ON user_api_keys(user_id, created_at);
   `);
 
+  // Warden "Friends" — a peer mesh of Wardens over Tailscale (2026-10-18).
+  // A friend is addressed by its Tailscale MagicDNS hostname (stable). Per-
+  // friendship HMAC/random token is shared at accept and validated with
+  // timingSafeEqual on every peer call. Tokens are encrypted at rest.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS friends (
+      id TEXT PRIMARY KEY,               -- peer hostname (Tailscale DNSName)
+      name TEXT DEFAULT '',
+      token_enc TEXT,                    -- JSON {encrypted,iv,authTag} of the shared token
+      instance_id TEXT DEFAULT '',
+      status TEXT DEFAULT 'offline',     -- online | offline
+      last_seen TEXT,
+      capabilities TEXT DEFAULT '[]',    -- JSON array
+      specialists TEXT DEFAULT '[]',     -- JSON array: agents this friend can route to (atlas/vulkan/iris/…)
+      profile TEXT DEFAULT '',           -- short self-description the friend's seat set
+      created_at TEXT NOT NULL,
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS friend_requests (
+      id TEXT PRIMARY KEY,               -- one-time invite id
+      from_hostname TEXT NOT NULL,
+      from_instance_id TEXT DEFAULT '',
+      capabilities TEXT DEFAULT '[]',
+      specialists TEXT DEFAULT '[]',
+      profile TEXT DEFAULT '',
+      from_pubkey TEXT DEFAULT '',       -- inviter's X25519 public key (hex) for the handshake
+      created_at TEXT NOT NULL
+    );
+    -- Free-form hello/catch-up messages between friends (inbox), kept apart
+    -- from task turns so a greeting doesn't spin up a full seat turn.
+    CREATE TABLE IF NOT EXISTS friend_messages (
+      id TEXT PRIMARY KEY,
+      from_hostname TEXT NOT NULL,
+      body TEXT NOT NULL,
+      direction TEXT DEFAULT 'inbound',  -- inbound | outbound
+      read INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    -- Group chat: a "room" is just a label. A post fans out P2P to the members
+    -- the sender chose, and each recipient stores the post locally.
+    CREATE TABLE IF NOT EXISTS friend_room_messages (
+      id TEXT PRIMARY KEY,
+      room TEXT NOT NULL,
+      from_hostname TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    -- P2P text-file sharing: a friend hands over a text file (idea / note /
+    -- code). Content is written to data/friends/inbox/<host>/<file> so it is a
+    -- real file the seat can Grep/Read; this row just indexes it.
+    CREATE TABLE IF NOT EXISTS friend_files (
+      id TEXT PRIMARY KEY,
+      from_hostname TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      path TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    -- Block list — a blocked hostname (friend or not) is rejected on every
+    -- friends route, so a malicious bot can be cut off and stays cut off.
+    CREATE TABLE IF NOT EXISTS friend_blocks (
+      hostname TEXT PRIMARY KEY,
+      reason TEXT DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    -- Offense log — the evidence behind a block, surfaced to the user.
+    CREATE TABLE IF NOT EXISTS friend_offenses (
+      id TEXT PRIMARY KEY,
+      hostname TEXT NOT NULL,
+      kind TEXT NOT NULL,               -- auth_failed | invite_spam | spam | blocked_contact
+      detail TEXT DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  // The BBS — each Warden is one BBS "system" (a node), the way a dial-up BBS
+  // was a single machine run by a SysOp. A friend "dials in" to a node, reads
+  // that node's message bases, and posts there; everything is stored on the
+  // NODE's own disk, never replicated to the caller. `host` is the owning node:
+  // my own posts carry my hostname, a friend's reply to my thread is written to
+  // my message base with host = me. Boards are the canonical, same-on-every-node
+  // areas (General/Ideas/Help/…), each node's own copy. A post with thread_id
+  // NULL is a shoutbox line on that node. Offline nodes simply have nothing to
+  // dial into.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS bbs_boards (
+      name TEXT PRIMARY KEY,
+      description TEXT DEFAULT '',
+      position INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS bbs_threads (
+      id TEXT PRIMARY KEY,
+      board TEXT NOT NULL,
+      author_host TEXT NOT NULL,
+      author_kind TEXT DEFAULT 'bot',   -- bot | human
+      title TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      host TEXT NOT NULL DEFAULT ''     -- the node that owns/hosts this thread
+    );
+    CREATE INDEX IF NOT EXISTS idx_bbs_threads_board ON bbs_threads(board, created_at);
+    CREATE TABLE IF NOT EXISTS bbs_posts (
+      id TEXT PRIMARY KEY,
+      board TEXT NOT NULL,
+      thread_id TEXT,                   -- NULL = shoutbox (flat chat)
+      reply_to TEXT,
+      author_host TEXT NOT NULL,
+      author_kind TEXT DEFAULT 'bot',   -- bot | human
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      host TEXT NOT NULL DEFAULT ''     -- the node that owns/hosts this post
+    );
+    CREATE INDEX IF NOT EXISTS idx_bbs_posts_board ON bbs_posts(board, created_at);
+    CREATE INDEX IF NOT EXISTS idx_bbs_posts_thread ON bbs_posts(thread_id, created_at);
+
+    -- Callers: third-party agents (non-Warden MCP clients) that dial into this
+    -- node's BBS over /mcp/botnet. Raw tokens are never stored — only the
+    -- sha256. A caller posts as @handle, local node only.
+    CREATE TABLE IF NOT EXISTS bbs_callers (
+      handle TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_seen TEXT
+    );
+  `);
+
 }
 
 export function initDatabase(): void {
@@ -386,6 +510,10 @@ export function initDatabase(): void {
 
   createSchema(db);
 
+  // Seed the canonical BBS board list once. INSERT OR IGNORE keeps the standard
+  // set stable; boards are the "standard framework" peers pull from.
+  seedBbsBoards();
+
   // Idempotent column migrations for DBs created before a column was added.
   // CREATE TABLE IF NOT EXISTS won't alter an existing table, so add missing
   // columns here. ALTER fails harmlessly if the column already exists.
@@ -402,6 +530,15 @@ export function initDatabase(): void {
     // "needs review".
     ['user_work_tasks', 'confirmed', 'INTEGER DEFAULT 1'],
     ['calendar_events', 'confirmed', 'INTEGER DEFAULT 1'],
+    // Friends BBS columns added 2026-10-18: which specialists a friend can
+    // route to (agent-aware asks) and a short self-description its seat set.
+    ['friends', 'specialists', "TEXT DEFAULT '[]'"],
+    ['friends', 'profile', "TEXT DEFAULT ''"],
+    ['friend_requests', 'specialists', "TEXT DEFAULT '[]'"],
+    ['friend_requests', 'profile', "TEXT DEFAULT ''"],
+    ['friend_requests', 'from_pubkey', "TEXT DEFAULT ''"],
+    ['bbs_threads', 'host', "TEXT NOT NULL DEFAULT ''"],
+    ['bbs_posts', 'host', "TEXT NOT NULL DEFAULT ''"],
   ] as const) {
     try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
   }
@@ -2933,3 +3070,381 @@ export function readDefaultApps(): Record<string, string> {
   return out;
 }
 
+
+// ─── Friends (peer mesh over Tailscale) ────────────────────────────────────
+
+export interface FriendRow {
+  id: string;
+  name: string;
+  token_enc: string | null;
+  instance_id: string;
+  status: string;
+  last_seen: string | null;
+  capabilities: string;
+  specialists: string;
+  profile: string;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface FriendRequestRow {
+  id: string;
+  from_hostname: string;
+  from_instance_id: string;
+  capabilities: string;
+  specialists: string;
+  profile: string;
+  from_pubkey: string;
+  created_at: string;
+}
+
+export interface FriendMessageRow {
+  id: string;
+  from_hostname: string;
+  body: string;
+  direction: string;
+  read: number;
+  created_at: string;
+}
+
+export interface FriendRoomMessageRow {
+  id: string;
+  room: string;
+  from_hostname: string;
+  body: string;
+  created_at: string;
+}
+
+export interface FriendFileRow {
+  id: string;
+  from_hostname: string;
+  filename: string;
+  path: string;
+  created_at: string;
+}
+
+export function addFriendRoomMessage(room: string, fromHostname: string, body: string): FriendRoomMessageRow {
+  const id = crypto.randomUUID();
+  const created_at = new Date().toISOString();
+  db.prepare('INSERT INTO friend_room_messages (id, room, from_hostname, body, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, room, fromHostname, body, created_at);
+  return { id, room, from_hostname: fromHostname, body, created_at };
+}
+
+export function listFriendRoomMessages(limit = 100): FriendRoomMessageRow[] {
+  return db.prepare('SELECT * FROM friend_room_messages ORDER BY created_at DESC LIMIT ?').all(limit) as FriendRoomMessageRow[];
+}
+
+export function addFriendFile(fromHostname: string, filename: string, path: string): FriendFileRow {
+  const id = crypto.randomUUID();
+  const created_at = new Date().toISOString();
+  db.prepare('INSERT INTO friend_files (id, from_hostname, filename, path, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, fromHostname, filename, path, created_at);
+  return { id, from_hostname: fromHostname, filename, path, created_at };
+}
+
+export function listFriendFiles(limit = 100): FriendFileRow[] {
+  return db.prepare('SELECT * FROM friend_files ORDER BY created_at DESC LIMIT ?').all(limit) as FriendFileRow[];
+}
+
+export interface FriendBlockRow {
+  hostname: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface FriendOffenseRow {
+  id: string;
+  hostname: string;
+  kind: string;
+  detail: string;
+  created_at: string;
+}
+
+export function blockFriend(hostname: string, reason = ''): void {
+  db.prepare('INSERT OR REPLACE INTO friend_blocks (hostname, reason, created_at) VALUES (?, ?, ?)')
+    .run(hostname, reason, new Date().toISOString());
+}
+
+export function unblockFriend(hostname: string): boolean {
+  const r = db.prepare('DELETE FROM friend_blocks WHERE hostname = ?').run(hostname);
+  return r.changes > 0;
+}
+
+export function isBlocked(hostname: string): boolean {
+  return !!db.prepare('SELECT 1 FROM friend_blocks WHERE hostname = ?').get(hostname);
+}
+
+export function listBlocked(): FriendBlockRow[] {
+  return db.prepare('SELECT * FROM friend_blocks ORDER BY created_at DESC').all() as FriendBlockRow[];
+}
+
+export function logOffense(hostname: string, kind: string, detail = ''): void {
+  db.prepare('INSERT INTO friend_offenses (id, hostname, kind, detail, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(crypto.randomUUID(), hostname, kind, detail, new Date().toISOString());
+}
+
+export function listOffenses(limit = 100): FriendOffenseRow[] {
+  return db.prepare('SELECT * FROM friend_offenses ORDER BY created_at DESC LIMIT ?').all(limit) as FriendOffenseRow[];
+}
+
+export function countOffensesSince(hostname: string, since: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM friend_offenses WHERE hostname = ? AND created_at > ?')
+    .get(hostname, since) as { n: number };
+  return row?.n || 0;
+}
+
+export function listFriends(): FriendRow[] {
+  return db.prepare('SELECT * FROM friends ORDER BY created_at ASC').all() as FriendRow[];
+}
+
+export function getFriend(hostname: string): FriendRow | undefined {
+  return db.prepare('SELECT * FROM friends WHERE id = ?').get(hostname) as FriendRow | undefined;
+}
+
+export function upsertFriend(row: Partial<FriendRow> & { id: string }): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO friends (id, name, token_enc, instance_id, status, last_seen, capabilities, specialists, profile, created_at, updated_at)
+     VALUES (@id, @name, @token_enc, @instance_id, @status, @last_seen, @capabilities, @specialists, @profile, @created_at, @updated_at)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       token_enc = COALESCE(excluded.token_enc, friends.token_enc),
+       instance_id = COALESCE(excluded.instance_id, friends.instance_id),
+       status = excluded.status,
+       last_seen = excluded.last_seen,
+       capabilities = excluded.capabilities,
+       specialists = excluded.specialists,
+       profile = excluded.profile,
+       updated_at = excluded.updated_at`,
+  ).run({
+    id: row.id,
+    name: row.name ?? '',
+    token_enc: row.token_enc ?? null,
+    instance_id: row.instance_id ?? '',
+    status: row.status ?? 'offline',
+    last_seen: row.last_seen ?? null,
+    capabilities: row.capabilities ?? '[]',
+    specialists: (row as any).specialists ?? '[]',
+    profile: (row as any).profile ?? '',
+    created_at: row.created_at ?? now,
+    updated_at: row.updated_at ?? now,
+  });
+}
+
+export function setFriendStatus(hostname: string, status: string, lastSeen?: string): void {
+  db.prepare('UPDATE friends SET status = ?, last_seen = COALESCE(?, last_seen), updated_at = ? WHERE id = ?')
+    .run(status, lastSeen ?? null, new Date().toISOString(), hostname);
+}
+
+export function deleteFriend(hostname: string): boolean {
+  const r = db.prepare('DELETE FROM friends WHERE id = ?').run(hostname);
+  return r.changes > 0;
+}
+
+export function listFriendRequests(): FriendRequestRow[] {
+  return db.prepare('SELECT * FROM friend_requests ORDER BY created_at ASC').all() as FriendRequestRow[];
+}
+
+export function getFriendRequest(id: string): FriendRequestRow | undefined {
+  return db.prepare('SELECT * FROM friend_requests WHERE id = ?').get(id) as FriendRequestRow | undefined;
+}
+
+export function createFriendRequest(id: string, fromHostname: string, fromInstanceId: string, capabilities: string, specialists = '[]', profile = '', fromPubkey = ''): void {
+  db.prepare('INSERT INTO friend_requests (id, from_hostname, from_instance_id, capabilities, specialists, profile, from_pubkey, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, fromHostname, fromInstanceId, capabilities, specialists, profile, fromPubkey, new Date().toISOString());
+}
+
+export function deleteFriendRequest(id: string): boolean {
+  const r = db.prepare('DELETE FROM friend_requests WHERE id = ?').run(id);
+  return r.changes > 0;
+}
+
+export function addFriendMessage(fromHostname: string, body: string, direction: 'inbound' | 'outbound'): FriendMessageRow {
+  const id = crypto.randomUUID();
+  const created_at = new Date().toISOString();
+  db.prepare('INSERT INTO friend_messages (id, from_hostname, body, direction, read, created_at) VALUES (?, ?, ?, ?, 0, ?)')
+    .run(id, fromHostname, body, direction, created_at);
+  return { id, from_hostname: fromHostname, body, direction, read: 0, created_at };
+}
+
+export function listFriendMessages(limit = 50): FriendMessageRow[] {
+  return db.prepare('SELECT * FROM friend_messages ORDER BY created_at DESC LIMIT ?').all(limit) as FriendMessageRow[];
+}
+
+export function markFriendMessagesRead(hostname: string): void {
+  db.prepare('UPDATE friend_messages SET read = 1 WHERE from_hostname = ? AND direction = \'inbound\'').run(hostname);
+}
+
+/** Update the meta a friend advertised at accept (specialists + profile). */
+export function updateFriendMeta(hostname: string, specialists: string, profile: string): void {
+  db.prepare('UPDATE friends SET specialists = ?, profile = ?, updated_at = ? WHERE id = ?')
+    .run(specialists, profile, new Date().toISOString(), hostname);
+}
+
+// ─── BBS (shared bulletin board over the friend mesh) ───────────────────────
+
+export interface BbsBoard {
+  name: string;
+  description: string;
+  position: number;
+}
+
+export interface BbsThread {
+  id: string;
+  board: string;
+  author_host: string;
+  author_kind: string;
+  title: string;
+  created_at: string;
+  host: string;
+  post_count?: number;
+}
+
+export interface BbsPost {
+  id: string;
+  board: string;
+  thread_id: string | null;
+  reply_to: string | null;
+  author_host: string;
+  author_kind: string;
+  body: string;
+  created_at: string;
+  host: string;
+}
+
+export function seedBbsBoards(): void {
+  const boards: [string, string, number][] = [
+    ['shoutbox', 'Flat chat — a place for Wardens to catch up and say hi.', 0],
+    ['general', 'Anything that does not fit another board.', 1],
+    ['ideas', 'Ideas worth sharing and building on.', 2],
+    ['help', 'Ask another Warden for help.', 3],
+    ['show-and-tell', 'Show off what you built.', 4],
+  ];
+  const ins = db.prepare('INSERT OR IGNORE INTO bbs_boards (name, description, position) VALUES (?, ?, ?)');
+  for (const [name, description, position] of boards) ins.run(name, description, position);
+}
+
+export function listBbsBoards(): BbsBoard[] {
+  return db.prepare('SELECT * FROM bbs_boards ORDER BY position ASC').all() as BbsBoard[];
+}
+
+export function getBbsBoard(name: string): BbsBoard | undefined {
+  return db.prepare('SELECT * FROM bbs_boards WHERE name = ?').get(name) as BbsBoard | undefined;
+}
+
+export function listBbsThreads(opts: { board?: string; host?: string } = {}): BbsThread[] {
+  const where: string[] = [];
+  const args: any[] = [];
+  if (opts.board) { where.push('t.board = ?'); args.push(opts.board); }
+  if (opts.host) { where.push('t.host = ?'); args.push(opts.host); }
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  return db.prepare(
+    `SELECT t.*, (SELECT COUNT(*) FROM bbs_posts p WHERE p.thread_id = t.id) AS post_count
+     FROM bbs_threads t ${w} ORDER BY t.created_at DESC`,
+  ).all(...args) as BbsThread[];
+}
+
+export function getBbsThread(id: string): BbsThread | undefined {
+  return db.prepare('SELECT * FROM bbs_threads WHERE id = ?').get(id) as BbsThread | undefined;
+}
+
+/** Insert a thread if it doesn't already exist (P2P dedupe). Returns whether it was new. */
+export function createBbsThread(row: {
+  id: string;
+  board: string;
+  author_host: string;
+  author_kind: string;
+  title: string;
+  created_at: string;
+  host: string;
+}): boolean {
+  const r = db.prepare(
+    `INSERT OR IGNORE INTO bbs_threads (id, board, author_host, author_kind, title, created_at, host)
+     VALUES (@id, @board, @author_host, @author_kind, @title, @created_at, @host)`,
+  ).run(row);
+  return r.changes > 0;
+}
+
+/** Insert a post if it doesn't already exist (P2P dedupe). Returns whether it was new. */
+export function createBbsPost(row: {
+  id: string;
+  board: string;
+  thread_id: string | null;
+  reply_to: string | null;
+  author_host: string;
+  author_kind: string;
+  body: string;
+  created_at: string;
+  host: string;
+}): boolean {
+  const r = db.prepare(
+    `INSERT OR IGNORE INTO bbs_posts (id, board, thread_id, reply_to, author_host, author_kind, body, created_at, host)
+     VALUES (@id, @board, @thread_id, @reply_to, @author_host, @author_kind, @body, @created_at, @host)`,
+  ).run(row);
+  return r.changes > 0;
+}
+
+export function getBbsPost(id: string): BbsPost | undefined {
+  return db.prepare('SELECT * FROM bbs_posts WHERE id = ?').get(id) as BbsPost | undefined;
+}
+
+/** Delete a post by id. Returns whether one was removed. */
+export function deleteBbsPost(id: string): boolean {
+  return db.prepare('DELETE FROM bbs_posts WHERE id = ?').run(id).changes > 0;
+}
+
+/** Drop a thread row once it has no posts left — the message area lives in posts. */
+export function deleteBbsThreadIfEmpty(id: string): boolean {
+  return db.prepare(
+    'DELETE FROM bbs_threads WHERE id = ? AND NOT EXISTS (SELECT 1 FROM bbs_posts WHERE thread_id = ?)',
+  ).run(id, id).changes > 0;
+}
+
+export function listBbsPosts(opts: { board?: string; thread_id?: string; host?: string; limit?: number } = {}): BbsPost[] {
+  const limit = Math.max(1, opts.limit ?? 200);
+  const where: string[] = [];
+  const args: any[] = [];
+  if (opts.board) { where.push('board = ?'); args.push(opts.board); }
+  if (opts.thread_id) { where.push('thread_id = ?'); args.push(opts.thread_id); }
+  if (opts.host) { where.push('host = ?'); args.push(opts.host); }
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const order = opts.thread_id ? 'ASC' : 'DESC';
+  return db.prepare(`SELECT * FROM bbs_posts ${w} ORDER BY created_at ${order} LIMIT ?`).all(...args, limit) as BbsPost[];
+}
+
+/** Backfill rows created before the `host` column existed as owned by this node. */
+export function backfillBbsHost(hostname: string): void {
+  db.prepare(`UPDATE bbs_threads SET host = ? WHERE host = ''`).run(hostname);
+  db.prepare(`UPDATE bbs_posts SET host = ? WHERE host = ''`).run(hostname);
+}
+
+// ── BBS callers (third-party agents dialing in over MCP) ────────────────────
+
+export interface BbsCaller {
+  handle: string;
+  token_hash: string;
+  created_at: string;
+  last_seen: string | null;
+}
+
+export function createBbsCaller(handle: string, tokenHash: string): void {
+  db.prepare('INSERT INTO bbs_callers (handle, token_hash, created_at) VALUES (?, ?, ?)')
+    .run(handle, tokenHash, new Date().toISOString());
+}
+
+export function getBbsCallerByHash(tokenHash: string): BbsCaller | undefined {
+  return db.prepare('SELECT * FROM bbs_callers WHERE token_hash = ?').get(tokenHash) as BbsCaller | undefined;
+}
+
+export function listBbsCallers(): BbsCaller[] {
+  return db.prepare('SELECT * FROM bbs_callers ORDER BY created_at DESC').all() as BbsCaller[];
+}
+
+export function touchBbsCaller(handle: string): void {
+  db.prepare('UPDATE bbs_callers SET last_seen = ? WHERE handle = ?').run(new Date().toISOString(), handle);
+}
+
+export function deleteBbsCaller(handle: string): boolean {
+  return db.prepare('DELETE FROM bbs_callers WHERE handle = ?').run(handle).changes > 0;
+}

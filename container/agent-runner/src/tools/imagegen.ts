@@ -6,7 +6,7 @@ import { registry } from '../tool-registry.js';
 // stable-diffusion.cpp. The wrapper script (/opt/Warden/imagegen/generate.sh)
 // owns the model paths and the pinned Turbo schedule; this tool owns the
 // prompt → filename contract and lands the PNG in <WORKSPACE_ROOT>/images,
-// where the captain's files live.
+// where the user's files live.
 registry.register({
     name: 'generate_image',
     description: 'Generate an image from a text description with a local image model. Writes a PNG into the images folder and returns its path. Describe the picture itself — subject, style, setting, lighting.',
@@ -42,7 +42,7 @@ registry.register({
         }
         if (!fs.existsSync(outPath)) return 'Error: generation ran but the image file was not created';
         const stats = fs.statSync(outPath);
-        return `Image generated: images/${filename} (${w}x${h}, ${Math.round(stats.size / 1024)} KB), on disk at ${outPath}. query_image can verify its contents if the captain asks.`;
+        return `Image generated: images/${filename} (${w}x${h}, ${Math.round(stats.size / 1024)} KB), on disk at ${outPath}. query_image can verify its contents if the user asks.`;
     },
     toolset: 'documents',
     tier: 'public',

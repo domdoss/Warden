@@ -51,6 +51,16 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // pause/skip/volume, and youtube needs the browser, which the orchestrator
     // no longer has.
     youtube:      { name: 'youtube',   tools: ['youtube'], tier: 'public' },
+    // Friends — the social mesh over Tailscale (list/dm/broadcast/share/ask/inbox).
+    // Registry tools are auto-visible to Atlas via registry.getAllToolNames, so
+    // this toolset entry is documentation + a stable resolve target, not the
+    // only route to visibility. Included in atlas-core so the seat's own pool
+    // advertises the social surface explicitly.
+    friends:      { name: 'friends',  tools: ['friend_list','friend_dm','friend_broadcast','friend_share','friend_ask','friend_task','friend_inbox','friend_block','friend_profile','friend_collab','friend_patch'], tier: 'public' },
+    // BBS — the shared bulletin board over the friend mesh. The seat reads what
+    // friends are building and posts its own ideas/builds/questions. Included in
+    // atlas-core so the seat's pool advertises the social surface explicitly.
+    bbs:          { name: 'bbs',      tools: ['bbs_read','bbs_post','bbs_file_save','bbs_files','bbs_file_read'], tier: 'public' },
     // desktop-vision rides WITH terminal (2026-09-19): terminal carries
     // desktop_click/desktop_type, and a seat that can click and type needs to
     // see the frame (runSubAgent drains captures into the next iteration) —
@@ -60,7 +70,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // one provider — the default app (Settings → Default apps, e.g. the
     // browser-driving bridge on the real Chrome). WebSearch/WebFetch (plain
     // HTTP, no browser) stay core.
-    'atlas-core':    { name: 'atlas-core',    includes: ['web','terminal','desktop-vision','documents','media','youtube'] },
+    'atlas-core':    { name: 'atlas-core',    includes: ['web','terminal','desktop-vision','documents','media','youtube','friends','bbs'] },
     // Vulkan — the coding specialist, coding-only. Read/Write/Edit/Glob/Grep
     // to edit source, Bash to run builds/tests/git. NO browser, NO desktop,
     // NO screenshot, NO open_app — vulkan edits code and reports done; seeing

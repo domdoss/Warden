@@ -977,6 +977,37 @@ textarea { resize: vertical; min-height: 34px; line-height: 1.5; }
   font-size: 12.5px;
 }
 
+/* --- marm memory canvas --- */
+.marm-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.marm-stat {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+}
+.marm-stat b { font-size: 18px; font-weight: 700; }
+.marm-stat span { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.marm-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.marm-form textarea { flex: 1 1 100%; min-height: 56px; }
+.marm-recall {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  margin-bottom: 10px;
+}
+.marm-actions { margin-left: auto; }
+.marm-actions { margin-left: auto; }
+
 /* --- logs --- */
 .audit-log {
   margin: 0;
@@ -1582,4 +1613,179 @@ ul.tight li { margin-bottom: 4px; }
   .tr-fail > summary { flex-wrap: wrap; }
   .tr-fail-role { display: none; }
   .tr-fail-what { flex-basis: 100%; }
+}
+
+/* ============================================================================
+   SOCIAL — mesh BBS as a late-80s dial-in terminal
+   ============================================================================
+   A deliberate break from the deck aesthetic: phosphor-green on near-black,
+   scanlines, glow, box-drawing borders, inverse-video selection. Forced dark —
+   a CRT BBS is never light mode. Colors are fixed, not theme tokens, so the
+   view reads identically in both themes.
+
+   Late-80s, not early-80s: multiple phosphor hues (amber/cyan/magenta/blue)
+   alongside the green, block-letter banners, drop-shadowed frames, blinking
+   prompts, and a per-conference color identity so each board feels like its
+   own room rather than one flat list.
+   ============================================================================ */
+
+#view-social { background: #0a0b08; padding: 18px; }
+/* .view hides inactive sections at class level; an ID-level display would
+   override it and render the terminal under every other view — so flex lives
+   on the .active state only. */
+#view-social.active { display: flex; flex-direction: column; }
+
+/* ── The cabinet: chunky plastic shell, recessed curved glass, bezel plate ── */
+.bbs-case {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  background: linear-gradient(165deg, #34372c 0%, #262820 42%, #1b1d17 100%);
+  border: 1px solid #3d4133;
+  border-radius: 22px;
+  padding: 20px 20px 0;
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,0.07),
+    inset 0 -4px 10px rgba(0,0,0,0.55),
+    0 22px 70px rgba(0,0,0,0.7);
+}
+
+.bbs-crt {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  /* curved glass: rounded tube face, deep inset shadow, faint green bleed */
+  border: 1px solid #000;
+  border-radius: 18px / 22px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #041208 0%, #010301 55%, #000201 100%);
+  box-shadow:
+    inset 0 0 70px rgba(0,0,0,0.92),
+    inset 0 0 10px rgba(51,255,102,0.14),
+    0 2px 4px rgba(0,0,0,0.85),
+    0 1px 0 rgba(255,255,255,0.05);
+}
+/* scanlines */
+.bbs-crt::before {
+  content: '';
+  position: absolute; inset: 0; z-index: 5; pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0) 0px,
+    rgba(0,0,0,0) 2px,
+    rgba(0,0,0,0.28) 3px
+  );
+  mix-blend-mode: multiply;
+}
+/* vignette + faint phosphor bloom + glass glare streak */
+.bbs-crt::after {
+  content: '';
+  position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  background:
+    linear-gradient(112deg, transparent 42%, rgba(210,255,220,0.045) 47%, rgba(210,255,220,0.07) 50%, rgba(210,255,220,0.045) 53%, transparent 58%),
+    radial-gradient(ellipse at center, rgba(0,0,0,0) 50%, rgba(0,0,0,0.6) 100%),
+    radial-gradient(700px 300px at 50% 0%, rgba(51,255,102,0.06), transparent 70%);
+}
+
+/* ── The bezel plate under the tube: badge, spec line, modem/power LEDs ── */
+.bbs-bezel {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 8px 13px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 2px;
+  color: #787d63; user-select: none;
+  text-shadow: 0 -1px 0 rgba(255,255,255,0.06), 0 1px 1px rgba(0,0,0,0.9);
+}
+.bbs-brand { font-weight: 700; color: #9aa07e; }
+.bbs-bezel-spec { flex: 1 1 auto; opacity: 0.65; white-space: nowrap; overflow: hidden; }
+.bbs-led-label { font-size: 8px; letter-spacing: 1.5px; opacity: 0.8; }
+.bbs-led {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: #14261a;
+  box-shadow: inset 0 0 3px rgba(0,0,0,0.9);
+}
+.bbs-led.on { background: #33ff66; box-shadow: 0 0 9px rgba(51,255,102,0.9), 0 0 3px #33ff66; }
+.bbs-led.led-pwr.on { background: #ffb000; box-shadow: 0 0 9px rgba(255,176,0,0.85), 0 0 3px #ffb000; }
+.bbs-led.on.busy { background: #ffb000; box-shadow: 0 0 10px #ffb000; animation: bbs-blink 0.55s steps(1) infinite; }
+
+.bbs-screen {
+  position: relative; z-index: 1;
+  height: 100%; display: flex; flex-direction: column;
+  padding: 12px 16px 12px;
+  gap: 8px;
+  color: #33ff66;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.42;
+  text-shadow: 0 0 7px rgba(51,255,102,0.5), 0 0 1px rgba(51,255,102,0.85);
+  animation: bbs-flicker 6s infinite;
+}
+@keyframes bbs-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.94; }
+  94% { opacity: 1; }
+  97% { opacity: 0.985; }
+  98% { opacity: 1; }
+}
+
+/* The single redraw canvas — a <pre> that re-renders per "screen". pre-wrap so
+   long bodies wrap instead of forcing a horizontal scrollbar. The block is a
+   fit-content width centered in the tube, like a real CRT's raster. */
+.bbs-frame {
+  flex: 1; min-height: 0; overflow-y: auto;
+  width: fit-content; max-width: 100%; margin-left: auto; margin-right: auto;
+  margin-top: 6px;
+  padding: 2px 4px 4px;
+  font-family: var(--font-mono); font-size: 15px; line-height: 1.5;
+  white-space: pre-wrap; color: #33ff66;
+  user-select: text; outline: none;
+}
+.bbs-frame::-webkit-scrollbar { width: 8px; }
+.bbs-frame::-webkit-scrollbar-thumb { background: #175a2e; }
+
+/* ANSI color words — the phosphor palette. One class per hue. */
+.c-green   { color: #33ff66; }
+.c-amber   { color: #ffb000; text-shadow: 0 0 7px rgba(255,176,0,0.45); }
+.c-cyan    { color: #3de8ff; text-shadow: 0 0 7px rgba(61,232,255,0.45); }
+.c-white   { color: #eaffec; text-shadow: 0 0 8px rgba(234,255,236,0.5); }
+.c-magenta { color: #ff6cff; text-shadow: 0 0 7px rgba(255,108,255,0.45); }
+.c-blue    { color: #7fb2ff; text-shadow: 0 0 7px rgba(127,178,255,0.45); }
+.c-red     { color: #ff5c5c; text-shadow: 0 0 7px rgba(255,92,92,0.45); }
+.c-dim     { color: #2fbf57; opacity: 0.85; }
+.c-gray    { color: #4f6150; }
+/* inverse-video highlight (menu selection) */
+.inv       { background: #33ff66; color: #011603; text-shadow: none; }
+/* blinking cursor / prompts */
+.blink     { animation: bbs-blink 1.05s steps(1) infinite; }
+@keyframes bbs-blink { 50% { opacity: 0; } }
+
+.bbs-status { color: #1f9e3f; font-size: 12px; min-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* bottom command bar — live keys + the inline prompt input */
+.bbs-command {
+  display: flex; align-items: center; gap: 10px;
+  border-top: 1px solid #175a2e; padding-top: 8px;
+}
+.bbs-keys { color: #4f6150; font-size: 12px; letter-spacing: 0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bbs-command input {
+  display: none; flex: 1; font-family: var(--font-mono); font-size: 15px;
+  color: #ffb000; background: rgba(20,10,0,0.7); border: 1px solid #8a5a00;
+  padding: 7px 9px; text-shadow: 0 0 5px rgba(255,176,0,0.4); caret-color: #ffb000;
+}
+.bbs-command input:focus { outline: none; border-color: #ffb000; box-shadow: 0 0 0 1px rgba(255,176,0,0.3); }
+.bbs-command.prompting .bbs-keys { display: none; }
+.bbs-command.prompting input { display: block; }
+
+/* clickable menu/entry lines — hover never inserts characters (a ::before
+   glyph would push the line past the frame and the right border "breaks") */
+.bbs-hit { cursor: pointer; }
+.bbs-hit:hover { text-decoration: underline; background: rgba(51,255,102,0.10); border-radius: 2px; }
+
+@media (max-width: 720px) {
+  #view-social { padding: 8px; }
+  .bbs-case { padding: 10px 10px 0; border-radius: 14px; }
+  .bbs-bezel { gap: 10px; padding: 8px 4px 9px; }
+  .bbs-bezel-spec { display: none; }
+  .bbs-screen { padding: 8px 8px 8px; font-size: 12px; }
+  .bbs-frame { font-size: 11px; }
+  .bbs-command { flex-wrap: wrap; }
 }

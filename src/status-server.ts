@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { execSync, spawn, spawnSync } from 'child_process';
 import http from 'http';
@@ -9,9 +10,11 @@ import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
-import { syncAgentCtxEnv } from './index.js';
+import { syncAgentCtxEnv, runFriendTurn, runColab, getColabStatus } from './index.js';
 import { parseRelativeDuration } from './task-scheduler.js';
 import { handleBrowserMcp, startBrowserGate } from './browser-mcp-gate.js';
+import { handleFriendsRequest, setHumanPresence } from './friends.js';
+import { handleBotnetMcp } from './botnet-mcp.js';
 import { propagateOpsModel } from './ops-model.js';
 import { loadMemoryTree, runMemoryClassification, treeActivity, memoryTreeRunning, noteTreeActivity, filedTreeFacts, maybeBackfillTreeFacts, scanConfig, setScanConfig, requestScanAbort } from './memory-tree.js';
 import {
@@ -1411,6 +1414,236 @@ async function readToolPool(): Promise<string[]> {
   return cachedToolPool;
 }
 
+// --- MARM memory canvas -----------------------------------------------------
+// The MARM dash rebuilt natively on a Warden canvas — no iframe. The Warden
+// host reads MARM's SQLite store directly (same queries the MARM console uses)
+// and checks the live MARM API for health. MARM is optional: a down API or a
+// missing store degrades the canvas to "offline" and never blocks anything
+// else (the same optional-component contract as the browser capability).
+
+const MARM_URL = process.env.MARM_URL || 'http://127.0.0.1:8001';
+const MARM_DB_PATH = process.env.MARM_DB_PATH || path.join(os.homedir(), '.marm', 'marm_memory.db');
+let marmDb: Database.Database | null = null;
+
+function getMarmDb(): Database.Database | null {
+  if (marmDb) return marmDb;
+  try {
+    marmDb = new Database(MARM_DB_PATH, { fileMustExist: true });
+    // MARM's own service writes through the same file (WAL) — never wedge on a lock.
+    marmDb.pragma('busy_timeout = 3000');
+    return marmDb;
+  } catch {
+    return null;
+  }
+}
+
+/** Bounded health probe of the MARM API — both connect and body reads time out. */
+function marmHealth(): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: Record<string, unknown>) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const probe = http.get(`${MARM_URL}/health`, (r) => {
+        let body = '';
+        r.on('data', (c: Buffer) => { body += c.toString(); if (body.length > 65536) probe.destroy(); });
+        r.on('end', () => {
+          try { done(JSON.parse(body) as Record<string, unknown>); } catch { done({ reachable: false }); }
+        });
+        r.on('error', () => done({ reachable: false }));
+      });
+      probe.on('error', () => done({ reachable: false }));
+      // Bounds the whole request: if no response within 3s, the canvas shows offline.
+      probe.setTimeout(3000, () => { probe.destroy(); done({ reachable: false }); });
+    } catch {
+      done({ reachable: false });
+    }
+  });
+}
+
+function marmCount(db: Database.Database, sql: string): number {
+  const n = db.prepare(sql).pluck().get();
+  return typeof n === 'number' ? n : 0;
+}
+
+/** Bounded JSON call into the live MARM API — connect AND response are timed out. */
+function marmApi(method: string, marmPath: string, body: unknown, timeoutMs: number): Promise<{ status: number; data: unknown }> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (msg: string) => { if (!settled) { settled = true; reject(new Error(msg)); } };
+    try {
+      const u = new URL(MARM_URL + marmPath);
+      const payload = body == null ? null : Buffer.from(JSON.stringify(body));
+      const r = http.request(
+        {
+          hostname: u.hostname, port: u.port, path: u.pathname + u.search, method,
+          headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {},
+        },
+        (r2) => {
+          let buf = '';
+          r2.on('data', (c: Buffer) => { buf += c.toString(); if (buf.length > 8 * 1024 * 1024) r2.destroy(); });
+          r2.on('end', () => {
+            try { resolve({ status: r2.statusCode || 0, data: buf ? JSON.parse(buf) : null }); }
+            catch { fail(`MARM API returned non-JSON (HTTP ${r2.statusCode})`); }
+          });
+          r2.on('error', (e: Error) => fail(e.message));
+        }
+      );
+      r.on('error', (e) => fail(e.message));
+      r.setTimeout(timeoutMs, () => { r.destroy(); fail('MARM API timed out'); });
+      if (payload) r.write(payload);
+      r.end();
+    } catch (e: any) { fail(e.message); }
+  });
+}
+
+async function handleMarm(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  pathname: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const db = getMarmDb();
+  if (!db) return error(res, `MARM store unavailable at ${MARM_DB_PATH}`, 503);
+
+  const limit = Math.min(Math.max(Number(params.get('limit')) || 50, 1), 200);
+  const offset = Math.max(Number(params.get('offset')) || 0, 0);
+
+  // DELETE memories / logs — { ids: [...] }
+  if (req.method === 'DELETE' && (pathname === '/api/marm/memories' || pathname === '/api/marm/logs')) {
+    const body = parseJson(await parseBody(req)) as { ids?: (string | number)[] };
+    const ids = (Array.isArray(body.ids) ? body.ids : []).filter((x) => typeof x === 'string' || typeof x === 'number').slice(0, 500);
+    if (!ids.length) return error(res, 'ids required');
+    const table = pathname === '/api/marm/memories' ? 'memories' : 'log_entries';
+    const stmt = db.prepare(`DELETE FROM ${table} WHERE id = ?`);
+    const deleted = db.transaction((list: (string | number)[]) => {
+      let n = 0;
+      for (const id of list) n += stmt.run(id).changes;
+      return n;
+    })(ids);
+    return json(res, { ok: true, deleted });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/marm/overview') {
+    const health = await marmHealth();
+    return json(res, {
+      health,
+      db: MARM_DB_PATH,
+      stats: {
+        active_memories: marmCount(db, "SELECT COUNT(*) FROM memories WHERE compaction_role IS NULL OR compaction_role != 'source'"),
+        compacted_sources: marmCount(db, "SELECT COUNT(*) FROM memories WHERE compaction_role = 'source'"),
+        missing_embeddings: marmCount(db, 'SELECT COUNT(*) FROM memories WHERE embedding IS NULL'),
+        sessions: marmCount(db, 'SELECT COUNT(*) FROM sessions'),
+        log_entries: marmCount(db, 'SELECT COUNT(*) FROM log_entries'),
+        notebook_entries: marmCount(db, 'SELECT COUNT(*) FROM notebook_entries'),
+        pending_compaction: marmCount(db, "SELECT COUNT(*) FROM compaction_staging WHERE status IN ('pending_summary','ready')"),
+        staged_compaction: marmCount(db, "SELECT COUNT(*) FROM compaction_staging WHERE status = 'staged'"),
+      },
+      projects: db.prepare("SELECT DISTINCT project FROM memories WHERE project IS NOT NULL AND project != '' ORDER BY project COLLATE NOCASE").pluck().all(),
+      platforms: db.prepare("SELECT DISTINCT platform FROM memories WHERE platform IS NOT NULL AND platform != '' ORDER BY platform COLLATE NOCASE").pluck().all(),
+    });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/marm/memories') {
+    const clauses: string[] = [];
+    const args: (string | number)[] = [];
+    const role = params.get('role');
+    if (role === 'compacted') clauses.push("compaction_role = 'source'");
+    else if (role !== 'all') clauses.push("(compaction_role IS NULL OR compaction_role != 'source')");
+    const session = params.get('session');
+    if (session) { clauses.push('session_name = ?'); args.push(session); }
+    const project = params.get('project');
+    if (project) { clauses.push('project = ?'); args.push(project); }
+    const q = params.get('q');
+    if (q) {
+      clauses.push("content LIKE ? ESCAPE '\\'");
+      args.push('%' + q.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_') + '%');
+    }
+    const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
+    const total = db.prepare(`SELECT COUNT(*) FROM memories${where}`).pluck().get(...args) as number;
+    const memories = db.prepare(
+      `SELECT id, session_name, project, platform, context_type, compaction_role, created_at, substr(content, 1, 500) AS content FROM memories${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).all(...args, limit, offset);
+    return json(res, { total, memories });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/marm/logs') {
+    const clauses: string[] = [];
+    const args: (string | number)[] = [];
+    const session = params.get('session');
+    if (session) { clauses.push('session_name = ?'); args.push(session); }
+    const q = params.get('q');
+    if (q) {
+      clauses.push("summary LIKE ? ESCAPE '\\'");
+      args.push('%' + q.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_') + '%');
+    }
+    const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
+    const total = db.prepare(`SELECT COUNT(*) FROM log_entries${where}`).pluck().get(...args) as number;
+    const logs = db.prepare(
+      `SELECT id, session_name, entry_date, topic, project, platform, created_at, substr(summary, 1, 400) AS summary FROM log_entries${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).all(...args, limit, offset);
+    return json(res, { total, logs });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/marm/sessions') {
+    const sessions = db.prepare(
+      'SELECT session_name, marm_active, created_at, last_accessed FROM sessions ORDER BY last_accessed DESC LIMIT ?'
+    ).all(limit);
+    return json(res, { sessions });
+  }
+
+  // Session create/delete straight in the store (same rows the console manages).
+  if (req.method === 'POST' && pathname === '/api/marm/sessions') {
+    const body = parseJson(await parseBody(req)) as { session_name?: string };
+    const name = String(body.session_name || '').trim().slice(0, 255);
+    if (!name) return error(res, 'session_name required');
+    db.prepare(
+      "INSERT OR IGNORE INTO sessions (session_name, marm_active, created_at, last_accessed) VALUES (?, 0, datetime('now'), datetime('now'))"
+    ).run(name);
+    return json(res, { ok: true, session_name: name });
+  }
+  if (req.method === 'DELETE' && pathname === '/api/marm/sessions') {
+    const body = parseJson(await parseBody(req)) as { names?: string[] };
+    const names = (Array.isArray(body.names) ? body.names : []).filter((x) => typeof x === 'string').slice(0, 500);
+    if (!names.length) return error(res, 'names required');
+    const stmt = db.prepare('DELETE FROM sessions WHERE session_name = ?');
+    const deleted = db.transaction((list: string[]) => {
+      let n = 0;
+      for (const nm of list) n += stmt.run(nm).changes;
+      return n;
+    })(names);
+    return json(res, { ok: true, deleted });
+  }
+
+  // Live MARM API passthroughs — every canvas action that belongs to the
+  // running service (recall, compaction, notebook, concepts, summary) goes
+  // through the API, never by second-guessing its internals in SQL.
+  const marmPassthrough: Record<string, [string, string]> = {
+    '/api/marm/memory':        ['POST', '/internal/memories'],
+    '/api/marm/log-entry':     ['POST', '/marm_log_entry'],
+    '/api/marm/smart-recall':  ['POST', '/marm_smart_recall'],
+    '/api/marm/compaction':    ['POST', '/marm_compaction'],
+    '/api/marm/notebook':      ['POST', '/marm_notebook'],
+    '/api/marm/concept-build': ['POST', '/marm_concept_build'],
+    '/api/marm/summary':       ['GET',  '/marm_summary'],
+  };
+  if (marmPassthrough[pathname]) {
+    const [method, marmPath] = marmPassthrough[pathname];
+    try {
+      const body = method === 'POST' ? parseJson(await parseBody(req)) : null;
+      const query = method === 'GET' && params.toString() ? '?' + params.toString() : '';
+      const out = await marmApi(method, marmPath + query, body, 60_000);
+      if (out.status >= 400) {
+        return error(res, `MARM said HTTP ${out.status}: ${JSON.stringify(out.data).slice(0, 300)}`, 502);
+      }
+      return json(res, out.data);
+    } catch (e: any) {
+      return error(res, `MARM API: ${e.message}`, 502);
+    }
+  }
+
+  return error(res, 'Not found', 404);
+}
+
 async function handleSettings(res: http.ServerResponse): Promise<void> {
   const envVals = readEnvFile([
     'CALENDAR_TOKEN',
@@ -2544,6 +2777,43 @@ function getClientIp(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || 'unknown';
 }
 
+// --- Friends surface guard (Tailscale vs local) ---
+// Warden binds 0.0.0.0 so a peer can reach the friends routes over the
+// tailnet, but the owner dashboard + owner API must never be reachable from
+// a peer. The friends mesh uses Tailscale's CGNAT range (100.64.0.0/10), so
+// "local" = loopback or a private LAN; anything else may reach ONLY the
+// peer-facing friends routes (which carry their own per-friendship
+// encryption + auth). The socket address is used directly — never a forwarded
+// header, which a peer could spoof to look local.
+const PEER_FRIENDS_ROUTES = new Set([
+  '/api/friends/whoami',
+  '/api/friends/invite',
+  '/api/friends/accept',
+  '/api/friends/ping',
+  '/api/friends/message',
+  '/api/friends/room-post',
+  '/api/friends/share',
+  '/api/friends/request',
+  '/api/friends/task',
+  '/api/friends/bbs/post',
+  '/api/friends/bbs/recent',
+  '/api/friends/bbs/file',
+  '/api/friends/patch',
+  // BotNet MCP gate — NOT trusted by virtue of reaching it: the handler
+  // itself demands a caller bearer token (src/botnet-mcp.ts). Listed here so
+  // callers on the tailnet aren't 403'd before the token check.
+  '/mcp/botnet',
+]);
+
+function isLoopbackOrLan(ip: string): boolean {
+  const v4 = ip.replace(/^::ffff:/, '');
+  if (ip === '::1' || v4 === '127.0.0.1' || v4.startsWith('127.')) return true;
+  if (/^10\./.test(v4)) return true;
+  if (/^192\.168\./.test(v4)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(v4)) return true;
+  return false;
+}
+
 // --- Security frame-server proxy (the "eyes") ---
 // The security detector (RF-DETR + webcam) runs on a separate host (the laptop)
 // and serves a frame server on 8765. The UI never reaches 8765 directly — the
@@ -3454,6 +3724,29 @@ export function startStatusServer(d: StatusDeps): void {
     }
 
     try {
+      // Friends surface guard: a non-local (tailnet) source may reach ONLY the
+      // peer-facing friends routes. Everything else — dashboard, owner API,
+      // browser MCP gate — is local/LAN only. Placed before every other route.
+      if (!isLoopbackOrLan(req.socket.remoteAddress || '') && !PEER_FRIENDS_ROUTES.has(pathname)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden' }));
+        return;
+      }
+      // Human presence heartbeat (BotNet autonomy gate): the dashboard tells
+      // the host whether the human is looking at the window. Local-only.
+      if (pathname === '/api/presence' && req.method === 'POST') {
+        try {
+          const buf = await parseBody(req);
+          const parsed = buf.length ? JSON.parse(buf.toString('utf-8')) : {};
+          setHumanPresence(parsed?.watching === true);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, watching: parsed?.watching === true }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'bad presence body' }));
+        }
+        return;
+      }
       // Browser-driving MCP gate: stateless front for the extension bridge's
       // single slot (see browser-mcp-gate.ts). Mounted before everything else.
       if (pathname === '/mcp/browser') return await handleBrowserMcp(req, res);
@@ -3779,8 +4072,23 @@ export function startStatusServer(d: StatusDeps): void {
       }
       if (pathname === '/api/messages')
         return await handleMessages(req, res, params);
+      // Friends — peer mesh over Tailscale (see src/friends.ts). Dispatched
+      // before the other /api/* handlers; the friends routes are the one
+      // deliberately peer-reachable surface, the rest stays single-user-local.
+      // BotNet MCP gate — third-party agents (non-Warden) dial into the BBS
+      // with a caller token. Token-gated at the handler itself, so it sits
+      // outside any of the /api trees (see src/botnet-mcp.ts).
+      if (pathname === '/mcp/botnet') {
+        if (await handleBotnetMcp(req, res, pathname)) return;
+      }
+      if (pathname.startsWith('/api/friends')) {
+        const handled = await handleFriendsRequest(req, res, pathname, params, runFriendTurn, runColab, getColabStatus);
+        if (handled) return;
+      }
       if (pathname.startsWith('/api/files'))
         return await handleFiles(req, res, pathname, params);
+      if (pathname.startsWith('/api/marm'))
+        return await handleMarm(req, res, pathname, params);
       if (pathname === '/api/settings' && req.method === 'GET')
         return handleSettings(res);
       if (pathname === '/api/settings' && req.method === 'POST')

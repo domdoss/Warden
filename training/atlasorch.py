@@ -4,7 +4,7 @@ seat dataset (orchatlas-sft.jsonl).
 
 Split out of train_iris_lora.py on 2026-09-18b. The two are separate jobs that
 happen to share a rendering contract: iris is a 3b toolcall agent on ~5K-token
-rows, this is the 8b seat that talks to the captain and drives the machine, on
+rows, this is the 8b seat that talks to the user and drives the machine, on
 ~11K-token rows carrying the whole 57-tool schema. They have different bases,
 datasets, sequence lengths, batch shapes and Ollama names, and neither run may
 overwrite the other's adapter. The dataset, collator and Ollama-faithful
@@ -319,7 +319,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="ibm-granite/granite-4.2-8b",
                     help="HF model id or local path (the pack step's Modelfile donor must match it: granite4.2:8b)")
-    ap.add_argument("--data", default=os.path.join(os.path.dirname(__file__), "orchatlas-sft.jsonl"))
+    ap.add_argument("--data", default=os.path.join(os.path.dirname(__file__), "orchatlas-sft-balanced.jsonl"))
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "orchatlas-lora"))
     ap.add_argument("--merged-out", default=os.path.join(os.path.dirname(__file__), "orchatlas-lora-merged"))
     # 2 epochs, not 4: 281 examples converge by epoch 2 (loss flattens ~0.12)
@@ -354,6 +354,9 @@ def main():
                          "loading the model — what atlasorch.sh uses to derive --max-len.")
     ap.add_argument("--max-steps", type=int, default=0,
                     help="stop after N optimizer steps (smoke test). 0 = train the full run.")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from the newest checkpoint in --out. Without this the run "
+                         "starts from the base model, even when checkpoints exist.")
     ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--lora-alpha", type=int, default=32)
     # dropout 0, not 0.05: unsloth's fast Granite patch only engages its fused
@@ -491,7 +494,13 @@ def main():
         warmup_ratio=0.05,
         fp16=True,
         logging_steps=2,
-        save_strategy="no",
+        # Keep the work. An interrupted epoch used to be total loss: the
+        # adapter was only written at the end, so stopping a healthy run cost
+        # the whole run (2026-10-18, 123/200 steps thrown away). Two
+        # checkpoints is ~600 MB; --resume picks the newest.
+        save_strategy="steps",
+        save_steps=25,
+        save_total_limit=2,
         report_to=[],
         remove_unused_columns=False,
         dataloader_drop_last=False,
@@ -507,7 +516,7 @@ def main():
         train_dataset=dataset,
         data_collator=PadCollator(tokenizer.pad_token_id),
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if args.resume else None)
 
     # Save the adapter (small) AND a merged fp16 model (for GGUF conversion).
     # Writes are main-process-only; other ranks wait at the barrier — no

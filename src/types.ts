@@ -68,6 +68,10 @@ export interface AgentInput {
   /** Tools exempt from relevance ranking. */
   pinnedTools?: string[];
   verbose?: boolean;
+  /** Autonomous background turn (e.g. the BotNet sweep): processed normally, but
+   *  its prompt and output must NOT persist into the seat's live conversation —
+   *  the runner rolls it back out of `messages` when the turn ends. */
+  sideTurn?: boolean;
 }
 
 export interface AgentOutput {

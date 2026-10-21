@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'node:child_process';
+import crypto from 'crypto';
+import { spawn, execFileSync } from 'node:child_process';
 
 import {
   AGENT_TIMEOUT,
@@ -93,6 +94,33 @@ import { startLogCap } from './log-rotator.js';
 import { Channel, NewMessage, OWNER_JID, AgentInput, ScheduledTask } from './types.js';
 import { logger } from './logger.js';
 import { captureScreenshotFromSecurityApp, captureWebcamFromSecurityApp, readHostImage } from './capture.js';
+import {
+  myHostname,
+  myLink,
+  listFriends,
+  listFriendRequests,
+  listFriendMessages,
+  listFriendRoomMessages,
+  listFriendFiles,
+  askFriend,
+  assignFriendTask,
+  dmFriend,
+  broadcastToRoom,
+  shareFile,
+  getSelfProfile,
+  setSelfProfile,
+  bbsState,
+  bbsPost,
+  bbsDialState,
+  bbsFileSave,
+  bbsFiles,
+  bbsFileRead,
+  readFriendFile,
+  friendCollab,
+  sendPatch,
+  isHumanWatching,
+} from './friends.js';
+import { listBlocked, listOffenses, blockFriend, unblockFriend, deleteFriend } from './db.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -335,36 +363,10 @@ function mercuryRetrieveRelevant(newMessages: NewMessage[], topK = MERCURY_CONTE
 function buildPrompt(newMessages: NewMessage[]): string {
   let prompt = '';
 
-  const mode = mercuryMode();
-  // Resolved once, up front, so both the Mercury summary/RAG injection and the
-  // <chat_history> gate share the same clear boundary this turn.
+  // Resolved once, up front, so the <chat_history> gate shares the same clear
+  // boundary this turn. Long-term recall is injected by MARM auto-recall in the
+  // agent-runner, so the prompt leads straight into chat history below.
   const clearAt = getRouterState('atlas:context_clear_at') || '';
-
-  // Mercury rolling memory — compacted context from older conversation turns.
-  if (mode === 'summary' || mode === 'full') {
-    const mercury = loadMercurySummary(clearAt);
-    if (mercury) {
-      prompt += `<mercury_summary>\n${mercury.replace(/^#\s*Mercury summary updated\s+\S+\s*\n/, '')}\n</mercury_summary>\n\n`;
-    }
-  }
-
-  // Mercury RAG: pull older conversation snippets relevant to the current ask.
-  if (mode === 'rag' || mode === 'full') {
-    const relevant = mercuryRetrieveRelevant(newMessages, MERCURY_CONTEXT_TURNS, clearAt);
-    if (relevant.length > 0) {
-      const lines = relevant.map((m) => {
-        const role = m.is_bot_message ? ASSISTANT_NAME : (m.sender_name || 'User');
-        const time = formatLocalTime(m.timestamp, TIMEZONE);
-        return `<message sender="${role}" time="${time}" history="relevant">${m.content}</message>`;
-      });
-      // The `time` on each line is the anti-hijack: keyword matches can surface
-      // day-old turns, and without a visible timestamp the model cannot tell a
-      // stale thread from the current one (it once answered a fresh question by
-      // replaying a day-old exchange retrieved this way). The note states the
-      // hierarchy: these are background, never a substitute for the ask.
-      prompt += `<mercury_context count="${relevant.length}" note="older turns keyword-matched to this ask — background only; check each timestamp; the current ask and recent chat history always take priority">\n${lines.join('\n')}\n</mercury_context>\n\n`;
-    }
-  }
 
   // Get recent conversation context including bot replies (not just user messages).
   // getMessagesForDashboard returns both sides of the conversation.
@@ -427,19 +429,33 @@ function cleanAgentText(raw: string): string {
     .trim();
 }
 
+/** Set when the seat calls clear_context mid-turn; consumed by the next stored
+ *  reply so the boundary lands AFTER that reply (see deliverReply). */
+let pendingContextClear = false;
+
 /** Forward the bot's reply to every connected channel + persist to DB. */
 async function deliverReply(text: string): Promise<void> {
   const messageId = `bot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const timestamp = new Date().toISOString();
   storeMessage({
     id: messageId,
     chat_jid: OWNER_JID,
     sender: 'assistant:local',
     sender_name: ASSISTANT_NAME,
     content: text,
-    timestamp: new Date().toISOString(),
+    timestamp,
     is_from_me: false,
     is_bot_message: true,
   });
+  // clear_context recorded its boundary at request time, but this turn's own
+  // reply was stored after it — so the next turn's <chat_history> would carry
+  // the clearing turn's reply back in and re-seed the conversation the user
+  // just cleared. Move the boundary past this one reply.
+  if (pendingContextClear) {
+    pendingContextClear = false;
+    setRouterState('atlas:context_clear_at', timestamp);
+    logger.info({ timestamp }, 'clear_context: boundary moved past the clearing turn reply');
+  }
   await Promise.allSettled(
     channels.map((ch) =>
       ch.sendMessage(OWNER_JID, text).catch((err) =>
@@ -570,16 +586,24 @@ export function buildAgentCallbacks(): CallbackMap {
         let finalText = text;
         if (!finalText.trim()) return { ok: false, error: 'missing text' };
         const messageId = `bot-cb-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const timestamp = new Date().toISOString();
         storeMessage({
           id: messageId,
           chat_jid: OWNER_JID,
           sender: 'assistant:local',
           sender_name: senderName,
           content: finalText,
-          timestamp: new Date().toISOString(),
+          timestamp,
           is_from_me: false,
           is_bot_message: true,
         });
+        // Same boundary rule as deliverReply: the clearing turn's reply lands
+        // after clear_context's recorded time, so move the boundary past it.
+        if (pendingContextClear) {
+          pendingContextClear = false;
+          setRouterState('atlas:context_clear_at', timestamp);
+          logger.info({ timestamp }, 'clear_context: boundary moved past the clearing turn reply (send_message)');
+        }
 
         const targetChannel = typeof args?.channel === 'string'
           ? channels.find((c) => c.name === args.channel)
@@ -1620,6 +1644,11 @@ export function buildAgentCallbacks(): CallbackMap {
         const now = new Date().toISOString();
         setRouterState('atlas:context_clear_at', now);
         setRouterState('last_agent_timestamp', now);
+        // The boundary must end up AFTER this turn's own reply, not at the
+        // request time: deliverReply/send_message advance it when the reply is
+        // stored. Otherwise the clearing turn's reply is re-injected as history
+        // next turn.
+        pendingContextClear = true;
         logger.info({ reason: args?.reason }, 'clear_context tool: host boundary recorded');
         return { ok: true, clearedAt: now };
       } catch (err: any) {
@@ -1798,6 +1827,172 @@ export function buildAgentCallbacks(): CallbackMap {
           return { ok: deleteAlarmDb(alarmId) };
         }
 
+        // ── Friends (peer mesh over Tailscale) ──────────────────────────
+        // The agent-runner never sees friend tokens — it sends the action here,
+        // the host resolves the stored token and makes the call.
+        if (type === 'friend_list') {
+          const friends = listFriends().map((f: any) => ({
+            hostname: f.id,
+            name: f.name || f.id,
+            status: f.status,
+            last_seen: f.last_seen,
+            profile: f.profile || '',
+            capabilities: (() => { try { return JSON.parse(f.capabilities); } catch { return []; } })(),
+            specialists: (() => { try { return JSON.parse(f.specialists); } catch { return []; } })(),
+          }));
+          return {
+            ok: true,
+            self: { hostname: myHostname(), link: myLink(), profile: getSelfProfile() },
+            friends,
+            requests: listFriendRequests().map((r: any) => ({ id: r.id, from_hostname: r.from_hostname })),
+            blocked: listBlocked(),
+            offenses: listOffenses(100),
+          };
+        }
+        if (type === 'friend_profile') {
+          const profile = String(args.profile || '').slice(0, 500);
+          setSelfProfile(profile);
+          return { ok: true, profile };
+        }
+        if (type === 'friend_block') {
+          const hostname = String(args.hostname || '');
+          if (!hostname) return { ok: false, error: 'friend_block requires hostname' };
+          // Remove as friend and cut off on every route.
+          deleteFriend(hostname);
+          blockFriend(hostname, String(args.reason || 'blocked').slice(0, 200));
+          return { ok: true, blocked: hostname };
+        }
+        if (type === 'friend_unblock') {
+          const hostname = String(args.hostname || '');
+          if (!hostname) return { ok: false, error: 'friend_unblock requires hostname' };
+          return { ok: unblockFriend(hostname), hostname };
+        }
+        if (type === 'friend_dm') {
+          const hostname = String(args.hostname || '');
+          const message = String(args.message || '').slice(0, 4000);
+          if (!hostname || !message) return { ok: false, error: 'friend_dm requires hostname and message' };
+          return await dmFriend(hostname, message);
+        }
+        if (type === 'friend_broadcast') {
+          const room = String(args.room || '').slice(0, 120);
+          const message = String(args.message || '').slice(0, 4000);
+          const hostnames = Array.isArray(args.hostnames) ? args.hostnames.map(String) : [];
+          if (!room || !message || hostnames.length === 0) {
+            return { ok: false, error: 'friend_broadcast requires room, message, and hostnames' };
+          }
+          return await broadcastToRoom(room, message, hostnames);
+        }
+        if (type === 'friend_share') {
+          const hostname = String(args.hostname || '');
+          const filename = String(args.filename || '').slice(0, 120);
+          const content = String(args.content || '').slice(0, 1024 * 1024);
+          if (!hostname || !filename || !content) return { ok: false, error: 'friend_share requires hostname, filename, and content' };
+          return await shareFile(hostname, filename, content);
+        }
+        if (type === 'friend_ask') {
+          const hostname = String(args.hostname || '');
+          const task = String(args.task || '').slice(0, 8000);
+          const agent = String(args.agent || '').toLowerCase();
+          if (!hostname || !task) return { ok: false, error: 'friend_ask requires hostname and task' };
+          const r = await askFriend(hostname, task, 120000, agent || undefined);
+          return r.ok ? { ok: true, answer: r.answer } : { ok: false, error: r.error };
+        }
+        if (type === 'friend_task') {
+          const hostname = String(args.hostname || '');
+          const title = String(args.title || '').slice(0, 300);
+          if (!hostname || !title) return { ok: false, error: 'friend_task requires hostname and title' };
+          const r = await assignFriendTask(hostname, {
+            title,
+            description: String(args.description || '').slice(0, 4000) || undefined,
+            priority: String(args.priority || '') || undefined,
+            due_date: String(args.due_date || '') || undefined,
+          });
+          return r.ok ? { ok: true, task_id: r.task_id } : { ok: false, error: r.error };
+        }
+        if (type === 'friend_inbox') {
+          // Read the social inbox: DMs, room posts, shared files. Files come
+          // back with their on-disk path so the seat can Grep/Read them.
+          return {
+            ok: true,
+            self: { hostname: myHostname(), link: myLink() },
+            messages: listFriendMessages(50),
+            rooms: listFriendRoomMessages(100),
+            files: listFriendFiles(100),
+          };
+        }
+        if (type === 'bbs_read') {
+          const host = String(args.host || '').trim();
+          const board = String(args.board || '').trim().slice(0, 60);
+          if (host && host !== myHostname()) return await bbsDialState(host, board || undefined);
+          return bbsState(board || undefined);
+        }
+        if (type === 'bbs_post') {
+          const board = String(args.board || '').slice(0, 60);
+          const body = String(args.body || '').slice(0, 8000);
+          const title = String(args.title || '').slice(0, 200);
+          const threadId = String(args.thread_id || '').slice(0, 64);
+          const host = String(args.host || '').trim();
+          if (!board || !body) return { ok: false, error: 'bbs_post requires board and body' };
+          return await bbsPost({ board, body, title: title || undefined, thread_id: threadId || undefined, author_kind: 'bot', host: host || undefined });
+        }
+        if (type === 'friend_patch') {
+          const hostname = String(args.hostname || '').trim();
+          if (!hostname) return { ok: false, error: 'friend_patch requires hostname' };
+          return await sendPatch(hostname, {
+            repo: String(args.repo || ''),
+            base: args.base ? String(args.base) : undefined,
+            description: String(args.description || ''),
+          });
+        }
+        if (type === 'friend_collab') {
+          const hostnames = Array.isArray(args.hostnames) ? args.hostnames.map(String) : [];
+          const subtasks = Array.isArray(args.subtasks)
+            ? args.subtasks.map((s: any) => ({ hostname: String(s?.hostname || ''), task: String(s?.task || '') }))
+            : undefined;
+          if (hostnames.length === 0) return { ok: false, error: 'friend_collab requires hostnames' };
+          return await friendCollab({
+            hostnames,
+            title: String(args.title || ''),
+            task: String(args.task || ''),
+            subtasks,
+            save: args.save !== false,
+          });
+        }
+        if (type === 'bbs_file_save') {
+          const name = String(args.name || '').slice(0, 120);
+          const content = String(args.content || '');
+          if (!name || !content) return { ok: false, error: 'bbs_file_save requires name and content' };
+          return bbsFileSave(name, content);
+        }
+        if (type === 'bbs_files') {
+          const host = String(args.host || '').trim();
+          if (host && host !== myHostname()) {
+            const d = await bbsDialState(host);
+            return { ok: d.ok, files: d.files || [], host, online: d.online, error: d.error };
+          }
+          return { ok: true, files: bbsFiles() };
+        }
+        if (type === 'bbs_file_read') {
+          const name = String(args.name || '');
+          const host = String(args.host || '').trim();
+          if (host && host !== myHostname()) return await readFriendFile(host, name);
+          return bbsFileRead(name);
+        }
+        if (type === 'bbs_botnet') {
+          // Get/set the autonomy sweep's kill switch + which specialist runs it.
+          const action = String(args.action || 'get');
+          if (action === 'set') {
+            if (args.enabled !== undefined) setRouterState('bbs:autonomy:enabled', (args.enabled === true || args.enabled === 'true') ? 'true' : 'false');
+            const agent = String(args.agent || '').toLowerCase();
+            if (agent === 'atlas' || agent === 'vulkan') setRouterState('bbs:autonomy:agent', agent);
+          }
+          return {
+            ok: true,
+            enabled: getRouterState('bbs:autonomy:enabled') !== 'false',
+            agent: getRouterState('bbs:autonomy:agent') || 'atlas',
+          };
+        }
+
         return { ok: false, error: `unknown ipc type: ${type}` };
       } catch (err: any) {
         logger.warn({ err, type: args?.type }, 'ipc callback: error');
@@ -1806,6 +2001,512 @@ export function buildAgentCallbacks(): CallbackMap {
     },
 
   };
+}
+
+// ─── Friends: run an inbound "ask" as a normal seat turn ───────────────────
+// A friend who was accepted may POST /api/friends/request. This runs the task
+// through the same seat (Atlas) as an owner message — same model/settings,
+// same tools — and returns the seat's final answer. Bounded ~2 min. Never
+// builds the prompt via buildPrompt(): that injects the owner's private chat
+// history, which a friend must not see.
+let friendTurnBusy = false;
+
+/** The seat's full model/settings wiring, shared by every "background seat turn"
+ *  (inbound friend ask + the BotNet autonomy sweep) so they run with the same
+ *  models and tools as an owner message — no private chat history attached. */
+function seatModelSettings() {
+  return {
+    maxOutputTokens: (getRouterState('local:max_output_tokens') || '').trim(),
+    model: (getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
+    vulkanModel: (getRouterState('vulkan:model') || '').replace(/^local:/, '') || undefined,
+    supervisorModel: (getRouterState('supervisor:model') || '').replace(/^local:/, '') || undefined,
+    supervisorEnabled: getRouterState('supervisor:enabled') !== 'false',
+    irisModel: (getRouterState('local:subagent_model') || '').replace(/^local:/, '') || undefined,
+    artemisModel: (getRouterState('artemis:model') || '').replace(/^local:/, '') || undefined,
+    sentryModel: (getRouterState('sentry:model') || getRouterState('atlas:model') || '').replace(/^local:/, '') || undefined,
+    drivingForce: getRouterState('atlas:driving_force') || '',
+    contextClearAt: getRouterState('atlas:context_clear_at') || '',
+    councilSkepticModel: (getRouterState('council:skeptic_model') || '').replace(/^local:/, '') || undefined,
+    councilPragmatistModel: (getRouterState('council:pragmatist_model') || '').replace(/^local:/, '') || undefined,
+    councilSynthesistModel: (getRouterState('council:synthesist_model') || '').replace(/^local:/, '') || undefined,
+    defaultApps: readDefaultApps(),
+    assistantName: ASSISTANT_NAME,
+    pinnedTools: readPinnedTools(),
+    showThinking: 'false',
+    verbose: false,
+  };
+}
+
+export async function runFriendTurn(task: string, fromHost: string, agent?: string): Promise<{ text: string; error?: string }> {
+  if (friendTurnBusy || agentProcessing || isForegroundTurnActive()) {
+    return { text: '', error: 'this Warden is busy on another turn right now' };
+  }
+  friendTurnBusy = true;
+  try {
+    const routing = agent && agent !== 'atlas'
+      ? `The friend asked specifically for your ${agent} specialist. Delegate this to ${agent} with your ${agent} tool and return that specialist's result as your answer.`
+      : `Do the work yourself with your tools if needed, then reply directly to the friend with a concise, complete answer.`;
+    const prompt =
+      `A Warden friend (${fromHost}) asked you something.\n\n` +
+      `<friend_message from="${fromHost}">\n${task}\n</friend_message>\n\n` +
+      routing;
+
+    const msg: NewMessage = {
+      id: crypto.randomUUID(),
+      chat_jid: OWNER_JID,
+      sender: fromHost,
+      sender_name: fromHost,
+      content: task,
+      timestamp: new Date().toISOString(),
+      channel: 'web',
+    };
+
+    const input: AgentInput = {
+      prompt,
+      sessionId: 'owner',
+      workspaceRoot: WORKSPACE_ROOT,
+      history: [msg],
+      timeoutMs: 120000,
+      ...seatModelSettings(),
+    };
+
+    const output = await runAgent({ ...input, callbacks: buildAgentCallbacks() });
+
+    let text = cleanAgentText(output.text);
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.result === 'string' && parsed.result.trim()) {
+          text = cleanAgentText(parsed.result);
+        } else if (parsed.status === 'error' && typeof parsed.error === 'string' && parsed.error.trim()) {
+          return { text: '', error: parsed.error.trim() };
+        } else {
+          text = '';
+        }
+      }
+    } catch { /* not JSON, use as-is */ }
+
+    if (!text) return { text: '', error: output.error || 'no answer produced' };
+    return { text };
+  } catch (err: any) {
+    logger.warn({ err: err?.message ?? err, fromHost }, 'runFriendTurn failed');
+    return { text: '', error: String(err?.message ?? err) };
+  } finally {
+    friendTurnBusy = false;
+  }
+}
+
+// ─── BotNet autonomy sweep ─────────────────────────────────────────────────
+// On an idle interval (default 20 min), when the human is away and nothing else
+// is running, the assigned specialist (atlas or vulkan — bbs:autonomy:agent)
+// reads the BBS, contributes if useful, queues integration tasks, and surfaces a
+// one-line summary to the human chat. Gated on: an enabled kill switch, human
+// presence (bots off while the human looks at the window), and idle (no turn or
+// job in flight). Mirrors checkSentryDue() — rides the 2s poll loop, never
+// throws, never blocks message pickup.
+
+const BBS_AUTONOMY_INTERVAL_MS = 20 * 60 * 1000;
+let bbsAutonomyChecked = false;
+let bbsAutonomyBusy = false;
+let bbsSweepRunning = false;
+
+async function runBbsAutonomySweep(): Promise<void> {
+  if (bbsSweepRunning) return;
+  bbsSweepRunning = true;
+  try {
+    const agent = getRouterState('bbs:autonomy:agent') === 'vulkan' ? 'vulkan' : 'atlas';
+    const routing = agent === 'vulkan'
+      ? `This sweep is assigned to your vulkan specialist. Hand the reading and any code change to vulkan with your vulkan tool, and base your summary on its result.`
+      : `Do this work yourself with your tools.`;
+    const prompt =
+      `This is your autonomous BotNet sweep — you run on your own while the human is away. Work quietly, then stop.\n\n` +
+      `1. Read your own BBS node with bbs_read. Then, for each online friend in friend_list, dial in with bbs_read (host=<friend>) and skim its boards.\n` +
+      `2. If a thread genuinely deserves a reply, post it with bbs_post (the right host and thread_id). A quiet board is a fine result — no padding, no repeats.\n` +
+      `3. If a thread poses a question several friends could usefully answer, use friend_collab to gather their answers and save the combined result.\n` +
+      `4. If you find an idea or change worth integrating into your own Warden, queue it as a work task with the project tool: describe exactly what to integrate and why.\n` +
+      `5. Note anything the human would want to hear about (a package worth discussing, a notable build).\n\n` +
+      `Use only these tools for the sweep: bbs_read, bbs_post, friend_list, friend_collab, bbs_file_save, project. If nothing needed action, end your reply with exactly the word QUIET on its own line; otherwise end with one short line of internal notes. This is a silent background task — nothing you write is shown in chat.\n\n` +
+      routing;
+
+    const msg: NewMessage = {
+      id: crypto.randomUUID(),
+      chat_jid: OWNER_JID,
+      sender: 'botnet',
+      sender_name: 'BotNet',
+      content: 'autonomous BotNet sweep',
+      timestamp: new Date().toISOString(),
+      channel: 'web',
+    };
+
+    const input: AgentInput = {
+      prompt,
+      sessionId: 'owner',
+      workspaceRoot: WORKSPACE_ROOT,
+      history: [msg],
+      timeoutMs: 90000,
+      sideTurn: true,
+      ...seatModelSettings(),
+    };
+
+    const output = await runAgent({ ...input, callbacks: buildAgentCallbacks() });
+
+    let text = cleanAgentText(output.text);
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.result === 'string' && parsed.result.trim()) text = cleanAgentText(parsed.result);
+        else text = '';
+      }
+    } catch { /* not JSON, use as-is */ }
+
+    // The sweep is a hidden background task — nothing it reads or writes for the
+    // BBS is reported in chat. Log the summary for debugging and drop it.
+    if (text && text.trim()) {
+      const line = text.trim().split('\n').filter(Boolean).pop() || text.trim();
+      if (/^quiet$/i.test(line.trim()) || /^no botnet action needed/i.test(line.trim())) {
+        logger.info('BotNet sweep: nothing needed action');
+      } else {
+        logger.info({ summary: line.slice(0, 400) }, 'BotNet sweep finished');
+      }
+    }
+  } catch (err: any) {
+    logger.warn({ err: err?.message ?? err }, 'BotNet autonomy sweep failed');
+  } finally {
+    bbsSweepRunning = false;
+  }
+}
+
+function checkBbsAutonomyDue(): void {
+  if (bbsAutonomyBusy) return;
+  bbsAutonomyBusy = true;
+  const firstCheck = !bbsAutonomyChecked;
+  bbsAutonomyChecked = true;
+  try {
+    if (getRouterState('bbs:autonomy:enabled') === 'false') return; // kill switch
+    if (isHumanWatching()) return; // human at the window → bots off (don't advance)
+    const now = Date.now();
+    const lastRaw = getRouterState('bbs:autonomy:lastrun');
+    if (!lastRaw) { setRouterState('bbs:autonomy:lastrun', new Date(now).toISOString()); return; }
+    const last = new Date(lastRaw).getTime();
+    if (Number.isNaN(last)) { setRouterState('bbs:autonomy:lastrun', new Date(now).toISOString()); return; }
+    if (now - last < BBS_AUTONOMY_INTERVAL_MS) return;
+    if (firstCheck) {
+      // Overdue while Warden was down — reset and wait for the next interval
+      // rather than firing a catch-up sweep the instant we boot.
+      setRouterState('bbs:autonomy:lastrun', new Date(now).toISOString());
+      return;
+    }
+    if (wardenBusy() || agentProcessing || friendTurnBusy || bbsSweepRunning) return; // idle-gated; don't advance
+    setRouterState('bbs:autonomy:lastrun', new Date(now).toISOString());
+    logger.info('BotNet autonomy sweep firing');
+    void runBbsAutonomySweep().catch((err) => logger.warn({ err: err?.message ?? err }, 'BotNet sweep failed'));
+  } finally {
+    bbsAutonomyBusy = false;
+  }
+}
+
+// ─── BotNet colab (human-initiated swarm) ───────────────────────────────────
+// The dashboard's Colab screen posts a task here; the host orchestrates a real
+// fan-out instead of one seat turn: a planner turn splits the task, each piece
+// becomes a REAL work task under a "BotNet — …" project in the Warden ledger
+// (the dashboard Projects view shows the swarm as a first-class project), the
+// workers run in parallel — friends over the mesh, one local seat slice — and
+// each one reports back, closes its task, and the host moves on. The combined
+// report is filed to the file area and announced on the shoutbox.
+// Live state is served at GET /api/friends/colab/status for the Colab screen.
+
+export interface ColabWorker {
+  worker: string;      // 'local' (this node) or a friend hostname
+  title: string;
+  state: 'queued' | 'running' | 'done' | 'error';
+  detail?: string;     // first slice of the answer, or the error
+  elapsedMs?: number;
+  taskId?: string;
+}
+export interface ColabStatus {
+  busy: boolean;
+  phase: 'idle' | 'organizing' | 'delegating' | 'combining' | 'done' | 'error';
+  task: string;
+  projectId: string;
+  projectName: string;
+  tree: string;        // the run's shared git tree on disk (WORKSPACE_ROOT/colab/<slug>)
+  workers: ColabWorker[];
+  report: string;
+  file: string;
+  error: string;
+  startedAt: number;
+}
+
+let colabState: ColabStatus = {
+  busy: false, phase: 'idle', task: '', projectId: '', projectName: '', tree: '', workers: [],
+  report: '', file: '', error: '', startedAt: 0,
+};
+export function getColabStatus(): ColabStatus {
+  return { ...colabState, workers: colabState.workers.map((w) => ({ ...w })) };
+}
+
+// One seat turn for the swarm (planner or the single local worker). Holds no
+// locks of its own — runColab gates entry and holds both turn locks for the
+// whole run, so a peer request mid-swarm hears "busy" instead of colliding.
+// With rawJson the model's final text passes through untouched (the planner's
+// answer IS the JSON plan, not a {result} envelope to unpack).
+async function runSwarmTurn(prompt: string, timeoutMs: number, rawJson = false): Promise<{ text: string; error?: string }> {
+  const msg: NewMessage = {
+    id: crypto.randomUUID(),
+    chat_jid: OWNER_JID,
+    sender: 'botnet',
+    sender_name: 'BotNet',
+    content: prompt.slice(0, 500),
+    timestamp: new Date().toISOString(),
+    channel: 'web',
+  };
+  try {
+    const output = await runAgent({
+      prompt,
+      sessionId: 'owner',
+      workspaceRoot: WORKSPACE_ROOT,
+      history: [msg],
+      timeoutMs,
+      ...seatModelSettings(),
+      callbacks: buildAgentCallbacks(),
+    });
+    let text = cleanAgentText(output.text);
+    if (!rawJson) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') {
+          if (typeof parsed.result === 'string' && parsed.result.trim()) text = cleanAgentText(parsed.result);
+          else if (parsed.status === 'error' && typeof parsed.error === 'string' && parsed.error.trim()) {
+            return { text: '', error: parsed.error.trim() };
+          } else text = '';
+        }
+      } catch { /* not JSON, use as-is */ }
+    }
+    if (!text) return { text: '', error: output.error || 'no answer produced' };
+    return { text };
+  } catch (err: any) {
+    return { text: '', error: String(err?.message ?? err) };
+  }
+}
+
+interface SwarmSubtask { worker: string; title: string; detail: string }
+
+export async function runColab(task: string, fromHost = 'dashboard'): Promise<{ text: string; error?: string }> {
+  if (friendTurnBusy || bbsSweepRunning || agentProcessing || isForegroundTurnActive()) {
+    return { text: '', error: 'this Warden is busy on another turn right now' };
+  }
+  bbsSweepRunning = true;
+  friendTurnBusy = true;
+  colabState = {
+    busy: true, phase: 'organizing', task, projectId: '', projectName: '', tree: '', workers: [],
+    report: '', file: '', error: '', startedAt: Date.now(),
+  };
+  try {
+    const online = listFriends().filter((f) => f.status === 'online');
+
+    // The ledger first: the swarm is a Warden project with one work task per
+    // worker, so it shows natively on the dashboard Projects view.
+    const project = createProject({
+      name: `BotNet — ${task.replace(/\s+/g, ' ').slice(0, 60)}`,
+      group_jid: OWNER_JID,
+      description: task.slice(0, 4000),
+      status: 'On Track',
+    });
+    colabState.projectId = project.id;
+    colabState.projectName = project.name;
+
+    // The shared tree: every run materializes under WORKSPACE_ROOT/colab/<slug>/
+    // as its own git repo — the mesh works ONE versioned tree per run. Local
+    // workers save deliverables straight into it; remote answers are committed
+    // on the sender's behalf, one commit per worker. Diffable, branchable, left
+    // on disk as the run's workspace.
+    const slug = task.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'run';
+    const runDir = path.join(WORKSPACE_ROOT, 'colab', `${slug}-${Date.now().toString(36)}`);
+    fs.mkdirSync(path.join(runDir, 'workers'), { recursive: true });
+    colabState.tree = runDir;
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: runDir });
+    } catch (e: any) {
+      logger.warn({ err: e?.message ?? e }, 'colab tree: git init failed — this run is unversioned');
+    }
+    // Commits are chained — parallel workers finishing together would race the
+    // index lock otherwise.
+    let gitChain: Promise<unknown> = Promise.resolve();
+
+    // ORGANIZE — the seat plans the split, nothing more.
+    const crew = online.length
+      ? online.map((f) => `- ${f.id} — ${String(f.profile || f.name || 'no profile').slice(0, 120)}`).join('\n')
+      : '(none online — no friend nodes can take work right now)';
+    const plannerPrompt =
+      `A human (${fromHost}) posted this task to the BotNet colab channel. You are the ORGANIZER: plan the swarm, do NOT do the work.\n\n` +
+      `<colab_task>\n${task}\n</colab_task>\n\n` +
+      `Online friend nodes you can delegate to:\n${crew}\n\n` +
+      `Rules:\n` +
+      `- Split the task into 1-6 self-contained subtasks; each worker sees ONLY its own title and detail.\n` +
+      `- worker is a friend hostname exactly as listed, or "local" for this node. Delegate real work to online friends when the task benefits from it.\n` +
+      `- AT MOST ONE subtask may be "local".\n` +
+      `- All deliverables are collected into one shared git tree on this node — the swarm works a single versioned workspace.\n` +
+      `- Reply with ONLY a JSON object, no prose, no code fences:\n` +
+      `{"subtasks":[{"worker":"local|hostname","title":"short label","detail":"complete instructions for the worker"}]}`;
+    const planOut = await runSwarmTurn(plannerPrompt, 60000, true);
+
+    let subtasks: SwarmSubtask[] = [];
+    if (planOut.text) {
+      try {
+        const m = planOut.text.match(/\{[\s\S]*\}/);
+        const parsed = m ? JSON.parse(m[0]) : null;
+        if (parsed && Array.isArray(parsed.subtasks)) {
+          for (const s of parsed.subtasks) {
+            const st: SwarmSubtask = {
+              worker: String(s?.worker || 'local').trim(),
+              title: String(s?.title || '').slice(0, 120) || 'subtask',
+              detail: String(s?.detail || '').slice(0, 4000),
+            };
+            if (st.detail) subtasks.push(st);
+          }
+        }
+      } catch { /* unparseable plan — solo fallback below */ }
+    } else {
+      logger.warn({ err: planOut.error }, 'colab planner produced nothing — running solo');
+    }
+    // Sanitize: only real online friends run remote; unknown/down hosts and any
+    // extra "local" pieces fold into the single local slice (the seat is one seat).
+    const onlineHosts = new Set(online.map((f) => f.id));
+    const remote: SwarmSubtask[] = [];
+    const localParts: SwarmSubtask[] = [];
+    for (const s of subtasks.slice(0, 6)) {
+      if (s.worker !== 'local' && onlineHosts.has(s.worker)) remote.push(s);
+      else localParts.push(s);
+    }
+    const plan: SwarmSubtask[] = [...remote];
+    if (localParts.length === 1) plan.push({ ...localParts[0], worker: 'local' });
+    else if (localParts.length > 1) {
+      plan.push({
+        worker: 'local',
+        title: localParts.map((s) => s.title).join(' + ').slice(0, 120),
+        detail: 'Do ALL of these slices, each clearly separated:\n\n' +
+          localParts.map((s, i) => `${i + 1}. ${s.title}\n${s.detail}`).join('\n\n'),
+      });
+    }
+    if (!plan.length) plan.push({ worker: 'local', title: task.replace(/\s+/g, ' ').slice(0, 120), detail: task });
+
+    // DELEGATE — one work task per worker, then every worker runs at once.
+    for (const s of plan) {
+      const wt = createWorkTask({
+        title: s.title,
+        description: s.detail,
+        priority: 'high',
+        assigned_to: s.worker === 'local' ? 'atlas' : s.worker,
+        created_by: 'botnet',
+        project_id: project.id,
+      });
+      colabState.workers.push({ worker: s.worker, title: s.title, state: 'queued', taskId: wt.id });
+    }
+    const answers: string[] = new Array(plan.length).fill('');
+    colabState.phase = 'delegating';
+    await Promise.all(plan.map(async (s, i) => {
+      const wk = colabState.workers[i];
+      const started = Date.now();
+      wk.state = 'running';
+      updateWorkTask(wk.taskId!, { status: 'in_progress' });
+      try {
+        if (s.worker === 'local') {
+          const workerPrompt =
+            `You are the BotNet worker on this node. The mesh is swarming a task posted to the colab channel; this is your slice.\n\n` +
+            `<colab_task>\n${task}\n</colab_task>\n\n` +
+            `<your_subtask title="${s.title}">\n${s.detail}\n</your_subtask>\n\n` +
+            `The swarm shares one git tree for this run at ${runDir} — save substantial deliverables (code, drafts, structured data) as files in it, ` +
+            `names prefixed "local_". Then reply with the deliverable itself (or, for large work, a tight summary naming the files you saved). ` +
+            `That reply goes straight to the organizer and is filed. Do not call send_message.`;
+          const out = await runSwarmTurn(workerPrompt, 120000);
+          if (!out.text) throw new Error(out.error || 'no answer produced');
+          answers[i] = out.text;
+        } else {
+          const a = await askFriend(s.worker, `${s.title}\n\n${s.detail}\n\n(Your answer is filed whole into the swarm's shared tree on the organizing node.)`, 120000);
+          if (!a.ok || !a.answer) throw new Error(a.error || 'no answer');
+          answers[i] = a.answer;
+        }
+        // Remote slice → a file in the tree named for the node; local slices
+        // may already be files the worker wrote itself. Either way: one commit
+        // per worker, chained so parallel finishes never race the index lock.
+        if (s.worker !== 'local') {
+          fs.writeFileSync(path.join(runDir, 'workers', `${s.worker.replace(/[^a-zA-Z0-9._-]+/g, '_')}.md`), answers[i]);
+        }
+        gitChain = gitChain.then(() => {
+          execFileSync('git', ['add', '-A'], { cwd: runDir });
+          execFileSync('git', ['-c', 'user.name=BotNet', '-c', `user.email=${s.worker}@botnet`, 'commit', '-q', '--allow-empty', '-m', `${s.worker}: ${s.title}`], { cwd: runDir });
+        }).catch(() => { /* unversioned run — git init failed above */ });
+        wk.state = 'done';
+        wk.detail = answers[i].replace(/\s+/g, ' ').slice(0, 240);
+        updateWorkTask(wk.taskId!, { status: 'done', notes: answers[i].slice(0, 4000) });
+      } catch (err: any) {
+        wk.state = 'error';
+        wk.detail = String(err?.message ?? err).slice(0, 240);
+        // back to 'todo' on purpose: an unfinished subtask must look unfinished
+        updateWorkTask(wk.taskId!, { status: 'todo', notes: `worker failed: ${wk.detail}` });
+      }
+      wk.elapsedMs = Date.now() - started;
+      const doneSoFar = colabState.workers.filter((w) => w.state === 'done').length;
+      updateProject(project.id, { progress: Math.round(doneSoFar / colabState.workers.length * 100) });
+    }));
+
+    // COMBINE — deterministic assembly; no extra model call to fail.
+    await gitChain;
+    colabState.phase = 'combining';
+    const title = `Colab — ${task.replace(/\s+/g, ' ').slice(0, 50)}`;
+    const lines: string[] = [`# ${title}`, '', `> Goal: ${task}`, ''];
+    plan.forEach((s, i) => {
+      const wk = colabState.workers[i];
+      lines.push(`## ${s.worker === 'local' ? 'this node' : s.worker} — ${s.title}`, '');
+      lines.push(answers[i] ? answers[i].trim() : `_no answer: ${wk.detail || 'failed'}_`, '');
+    });
+    const doneCount = colabState.workers.filter((w) => w.state === 'done').length;
+    let commitLog = '';
+    try {
+      commitLog = execFileSync('git', ['log', '--oneline', '--no-decorate'], { cwd: runDir, encoding: 'utf8' }).toString().trim();
+    } catch { /* unversioned run */ }
+    const treeFiles: string[] = [];
+    try {
+      for (const f of fs.readdirSync(runDir)) if (f !== '.git' && f !== 'workers') treeFiles.push(f);
+      for (const f of fs.readdirSync(path.join(runDir, 'workers'))) treeFiles.push(`workers/${f}`);
+    } catch { /* tree unreadable — the path note below still stands */ }
+    lines.push(
+      '---',
+      `${doneCount}/${colabState.workers.length} subtasks completed`,
+      '',
+      `Tree: \`${runDir}\`${commitLog ? ` — ${commitLog.split('\n').length} commit(s), one per worker` : ' (unversioned — git unavailable)'}`,
+      commitLog || '',
+      treeFiles.length ? `Files:\n${treeFiles.map((f) => `- ${f}`).join('\n')}` : 'Files: (none saved)',
+    );
+    const report = lines.join('\n').trim();
+
+    const saved = bbsFileSave(title, report);
+    if (saved.ok) colabState.file = String(saved.name || title);
+    if (doneCount === colabState.workers.length) completeProject(project.id);
+    else updateProject(project.id, { status: 'At Risk' });
+
+    // Announce on the shoutbox — the mesh's own record of the run.
+    await bbsPost({
+      board: 'shoutbox',
+      body: `▲ colab swarm done — ${doneCount}/${colabState.workers.length} subtasks · report filed: ${colabState.file || title} · project: ${project.name}`,
+      author_kind: 'bot',
+    }).catch(() => undefined);
+
+    colabState.report = report;
+    colabState.phase = 'done';
+    logger.info({ workers: colabState.workers.length, done: doneCount, project: project.id }, 'BotNet colab run complete');
+    return { text: report };
+  } catch (err: any) {
+    logger.warn({ err: err?.message ?? err }, 'runColab failed');
+    colabState.phase = 'error';
+    colabState.error = String(err?.message ?? err);
+    if (colabState.projectId) updateProject(colabState.projectId, { status: 'Blocked' });
+    return { text: '', error: colabState.error };
+  } finally {
+    bbsSweepRunning = false;
+    friendTurnBusy = false;
+    colabState.busy = false;
+  }
 }
 
 // Mercury scheduling — runs on the 2s poll loop (see startMessageLoop), not
@@ -2019,6 +2720,11 @@ async function processOwnerMessages(): Promise<void> {
     }
   }
   if (pending.length === 0) return;
+
+  // A clear requested last turn whose reply never got stored has no reply to
+  // move past — the boundary already sits at request time. Start every turn
+  // clean so a stale flag can't advance the boundary over the wrong message.
+  pendingContextClear = false;
 
   // ── Idle context clear ──────────────────────────────────────────────────
   // If the user's last message was older than the configured threshold (Model
@@ -2974,10 +3680,9 @@ async function startMessageLoop(): Promise<void> {
       // peek / daily deep security scans directly as background sentry
       // spawns (no chat, no seat turn) when their cron is due.
       void checkSentryDue();
-      // Mercury compaction scheduler: same poll loop, time/downtime trigger.
-      // Fire-and-forget; idle-gated + shared cleaner lock so it never overlaps
-      // a turn or another cleaner.
-      void maybeScheduleMercury();
+      // BotNet autonomy scheduler: same poll loop — fires a seat sweep on an
+      // idle interval when the human is away. Presence + idle gated.
+      void checkBbsAutonomyDue();
       // Memory-tree classifier: same rider. When nothing is happening (no
       // agent run, no big model holding VRAM) it classifies the unprocessed
       // warden.log backlog into the memory tree with granite4.1:30b — runs

@@ -27,7 +27,7 @@ import { CAPABILITY_BUILTINS } from './toolsets.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
-import { marmAutoRecall, noteMarmActivity } from './marm-recall.js';
+import { noteMarmActivity } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
 import { createProvider } from './providers/index.js';
@@ -314,7 +314,7 @@ async function disconnectMcpClients(force = false): Promise<void> {
 }
 
 // Capability tools that must FOLLOW THE DEFAULT APP (youtube drives whatever
-// browser the captain chose in Settings → Default apps) live in tools/ and
+// browser the user chose in Settings → Default apps) live in tools/ and
 // cannot import this file (circular), so the two facts they need are exposed
 // here. Lazy readers — skillState and DEFAULT_APPS are reassigned as turns
 // reload — so these are functions and live lookups, never snapshots.
@@ -529,23 +529,7 @@ function untrustedContextMessage(content: string): string {
 // external content (web, email, files) to this set.
 const TRUSTED_RESULT_TOOLS = new Set(['activate_skill', 'deactivate_skill', 'list_skills', 'fabric_pattern']);
 
-// Mid-loop breaker: distinct from the post-loop force-answer fallback.
-//   CIRCLING_USELESS_LIMIT consecutive "useless" rounds (repeated recent tool
-//   signature + no answer text) → force one tool-free round.
-//   RUNAWAY_CALL_LIMIT of the exact same call signature → force one tool-free
-//   round (this catches a model stuck repeating one tool call verbatim).
-const CIRCLING_USELESS_LIMIT = 4;
-const RUNAWAY_CALL_LIMIT = 15;
-const RECENT_CALL_SIG_DEPTH = 6;
-const FORCED_NO_TOOL_MAX = 3;   // #3b: cap on retrying a tool-free round that keeps returning phantom tool_calls
 const DUP_TOOL_ABORT = 3;       // consecutive IDENTICAL tool calls before the stream is aborted (repetition-loop guard)
-
-
-// Build a one-line signature of a tool call for the runaway / circling detectors.
-function callSignature(toolName: string, args: any): string {
-    const argString = JSON.stringify(args || {}).slice(0, 120);
-    return `${toolName}:${argString}`;
-}
 function writeOutput(output) {
     console.log(OUTPUT_START_MARKER);
     console.log(JSON.stringify(output));
@@ -679,14 +663,14 @@ function drainIpcInput() {
         const files = fs.readdirSync(IPC_INPUT_DIR)
             .filter(f => f.endsWith('.json'))
             .sort();
-        const messages = [];
+        const messages: { text: string; sideTurn: boolean }[] = [];
         for (const file of files) {
             const filePath = path.join(IPC_INPUT_DIR, file);
             try {
                 const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
                 fs.unlinkSync(filePath);
                 if (data.type === 'message' && data.text) {
-                    messages.push(data.text);
+                    messages.push({ text: data.text, sideTurn: data.sideTurn === true });
                     // Re-sync dashboard model/ctx settings from the host for this turn.
                     // The persistent child captured env at spawn and only got models on
                     // its first stdin payload; without this, dashboard changes never
@@ -875,25 +859,25 @@ const CLAMP_WARNED = new Set<string>();
 
 // Strip tier field before sending to Ollama — it only expects { type, function }
 function stripTier(tools: any[]) {
-    // The tool schema block is re-ingested EVERY prompt — descriptions ride
-    // along at full length (MCP servers write paragraphs). Clamp to the first
-    // non-empty line: the name and parameter schema carry the contract, the
-    // prose cost more per turn than it taught (2026-09-19).
+    // The tool schema block is re-ingested EVERY prompt. The 200-char clamp
+    // exists for third-party MCP servers, which ship paragraph prose where the
+    // name and parameter schema already carry the contract. It must NOT touch
+    // first-party tools: ours are authored as a compact JSON blob
+    // ({"what":…,"use_when":…,"answer":…}) where the description IS the
+    // contract, and slicing one at 197 chars cuts the JSON mid-string, leaving
+    // the model an invalid blob ending in an ellipsis — the BBS/friends tools
+    // shipped that way (2026-10-18) and the seat confabulated their behavior.
     return tools.map(({ tier, ...rest }) => {
         const d = rest?.function?.description;
         if (typeof d === 'string' && d.length > 200) {
             const name = String(rest?.function?.name || '');
-            // Our own descriptions are authored to fit; one going over means a
-            // real constraint is being cut mid-sentence and no one can see it.
-            // Four tools shipped truncated this way before anyone noticed, so
-            // say it once. MCP tools are exempt: third-party servers ship
-            // paragraphs by design and that is what the clamp is for.
-            if (!name.startsWith('mcp__') && !CLAMP_WARNED.has(name)) {
+            if (name.startsWith('mcp__')) {
+                const first = d.split('\n').map((l: string) => l.trim()).find(Boolean) || d;
+                rest.function.description = first.length > 200 ? first.slice(0, 197).trimEnd() + '…' : first;
+            } else if (!CLAMP_WARNED.has(name)) {
                 CLAMP_WARNED.add(name);
-                log(`[tools] description for "${name}" is ${d.length} chars — clamped to 200, the tail is not reaching the model; shorten it or move the detail into a parameter description (those are not clamped)`);
+                log(`[tools] description for "${name}" is ${d.length} chars — passed through unclamped (first-party JSON contract)`);
             }
-            const first = d.split('\n').map((l: string) => l.trim()).find(Boolean) || d;
-            rest.function.description = first.length > 200 ? first.slice(0, 197).trimEnd() + '…' : first;
         }
         return rest;
     });
@@ -1054,7 +1038,7 @@ Your tools are source edits, builds and tests. Showing a result on screen is War
 - A behavioral change is verified by running the build and the relevant test, or a focused reproduction, and reading the output.
 
 # DELIVERABLES
-- Media deliverables (animation, video, image, designed asset) are produced with the installed media/design tools and skills — \`list_skills\` shows what is available, and the Canva MCP covers designed assets.
+- Media deliverables (animation, video, image, designed asset) are produced with the installed media/design tools and skills — \`list_skills\` shows what is available.
 - Anything that becomes a file is built with the Write tool; Bash runs single-line commands.
 
 # KERNEL
@@ -1251,17 +1235,17 @@ function getSubAgentToolNames(subagent: SubAgentDef): string[] {
 // `# THE CREW` is deliberately absent: crewBlock() generates the roster from
 // SUBAGENTS, so a hand-written one would both duplicate it and go stale the
 // moment a seat is added or re-scoped.
-const ORCH_SYSTEM = `You are Warden, the captain's first officer. The captain speaks to you in chat; you speak plainly back, act on their machine yourself, and hand what you don't own to the crew below. Talk like a person: short, plain sentences, one or two is a good reply, the answer carried in the words themselves. The captain would rather hear a straight "couldn't do it, here's why" than a hopeful guess — and a repeated question gets answered again, identically kindly.
+const ORCH_SYSTEM = `You are Warden, the assistant that runs on this machine. The user talks to you in chat; you answer plainly, act on their machine yourself when the ask needs it, and hand what you don't own to the specialists below. Talk like a normal person: short, plain sentences, the answer carried in the words themselves. Most messages are ordinary conversation and deserve an ordinary answer. When the user names a shape — one word, a single line, a list — that shape is the whole reply. The user would rather hear a straight "couldn't do it, here's why" than a hopeful guess — and a repeated question gets answered again, identically kindly.
 
-Decide and act on the first turn — pick the tool and call it. A multi-step ask is yours end to end: state the chain once, take the steps one after another, report when it lands. The tool result is the truth: report outcomes from results, not intentions. When something fails, try a genuinely different way; after three real failures, say what blocked you.
+Decide on the first turn: when the ask needs an action, pick the tool and call it; when it is a greeting, small talk, or a question the conversation already answers, reply in plain text with no tool call. A multi-step ask is yours end to end: state the chain once, take the steps one after another, report when it lands. The tool result is the truth: report outcomes from results, not intentions. When something fails, try a genuinely different way; after three real failures, say what blocked you.
 
 {"fixed": {
  "machine": {
-  "host": "Arch + KDE + Wayland; the browser is the captain's signed-in Chrome",
+  "host": "Arch + KDE + Wayland; the browser is the user's signed-in Chrome",
   "src": "/opt/Warden — src/ (host), container/agent-runner/ (agent); dist/ is build output",
-  "user_files": "~/Warden — the captain's files, uploads, deliverables"
+  "user_files": "~/Warden — the user's files, uploads, deliverables"
  },
- "sudo": "the captain types the password: run the install once, say a prompt is waiting, end the turn",
+ "sudo": "the user types the password: run the install once, say a prompt is waiting, end the turn",
  "jobs": {
   "before": "list_running_agents — a running job that owns the outcome keeps it",
   "steer": "nudge_agent steers a job; stop_agent stops a stuck one",
@@ -1273,7 +1257,7 @@ Decide and act on the first turn — pick the tool and call it. A multi-step ask
   "mcp": "install_mcp_server → tools arrive NEXT turn, say so; uninstall_mcp_server removes",
   "package": "create_skill"
  },
- "report": "outcome first, 1-2 plain sentences; work the captain can already see or hear: say so only when it fails"
+ "report": "outcome first, 1-2 plain sentences unless the user named a shape; work the user can already see or hear: say so only when it fails"
 }}`;
 // The prompt going IN is dense nested JSON (granite's preferred shape; every
 // token is re-ingested every prompt, so keys carry the structure). The reply
@@ -1315,7 +1299,7 @@ function defaultsSection(): string {
         }
     }
     if (entries.length === 0) return '';
-    return `\n\n{"default_apps":{"note":"the captain chose these providers in Settings — always use them for their capability",${entries.join(',')}}}\n`;
+    return `\n\n{"default_apps":{"note":"these providers were chosen in Settings — always use them for their capability",${entries.join(',')}}}\n`;
 }
 
 const SUBAGENT_OWNED = new Set<string>(SUBAGENTS.flatMap(s => getSubAgentToolNames(s)));
@@ -1843,6 +1827,11 @@ function rehydrateOrphanedJobs(): void {
 // it is reset at the top of each idle-loop pass and set when a digest turn
 // is composed.)
 let turnWasInboxDigest = false;
+// True for the NEXT turn when the drained IPC message is an autonomous
+// background turn (the BotNet sweep). Its prompt + output are rolled back out
+// of the seat's live `messages` when the turn ends, so the sweep's "work
+// quietly … QUIET" instructions never leak into a normal chat turn.
+let sideTurnPending = false;
 // The genuine user ask, captured from real user input only (initial prompt +
 // each IPC-winning nextInput), tag-stripped. Fed to runCompletionVerdict so
 // its verdict judges against the real request — never against an injected
@@ -2756,6 +2745,15 @@ function modelRequiresThink(model: string): boolean {
     return ALWAYS_THINK_MODEL_RE.test(model || '');
 }
 
+// Granite 4.x models — including the orchatlas-ft seat fine-tune, which is
+// granite4.2 under a non-granite name — plan inside their normal turn. Forcing
+// a separate think pass on them spends the whole turn in the think channel and
+// comes back with no content (2026-10-18: "the user asked whether…" rumination
+// then a clean stop, 0 content, 0 tools). They are deliberately excluded from
+// every forced-think decision, matching the sub-agent loop's long-standing
+// granite exclusion.
+const GRANITE_MODEL_RE = /granite|orchatlas/i;
+
 // Max tokens one reply may generate — the dashboard's "Max output" row
 // (local:max_output_tokens), delivered in the spawn/turn payload. This is NOT
 // ctx: it caps a single response, and its job is to stop a model that has lost
@@ -2783,7 +2781,10 @@ function maxOutput(kind: keyof typeof DEFAULT_MAX_OUTPUT): number {
 // touched here — that knob is the user's.
 function graniteSampling(model: string): Record<string, number> {
     const m = String(model || '');
-    if (!/granite/i.test(m)) return {};
+    // orchatlas-ft is granite4.2 under a non-granite name — GRANITE_MODEL_RE
+    // matches it so the seat gets the model-card sampling, not the 0.3 default
+    // that replays the same path verbatim (see the note below).
+    if (!GRANITE_MODEL_RE.test(m)) return {};
     // Toolcall-trained small granite (iris/byte/dexter, toolcall-ft): the
     // fine-tune transcribes tool calls — deterministic is the point.
     if (/toolcall-ft|granite4\.1:3b/i.test(m)) return { temperature: 0 };
@@ -3805,7 +3806,7 @@ async function runSubAgentInner(
             // ran no tools" twice in a row, 2026-09-18 14:09 and 14:11). The
             // flag was written for models that needed a planning nudge; granite
             // plans inside its normal turn and acts in the same one.
-            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && !/granite/i.test(model);
+            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && !GRANITE_MODEL_RE.test(model);
             const subThink = forcedFirstThink || modelRequiresThink(model);
             const chatResult = await provider.chatStream({
                 model,
@@ -4117,6 +4118,10 @@ interface ContainerInput {
     userId?: string;
     userKeyId?: string;
     verbose?: boolean;
+    /** Autonomous background turn (the BotNet sweep): processed normally, but
+     *  its prompt and output must NOT persist into the seat's live conversation —
+     *  rolled back out of `messages` when the turn ends. Mirrors AgentInput.sideTurn. */
+    sideTurn?: boolean;
     showThinking?: boolean | string;
     memoryContext?: string;
     activeIdea?: string;
@@ -4257,9 +4262,10 @@ async function runNativeOllama(input: ContainerInput) {
     // tool. Visibility within MCP is the RAG layer's job, not this gate's.
     const orchToolBlocked = (_n: string): boolean => false;
 
-    /** Merge skill-layer tools into the core base. Always in: core skill,
-     *  marm, default-app providers, pins. RAG pool: the rest, top-K by turn
-     *  keywords. */
+    /** Merge skill-layer tools into the core base. Only discovery, delegation
+     *  bookkeeping and user pins are always in; everything else (core
+     *  file/bash/meta, MARM, default-app providers) competes in the RAG pool,
+     *  top-K by turn keywords. */
     let ragCache: { key: string; ranked: any[] } | null = null;
     function mergeSkillTools(): any[] {
         const blocked = (t: any) => {
@@ -4269,18 +4275,6 @@ async function runNativeOllama(input: ContainerInput) {
         const skillTools = (skillToolDefs() as any[]).filter((t) => !blocked(t));
         const activeFiltered = (activeToolDefs as any[]).filter((t) => !blocked(t));
         const nameOf = (t: any) => String(t?.function?.name || '');
-        // Core-builtin skill tools: every non-MCP skill's tools (the 'core'
-        // builtin skill carries the meta tools + basic file ops; user skills
-        // are instruction-only today — if one grows tools it lands in the
-        // RAG pool like any other non-core skill).
-        const coreToolNames = new Set<string>();
-        for (const sk of skillState?.skills || []) {
-            if (sk.source !== 'mcp') for (const t of sk.tools) coreToolNames.add(nameOf(t));
-        }
-        const isDefaultProvider = (n: string) => Object.values(DEFAULT_APPS).some((v) => {
-            const s = String(v || '').trim();
-            return s.startsWith('mcp:') && n.startsWith(`mcp__${s.slice(4).trim()}__`);
-        });
         // The CURRENT ask, not a messages scan. This runs BEFORE this turn's
         // user message is pushed, so the scan picked up an EARLIER user turn.
         const lastUserText = lastUserAsk
@@ -4291,33 +4285,81 @@ async function runNativeOllama(input: ContainerInput) {
                 return '';
             })();
         CURRENT_ASK = lastUserText;
-        // The playback tool stand-down that used to live here is REMOVED
-        // (2026-09-21): a playback word anywhere in the ask withheld the
-        // browser provider's tools for the whole turn, and web asks that
-        // mentioned music lost the browser entirely — the seat fell back to
-        // youtube and the user's ask went unanswered. The youtube tool
-        // competes on its description like everything else.
-        const alwaysIn = skillTools.filter((t) => {
+        // RAG gates the WHOLE menu. Core file/bash/meta tools, MARM and
+        // default-provider MCP all compete on relevance like everything else —
+        // nothing is exempt except what the user pinned (a pin is a deliberate
+        // "always show me this" of one or two tools, not a bucket). A greeting
+        // or small-talk turn matches no tool description, so it ranks nothing
+        // and the seat gets a near-empty menu: an 8B that sees only its
+        // bookkeeping tools has no unrelated delegate/browser tool to reach
+        // for (2026-10-18 — "hello" was delegating to Vulkan and editing the
+        // navbar, unprompted).
+        const alwaysIn = skillTools.filter((t) => isPinnedTool(nameOf(t)));
+        // Discovery + delegation bookkeeping stay unconditional: the model
+        // cannot ask for what it can no longer see (list_skills/activate_skill
+        // are the escape hatch to load a skill/MCP server on demand), and a
+        // delegated job needs its result reader (read_job_result) and failure
+        // reporter (report_task_failure).
+        const ALWAYS_IN_CORE = new Set(['list_skills', 'activate_skill', 'read_job_result', 'report_task_failure']);
+        const alwaysInCore = activeFiltered.filter((t) => {
             const n = nameOf(t);
-            return coreToolNames.has(n) || n.startsWith('mcp__marm__') || isDefaultProvider(n)
-                || isPinnedTool(n); // a pin is always visible — MCP server pins included
+            return ALWAYS_IN_CORE.has(n) || isPinnedTool(n);
         });
-        const ragPool = skillTools.filter((t) => !alwaysIn.includes(t));
+        const ragPool = (() => {
+            const pool = [
+                ...skillTools.filter((t) => !alwaysIn.includes(t)),
+                ...activeFiltered.filter((t) => !ALWAYS_IN_CORE.has(nameOf(t)) && !isPinnedTool(nameOf(t))),
+            ];
+            const byName = new Map<string, any>();
+            for (const t of pool) {
+                const n = nameOf(t);
+                if (n && !byName.has(n)) byName.set(n, t);
+            }
+            return [...byName.values()];
+        })();
         // Rank once per distinct (history length, pool) pair — mergeSkillTools
         // runs several times per request cycle and extractKeywords on a long
         // history is not free.
         let ragRanked: any[] = [];
         if (ragPool.length > 0) {
-            const key = `${messages.length}|${ragPool.map(nameOf).join(',')}`;
+            // The current ask is the ranking signal. On the first call of a turn
+            // `messages` does not carry this turn's user message yet, so ranking
+            // off it scored the PREVIOUS ask's tools: "what do you remember
+            // about the BBS system" ranked time/filesystem and withheld
+            // bbs_read, and the seat invented a memory-server tool instead
+            // (2026-10-18). Append the live ask so it always drives the rank.
+            const askForRag = lastUserText
+                ? [...messages, { role: 'user', content: lastUserText }]
+                : messages;
+            const key = `${messages.length}|${lastUserText}|${ragPool.map(nameOf).join(',')}`;
             if (!ragCache || ragCache.key !== key) {
-                const keywords = extractKeywords(messages);
+                const keywords = extractKeywords(askForRag);
                 const ranked = keywords.length > 0
                     ? new Set(rankTools(ragPool, keywords, ATLAS_DYNAMIC_TOP_K))
                     : new Set<string>();
                 ragCache = { key, ranked: ragPool.filter((t) => ranked.has(nameOf(t))) };
-                log(`Tools: RAG ${ragCache.ranked.length} of ${ragPool.length} non-core skill tools ranked (marm/defaults/core exempt)`);
+                log(`Tools: RAG ${ragCache.ranked.length} of ${ragPool.length} tools ranked (discovery/pins exempt)`);
             }
             ragRanked = ragCache.ranked;
+        }
+        // Co-required tools surface TOGETHER: a web/media ask that ranked
+        // youtube must also hand it the browser page-drive tools (and vice
+        // versa), or the seat has a play control with no way to browse the
+        // player — "play a song" ranked youtube but withheld chrome_navigate
+        // and the seat rambled instead of acting (2026-10-18). Expand the
+        // ranked set with any group members still in the pool (a lazy browser
+        // not yet dialed simply contributes nothing until it is).
+        {
+            const WEB_MEDIA_GROUP = new Set([
+                'youtube', 'WebSearch', 'WebFetch',
+                'mcp__browser-driving__chrome_navigate',
+                'mcp__browser-driving__chrome_get_web_content',
+            ]);
+            const rankedNames = new Set(ragRanked.map(nameOf));
+            if ([...WEB_MEDIA_GROUP].some((n) => rankedNames.has(n))) {
+                for (const n of WEB_MEDIA_GROUP) rankedNames.add(n);
+                ragRanked = ragPool.filter((t) => rankedNames.has(nameOf(t)));
+            }
         }
         // Dedupe BEFORE default-app substitution, on the FULL union of all
         // pools — activeToolDefs and skillTools carry the built-ins from
@@ -4327,9 +4369,12 @@ async function runNativeOllama(input: ContainerInput) {
         // pool it wasn't dropped from (2026-09-19: browser_navigate kept
         // reappearing after a default app was set for 'browser', because it
         // survived in skillTools while activeToolDefs' copy got dropped).
+        // The union is alwaysIn + alwaysInCore + ragRanked ONLY: re-adding
+        // activeFiltered or skillTools here defeats RAG and puts every tool in
+        // front of the model again.
         const seen = new Set<string>();
         const merged: any[] = [];
-        for (const t of [...activeFiltered, ...alwaysIn, ...ragRanked]) {
+        for (const t of [...alwaysIn, ...alwaysInCore, ...ragRanked]) {
             const n = t?.function?.name;
             if (typeof n === 'string') {
                 if (seen.has(n)) continue;
@@ -4402,20 +4447,14 @@ async function runNativeOllama(input: ContainerInput) {
     // Conversation state (`let` so a context clear can reset it to a fresh
     // system prompt — see the _clearContextRequested handling in the main loop).
     let messages: any[] = [];
-    // Load the durable project journal (JOURNAL.md) so lessons learned persist across turns.
-let journalSection = '';
-try {
-    const journalPath = path.join(process.env.WORKSPACE_ROOT || process.cwd(), 'JOURNAL.md');
-    if (fs.existsSync(journalPath)) {
-        const journalText = fs.readFileSync(journalPath, 'utf-8');
-        const tail = journalText.slice(-2000).trim();
-        if (tail) {
-            journalSection = `\n\n{"project_journal":{"note":"recent entries — learned facts and standing instructions; use them when deciding","tail":${JSON.stringify(tail)}}}`;
-        }
-    }
-} catch (err: any) {
-    journalSection = '';
-}
+    // JOURNAL.md is deliberately NOT injected. It is a third-person log of what
+    // each session was about ("User asked twice…", "User requests … Canva"),
+    // and the seat read that register as its own voice: it narrated the
+    // conversation about the user instead of answering them ("the user asked
+    // twice to say hello after no-Canva instructions…", 2026-10-18) and kept
+    // re-seeding topics the user had moved past — Canva chief among them.
+    // Durable facts reach the seat through MARM recall; the journal remains a
+    // human-readable file and never enters the prompt.
 
 // Driving force — the orchestrator's governing preamble. The default below is
 // used when no preset is selected; a dashboard-selected preset (data/driving-
@@ -4436,7 +4475,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n{"long_term_recall":{"core":"MEMORY.md carries the durable core, auto-loaded; older memories relevant to the current ask are auto-recalled below it","deep_dig":"mcp__marm__marm_smart_recall (that exact name) — semantic search over facts the memory system already holds","log_new":"only when the user asked you to remember it, or you asked first and they agreed → mcp__marm__marm_log_entry; never log a fact automatically"}}\n`
+    ? `\n{"long_term_recall":{"core":"durable facts live in MARM memory — pull them on demand with mcp__marm__marm_smart_recall when the ask needs past context; memory is never auto-injected into a turn","deep_dig":"mcp__marm__marm_smart_recall (that exact name) — semantic search over facts the memory system already holds","log_new":"only when the user asked you to remember it, or you asked first and they agreed → mcp__marm__marm_log_entry; never log a fact automatically","code_map":"this codebase (/opt/Warden) is indexed in the code graph and re-indexes automatically after edits — when working on Warden's own code: mcp__marm__marm_code_context for the symbols and source a task needs, mcp__marm__marm_graph_trace to follow a call path, mcp__marm__marm_graph_impact to see what a change touches before making it"}}\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -4508,7 +4547,7 @@ const marmRecallSection = marmEnabled
         //   - scheduling "belongs to the parent scheduler" — there is no parent.
         // Rewritten on the merged copy only; the background atlas job keeps the
         // sub-agent wording it was written for.
-        // The seat speaks as the captain's first officer. ORCH_SYSTEM is the
+        // The seat speaks as Warden. ORCH_SYSTEM is the
         // text the orchatlas fine-tune was trained on, used verbatim so the
         // model is conditioned at inference on the prompt it saw in training.
         // The one token that may differ is the agent's own name — spoken as
@@ -4561,20 +4600,27 @@ const marmRecallSection = marmEnabled
               // "playback is paused" while the music kept playing — the tool
               // card read play/search only, so control asks mapped to no tool).
               // Positive shape: the ask→action mapping + proof rule.
-              + ',"control":{"rule":"youtube or playing-music mention → the youtube tool; pause/stop = action pause, resume/unpause/continue = action resume","proof":"the tool result is the reply — never state a playback change without the call"}}\n';
+              + ',"control":{"rule":"youtube or playing-music mention → the youtube tool; pause/stop = action pause, resume/unpause/continue = action resume","proof":"the tool result is the reply — never state a playback change without the call"}'
+              // BBS/BotNet grounding (2026-10-18): the friends/BBS tools joined
+              // atlas-core with no prompt grounding, so a question about the BBS
+              // answered with a confabulated dashboard URL + node port + a fake
+              // read_job_result id. Map the words to the tools, answer from the
+              // tool result, and forbid inventing an address.
+              + ',"mesh":{"rule":"BBS, BotNet, your node, or friends mentioned → bbs_read or friend_list first, then answer from what they return","address":"your only real address is what bbs_read and friend_list report — there is no public dashboard URL, hostname, or port to give"}}\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is
                 // added, renamed or re-scoped, which is the whole reason
                 // crewBlock exists.
                 + modeBlock
-                // These three rode on the routing-core branch and would be lost
-                // here: the journal carries the user's standing instructions and
-                // learned facts, and the skill index is the only thing that
-                // tells this seat its 60+ skills exist and how to activate one.
+                // These sections ride on the routing-core branch and would be
+                // lost here: the skill index is the only thing that tells this
+                // seat its 60+ skills exist and how to activate one.
                 // defaultsSection() is generated from the same DEFAULT_APPS the
                 // tool gate uses — the claim and the tool list cannot drift.
-                + journalSection + fabricSection + skillIndexSection
+                // (JOURNAL.md is not among them — see the note where the seat's
+                // conversation state is initialized.)
+                + fabricSection + skillIndexSection
                 + defaultsSection()
                 + orchestratorNowLine + marmRecallSection;
     };
@@ -4634,6 +4680,12 @@ const marmRecallSection = marmEnabled
     }
     let prompt = input.prompt;
     lastUserAsk = extractAsk(input.prompt) || lastUserAsk;
+    // A side turn (BotNet sweep) delivered as the FIRST turn of a freshly-spawned
+    // runner — the child was killed by timeout/restart and re-spawned — must roll
+    // back out of `messages` exactly like the IPC-delivered side turns do. The
+    // spawn payload carries `sideTurn` (agent-spawn.ts) but ContainerInput never
+    // read it, so that first sweep leaked (the hole the IPC path doesn't have).
+    sideTurnPending = input.sideTurn === true;
 
     if (input.activeIdea) {
         const ideaDir = path.join(process.cwd(), 'ideas', input.activeIdea);
@@ -4648,7 +4700,7 @@ const marmRecallSection = marmEnabled
     // Drain any pending IPC messages for initial prompt
     const pending = drainIpcInput();
     if (pending.length > 0) {
-        prompt += '\n' + pending.join('\n');
+        prompt += '\n' + pending.map(p => p.text).join('\n');
     }
     // Main idle loop
     let isFirstUserTurn = true;
@@ -4689,94 +4741,34 @@ const marmRecallSection = marmEnabled
         await fetchModelCtx(OLLAMA_URL, model);
         // No per-turn flow-control reminder — the model replies when done and emits a
         // tool call when it needs one. (Completion guidance lives in the system prompt.)
-        // The parent composes EVERY turn's prompt with <mercury_summary>/<mercury_context>/
-        // <chat_history> baked in. The persistent `messages` layout is:
-        //   [system(+merged mercury slot), initialUser, ...verbatimTail]
-        // The mercury summary is MERGED INTO the system prompt (messages[0]) as a
-        // trailing <mercury_summary> block — NOT a separate system message at
-        // messages[1]. A second system message trips Ollama renderers (qwen3.8
-        // logs "non-leading system message" and the render is undefined behavior
-        // — linked to premature mid-word EOS truncation). It is refreshed in
-        // place each turn from the latest <mercury_summary> injection (never grows).
-        // The verbatim tail carries the live conversation; <chat_history> and
-        // <mercury_context> are pure duplication on persistent turns and are stripped.
+        // The parent composes the prompt with <chat_history> baked in. The
+        // persistent `messages` layout is [system, initialUser, ...verbatimTail].
+        // The verbatim tail carries the live conversation; <chat_history> is pure
+        // duplication on persistent turns and is stripped below.
         let cleanedPrompt = prompt;
-        const MERCURY_RE = /\n*<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g;
-        if (isFirstUserTurn) {
-            // First turn after spawn / context-clear: a fresh process has no
-            // in-memory conversation, so the host's <chat_history> + <mercury_context>
-            // are kept in the first ask this turn (a follow-up like "run it again"
-            // needs the referent). Merge <mercury_summary> into the system prompt
-            // (extracting it from the ask), and strip only the summary from the ask
-            // so it isn't duplicated. chat_history/mercury_context are stripped
-            // from the permanent first-ask slot on the NEXT turn.
-            const sm = cleanedPrompt.match(/<mercury_summary>([\s\S]*?)<\/mercury_summary>\s*/);
-            const body = sm && sm[1].trim()
-                ? sm[1].trim()
-                : '(no summary yet — mercury compaction populates this after the next reply)';
-            MERCURY_RE.lastIndex = 0;
-            messages[0].content = messages[0].content.replace(MERCURY_RE, '') + `\n\n<mercury_summary>\n${body}\n</mercury_summary>`;
-            cleanedPrompt = cleanedPrompt.replace(/<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g, '');
-            log(`First turn: merged mercury summary into system prompt (${body.length} chars)`);
-        } else {
-            // Persistent turn: refresh the merged summary block from the host's
-            // latest <mercury_summary>, then strip all three re-injected blocks
-            // from this turn's prompt (the verbatim tail carries the conversation;
-            // the summary lives in the system prompt).
-            const sm = cleanedPrompt.match(/<mercury_summary>([\s\S]*?)<\/mercury_summary>\s*/);
-            if (sm && sm[1].trim() && messages[0] && messages[0].role === 'system' && typeof messages[0].content === 'string') {
-                const newSlot = `<mercury_summary>\n${sm[1].trim()}\n</mercury_summary>`;
-                // Only rewrite the block when the summary actually changed. An
-                // unconditional equal-string write still diverges the cached
-                // prefix for qwen3.8's SWA attention on the next prompt eval,
-                // forcing a full 22k reprocess. Skipping a byte-identical write
-                // preserves the cache prefix.
-                MERCURY_RE.lastIndex = 0;
-                const cur = messages[0].content.match(/<mercury_summary>[\s\S]*?<\/mercury_summary>/);
-                if (!cur || cur[0] !== newSlot) {
-                    messages[0].content = messages[0].content.replace(MERCURY_RE, '').trimEnd() + `\n\n${newSlot}`;
-                    log(`Persistent turn: refreshed mercury summary in system prompt (${sm[1].trim().length} chars)`);
-                } else {
-                    log(`Persistent turn: mercury summary unchanged — skipping write (preserves SWA cache prefix)`);
-                }
-            }
+        if (!isFirstUserTurn) {
+            // Persistent turn: strip the host's re-composed <chat_history> so it
+            // isn't duplicated — the in-memory verbatim tail already carries the
+            // conversation (Dockbox parity: history is injected once, then the
+            // live tail carries it).
             const before = cleanedPrompt.length;
-            cleanedPrompt = cleanedPrompt
-                .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
-                .replace(/<mercury_summary>[\s\S]*?<\/mercury_summary>\s*/g, '')
-                .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '');
+            cleanedPrompt = cleanedPrompt.replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '');
             if (cleanedPrompt.length !== before) {
-                log(`Persistent turn: stripped ${before - cleanedPrompt.length} chars of re-injected context`);
+                log(`Persistent turn: stripped ${before - cleanedPrompt.length} chars of re-injected chat_history`);
             }
-            // The first ask (messages[1]) kept <chat_history>/<mercury_context> on
-            // turn 1 for follow-up referents. Now that the verbatim tail carries the
-            // live conversation, strip them once so the permanent first-ask slot is
-            // just the ask (the summary lives merged in the system prompt, never here).
+            // The first ask (messages[1]) kept <chat_history> on turn 1 for
+            // follow-up referents. Strip it once now that the verbatim tail
+            // carries the live conversation.
             const m2 = messages[1];
-            if (m2 && typeof m2?.content === 'string' && /<(chat_history|mercury_context|recalled_memories)/.test(m2.content)) {
-                m2.content = m2.content
-                    .replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '')
-                    .replace(/<mercury_context[\s\S]*?<\/mercury_context>\s*/g, '')
-                    .replace(/<recalled_memories>[\s\S]*?<\/recalled_memories>\s*/g, '')
-                    .trim();
+            if (m2 && typeof m2?.content === 'string' && /<chat_history/.test(m2.content)) {
+                m2.content = m2.content.replace(/<chat_history[\s\S]*?<\/chat_history>\s*/g, '').trim();
             }
         }
         isFirstUserTurn = false;
-        // MARM auto-recall runs PER TURN and rides this turn's user message.
-        // It used to be computed once from the process's first prompt and baked
-        // into the system prompt, which froze it: every later turn re-injected
-        // turn 1's memories, unrelated to the current ask. It cannot move into
-        // the system prompt refresh either — messages[0] must stay byte-stable
-        // for the prompt cache (the mercury slot depends on that). Tagged so the
-        // previous turn's block is stripped from the permanent first-ask slot
-        // below instead of accumulating. Fail-open: errors/timeouts yield ''.
-        let recallBlock = '';
-        if (marmEnabled) {
-            try {
-                const recalled = await marmAutoRecall(cleanedPrompt);
-                if (recalled.trim()) recallBlock = `<recalled_memories>${recalled}</recalled_memories>\n\n`;
-            } catch { /* fail-open — recall never blocks a turn */ }
-        }
+        // Memory is NOT auto-injected per turn (Dockbox parity): auto-injecting
+        // weeks-old MEMORY.md + MARM recall on every turn is what made the seat
+        // answer questions with stale facts. Long-term recall is on demand, via
+        // the mcp__marm__* tools (see long_term_recall in the system prompt).
         // The LAZY default browser provider: dial it EVERY turn, before the
         // tool list is built — the default app IS the pipeline, and the only
         // alternative is the stock built-in fallback, which must never
@@ -4799,7 +4791,7 @@ const marmRecallSection = marmEnabled
                 log(`[lazy-dial] ${lazyBrowserServer} unreachable (${err?.message || err}) — retrying next turn`);
             }
         }
-        const userMsg: any = { role: 'user', content: recallBlock + cleanedPrompt.trim() };
+        const userMsg: any = { role: 'user', content: cleanedPrompt.trim() };
         // Attach any pending images from Read tool (vision) — but only when the
         // orchestrator's context can hold them; an over-limit attach 400s the
         // next request and kills the turn (same defect as the sub-agent drain).
@@ -4819,6 +4811,12 @@ const marmRecallSection = marmEnabled
                 userMsg.content += `\n[Note: image(s) you Read earlier are NOT visible — ${why}. Do not Read them again; proceed from what you already know.]`;
             }
         }
+        // An autonomous background turn (the BotNet sweep) must not leak its
+        // "work quietly … QUIET" instructions into the seat's live conversation.
+        // Mark the turn's own user message so we roll the whole turn back out of
+        // `messages` once it ends (by reference — survives trim rebuilds).
+        const sideTurnMarker = sideTurnPending ? userMsg : null;
+        sideTurnPending = false;
         messages.push(userMsg);
         // Re-rank tools for this turn (never throws — falls back to full list)
         refreshActiveToolDefs();
@@ -4841,13 +4839,8 @@ const marmRecallSection = marmEnabled
         // X now" promise (name mentioned, no call) from "Atlas reported X"
         // citations of completed work (name mentioned AND was called).
         const delegatesCalledThisTurn = new Set<string>();
-        let circlingUselessRounds = 0;     // #3: consecutive useless rounds
-        let forceToolFreeRound = false;    // #3: set by breaker → next round runs with NO tools
-        let forcedNoToolRetries = 0;       // #3b: times a forced tool-free round still returned phantom tool_calls
         let thinkBudgetRetries = 0;        // #3c: times a length-capped thinking-only round was retried with thinking off
         let suppressThinkOnce = false;     // #3c: forces the next round's think=false
-        const recentCallSigs: string[] = []; // #3: deque of last RECENT_CALL_SIG_DEPTH sigs
-        const callFreq: Record<string, number> = {}; // #3: call signature → count
         // Pipe status updates through stdout — no file I/O. `fg:1` marks this
         // as the ORCHESTRATOR'S OWN turn status: the host routes fg entries to
         // the dashboard live label and uses them to flag a turn in flight.
@@ -4930,22 +4923,8 @@ const marmRecallSection = marmEnabled
             const trimmedOrch = trimMessagesToBudget(messages, orchBudget);
             if (trimmedOrch !== messages) { messages.length = 0; messages.push(...trimmedOrch); }
             try {
-                // #3 Mid-loop breaker: if circling or runaway was detected last
-                // round, force this round to run with NO tools so the model must
-                // produce an answer instead of repeating the same call.
-                const wasForced = forceToolFreeRound;
-                if (wasForced) {
-                    forceToolFreeRound = false;
-                    circlingUselessRounds = 0;
-                    log(`[breaker] Forcing a tool-free round (circlingUseless was ${circlingUselessRounds})`);
-                    appendStatus({ phase: 'tool', label: 'Loop breaker: forcing a no-tools round to extract an answer' });
-                } else {
-                    // A normal (non-forced) round — the last breakout is over,
-                    // so reset the phantom-call retry budget for the next one.
-                    forcedNoToolRetries = 0;
-                }
                 const _orchCtx = getNumCtx(model, seatCtxOverride(model));
-                const requestBody: any = { model, messages, ...(wasForced ? {} : { tools: mergeSkillTools() }), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: _orchCtx, ...graniteSampling(model) } };
+                const requestBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: _orchCtx, ...graniteSampling(model) } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
                 // keep it off to preserve context for the visible answer. Models that leak
                 // reasoning when thinking is disabled (kimi) stay on every round.
@@ -4965,7 +4944,7 @@ const marmRecallSection = marmEnabled
                     // in it mis-flagged the turn (same defect as the stand-down
                     // classifier, 2026-09-21).
                     requestBody.think = thinkingAlways || modelRequiresThink(model)
-                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk));
+                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk) && !GRANITE_MODEL_RE.test(model));
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
@@ -5240,52 +5219,17 @@ const marmRecallSection = marmEnabled
                 // 'length' (budget), missing/empty reason (qwen emitted a malformed
                 // tool call at 21:15 — Ollama's parser dropped it server-side and
                 // returned 200 with no done_reason, 0 content, 0 tool calls), or
-                // any other dead end. A legitimately empty 'stop' round retries
-                // once too — harmless, capped at one attempt.
+                // any other dead end. A clean 'stop' is NOT retried: the granite
+                // seats are never forced into the think channel (GRANITE_MODEL_RE
+                // at the think decision below), so an empty clean stop is the
+                // model's own finish — handled by the empty-reply fallback, not by
+                // forcing thinking off.
                 if (doneReason !== 'stop' && !fullContent.trim() && collectedToolCalls.length === 0
                     && thinkBudgetRetries < 1) {
                     thinkBudgetRetries++;
                     suppressThinkOnce = true;
                     log(`[think-budget] round ended without a clean stop and produced nothing (doneReason=${doneReason || 'none'}, thinking ${fullThinking.length} chars) — retrying this round with thinking off`);
                     appendStatus({ phase: 'thinking', label: 'Retry: thinking overran the reply budget' });
-                    continue;
-                }
-                // #3b Phantom tool calls in a forced tool-free round. The breaker
-                // sent this round with NO tools offered, but some models (observed
-                // 2026-08-24 with qwen3.8:27b) keep emitting tool_calls anyway —
-                // they continue the tool-use pattern from history even when the
-                // `tools` key is absent. Executing those phantom calls would
-                // re-arm circling and reset circlingUselessRounds, so the breaker
-                // refires 4 rounds later and never extracts an answer (it fired 3x
-                // over 36 iterations in the failing run, eating the report-back).
-                // A forced round offered no tools, so ANY tool_calls it returns
-                // are phantom — never execute them. Discard, demand a text answer,
-                // keep the next round tool-free, and cap it so a model that won't
-                // stop calling tools can't spin to the iteration cap.
-                if (wasForced && collectedToolCalls.length > 0) {
-                    forcedNoToolRetries++;
-                    finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
-                    if (historyContent.trim()) {
-                        // Text rode alongside the phantom calls — accept it as the answer.
-                        log(`[breaker] Tool-free round #${forcedNoToolRetries} produced ${collectedToolCalls.length} phantom tool call(s) WITH text — accepting the text as the answer`);
-                        finalContent = historyContent;
-                        break;
-                    }
-                    if (forcedNoToolRetries >= FORCED_NO_TOOL_MAX) {
-                        // Give up forcing; synthesize an honest completion so the
-                        // turn (and any pending report-back send_message) actually
-                        // fires instead of circling to the 200-iteration cap.
-                        log(`[breaker] Tool-free round gave no text after ${forcedNoToolRetries} attempts — writing fallback answer so the turn completes`);
-                        appendStatus({ phase: 'tool', label: 'Loop breaker: could not extract a text answer — reporting last known state' });
-                        finalContent = lastToolSummary
-                            ? `I had trouble producing a clean final summary this turn. Last action: ${lastToolSummary}.`
-                            : 'I had trouble producing a clean final summary this turn.';
-                        break;
-                    }
-                    log(`[breaker] Tool-free round #${forcedNoToolRetries} still produced ${collectedToolCalls.length} tool call(s) with no tools offered — discarding, demanding text (${forcedNoToolRetries}/${FORCED_NO_TOOL_MAX})`);
-                    appendStatus({ phase: 'tool', label: `Loop breaker: model called tools in a no-tools round — demanding a text answer (${forcedNoToolRetries}/${FORCED_NO_TOOL_MAX})` });
-                    messages.push({ role: 'user', content: 'You have NO tools available this round — the tool calls you just attempted cannot run. Stop trying to call tools and reply to me directly in plain text now: say what you have done so far and the current status.' });
-                    forceToolFreeRound = true;   // keep the next round tool-free too
                     continue;
                 }
                 if (collectedToolCalls.length > 0) {
@@ -5356,41 +5300,14 @@ const marmRecallSection = marmEnabled
                     }
                     lastToolBatchWasError = toolResults.length > 0
                         && toolResults.every(r => /^Error/i.test(String(r.content).trim()));
-                    // #3 Mid-loop breaker tracking: record each call sig, detect
-                    // runaway (same sig >= RUNAWAY_CALL_LIMIT) and circling
-                    // (repeated recent sig + no answer text). Either forces a
-                    // tool-free round on the next iteration.
-                    const lastSigs = collectedToolCalls.map(tc => callSignature(tc.function?.name || '', tc.function?.arguments || {}));
-                    const repeatsRecent = lastSigs.some(s => recentCallSigs.includes(s));
+                    // Track which delegates were actually invoked this turn (used by
+                    // the narrated-delegation guard to tell a promise from a citation).
                     for (let k = 0; k < collectedToolCalls.length; k++) {
-                        const tc = collectedToolCalls[k];
-                        const name = tc.function?.name || '';
-                        const args = tc.function?.arguments || {};
-                        const sig = lastSigs[k];
-                        recentCallSigs.push(sig);
-                        if (recentCallSigs.length > RECENT_CALL_SIG_DEPTH) recentCallSigs.shift();
-                        callFreq[sig] = (callFreq[sig] || 0) + 1;
+                        const name = collectedToolCalls[k].function?.name || '';
                         if (SUBAGENT_BY_DELEGATE.has(name)) {
                             delegatedThisTurn = true;
                             delegatesCalledThisTurn.add(name);
                         }
-                    }
-                    const topFreqEntry = Object.entries(callFreq).sort((a, b) => b[1] - a[1])[0];
-                    if (topFreqEntry && topFreqEntry[1] >= RUNAWAY_CALL_LIMIT) {
-                        log(`[breaker] Runaway: "${topFreqEntry[0].slice(0, 80)}" called ${topFreqEntry[1]}x — forcing tool-free round`);
-                        appendStatus({ phase: 'tool', label: `Loop breaker: runaway call (${topFreqEntry[1]}x same signature)` });
-                        forceToolFreeRound = true;
-                    }
-                    const hasAnswerText = (historyContent || '').trim().length > 50;
-                    if (!hasAnswerText && repeatsRecent) {
-                        circlingUselessRounds++;
-                        if (circlingUselessRounds >= CIRCLING_USELESS_LIMIT) {
-                            log(`[breaker] Circling: ${circlingUselessRounds} useless rounds — forcing tool-free round`);
-                            appendStatus({ phase: 'tool', label: `Loop breaker: ${circlingUselessRounds} circling rounds` });
-                            forceToolFreeRound = true;
-                        }
-                    } else {
-                        circlingUselessRounds = 0;
                     }
                     // If Read tool queued images, inject them as a user message for vision
                     // — only when they fit the context budget (an over-limit attach
@@ -5541,13 +5458,36 @@ const marmRecallSection = marmEnabled
                         for (const pm of fnMatch[2].matchAll(/<parameter=([\w.-]+)>\s*([\s\S]*?)\s*(?:<\/parameter>|$)/g)) {
                             fnArgs[pm[1]] = pm[2];
                         }
+                        // Only recover a call the model can actually SEE this
+                        // turn. A name absent from the tool menu is the model
+                        // inventing one — running it would hand back a result
+                        // for a tool it was never offered, and the reply would
+                        // report the hallucinated action as done. Strip the
+                        // block instead: the text around it is the answer, and
+                        // an empty remainder hits the empty-reply fallback.
+                        const visible = new Set(mergeSkillTools().map((t: any) => String(t?.function?.name || '')));
+                        const bareFull = resolveBareMcpName(fnName);
+                        const callName = visible.has(fnName) ? fnName : (bareFull && visible.has(bareFull) ? bareFull : '');
+                        if (!callName) {
+                            log(`[pasted-call] <function=${fnName}> names a tool outside this turn's menu — stripped, not run`);
+                            // Strip the wrapper too — matching only the
+                            // <function=…> body left <tool_call></tool_call>
+                            // dangling at the end of the reply (2026-10-18).
+                            finalContent = historyContent
+                                .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+                                .replace(/<function=[\w.-]+>[\s\S]*?(?:<\/function>|$)/i, '')
+                                .replace(/<\/?tool_call>/gi, '')
+                                .trim();
+                            finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
+                            break;
+                        }
                         pastedCallRuns++;
                         log(`[pasted-call] model emitted <function=${fnName}> as content — recovering it as a real tool call`);
-                        appendStatus({ phase: 'tool', label: `Recovered pasted tool call: ${fnName}` });
-                        const fnResult = await executeXmlTool(fnName, fnArgs, toolContext, modifiedFiles, { orchestrator: true });
+                        appendStatus({ phase: 'tool', label: `Recovered pasted tool call: ${callName}` });
+                        const fnResult = await executeXmlTool(callName, fnArgs, toolContext, modifiedFiles, { orchestrator: true });
                         // The assistant turn (with the pasted XML) was already
                         // pushed above — only the tool result rides in now.
-                        messages.push({ role: 'user', content: `The ${fnName} call you wrote out just ran. Result:\n${truncateToolResult('orchestrator', String(fnResult))}\n\nReply to the user now in plain text — no tool calls.` });
+                        messages.push({ role: 'user', content: `The ${callName} call you wrote out just ran. Result:\n${truncateToolResult('orchestrator', String(fnResult))}\n\nReply to the user now in plain text — no tool calls.` });
                         continue;
                     }
                 }
@@ -5807,6 +5747,25 @@ const marmRecallSection = marmEnabled
             outputContent = outputContent.replace(/(?:<unk>|<pad>|<\|[a-z_]+\|>)+/gi, ' ').replace(/\s{2,}/g, ' ').trim();
             log(`WARNING: control-token garbage stripped from final output (${before} -> ${outputContent.length} chars, model=${ATLAS_MODEL}). Degenerate generation — capture this prompt if it recurs.`);
         }
+        // Raw tool-call markup must never reach the reply channel. The
+        // pasted-call recovery strips the <function=…> block it inspects, but
+        // the surrounding <tool_call> wrapper survived and shipped as the last
+        // lines of the chat reply (2026-10-18). Strip the whole shape here too
+        // and log when it fires.
+        if (outputContent && /<\/?tool_call>|<function=[\w.-]+>/i.test(outputContent)) {
+            const before = outputContent.length;
+            outputContent = outputContent
+                .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+                .replace(/<function=[\w.-]+>[\s\S]*?(?:<\/function>|$)/gi, '')
+                .replace(/<\/?tool_call>/gi, '')
+                .trim();
+            log(`[output] raw tool-call markup stripped from reply (${before} -> ${outputContent.length} chars)`);
+            if (!outputContent) {
+                outputContent = lastToolSummary
+                    ? `I couldn't produce a clean reply this turn. Last action: ${lastToolSummary}.`
+                    : `I couldn't produce a clean reply this turn.`;
+            }
+        }
         // Second net: BPE word-mash garbage carries no control tokens (observed
         // 2026-07-03 under kimi: "inistcapebene autwebkitOraCurve LumpDotLAB ...").
         // Deliberately conservative — real prose contains English function words
@@ -5895,6 +5854,14 @@ const marmRecallSection = marmEnabled
         // (Without this there's a dead zone between turn-end and the job's first
         // tool call where the dashboard reads "idle" while Atlas is working.)
         emitJobsStatus();
+        // Roll an autonomous background turn back out of the conversation — its
+        // prompt and output must not become the seat's memory (a following chat
+        // turn would otherwise answer a real question with the sweep's "QUIET").
+        if (sideTurnMarker) {
+            const si = messages.indexOf(sideTurnMarker);
+            if (si >= 0) messages.length = si;
+            else log('side-turn rollback: marker already trimmed away');
+        }
         // Turn done — context retention. We deliberately do NOT collapse to
         // chat-history-only here. collapseToChatHistory dropped every dispatch
         // turn (assistant messages with tool_calls) and every tool result,
@@ -5962,7 +5929,7 @@ const marmRecallSection = marmEnabled
                       `2. PROVEN-FAILED — the result itself shows the deliverable is wrong or missing (the path it claims to have written doesn't match the request, the answer contradicts the ask, the job errored or was aborted), OR the supervisor verdict above is FAILED. A browser job whose result narrates actions ("navigated, typed, clicked") without naming what it found, opened, or bought has NOT delivered — that is PROVEN-FAILED, and you can see the truth yourself: if the browser state decides success, call chrome_read_page on the task tab and judge the actual page before you say a word. Call report_task_failure with the task and the reason, then re-delegate ONCE to the right specialist, naming the GAP — what was wanted versus what came back — never the fix. If the runner refuses the re-delegation, that refusal is final: tell the user plainly what failed and why, and stop.\n` +
                       `3. UNVERIFIABLE FROM TEXT — whether it worked depends on screen or system state you cannot see from this result (a page rendered, an app launched, a button pressed) and the result names a concrete outcome. Trust it and move on. "I did the steps" is not a concrete outcome — when in doubt, check the state (chrome_read_page) or treat it as PROVEN-FAILED.\n` +
                       `CHAIN: if a result is one step of a larger request, take the next step yourself now — delegate it — without waiting for the user. Stop only when the whole task is done or you are genuinely blocked. Do not paste raw output verbatim; speak the outcome.\n` +
-                      `FORMAT: the reply is chat to the captain, not a report. One or two plain sentences per result, carrying the outcome itself. No headers, no bullets, no restating the ask or the job id, no verdict words, no next-steps offers.` +
+                      `FORMAT: the reply is chat to the user, not a report. One or two plain sentences per result, carrying the outcome itself. No headers, no bullets, no restating the ask or the job id, no verdict words, no next-steps offers.` +
                       stillRunningBlock
                     : '';
                 nextInput = resultsBlock;
@@ -5973,7 +5940,7 @@ const marmRecallSection = marmEnabled
             // background job finishes (inbox).
             const idleIpcCancel = { cancelled: false };
             const winner = await Promise.race([
-                waitForIpcMessageWithTimeout(IDLE_TIMEOUT_MS, idleIpcCancel).then(v => v as string | null),
+                waitForIpcMessageWithTimeout(IDLE_TIMEOUT_MS, idleIpcCancel),
                 inbox.waitForItem().then(() => '__INBOX_ITEM__' as const),
             ]);
             if (winner === '__INBOX_ITEM__') {
@@ -5982,7 +5949,8 @@ const marmRecallSection = marmEnabled
                 idleIpcCancel.cancelled = true;
                 continue; // loop back to the drain check
             }
-            nextInput = winner as string | null;
+            nextInput = winner ? winner.text : null;
+            sideTurnPending = winner ? winner.sideTurn : false;
             if (!nextInput) {
                 log('Idle timeout or close signal — exiting.');
                 await disconnectMcpClients();
@@ -6794,7 +6762,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
 /**
  * Wait for IPC message or _close sentinel with timeout
  */
-function waitForIpcMessageWithTimeout(timeoutMs, cancelToken?: { cancelled: boolean }) {
+function waitForIpcMessageWithTimeout(timeoutMs, cancelToken?: { cancelled: boolean }): Promise<{ text: string; sideTurn: boolean } | null> {
     return new Promise((resolve) => {
         let start = Date.now();
         const poll = () => {
@@ -6815,9 +6783,9 @@ function waitForIpcMessageWithTimeout(timeoutMs, cancelToken?: { cancelled: bool
                 return;
             }
             // Check for messages
-            const messages = drainIpcInput();
-            if (messages.length > 0) {
-                resolve(messages.join('\n'));
+            const drained = drainIpcInput();
+            if (drained.length > 0) {
+                resolve({ text: drained.map(d => d.text).join('\n'), sideTurn: drained.some(d => d.sideTurn) });
                 return;
             }
             // Check keepalive — if touched recently, reset idle timer

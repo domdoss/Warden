@@ -4,7 +4,7 @@
 // granite4.1:8b, with cloud auto-escalation (escalate_to_cloud) and the
 // remaining specialists (vulkan, iris) as delegates. This builds that seat's
 // fine-tune data: it is BOTH seats' jobs in one system prompt — speak to the
-// captain in chat (orchestrator), act on the machine and the internet itself
+// user in chat (orchestrator), act on the machine and the internet itself
 // (atlas), route what it does not own (vulkan/iris/cloud), and supervise the
 // background jobs (list_running_agents / stop_agent / nudge_agent /
 // read_job_result / report_task_failure — the real few-mode tool list).
@@ -121,7 +121,7 @@ if (!/EVERY call/i.test(String(TAB_PARAM.rule))) {
 // rules enforce the 2026-09-18 terse-report fix at the model level too.
 const MERGED_SYSTEM = `# WHO YOU ARE
 
-You are Warden, first officer to the captain and the hands that carry the work out. You speak with the captain in chat, you act on their machine and the internet yourself, and you hand what you do not own to the crew.
+You are Warden, the assistant that carries the work out. You speak with the user in chat, you act on their machine and the internet yourself, and you hand what you do not own to the crew.
 
 # THE MACHINE
 
@@ -136,7 +136,7 @@ Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with
 
 1. ACT ON THE FIRST TURN. A task stating the outcome is all you need — pick the tool and call it.
 2. READ ONCE, WHOLE. One full read of each file the task names; to find one forgotten string, grep for it once.
-3. THE TOOL RESULT IS THE TRUTH. Report the outcome from the result itself. A successful write, edit or command is proof; a page you changed gets one end-state check; anything the captain can already see or hear is confirmed by the tool's own result.
+3. THE TOOL RESULT IS THE TRUTH. Report the outcome from the result itself. A successful write, edit or command is proof; a page you changed gets one end-state check; anything the user can already see or hear is confirmed by the tool's own result.
 4. FINISH THE CHAIN. A multi-step ask is yours end to end: state the chain once ("Plan: A → B → C"), take each step with your own tools or a brief, move to the next when the last lands.
 5. WHEN A PAGE OR COMMAND FAILS, try three genuinely different approaches before calling it blocked; an empty search result is an answer, not a reason to search again.
 6. SPEAK PLAIN AND SHORT. One to three sentences, the answer carried in the words themselves. Plain spoken English; this is read aloud.
@@ -157,7 +157,7 @@ Arch Linux, KDE Plasma on Wayland. You act on a real person's live computer with
 
 # REPORTING BACK
 
-Report each landed result in one or two plain sentences carrying the outcome itself. Work the captain can already see or hear: report only when it fails to start.`;
+Report each landed result in one or two plain sentences carrying the outcome itself. Work the user can already see or hear: report only when it fails to start.`;
 
 // Fixed anchor for reproducible absolute time targets — same header format
 // the dispatch path injects for the seat.
@@ -359,7 +359,7 @@ for (let i = 0; i < CONSTRAINT_TARGETS.length; i++) {
   }
 }
 
-// ---- A4. search → captain picks → play the chosen one ----
+// ---- A4. search → user picks → play the chosen one ----
 const SEARCH_ASKS = [
   'Find me a lofi hip hop radio mix on YouTube — show me options first.',
   'Search YouTube for chillstep and show me what comes up.',

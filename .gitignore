@@ -63,6 +63,10 @@ attic/
 jarvis-install/
 jarvis-install (2)/
 jarvis-install (3)/
+# Runtime home-dir clone (node_modules, .claude.json, PII vault, message DB) — never commit
+dockbox/
+# Symlink to ~/Projects/MentaraIQ (separate project) — never commit
+training/studio
 
 # ── Vendored Google Fonts cache (mirrored gstatic/googleapis — re-fetchable) ──
 public/fonts.gstatic.com/
@@ -170,10 +174,19 @@ security/sentry.md
 CameraWebServer/
 unsloth_compiled_cache/
 training/orchatlas-sft.jsonl
+training/orchatlas-bbs-sft.jsonl
+training/orchatlas-sft-balanced.jsonl
 
 # Training-loop runtime artifacts (audit catalogs, step logs)
 training/loop/catalogs/
 training/loop/logs/
+training/chatbot/logs/
+
+# Model weights + fine-tune outputs (safetensors/gguf — never in git)
+*.safetensors
+*.gguf
+training/chatbot/bots/*/merged/
+training/chatbot/bots/*/lora/
 
 # ── Alpha Stack (trading) ──
 # Machine-local environment (venv, models, data, paper state, secrets) —

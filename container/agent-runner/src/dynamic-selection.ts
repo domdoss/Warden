@@ -79,16 +79,30 @@ interface ChatMessage {
 }
 
 /**
- * Pull salient keywords (unigrams + bigrams) from the latest user message plus
- * the last few conversation turns. The latest user message is weighted 3x.
+ * Pull salient keywords (unigrams + bigrams) from the user's own turns — the
+ * latest plus the last few before it, latest weighted 3x. Assistant prose is
+ * EXCLUDED: the seat naming a tool in its reply fed that word straight back
+ * into ranking as a name match (score 3), so one mention made that tool the
+ * top-scored set on every following turn — a self-reinforcing fixation loop
+ * (2026-10-18: one mention of a design app in the seat's own reply made that
+ * app's tools the top-scored set for every following, unrelated ask). Tool
+ * relevance follows what the user asked, not what the model narrated.
  * Returns up to `limit` keywords sorted by score. Bigrams use a space separator.
  */
 export function extractKeywords(messages: ChatMessage[], limit = KEYWORD_LIMIT): string[] {
     try {
         const textTurns = (messages || []).filter(
-            (m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim()
+            (m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim()
         );
         if (textTurns.length === 0) return [];
+        // A greeting / small-talk / bare-affirmation turn has no salient
+        // keywords ("hello", "hi", "thanks", "yes", "okay" are all stopwords).
+        // Carrying earlier turns' keywords forward into such a turn ranked the
+        // PREVIOUS task's tools for a greeting — "hello" surfaced the time /
+        // memory / friend tools and the seat reached for one of them
+        // (2026-10-18). No keywords in the current ask means no keyword-driven
+        // ranking this turn: the menu falls back to discovery + bookkeeping.
+        if (tokenize(String(textTurns[textTurns.length - 1]?.content || '').slice(0, TURN_CHAR_CAP)).length === 0) return [];
         const lastUserIdx = (() => {
             for (let i = textTurns.length - 1; i >= 0; i--) {
                 if (textTurns[i].role === 'user') return i;

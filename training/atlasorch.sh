@@ -3,7 +3,7 @@
 #   venv check  →  seq-length measure  →  train (both RTX 5000s)  →  pack to Ollama ("orchatlas-ft")
 #
 # One LoRA on granite-4.2-8b for the orchatlas seat: the seat that talks to
-# that talks to the captain, drives the machine with its own hands, and hands
+# that talks to the user, drives the machine with its own hands, and hands
 # the rest to the crew (iris, vulkan, artemis, sentry, the Council). Data is
 # training/orchatlas-sft.jsonl — the hand-written part files under
 # orchatlas-parts/, merged (and validated) by merge_orchatlas_parts.mjs.
@@ -22,6 +22,7 @@
 #   BATCH        per-device batch                       (default: 1)
 #   GRAD_ACCUM   gradient accumulation steps            (default: 2)
 #   EPOCHS       passes over the data                   (trainer default if unset)
+#   RESUME       1 = continue from the newest checkpoint in orchatlas-lora
 #   REMERGE      1 = re-run the parts merge first       (default: 1)
 #   SMOKE        1 = 2 optimizer steps, then stop        (default: 0)
 #   SKIP_PACK    1 = stop after training                (default: 0)
@@ -50,12 +51,13 @@ NPROC="${NPROC:-2}"
 BATCH="${BATCH:-1}"
 GRAD_ACCUM="${GRAD_ACCUM:-2}"
 REMERGE="${REMERGE:-1}"
+RESUME="${RESUME:-0}"
 SKIP_PACK="${SKIP_PACK:-0}"
 UNLOAD_OLLAMA="${UNLOAD_OLLAMA:-1}"
 LLAMA_CPP="${LLAMA_CPP:-$HOME/src/llama.cpp}"
 
 BASE_MODEL="ibm-granite/granite-4.2-8b"
-DATA="$WORK/orchatlas-sft.jsonl"
+DATA="$WORK/orchatlas-sft-balanced.jsonl"
 OUT="$WORK/orchatlas-lora"
 MERGED="$WORK/orchatlas-lora-merged"
 OLLAMA_NAME="orchatlas-ft"
@@ -73,6 +75,13 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # update (all_reduce spins forever at 100% util, ~80 W, no memory growth).
 # Routing through host memory works and costs little for LoRA gradients.
 export NCCL_P2P_DISABLE=1
+# Keep the rendezvous on loopback. The hostname resolves to a link-local IPv6
+# address on this box; TCPStore connects, then the heartbeat dies hours later
+# ("Network is unreachable" → "Broken pipe") and the run hangs mid-epoch
+# (2026-10-18, step 10 of 200).
+export GLOO_SOCKET_IFNAME=lo
+export TP_SOCKET_IFNAME=lo
+export NCCL_SOCKET_IFNAME=lo
 
 # ---- GPU sanity ----------------------------------------------------------
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -94,8 +103,13 @@ fi
 if [ "$REMERGE" = "1" ]; then
   phase "merging orchatlas-parts → orchatlas-sft.jsonl"
   node "$WORK/merge_orchatlas_parts.mjs"
+  phase "rebalancing → orchatlas-sft-balanced.jsonl (chat leads, tools peppered)"
+  node "$WORK/rebalance_orchatlas_sft.mjs"
+elif [ ! -s "$DATA" ]; then
+  phase "REMERGE=0 and no balanced corpus — rebalancing orchatlas-sft.jsonl as it stands"
+  node "$WORK/rebalance_orchatlas_sft.mjs"
 else
-  phase "REMERGE=0 — training orchatlas-sft.jsonl as it stands"
+  phase "REMERGE=0 — training orchatlas-sft-balanced.jsonl as it stands"
 fi
 [ -s "$DATA" ] || { echo "ERROR: $DATA is missing or empty." >&2; exit 1; }
 rows=$(wc -l < "$DATA")
@@ -155,6 +169,13 @@ TRAIN_ARGS=(
   --grad-accum "$GRAD_ACCUM"
 )
 [ -n "${EPOCHS:-}" ] && TRAIN_ARGS+=(--epochs "$EPOCHS")
+if [ "$RESUME" = "1" ]; then
+  if compgen -G "$OUT/checkpoint-*" >/dev/null; then
+    TRAIN_ARGS+=(--resume)
+  else
+    echo "WARNING: RESUME=1 but no checkpoint in $OUT — starting from the base model." >&2
+  fi
+fi
 # SMOKE=1 runs two optimizer steps and stops — the cheap way to find out that a
 # step does not fit before spending hours discovering it at step 0.
 if [ "${SMOKE:-0}" = "1" ]; then
@@ -164,7 +185,7 @@ fi
 
 phase "training orchatlas LoRA across $NPROC GPU(s) (max-len $MAX_LEN, batch $BATCH × accum $GRAD_ACCUM)"
 if [ "$NPROC" -gt 1 ]; then
-  "$VENV/bin/torchrun" --nproc_per_node="$NPROC" atlasorch.py "${TRAIN_ARGS[@]}"
+  "$VENV/bin/torchrun" --nproc_per_node="$NPROC" --master_addr=127.0.0.1 --master_port=29511 atlasorch.py "${TRAIN_ARGS[@]}"
 else
   "$PY" atlasorch.py "${TRAIN_ARGS[@]}"
 fi

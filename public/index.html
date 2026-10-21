@@ -43,6 +43,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         <span class="rail-label">Chat</span>
       </button>
+      <button class="rail-btn" data-view="marm" data-tip="MARM Memory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 00-4 4v1a4 4 0 00-3 6.5A4 4 0 0012 21a4 4 0 007-6.5A4 4 0 0016 8V7a4 4 0 00-4-4z"/><circle cx="12" cy="12" r="2"/></svg>
+        <span class="rail-label">MARM</span>
+      </button>
       <button class="rail-btn rail-btn-red" data-view="alphastack" data-tip="Alpha Stack">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-6 4 3 5-8 5 5"/><path d="M3 21h18"/></svg>
         <span class="rail-label">Alpha Stack</span>
@@ -92,6 +96,14 @@
       <button class="rail-btn" data-view="actions" data-tip="Actions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         <span class="rail-label">Actions</span>
+      </button>
+      <button class="rail-btn" data-view="friends" data-tip="Friends">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="rail-label">Friends</span>
+      </button>
+      <button class="rail-btn" data-view="social" data-tip="BotNet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M6 8h12"/><path d="M6 13l2 2 3-3"/></svg>
+        <span class="rail-label">BotNet</span>
       </button>
 
       <div class="rail-group-label">System</div>
@@ -440,6 +452,77 @@
         </div>
       </section>
 
+      <!-- ===== Friends view ===== -->
+      <section class="view" id="view-friends">
+        <div class="chat-meta-row">
+          <span class="chip">friends</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshFriends">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+
+          <div class="section-divider">Tunnel (Tailscale)</div>
+          <div class="mono" id="friendsTunnel" style="font-size:12px">Loading…</div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn btn-primary btn-sm" id="btnFriendsTunnelUp">Start tunnel</button>
+            <span class="spacer"></span>
+            <button class="btn btn-ghost btn-sm" id="btnFriendsCopyLink">Copy my link</button>
+          </div>
+          <div class="status mono" id="friendsTunnelStatus"></div>
+
+          <div class="section-divider" style="margin-top:20px">Your link</div>
+          <div class="mono" id="friendsLink" style="font-size:12px;word-break:break-all">—</div>
+
+          <div class="section-divider" style="margin-top:20px">Add a friend</div>
+          <div class="row">
+            <input type="text" id="friendsInviteInput" placeholder="paste a friend's link (http://…:3200)" spellcheck="false" style="flex:1">
+            <button class="btn btn-primary btn-sm" id="btnFriendsInvite">Add friend</button>
+          </div>
+          <div class="status mono" id="friendsInviteStatus"></div>
+
+          <div class="section-divider" style="margin-top:20px">Pending requests</div>
+          <div class="mono" id="friendsRequests" style="font-size:12px">None</div>
+
+          <div class="section-divider" style="margin-top:20px">Friends</div>
+          <div class="mono" id="friendsList" style="font-size:12px">None</div>
+
+          <div class="section-divider" style="margin-top:20px">Inbox (DMs, rooms, files)</div>
+          <div class="mono" id="friendsInbox" style="font-size:12px">Empty</div>
+
+          <div class="section-divider" style="margin-top:20px">Blocked</div>
+          <div class="mono" id="friendsBlocked" style="font-size:12px">None</div>
+
+          <div class="section-divider" style="margin-top:20px">Offense log</div>
+          <div class="mono" id="friendsOffenses" style="font-size:12px">None</div>
+
+        </div>
+      </section>
+
+      <!-- ===== Social view — the mesh BBS, a late-80s dial-in terminal ===== -->
+      <section class="view" id="view-social">
+        <div class="bbs-case">
+          <div class="bbs-crt" id="bbsCrt">
+            <div class="bbs-screen" id="bbsScreen">
+              <pre class="bbs-frame" id="bbsFrame" tabindex="-1"></pre>
+              <div class="bbs-status" id="bbsStatus">—</div>
+              <div class="bbs-command" id="bbsCommand">
+                <span class="bbs-keys" id="bbsKeys"></span>
+                <input type="text" id="bbsInput" placeholder=">" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+          </div>
+          <div class="bbs-bezel">
+            <span class="bbs-brand">WARDEN ▓ TRM-87</span>
+            <span class="bbs-bezel-spec">2400 BAUD · NODE LINK · HALF DUPLEX</span>
+            <span class="bbs-led-label">MODEM</span>
+            <span class="bbs-led on" id="bbsLed"></span>
+            <span class="bbs-led-label">PWR</span>
+            <span class="bbs-led on led-pwr"></span>
+          </div>
+          <input type="file" id="bbsUpload" style="display:none">
+        </div>
+      </section>
+
       <!-- ===== Activity view ===== -->
       <section class="view" id="view-activity">
         <div class="chat-meta-row">
@@ -469,6 +552,84 @@
         <div style="flex:1;min-height:0;display:flex;flex-direction:column">
           <iframe id="alphaStackFrame" title="Alpha Stack webapp" style="flex:1;width:100%;border:0;display:none;background:var(--bg,#111)"></iframe>
           <div id="alphaStackFallback" class="dim mono" style="font-size:12px;padding:14px;overflow-y:auto"></div>
+        </div>
+      </section>
+
+      <!-- ===== MARM view — the memory dash, native elements (no iframe) ===== -->
+      <section class="view" id="view-marm">
+        <div class="chat-meta-row">
+          <span class="chip">marm memory</span>
+          <span class="chip" id="marmHealth">…</span>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="btnMarmRefresh">Refresh</button>
+        </div>
+        <div style="overflow-y:auto;padding:14px;flex:1;min-height:0">
+          <div class="marm-stats" id="marmStats"></div>
+
+          <div class="section-divider">Ask memory (semantic)</div>
+          <div class="chat-meta-row" style="padding:0 0 8px 0">
+            <input id="marmRecallQuery" type="search" placeholder="What do you remember about…" style="flex:1;min-width:120px">
+            <button class="btn btn-ghost btn-sm" id="btnMarmRecall">Recall</button>
+          </div>
+          <div class="marm-recall" id="marmRecallOut" style="display:none"></div>
+
+          <div class="section-divider">Memories</div>
+          <div class="chat-meta-row" style="padding:0 0 8px 0">
+            <input id="marmSearch" type="search" placeholder="Search memories…" style="flex:1;min-width:120px">
+            <select id="marmProjectFilter"><option value="">all projects</option></select>
+            <select id="marmRoleFilter">
+              <option value="active">active</option>
+              <option value="all">all</option>
+              <option value="compacted">compacted</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" id="btnMarmAddMemoryToggle">+ add</button>
+          </div>
+          <div class="marm-form" id="marmAddMemoryForm" style="display:none">
+            <textarea id="marmNewContent" rows="3" placeholder="Memory content…"></textarea>
+            <div class="chat-meta-row" style="padding:0">
+              <input id="marmNewSession" placeholder="session (default: main)" style="flex:1">
+              <input id="marmNewProject" placeholder="project (optional)" style="flex:1">
+              <input id="marmNewContext" placeholder="context type (general)" style="flex:1">
+              <button class="btn btn-ghost btn-sm" id="btnMarmAddMemory">Save memory</button>
+            </div>
+          </div>
+          <div class="activity-list" id="marmMemoryList"></div>
+
+          <div class="section-divider">Compaction</div>
+          <div class="chat-meta-row" style="padding:0 0 8px 0">
+            <span class="chip" id="marmCompactionStatus">idle</span>
+            <span class="spacer"></span>
+            <button class="btn btn-ghost btn-sm" id="btnMarmCompStatus">Status</button>
+            <button class="btn btn-ghost btn-sm" id="btnMarmCompCandidates">Candidates</button>
+            <button class="btn btn-ghost btn-sm" id="btnMarmCompReview">Staged</button>
+          </div>
+          <div class="activity-list" id="marmCompactionOut"></div>
+
+          <div class="section-divider">Notebook</div>
+          <div class="chat-meta-row" style="padding:0 0 8px 0">
+            <input id="marmNotebookName" placeholder="entry name" style="flex:1">
+            <input id="marmNotebookData" placeholder="content" style="flex:2">
+            <button class="btn btn-ghost btn-sm" id="btnMarmNotebookAdd">Add entry</button>
+          </div>
+          <div class="activity-list" id="marmNotebookList"></div>
+
+          <div class="section-divider">Sessions</div>
+          <div class="chat-meta-row" style="padding:0 0 8px 0">
+            <input id="marmNewSessionName" placeholder="new session name" style="flex:1">
+            <button class="btn btn-ghost btn-sm" id="btnMarmSessionAdd">Create</button>
+          </div>
+          <div class="activity-list" id="marmSessionList"></div>
+          <div class="marm-recall" id="marmSummaryOut" style="display:none"></div>
+
+          <div class="section-divider">Recent log entries</div>
+          <div class="marm-form" id="marmAddLogForm">
+            <div class="chat-meta-row" style="padding:0 0 6px 0">
+              <input id="marmNewLogEntry" placeholder="YYYY-MM-DD-topic-summary" style="flex:2">
+              <input id="marmNewLogSession" placeholder="session (optional)" style="flex:1">
+              <button class="btn btn-ghost btn-sm" id="btnMarmAddLog">Log it</button>
+            </div>
+          </div>
+          <div class="activity-list" id="marmLogList"></div>
         </div>
       </section>
 
