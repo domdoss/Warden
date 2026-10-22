@@ -5,6 +5,7 @@ Modelfile.*
 # - LoRA adapter + merged HF model (re-trained by run.sh, re-packable anytime)
 *-lora/*
 !toolcall-lora/**
+!orchatlas-lora/**
 *-lora-merged/
 # - training + dryfire logs
 *.log
