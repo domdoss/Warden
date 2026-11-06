@@ -65,6 +65,26 @@ You → Warden ─ does it itself: browser, desktop, shell, files, web ─→ Yo
                    → atlas_background (a copy of itself, for long work)
 ```
 
+```mermaid
+flowchart LR
+    U[You] --> S["Warden seat"]
+    S -->|"does it itself"| W["Browser / Desktop / Shell / Files / Web"]
+    W --> S
+    S -->|"WHAT brief"| I["Iris — email, calendar"]
+    S -->|"WHAT brief"| V["Vulkan — code, builds"]
+    S -->|"WHAT brief"| A["Artemis — audit"]
+    S -->|"WHAT brief"| SE["Sentry — security"]
+    S -->|"WHAT brief"| C["Council — deliberation"]
+    S -->|"WHAT brief"| BG["atlas_background — long work"]
+    I --> S
+    V --> S
+    A --> S
+    SE --> S
+    C --> S
+    BG --> S
+    S -->|"report"| U
+```
+
 > 💡 **Tools are not carried in context all the time.** Every seat but Iris gets a per-turn ranked set — the always-needed core plus what the task actually calls for — out of a pool that now includes every installed MCP server. A capability that doesn't surface is one `list_skills` + `activate_skill` away, so nothing is lost; it just stops being paid for on turns that never touch it. Iris is exempt: it runs the small fine-tuned toolcall model, trained on exactly one fixed tool list, so a list that changed per turn would put it off-distribution.
 
 #### A small model is enough — that's the whole point
@@ -79,9 +99,9 @@ The expensive generation splits two ways. Work the seat keeps — browser, deskt
 
 Delegation is not fire-and-forget. When the seat hands long work to a background copy of itself, the job runs **in the background** — the seat gets a job ID back immediately and stays free to handle your next message. While those jobs run, supervision is **on-demand, not automated**:
 
-**There is no running-job supervisor.** The periodic LLM self-audit watchdog that used to tick every few minutes and flag running jobs as **on track / off-rails / crashed** has been **cut out** — the ticker never arms, the tick function is a no-op, and the dashboard Supervisor row (model + on/off + cadence) is removed. It was **unneeded**: the seat's chain-following is now strong enough to drive a job end to end on its own — delegate → drain the finished-job inbox → confirm the result against the ask → chain the next step, or re-delegate on failure — so a second model watching the running job added false positives without value. And it was actively **harmful** on local hardware: a 3b model cannot reliably tell a slow read-or-compose from veering, so it kept flagging healthy background jobs (a read-first pass, a long idle while a 27b composes a large file) and the standing escalation rule killed them and handed the work to Vulkan — and even after the ticker was no-op'd, the seat's prompt still made it *role-play* supervisor flags about its own legitimate read-only delegations and stop them. **You supervise on demand:** ask the seat how a job is doing and it looks (`list_running_agents` / `agent_logs` / `read_job_result`), assesses the recent calls itself, and can `stop_agent` + re-delegate on its own judgment. It just no longer wakes itself up to do it. (The one thing that still runs on the supervisor model is the **completion verdict** on finished jobs — see below.)
+**There is no running-job supervisor.** The periodic LLM self-audit watchdog that used to tick every few minutes and flag running jobs as **on track / off-rails / crashed** has been **cut out** — the ticker never arms, the tick function is a no-op, and the dashboard Supervisor row is now just the completion-verdict gate (model + on/off) — its cadence control is gone. It was **unneeded**: the seat's chain-following is now strong enough to drive a job end to end on its own — delegate → drain the finished-job inbox → confirm the result against the ask → chain the next step, or re-delegate on failure — so a second model watching the running job added false positives without value. And it was actively **harmful** on local hardware: a 3b model cannot reliably tell a slow read-or-compose from veering, so it kept flagging healthy background jobs (a read-first pass, a long idle while a 27b composes a large file) and the standing escalation rule killed them and handed the work to Vulkan — and even after the ticker was no-op'd, the seat's prompt still made it *role-play* supervisor flags about its own legitimate read-only delegations and stop them. **You supervise on demand:** ask the seat how a job is doing and it looks (`list_running_agents` / `agent_logs` / `read_job_result`), assesses the recent calls itself, and can `stop_agent` + re-delegate on its own judgment. It just no longer wakes itself up to do it. (The one thing that still runs on the supervisor model is the **completion verdict** on finished jobs — see below.)
 
-**A deterministic churn detector.** The thing that actually stops a looping job is in code, not the LLM. The runner counts consecutive **read-only calls** (Read, Grep, Glob, Bash, WebSearch, …) with no deliverable produced. At 12 in a row it injects a *commit nudge* into the agent's next turn — "you have enough context, stop searching, write the deliverable now." If the agent keeps searching after the nudge — 10 more read-only calls — the runner aborts the job itself. Crucially, the post-nudge count is **decoupled from writes**: a single `Edit` in a sea of reads no longer resets the abort clock, so "churn punctuated by an occasional token write" can't dodge the kill. When a background job is stopped this way it **auto-escalates to Vulkan** on the same task (and burns the one retry credit so the seat can't double-dispatch on top of it). Artemis is exempt — it's read-only by design, so "lots of reads" is its job, not a loop. (Full mechanics: [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)
+**A deterministic churn detector.** The thing that watches a looping job is in code, not the LLM. The runner counts consecutive **read-only calls** (Read, Grep, Glob, Bash, WebSearch, …) with no deliverable produced. At 12 in a row it injects a *commit nudge* into the agent's next turn — "you have enough context, stop searching, write the deliverable now" — and re-nudges every 10 further read-only calls. It **only nudges**: the runner never aborts a job on a call count and never auto-escalates to Vulkan. What happens next is the orchestrator's call — it reads the job's status and decides on its own judgment to nudge again, `stop_agent` it, or let it run. Artemis and Sentry are exempt — read-only is their job, not a loop. (Full mechanics: [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)
 
 When a job **finishes**, the result lands in an **inbox**.
 
@@ -91,13 +111,27 @@ The inbox is the backbone of the async model. Finished jobs drop their full outp
 
 The net effect: you ask once, and the seat owns the outcome — prompting the specialists, supervising them, cutting off the ones that drift, and correcting course until the job is done or it's genuinely stuck.
 
+```mermaid
+flowchart TD
+    A["You ask once"] --> B["Seat dispatches a WHAT brief"]
+    B --> C["Job runs in the background"]
+    C --> D["Finished job lands in the inbox"]
+    D --> E["Seat drains the inbox"]
+    E --> F{"Result matches the ask?"}
+    F -->|"yes"| G["Chain next step, or report"]
+    F -->|"no"| H["Re-delegate with a reworked brief"]
+    H --> C
+    G -->|"more to do"| B
+    G -->|"done"| I["Report back in its own words"]
+```
+
 #### One conversation, one voice
 
-You have one conversation, with one assistant. Vulkan, Iris, and the rest never see your messages and never speak to you — the seat is the only voice in the chat. It works out what you actually need, composes a self-contained brief for the right specialist, and reports back in its own words when the work is done.
+You have one conversation, with one assistant. Vulkan, Iris, and the rest never see your messages and never speak to you — the seat is the only voice in the chat. Most of what you ask, it does itself with its own tools; when work belongs to another seat, it composes a self-contained brief for the right specialist, and reports back in its own words when the work is done.
 
-![The seat rewrites casual requests into clean task briefs before delegating](docs/screenshots/fabric.webp)
+![The seat composes a clean WHAT brief before handing work to a specialist](docs/screenshots/fabric.webp)
 
-Your raw message never reaches a specialist. *"hey can you set the volume to like fifty percent"* goes in; *"Set the system volume to 50 percent"* is what gets delegated. Every request is rewritten into a precise, self-contained brief — typos, slang, and missing context resolved — so the executing model starts from a clean statement of the goal instead of guessing at your phrasing.
+Your raw message never reaches a specialist. When you ask for something the seat does itself — *"hey can you set the volume to like fifty percent"* — it just does it: no rewrite, no middleman. Only work that belongs to another seat — email to Iris, heavy code to Vulkan, an audit to Artemis — gets handed off, and then as a self-contained **WHAT** brief: the goal in the seat's own words, typos and slang resolved, so the specialist starts from a clean statement of what's needed instead of guessing at your phrasing.
 
 ### Sub-Agents
 
@@ -110,7 +144,7 @@ Each sub-agent has its own system prompt and toolset. Iris and Sentry share one 
 | **Iris** | Local or cloud (local recommended) | Email, calendar, contacts, todos, scheduling, projects & work tasks | Personal information management — email digests, calendar events, scheduled tasks (cron, interval, once), projects, deliverables, and work tasks. |
 | **Artemis** | Local or cloud | Read-only file access | Critical review — audits conversations and decisions. |
 | **The Council** | 3×, local or cloud | Read-only file access | Three independent seats (Skeptic, Pragmatist, Synthesist) deliberate in parallel on high-stakes decisions. |
-| **Sentry** | Local or cloud (local recommended) | Bash (read-only), `sentry_report` | Background security scanner — periodically inventories the PC (listening sockets, network connections, running services, autostart, user crontab, enabled units, processes) with no elevated permissions, diffs against a learned baseline, and reports only when something new or suspicious appears. Runs an hourly peek and a daily deep scan; can also be dispatched on demand ("run a security scan"). |
+| **Sentry** | Local or cloud (local recommended) | Bash (read-only), `sentry_report` | Background security scanner — **currently disabled** (`SENTRY_ENABLED=false`). When enabled it would inventory the PC read-only (listening sockets, network connections, running services, autostart, user crontab, enabled units, processes), diff against a learned baseline, and report only when something new or suspicious appears. It's off until the fine-tune has sentry examples to drive a real inventory — a stock model fabricates one, so re-enable only after training sentry rows. |
 
 > 🎛️ **The Atlas seat, Vulkan, Artemis, and each Council seat have their own model.** **Iris and Sentry share one *Toolcall model*** (a single model + ctx row in the dashboard). Pick local Ollama or cloud per role — the same pipeline handles both. With `max_loaded_models=3` (see [Tuning the Ollama daemon](#tuning-the-ollama-daemon)), the Atlas seat (always kept alive) and the Toolcall model (if its keep-alive checkbox is on — this covers Iris/Sentry) stay resident in VRAM, with room for a third resident model (a separately-enabled model whose keep-alive is on). The supervisor model no longer holds a resident slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs. Any fourth model evicts the least-recently-used resident. The keep-alive re-pin that runs every minute only maintains models that are **loaded** — it snapshots Ollama's `/api/ps` first and never re-spawns a model that was deliberately unloaded, so a pinned model can't fight something big (like the training loop's 17 GB analyst) for VRAM after you cleared it on purpose.
 
@@ -145,7 +179,7 @@ The schedule-value format is where scheduling breaks in every system that has on
 
 > 🪨 **The toolcall agents (Iris, Sentry) are prompted for `granite4.1:3b`.** Their system prompts are tuned to that 3B model — temperature 0, deterministic keyword→tool rules, and **no few-shot examples** (granite pattern-matches example shapes: shown only `schedule_task(...)` examples, it would call `schedule_task` to "delete" instead of `cancel_task`). When editing any of these prompts, keep that target in mind: drive behavior with explicit rules and tool-selection mappings, never examples, and verify against `granite4.1:3b` — a prompt that reads cleanly on a big cloud model can mis-fire on the 3B local one.
 
-> ⚠️ **Stock granite doesn't cut it — the fine-tuned `toolcall-ft` model is effectively required.** The toolcall agents need the LoRA fine-tune built from `training/` (`toolcall-ft` in Ollama; see `training/README` / `Modelfile.toolcall-ft` for building it). Reliable tool-call transcription on this 41-tool surface was trained in — a stock model won't reproduce it. On a fresh install without the LoRA weights it just wouldn't work, even with the 8B stock model swapped in.
+> ⚠️ **Stock granite doesn't cut it — the fine-tuned `toolcall-ft` model is effectively required.** The toolcall agents need the LoRA fine-tune built from `training/` (`toolcall-ft` in Ollama; see `training/README` / `Modelfile.toolcall-ft` for building it). Reliable tool-call transcription on this action-parameter surface (one tool per noun — `email`, `task`, `calendar`, `alarm` — each with an `action` enum, collapsed from 41 flat tools in 2026-09) was trained in — a stock model won't reproduce it. On a fresh install without the LoRA weights it just wouldn't work, even with the 8B stock model swapped in.
 
 ### Persistent Runner
 
@@ -199,14 +233,14 @@ The tool loop has multiple circuit breakers to prevent common failure modes:
 - **Circling detection** — consecutive useless rounds (no tool calls, no output) trigger a forced no-tools round to extract an answer
 - **Degenerate output filter** — word-mash / garbled output from misconfigured models is detected and suppressed
 - **Verifier sub-agent** — after effectful work (file writes, edits), a verifier pass confirms the changes
-- **Deterministic churn detection** — N consecutive read-only calls (Read/Grep/Glob/Bash/WebSearch — the `RESEARCH` set) with no deliverable produced → inject a "stop searching, write now" commit nudge; 10 more read-only calls after the nudge → the runner aborts the job itself (12/10 thresholds; artemis is exempt). The post-nudge count ignores writes, so churn punctuated by an occasional `Edit` can't evade the abort. A stopped **Atlas** auto-escalates to **Vulkan** on the same task. *(See [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)*
-- **One-atlas-at-a-time gate** — a new Atlas dispatch aborts any already-running Atlas (the new task supersedes) before spawning, so the seat can't double-launch a background job on the same file and clobber edits. Vulkan is exempt (the churn-escalation spawns it while Atlas winds down).
+- **Deterministic churn detection** — N consecutive read-only calls (Read/Grep/Glob/Bash/WebSearch — the `RESEARCH` set) with no deliverable produced → inject a "stop searching, write now" commit nudge, re-nudged every 10 further read-only calls (12/10 thresholds). It **only nudges** — the runner never aborts on a call count and never auto-escalates; the orchestrator decides (nudge / `stop_agent` / let it run) on its own judgment. Artemis and Sentry are exempt (read-only is their job). *(See [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)*
+- **Per-delegate concurrency cap + same-file backstop** — at most 3 jobs per delegate run at once (`MAX_CONCURRENT_PER_DELEGATE`); a further dispatch for the same delegate is queued and starts when a slot frees. Separately, a dispatch that names a file a running writer already holds is queued behind it, so two jobs can't clobber the same file.
 - **Atlas first-turn thinking** — Atlas thinks on its first iteration only (plan what it needs, then act), paired with a **READ ONCE** prompt rule (read each named file once; don't re-Read it to find the next edit target — that re-reading *is* the loop). Later iterations keep thinking off to preserve context.
-- **Supervisor watchdog (cut out)** — the periodic LLM self-audit that flagged running jobs and let the seat nudge/stop has been removed. It was unneeded once the seat's chain-following could drive a job end to end on its own, and a 3b model kept false-flagging healthy slow reads/composes. The seat still monitors **on demand** (ask it, and it looks + can stop/retry on its own), and the completion verdict still judges finished jobs. Only the deterministic churn detector stops jobs automatically.
+- **Supervisor watchdog (cut out)** — the periodic LLM self-audit that flagged running jobs and let the seat nudge/stop has been removed. It was unneeded once the seat's chain-following could drive a job end to end on its own, and a 3b model kept false-flagging healthy slow reads/composes. The seat still monitors **on demand** (ask it, and it looks + can stop/retry on its own), and the completion verdict still judges finished jobs. Nothing stops jobs automatically — the deterministic churn detector only nudges; the seat (on demand) or you decide when to `stop_agent`.
 
 ### 📝 Memory System
 
-The seat writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` — no delegation needed. These files are loaded into context every turn.
+The seat writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` — no delegation needed. Only `MEMORY.md` is loaded into context every turn; `HEARTBEAT.md` is injected only for scheduled heartbeat tasks, and `TODO.md` is not auto-loaded.
 
 After every conversation, a **memory writeback** pass runs automatically: a local model reads the last ~30 messages of the chat, distills durable facts (preferences, decisions, context the agent should carry forward), and appends them to `MEMORY.md` with a dated entry in `JOURNAL.md`. The distilled facts are visible to the agent on the very next turn — no manual note-taking, no "remember this" prompts. The writeback is fire-and-forget (never blocks the message loop), throttled to once per chat per 15 minutes, and auto-compacts `MEMORY.md` when it grows too large. Both files live at `WORKSPACE_ROOT` — the same place the seat loads from every turn, and the same place Mercury writes `MERCURY_MEMORY.md`.
 
@@ -214,7 +248,7 @@ After every conversation, a **memory writeback** pass runs automatically: a loca
 
 Mercury is the working-memory layer for the live conversation — how a fresh seat (after a restart or context clear) knows what the current thread is about without replaying an ever-growing transcript.
 
-- **Rolling compaction.** On a cadence (default every 30 min, or 5 min after you go quiet — never mid-turn), a local model reads the last ~45 messages, keeps the newest ~12 verbatim, and compresses the rest into a concise state-of-the-conversation note written to `MERCURY_MEMORY.md`. Every turn's prompt starts with that summary merged into the system prompt, cache-prefix-stable.
+- **Rolling compaction.** On a turn-based cadence (every 30 user turns — `MERCURY_TURNS_PER_COMPACTION` — never mid-turn), a local model reads the recent conversation, keeps the newest ~30 messages verbatim (`MERCURY_RECENT_MESSAGES`), and compresses the rest into a concise state-of-the-conversation note written to `MERCURY_MEMORY.md`. Every turn's prompt starts with that summary merged into the system prompt, cache-prefix-stable.
 - **RAG over recent history.** A follow-up that references something older than the verbatim window ("what did I say about the filter two hours ago?") pulls keyword-matched turns from the last ~120 messages into a `<mercury_context>` block. Retrieval is deliberately conservative, because raw old turns injected carelessly once hijacked a turn — the model answered a fresh question by replaying a day-old exchange verbatim, matched on a single shared keyword: a query with 3+ keywords must now match ≥2 of them, score ties break toward the *newest* message, every retrieved line carries its timestamp, and the block is labeled background-only with the current ask explicitly prioritized.
 - **Filed to MARM when present.** Each compaction also files the summary into MARM (session `mercury`, `marm_log_entry`, deduped on unchanged text) so the rolling state stays semantically recallable even after the 120-message horizon passes. Fire-and-forget and fail-open: MARM down or absent changes nothing — Mercury and its RAG work standalone and are always the default recall path.
 
@@ -235,6 +269,16 @@ How it integrates (all built in, none of it requires touching Warden's core):
 - The memory writeback mirrors every distilled fact into MARM (`marm_log_entry`, over MCP HTTP) right after appending to `MEMORY.md` — fire-and-forget, with a 10s timeout: MARM down or absent changes nothing. In the other direction, `marm-recall.ts` auto-recalls the top MARM matches for each incoming message (2.5s timeout, ≤3 hits, ≤900 chars, fail-open) and injects them into the seat's prompt as a `# RECALLED MEMORIES` section.
 - Mercury compaction files each rolling summary into MARM as well (`marm_log_entry`, session `mercury`, deduped on unchanged text) — the conversation's recent state becomes long-term recallable under the same fail-open contract.
 - The voice app's center panel is the **memory galaxy** (`eyes_ears/ui/memory-galaxy.html`): a 3D constellation of MARM's concept graph — nodes are entities extracted from stored memories, edges are walked relations. Clicking a node opens its details in a separate popup window. The built graph is cached (15 min), so a UI restart doesn't re-probe MARM. With MARM off or the concept graph unbuilt, the galaxy falls back to its built-in demo constellation.
+
+```mermaid
+flowchart TD
+    S["Seat"] -->|"loaded every turn"| M["MEMORY.md / TODO.md / HEARTBEAT.md"]
+    W["memory writeback"] -->|"distills durable facts"| M
+    W -->|"mirrors facts"| MARM["MARM — semantic long-term recall"]
+    MARM -->|"top recalls injected"| S
+    S -->|"rolling compaction"| MC["Mercury — MERCURY_MEMORY.md"]
+    MC -->|"filed on compaction"| MARM
+```
 
 ### 💓 Heartbeat
 
@@ -271,7 +315,7 @@ Every model selection in the dashboard is per-role:
 | Role | Recommended | Why |
 |------|-------------|-----|
 | **Atlas (the seat)** | e4b local works; **31B cloud recommended** | Fast, cheap routing + hands-on work + supervision. e4b is the floor; 31B cloud catches sub-agents that bluff a result. Keep-alive is on by default. |
-| **Supervisor (watchdog)** | Small local (e.g. granite4.1:3b) | **The running-job self-audit tick is cut out** (see above). The model still runs the **completion verdict** on finished jobs — tool-less, a few hundred tokens per call, falls back to the seat model if unset. The dashboard Supervisor row is removed. |
+| **Supervisor (watchdog)** | Small local (e.g. granite4.1:3b) | **The running-job self-audit tick is cut out** (see above). The model still runs the **completion verdict** on finished jobs — tool-less, a few hundred tokens per call, falls back to the seat model if unset. The dashboard Supervisor row now just gates that completion verdict (model + on/off); its periodic tick/cadence control is gone. |
 | **Atlas** | Cloud (deepseek, glm) | Heavy lifting — internet access, shell, browser, complex reasoning. Keep-alive optional. |
 | **Vulkan** | Cloud (default) | Coding, builds, tests, refactoring, heavy shell pipelines. Keep-alive optional. |
 | **Toolcall agents** | Local (recommended) | Iris and Sentry share one model + ctx row. Run them local; save cloud for Atlas and the Council. |
@@ -315,6 +359,13 @@ Warden browses through **your actual Chrome** — the one you're logged into, wi
 The chain: the **chrome-mcp-server** extension (unpacked copy at `chrome-mcp-server-1.0.0/`) runs in your real Chrome and spawns the **mcp-chrome-bridge** native host (`npm install -g mcp-chrome-bridge`, serving MCP on `127.0.0.1:12306`). Warden's **browser gate** (`src/browser-mcp-gate.ts`) owns the single upstream connection to that host and re-serves it statelessly at `POST /mcp/browser` on `:3200` — the agent-runner never touches 12306 directly.
 
 The browser is an **optional component that never blocks anything**. It's dialed on demand — only when a browser/web tool is actually invoked — and the gate fails fast (5s) if the bridge is down, so no request can hang on it. Warden boots, chats, and runs every non-web turn with the bridge completely absent.
+
+```mermaid
+flowchart LR
+    A["Chrome MCP Server extension"] -->|"connectNative"| B["mcp-chrome-bridge :12306"]
+    B -->|"single upstream connection"| C["Warden gate :3200 — POST /mcp/browser"]
+    C -->|"chrome_* tools"| D["agent-runner (browser + youtube tools)"]
+```
 
 For the full contract (lazy connect, fail-to-default toolsets, the diagnostics ladder, and the one-command repair via `scripts/restart-browser-bridge.sh`), see `CLAUDE.md` → *Browser capability*.
 
@@ -534,6 +585,14 @@ Warden's seat model is a fine-tune (`orchatlas-ft`, built from `training/`), and
 | **Train** | Runs the standard 1-epoch `atlasorch.sh` as-is. When it finishes, flip the seat model to `orchatlas-ft` in the dashboard. |
 
 Each step is a detached background job with a live log tail in the view; only one step runs at a time, and audit/modify unload the analyst when they finish so the VRAM goes back to the resident models. The keep-alive re-pin cooperates: it only maintains models that are *loaded* — it snapshots Ollama's `/api/ps` and never re-spawns a model that was deliberately unloaded, so a pinned seat model can't fight the analyst for VRAM mid-audit.
+
+```mermaid
+flowchart LR
+    A["Audit logs (1 / 3 / 7-day)"] --> B["Modify training data"]
+    B --> C["Train — atlasorch.sh"]
+    C --> D["Flip seat model to orchatlas-ft"]
+    D -.->|"new failures"| A
+```
 
 ### 📈 Alpha Stack
 

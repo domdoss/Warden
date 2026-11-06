@@ -53,8 +53,6 @@ git/
 *.tgz
 *.7z
 webcam_capture.jpg
-1
-EOF
 
 # ── Nested / stray duplicate dirs ──
 Warden/

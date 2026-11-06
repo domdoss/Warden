@@ -22,3 +22,5 @@ import './project-tools.js';
 import './training-tools.js';
 import './friends.js';
 import './bbs.js';
+import './slack.js';
+import './trello.js';

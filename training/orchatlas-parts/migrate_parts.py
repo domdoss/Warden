@@ -3,7 +3,8 @@
 #   Read/Write            → read_file/write_file (file_path → path)
 #   Grep/Glob             → Bash one-liners (the seat's own hands)
 #   Edit                  → vulkan delegation (dispatch → started → read_job_result)
-#   project (work tasks)  → iris `task` (byte merged into iris; work tasks are iris's)
+#   project (work tasks)  → project (untouched — the merged `project` tool is
+#     orchestrator-direct, NOT iris; see agent-runner index.ts iris subagent note)
 #   browser_navigate/tabs/current_url/evaluate → chrome MCP equivalents
 #   browser_click/type/press_key/wait_for/hover/... → QUARANTINE (ref-based
 #     flows can't be honestly renamed without the read_page step)
@@ -19,7 +20,7 @@ RESULT_RENAME = {"Read": "read_file", "Write": "write_file", "Grep": "Bash",
                  "browser_evaluate": "chrome_javascript",
                  "browser_current_url": "chrome_javascript",
                  "browser_tabs": "get_windows_and_tabs",
-                 "browser_press_key": "chrome_keyboard", "project": "iris"}
+                 "browser_press_key": "chrome_keyboard"}
 # Old browser_* tools with no honest chrome_* mapping → row quarantined.
 QUARANTINE_TOOLS = {"browser_click", "browser_type", "browser_press_key",
                     "browser_wait_for", "browser_hover", "browser_select_option",
@@ -63,31 +64,6 @@ def edit_to_vulkan(cid, args, rid, result):
          "content": "Vulkan %s finished. Edit applied to %s. %s" % (job[8:], fp, (result or "")[:400])},
     ]
 
-def project_to_iris(cid, args, rid, result):
-    if isinstance(args, str):
-        try:
-            args = json.loads(args)
-        except Exception:
-            args = {}
-    args = args or {}
-    verb = {"create": "Create", "complete": "Mark complete", "update": "Update",
-            "list": "List"}.get(str(args.get("action", "create")), "Create")
-    title = args.get("title", "")
-    due = args.get("due", "")
-    text = "TASK: %s the work task '%s'" % (verb, title)
-    if due:
-        text += ", due %s" % due
-    for k, v in args.items():
-        if k in ("kind", "action", "title", "due"):
-            continue
-        if isinstance(v, str) and v:
-            text += ", %s: %s" % (k, v)
-    return [{"role": "assistant", "content": None,
-             "tool_calls": [{"id": cid, "type": "function",
-                             "function": {"name": "iris", "arguments": {"task": text}}}]},
-            {"role": "tool", "tool_call_id": cid, "name": "iris",
-             "content": result or "Work task recorded."}]
-
 def cloud_to_vulkan(cid, args, rid, result):
     """escalate_to_cloud → vulkan: vulkan runs the cloud model now, so the
     deep-reasoning hand-off is a plain vulkan delegation. The cloud's answer
@@ -114,21 +90,6 @@ def cloud_to_vulkan(cid, args, rid, result):
         {"role": "tool", "tool_call_id": rid + "r", "name": "read_job_result",
          "content": "Vulkan %s finished.\n%s" % (job[8:], (result or "")[:1200])},
     ]
-
-def project_task_text(args):
-    verb = {"create": "Create", "complete": "Mark complete", "update": "Update",
-            "list": "List"}.get(str(args.get("action", "create")), "Create")
-    title = args.get("title", "")
-    due = args.get("due", "")
-    text = "TASK: %s the work task '%s'" % (verb, title)
-    if due:
-        text += ", due %s" % due
-    for k, v in args.items():
-        if k in ("kind", "action", "title", "due"):
-            continue
-        if isinstance(v, str) and v:
-            text += ", %s: %s" % (k, v)
-    return text
 
 def conv_call(name, args):
     """→ (new_name, new_args) or ("SKIP", None) when the row must be quarantined."""
@@ -162,8 +123,6 @@ def conv_call(name, args):
         return "SKIP", None
     if name == "browser_press_key":
         return "chrome_keyboard", {"keys": args.get("key", args.get("keys", ""))}
-    if name == "project":
-        return "iris", {"task": project_task_text(args)}
     return ("SKIP", None) if name in QUARANTINE_TOOLS else (name, args)  # unknown → untouched
 
 for old in glob.glob(os.path.join(BASE, "quarantine-*.jsonl")):
@@ -189,18 +148,15 @@ for f in sorted(glob.glob(os.path.join(BASE, "s*.jsonl"))):
             m = msgs[i]
             calls = m.get("tool_calls") or []
             edits = [tc for tc in calls if tc["function"]["name"] == "Edit"]
-            projs = [tc for tc in calls if tc["function"]["name"] == "project"]
             clouds = [tc for tc in calls if tc["function"]["name"] == "escalate_to_cloud"]
-            if m.get("role") == "assistant" and (edits or projs or clouds) and len(calls) == 1:
+            if m.get("role") == "assistant" and (edits or clouds) and len(calls) == 1:
                 tc = calls[0]
                 rid = tc.get("id") or "call_m%d" % i
                 result = msgs[i + 1].get("content") if i + 1 < len(msgs) and msgs[i + 1].get("role") == "tool" else ""
                 if edits:
                     new_msgs.extend(edit_to_vulkan(rid, tc["function"]["arguments"], rid, result))
-                elif clouds:
-                    new_msgs.extend(cloud_to_vulkan(rid, tc["function"]["arguments"], rid, result))
                 else:
-                    new_msgs.extend(project_to_iris(rid, tc["function"]["arguments"], rid, result))
+                    new_msgs.extend(cloud_to_vulkan(rid, tc["function"]["arguments"], rid, result))
                 i += 2
                 changed = True
                 continue

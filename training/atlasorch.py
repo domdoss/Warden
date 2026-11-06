@@ -86,122 +86,108 @@ def load_examples(path: str):
 # ---------------------------------------------------------------------------
 # Ollama-faithful rendering.
 #
-# The old _render went through tokenizer.apply_chat_template (HF jinja), but
-# inference serves a DIFFERENT byte sequence: Ollama marshals the tools block
-# and tool-call arguments with Go encoding/json — compact separators,
-# alphabetized map keys, struct field order, HTML escapes — and the HF render
-# uses json.dumps spacing with insertion-order keys. The fine-tune learned the
-# HF bytes, then the model saw Ollama's bytes at inference and emitted tool
-# calls the parser silently ate (empty content, no tool_calls). Training on
-# the Ollama bytes closes the gap. Every rule below was validated against the
-# live granite template + api structs (ollama 0.32.14), down to an exact
-# prompt_eval_count match on the raw /api/generate oracle.
+# Ollama renders granite4.2 through its own Jinja2 engine (minja), and its
+# `tojson` filter matches Python json.dumps with the DEFAULT separators —
+# spaced (", " between items, ": " after keys), insertion order, non-ASCII
+# kept raw, and NO htmlsafe escaping. The `tool_to_json` macro wraps that in
+# '"key": <tojson(value)>' joined by ", ". We reproduce those bytes here
+# instead of going through apply_chat_template, because we need per-segment
+# labels (assistant turns labelled, everything else -100) that apply_chat_template
+# cannot produce. Every rule below is verified byte-exact against the HF
+# apply_chat_template render of the same rows, which in turn matches the live
+# /api/chat prompt_eval_count oracle within the tokenizer's 1-token split
+# difference (HF tokenizer vs llama.cpp) — not a render difference.
 # ---------------------------------------------------------------------------
 
-# granite special tokens + tool-call tags, built via concatenation so this
-# file never contains the literal tags (display mangling hazard)
-SOR = '<|start' + '_of_role|>'
-EOR = '<|end' + '_of_role|>'
-EOT = '<|end' + '_of_text|>'
+# granite 4.2 special tokens + tool-call tags, built via concatenation so this
+# file never contains the literal tags (display mangling hazard).
+# NOTE: granite4.2 (the served template) uses ChatML-style <|im_start|>/<|im_end|>,
+# NOT the granite-3.x <|start_of_role|>/<|end_of_role|>/<|end_of_text|> tokens this
+# file used to emit. The old tokens were a train/serve mismatch: the fine-tune was
+# taught SOR/EOR while Ollama fed it im_start/im_end, and it rambled instead of
+# calling tools (the "create a file → 4096-token ramble → 500" failure).
+IM_START = '<|im_' + 'start|>'
+IM_END = '<|im_' + 'end|>'
 TC_OPEN = '<' + 'tool' + '_call' + '>'
 TC_CLOSE = '<' + '/tool' + '_call' + '>'
 TR_OPEN = '<' + 'tool' + '_response' + '>'
 TR_CLOSE = '<' + '/tool' + '_response' + '>'
 
-TOOLS_PREFIX = ('You are a helpful assistant with access to the following tools. '
-    'You may call one or more tools to assist with the user query.\n\n'
-    'You are provided with function signatures within <tools></tools> XML tags:\n<tools>')
-TOOLS_SUFFIX = ('\n</tools>\n\nFor each tool call, return a json object with function '
-    'name and arguments within ' + TC_OPEN + TC_CLOSE + ' XML tags:\n' + TC_OPEN +
-    '\n{"name": <function-name>, "arguments": <args-json-object>}\n' + TC_CLOSE +
-    '. If a tool does not exist in the provided list of tools, notify the user '
-    'that you do not have the ability to fulfill the request.')
+# The granite4.2 tools block, byte-for-byte from the served template (ollama
+# /api/show on granite4.2:8b). Tool schemas are JSON objects inside <tools>,
+# and the answer format is <function=...>/<parameter=...> — NOT the flat
+# <tool_call>{"name":...} JSON this file used to emit.
+TOOLS_PREFIX = '# Tools\n\nYou have access to the following functions:\n\n<tools>'
+TOOLS_SUFFIX = (
+    '\n</tools>\n\n'
+    'If you choose to call a function ONLY reply in the following format with NO suffix:\n\n'
+    '<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\n'
+    'value_1\n</parameter>\n<parameter=example_parameter_2>\n'
+    'This is the value for the second parameter\nthat can span\nmultiple lines\n'
+    '</parameter>\n</function>\n</tool_call>\n\n'
+    '<IMPORTANT>\nReminder:\n'
+    '- Function calls MUST follow the specified format: an inner <function=...></function> '
+    'block must be nested within <tool_call></tool_call> XML tags\n'
+    '- Required parameters MUST be specified\n'
+    '- You may provide optional reasoning for your function call in natural language '
+    'BEFORE the function call, but NOT after\n'
+    '- If there is no function call available, answer the question like normal with your '
+    'current knowledge and do not tell the user about function calls\n'
+    '</IMPORTANT>')
 
 
-def _gostr(s):
-    # Go json.Marshal of a string: standard escapes, control chars, and Go's
-    # default HTML escaping of <, >, &. Non-ASCII stays raw UTF-8.
-    out = []
-    for ch in s:
-        if ch == '"': out.append('\\"')
-        elif ch == '\\': out.append('\\\\')
-        elif ch == '\n': out.append('\\n')
-        elif ch == '\r': out.append('\\r')
-        elif ch == '\t': out.append('\\t')
-        elif ch == '<': out.append('\\u003c')
-        elif ch == '>': out.append('\\u003e')
-        elif ch == '&': out.append('\\u0026')
-        elif ord(ch) < 0x20: out.append('\\u%04x' % ord(ch))
-        else: out.append(ch)
-    return '"' + ''.join(out) + '"'
-
-
-def _gov(v):
-    # Go json.Marshal of any: maps marshal with keys sorted lexicographically,
-    # compact separators, no spaces after ':' or ','.
-    if v is True: return 'true'
-    if v is False: return 'false'
-    if v is None: return 'null'
-    if isinstance(v, str): return _gostr(v)
-    if isinstance(v, (int, float)): return json.dumps(v)
-    if isinstance(v, list):
-        return '[' + ','.join(_gov(x) for x in v) + ']'
-    if isinstance(v, dict):
-        return '{' + ','.join(_gostr(k) + ':' + _gov(v[k]) for k in sorted(v)) + '}'
-    raise TypeError(type(v))
+def _tojson(v):
+    # Python Jinja2 `tojson` as transformers applies it: json.dumps with the
+    # default spaced separators (', ', ': '), insertion order, non-ASCII raw,
+    # and NO htmlsafe escaping. Verified against the live served template:
+    # a '<' in a schema description renders raw (not backslash-u003c), and '→'
+    # stays raw.
+    # Minja (ollama's Jinja2) also keeps UTF-8 raw, so ensure_ascii=False matches
+    # serve-time for both the tools block (explicit `tojson(ensure_ascii=False)`)
+    # and the bare-`tojson` argument path.
+    return json.dumps(v, ensure_ascii=False)
 
 
 def _go_tool(t):
-    # api.Tool{Type, Items(omitempty), Function{Name, Description, Parameters}}
-    # ToolFunctionParameters{Type, $defs(omitempty), items(omitempty),
-    #   required(omitempty), Properties (insertion order)}
-    # each ToolProperty value: struct field order anyOf/type/items/description/
-    # enum/properties/required (all omitempty) — this is the `json $tool_body`
-    # the granite template emits per tool.
-    f = t['function']
-    parts = [_gostr('name') + ':' + _gostr(f['name'])]
-    if 'description' in f:
-        parts.append(_gostr('description') + ':' + _gostr(f['description']))
-    p = f['parameters']
-    pparts = [_gostr('type') + ':' + _gov(p['type'])]
-    if p.get('required'):
-        pparts.append(_gostr('required') + ':[' +
-                      ','.join(_gostr(x) for x in p['required']) + ']')
-    if 'properties' in p:
-        def go_property(prop):
-            out = []
-            if 'anyOf' in prop: out.append(_gostr('anyOf') + ':' + _gov(prop['anyOf']))
-            if 'type' in prop: out.append(_gostr('type') + ':' + _gov(prop['type']))
-            if 'items' in prop: out.append(_gostr('items') + ':' + _gov(prop['items']))
-            if 'description' in prop: out.append(_gostr('description') + ':' + _gostr(prop['description']))
-            if 'enum' in prop: out.append(_gostr('enum') + ':' + _gov(prop['enum']))
-            if 'properties' in prop: out.append(_gostr('properties') + ':' + _gov(prop['properties']))
-            if 'required' in prop: out.append(_gostr('required') + ':' + _gov(prop['required']))
-            return '{' + ','.join(out) + '}'
-        inner = ','.join(_gostr(k) + ':' + go_property(props_v)
-                        for k, props_v in p['properties'].items())
-        pparts.append(_gostr('properties') + ':{' + inner + '}')
-    parts.append(_gostr('parameters') + ':{' + ','.join(pparts) + '}')
-    return '{"type":"function","function":{' + ','.join(parts) + '}}'
+    # granite4.2 `tool_to_json` macro: strip the OpenAI {"type":"function",...}
+    # envelope, emit the bare function object's keys in order with '": "' and
+    # '", "' separators, each value through tojson(ensure_ascii=False).
+    f = t.get('function', t)
+    parts = []
+    for k, v in f.items():
+        if k in ('defer_loading', 'strict'):
+            continue
+        parts.append('"' + k + '": ' + _tojson(v))
+    return '{' + ', '.join(parts) + '}'
+
+
+def _go_arg(v):
+    # Template line 128: a mapping or non-string sequence renders via tojson;
+    # every other value renders via the `string` filter (str()). Strings are
+    # RAW (the <parameter> value is literal text), bools use Python's str()
+    # spelling ("True"/"False") — both verified against the live template.
+    if isinstance(v, dict) or isinstance(v, list):
+        return _tojson(v)
+    return str(v)
 
 
 class OrchatlasSFTDataset(Dataset):
-    """Renders each example BYTE-EXACTLY as Ollama's granite template does at
-    inference (see the block comment above for why). Per-message segments are
-    assembled as text, encoded atomically with add_special_tokens=False, and
-    only assistant segments carry labels; everything else is -100.
+    """Renders each example BYTE-EXACTLY as Ollama's granite4.2 template does
+    at inference (see the block comment above for why). Per-message segments
+    are assembled as text, encoded atomically with add_special_tokens=False,
+    and only assistant segments carry labels; everything else is -100.
 
-    Framing (validated against the live template):
-      system (index 0): SOR+system+EOR + content + "\\n\\n" + tools block
-                        + EOT + "\\n"
-      user / mid-turn system: SOR+role+EOR + content + EOT + "\\n"
+    Framing (granite4.2, validated against the live template):
+      system (index 0): IM_START+system+"\\n" + content + "\\n\\n" + tools block
+                        + IM_END + "\\n"
+      user / mid-turn system: IM_START+role+"\\n" + content + IM_END + "\\n"
       tool run: consecutive tool messages fold into ONE user turn —
-                SOR+user+EOR + per message "\\n" + TR_OPEN + "\\n" + content
-                + "\\n" + TR_CLOSE, then EOT + "\\n"
-      assistant: SOR+assistant+EOR + content, then per tool call
-                 (a "\\n" first if content is non-empty or it isn't the first
-                 call) TC_OPEN + "\\n{\\"name\\": \\"NAME\\", \\"arguments\\": "
-                 + Go-marshal(args) + "}\\n" + TC_CLOSE, then EOT + "\\n\""""
+                IM_START+user+"\\n" + per message TR_OPEN+"\\n"+content+"\\n"+
+                TR_CLOSE+"\\n", then IM_END+"\\n"
+      assistant: IM_START+assistant+"\\n" + ("<think></think>" prepended to
+                 content), then per tool call TC_OPEN+"\\n<function=NAME>\\n" +
+                 per arg "<parameter=K>\\n"+value+"\\n</parameter>\\n" +
+                 "</function>\\n"+TC_CLOSE+"\\n", then IM_END+"\\n\""""
 
     def __init__(self, examples, tokenizer, max_len=None):
         self.examples = examples
@@ -240,14 +226,14 @@ class OrchatlasSFTDataset(Dataset):
         if messages and messages[0].get("role") == "system":
             sys_content = messages[0].get("content") or ""
             messages = messages[1:]
+
+        segments = []
         if sys_content or tools_block:
             if sys_content and tools_block:
                 sysmsg = sys_content + "\n\n" + tools_block
             else:
                 sysmsg = sys_content or tools_block
-            segments = [(SOR + "system" + EOR + sysmsg + EOT + "\n", False)]
-        else:
-            segments = []
+            segments.append((IM_START + "system\n" + sysmsg + IM_END + "\n", False))
 
         i, n = 0, len(messages)
         while i < n:
@@ -255,27 +241,39 @@ class OrchatlasSFTDataset(Dataset):
             role = m.get("role")
             content = m.get("content") or ""
             if role == "tool":
-                # fold the whole consecutive run into ONE user turn
+                # fold the whole consecutive run into ONE user turn (the template
+                # opens <|im_start|>user only before the first response and closes
+                # after the last — no leading "\n" before the first <tool_response>).
                 body = ""
                 while i < n and messages[i].get("role") == "tool":
-                    body += ("\n" + TR_OPEN + "\n" +
-                             (messages[i].get("content") or "") + "\n" + TR_CLOSE)
+                    body += (TR_OPEN + "\n" +
+                             (messages[i].get("content") or "") + "\n" + TR_CLOSE + "\n")
                     i += 1
-                segments.append((SOR + "user" + EOR + body + EOT + "\n", False))
+                segments.append((IM_START + "user\n" + body + IM_END + "\n", False))
             elif role == "assistant":
-                text = SOR + "assistant" + EOR + content
-                for idx, tc in enumerate(m.get("tool_calls") or []):
-                    fn = tc["function"]
-                    if content or idx:
-                        text += "\n"
-                    text += (TC_OPEN + '\n{"name": "' + fn["name"] +
-                             '", "arguments": ' + _gov(fn["arguments"]) +
-                             "}\n" + TC_CLOSE)
-                text += EOT + "\n"
+                # The template prepends an empty <think></think> placeholder to
+                # assistant content that doesn't already carry think tags.
+                c = content
+                if '<think>' not in c and '</think>' not in c:
+                    c = '<think></think>' + c
+                text = IM_START + "assistant\n"
+                tcs = m.get("tool_calls") or []
+                if tcs:
+                    text += c.strip() + "\n"
+                    for tc in tcs:
+                        fn = tc.get("function", tc)
+                        text += TC_OPEN + "\n<function=" + fn["name"] + ">\n"
+                        for aname, aval in (fn.get("arguments") or {}).items():
+                            text += ("<parameter=" + aname + ">\n" + _go_arg(aval) +
+                                     "\n</parameter>\n")
+                        text += "</function>\n" + TC_CLOSE + "\n"
+                    text += IM_END + "\n"
+                else:
+                    text += c.strip() + IM_END + "\n"
                 segments.append((text, True))
                 i += 1
             else:
-                segments.append((SOR + role + EOR + content + EOT + "\n", False))
+                segments.append((IM_START + role + "\n" + content + IM_END + "\n", False))
                 i += 1
 
         # special tokens are atomic, so segment boundaries (always at one)

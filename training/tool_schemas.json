@@ -1366,6 +1366,90 @@
     {
       "type": "function",
       "function": {
+        "name": "slack",
+        "description": "{\"what\":\"query the user's Slack workspace\",\"how\":\"action picks the operation\",\"answer\":\"the returned result text\",\"actions\":{\"mentions\":\"search messages that @-mention the user\",\"search\":\"keyword search over messages\",\"channels\":\"list channels\",\"history\":\"recent messages in one channel\",\"send\":\"post a message\"}}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "mentions",
+                "search",
+                "channels",
+                "history",
+                "send"
+              ],
+              "description": "{\"what\":\"the operation\",\"vals\":\"mentions|search|channels|history|send\"}"
+            },
+            "query": {
+              "type": "string",
+              "description": "{\"what\":\"mentions/search: the search text\",\"mentions\":\"optional — omit to auto-search for <@SLACK_USER_ID>\",\"search\":\"required keyword\"}"
+            },
+            "channel": {
+              "type": "string",
+              "description": "{\"what\":\"history/send: the channel id or name (e.g. general or C0123ABC)\"}"
+            },
+            "limit": {
+              "type": "number",
+              "description": "{\"what\":\"history: max messages\",\"default\":20,\"max\":100}"
+            },
+            "text": {
+              "type": "string",
+              "description": "{\"what\":\"send: the message text to post\"}"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "trello",
+        "description": "{\"what\":\"query the user's Trello boards and cards\",\"how\":\"action picks the operation\",\"answer\":\"the returned result text\",\"actions\":{\"boards\":\"list the user's boards\",\"lists\":\"lists in one board\",\"cards\":\"cards in a list or board\",\"search\":\"search boards and cards\",\"get\":\"one card or board by id\"}}",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "boards",
+                "lists",
+                "cards",
+                "search",
+                "get"
+              ],
+              "description": "{\"what\":\"the operation\",\"vals\":\"boards|lists|cards|search|get\"}"
+            },
+            "board_id": {
+              "type": "string",
+              "description": "{\"what\":\"lists/cards: the board id\"}"
+            },
+            "list_id": {
+              "type": "string",
+              "description": "{\"what\":\"cards: the list id (cards in that list)\"}"
+            },
+            "id": {
+              "type": "string",
+              "description": "{\"what\":\"get: the card or board id\"}"
+            },
+            "query": {
+              "type": "string",
+              "description": "{\"what\":\"search: the search text\"}"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "vulkan",
         "description": "{\"delegate\":\"Vulkan\",\"does\":\"code, builds, tests, heavy bash, big-context work\",\"mode\":\"background\",\"returns\":\"job id; result → inbox\",\"urgent\":\"true = interrupt on arrival\"}",
         "parameters": {
@@ -1821,13 +1905,13 @@
       "type": "function",
       "function": {
         "name": "read_file",
-        "description": "{\"what\":\"read a workspace file\",\"path\":\"workspace-relative or absolute\"}",
+        "description": "{\"what\":\"read ANY file on disk\",\"path\":\"absolute path, ~/... (tilde expanded), or relative\"}",
         "parameters": {
           "type": "object",
           "properties": {
             "path": {
               "type": "string",
-              "description": "{\"what\":\"the file to read\",\"format\":\"workspace-relative or absolute path\"}"
+              "description": "{\"what\":\"the file to read\",\"format\":\"absolute path or ~/... (tilde is expanded); any location on disk, not limited to a workspace\"}"
             }
           },
           "required": [
@@ -1840,13 +1924,13 @@
       "type": "function",
       "function": {
         "name": "write_file",
-        "description": "{\"what\":\"write text to a workspace file\",\"overwrites\":\"the whole file\"}",
+        "description": "{\"what\":\"write text to a file at ANY path on disk\",\"overwrites\":\"the whole file\",\"creates\":\"parent directories as needed\"}",
         "parameters": {
           "type": "object",
           "properties": {
             "path": {
               "type": "string",
-              "description": "{\"what\":\"the file to write\",\"format\":\"workspace-relative or absolute path\",\"creates\":\"parent directories as needed\"}"
+              "description": "{\"what\":\"the file to write\",\"format\":\"absolute path or ~/... (tilde is expanded); any location on disk, not limited to a workspace\",\"creates\":\"parent directories as needed\"}"
             },
             "content": {
               "type": "string",
@@ -1864,13 +1948,13 @@
       "type": "function",
       "function": {
         "name": "list_file",
-        "description": "{\"what\":\"list entries in a workspace directory\",\"default\":\"workspace root\"}",
+        "description": "{\"what\":\"list the entries of ANY directory on disk\",\"use\":\"pass an absolute path or ~/... to count or enumerate the contents of any folder, e.g. ~/Documents/Projects\",\"default\":\"current dir\"}",
         "parameters": {
           "type": "object",
           "properties": {
             "path": {
               "type": "string",
-              "description": "{\"what\":\"the directory to list\",\"format\":\"workspace-relative or absolute path\",\"default\":\"workspace root\"}"
+              "description": "{\"what\":\"the directory to list\",\"format\":\"absolute path or ~/... (tilde is expanded); any directory on disk, not limited to a workspace\",\"default\":\"current dir\"}"
             }
           }
         }
