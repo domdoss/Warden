@@ -186,9 +186,6 @@ training/chatbot/logs/
 training/chatbot/bots/*/merged/
 training/chatbot/bots/*/lora/
 
-# Training checkpoints (optimizer/scheduler/rng state — regenerable, large)
-training/orchatlas-lora/checkpoint-*/
-
 # Local scratch / one-off artifacts — never commit
 backups/
 e2e-loop/

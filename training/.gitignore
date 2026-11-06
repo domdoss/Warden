@@ -6,6 +6,8 @@ Modelfile.*
 *-lora/*
 !toolcall-lora/**
 !orchatlas-lora/**
+# - per-run training checkpoints (optimizer/scheduler/rng state — large, regenerable)
+*-lora/checkpoint-*/
 *-lora-merged/
 # - training + dryfire logs
 *.log
