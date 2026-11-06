@@ -352,13 +352,16 @@ def main():
     # fp16 — RTX 5000 (Turing) has no native bf16, so use fp16 not bf16.
     # CUDA_VISIBLE_DEVICES (set at the top of this file) pins this process to
     # one GPU; under torchrun each rank trains its own copy.
+    # NO trust_remote_code — same granite-4.2-8b base as atlasorch.py, where the
+    # flag is load-bearing to omit: unsloth_compile_transformers opens with
+    # `if trust_remote_code and not unsloth_force_compile: return`, bailing out
+    # of ALL its compile patches (fuse_lm_head among them) and OOMing at step 0.
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model,
         max_seq_length=args.max_len or 6144,
         dtype=torch.float16,
         load_in_4bit=not args.no_4bit,
         full_finetuning=False,
-        trust_remote_code=True,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

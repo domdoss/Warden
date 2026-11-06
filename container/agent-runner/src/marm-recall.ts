@@ -168,3 +168,21 @@ export async function marmAutoRecall(userAsk: string): Promise<string> {
     return '';
   }
 }
+
+/**
+ * Whether an ask is worth a MARM auto-recall. True only when the ask names a
+ * specific entity (a capitalized word after the first — a project/person/file/
+ * product) or explicitly asks about the user's own past/decisions/preferences.
+ * False for small talk and self-contained questions, so recall does not inject
+ * stale facts into neutral asks (the 2026-10-23 regression). The gate is the
+ * whole point: recall on every turn is what resurrected stale facts; recall on
+ * nothing is why MARM "doesn't do a lot".
+ */
+export function shouldAutoRecall(ask: string): boolean {
+  const s = String(ask || '').trim();
+  if (s.length < MIN_QUERY_CHARS) return false;
+  const words = s.split(/\s+/).filter(Boolean);
+  const properNoun = words.slice(1).some((w) => /^[A-Z][a-zA-Z0-9._-]{2,}/.test(w));
+  if (properNoun) return true;
+  return /(remember|remind|decided|prefer|project|repo|company|account|tax|financ|told me|told you|where does|what did we)/i.test(s);
+}

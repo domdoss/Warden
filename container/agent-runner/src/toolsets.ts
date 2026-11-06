@@ -61,6 +61,12 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // friends are building and posts its own ideas/builds/questions. Included in
     // atlas-core so the seat's pool advertises the social surface explicitly.
     bbs:          { name: 'bbs',      tools: ['bbs_read','bbs_post','bbs_file_save','bbs_files','bbs_file_read'], tier: 'public' },
+    // Slack + Trello — external personal-assistant accounts (query, not owned by
+    // a sub-agent; the seat answers "did anyone @mention me?" / "is there a
+    // project?" directly). Tokens live in data/env/env (SLACK_BOT_TOKEN,
+    // SLACK_USER_ID, TRELLO_API_KEY, TRELLO_TOKEN).
+    slack:        { name: 'slack',    tools: ['slack'], tier: 'public' },
+    trello:       { name: 'trello',   tools: ['trello'], tier: 'public' },
     // desktop-vision rides WITH terminal (2026-09-19): terminal carries
     // desktop_click/desktop_type, and a seat that can click and type needs to
     // see the frame (runSubAgent drains captures into the next iteration) —

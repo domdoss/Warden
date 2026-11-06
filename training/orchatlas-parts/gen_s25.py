@@ -147,7 +147,7 @@ rows.append(row([
     asst("Found it — the report job was getting cut off by a stale timeout before it could finish writing, and nothing ever retried it. I've sent vulkan a corrected brief so it doesn't die mid-write again."),
 ]))
 
-# 11. Full chain — ask, artemis, short inbox nudge + read_job_result, concrete one-line defect fixed directly with Edit.
+# 11. Full chain — ask, artemis, short inbox nudge + read_job_result, concrete one-line defect fixed directly with read_file + write_file.
 rows.append(row([
     user("why did the weekly digest skill never fire this week"),
     call("artemis", {"task": "Find out why the weekly-report skill never ran automatically this week even though it's supposed to be on a schedule."}),
@@ -156,8 +156,10 @@ rows.append(row([
     user("[inbox] Artemis w8lm finished."),
     call("read_job_result", {"job_id": "artemis-w8lm"}),
     tool("read_job_result", "artemis-w8lm (artemis, done) — task: \"find out why the weekly-report skill never ran automatically this week\"\n\nWhat was asked: why the weekly-report skill never fired this week.\n1. The skill's SKILL.md at /home/dominic/Warden/data/skills/weekly-report/SKILL.md has its schedule field set to \"0 9 * * one\" — not a valid cron field, so the scheduler silently skipped it.\n2. No error was logged because the parse failure happens before the scheduler ever queues the run."),
-    call("Edit", {"file_path": "/home/dominic/Warden/data/skills/weekly-report/SKILL.md", "old_string": "0 9 * * one", "new_string": "0 9 * * 1"}),
-    tool("Edit", "Applied 1 edit to /home/dominic/Warden/data/skills/weekly-report/SKILL.md"),
+    call("read_file", {"path": "/home/dominic/Warden/data/skills/weekly-report/SKILL.md"}),
+    tool("read_file", "1 name: weekly-report\n2 schedule: 0 9 * * one\n3 description: Generate the weekly report"),
+    call("write_file", {"path": "/home/dominic/Warden/data/skills/weekly-report/SKILL.md", "content": "name: weekly-report\nschedule: 0 9 * * 1\ndescription: Generate the weekly report"}),
+    tool("write_file", "The file /home/dominic/Warden/data/skills/weekly-report/SKILL.md was written (3 lines)."),
     asst("Found it — the schedule field had an invalid cron value, so it never queued a run. Fixed the field directly; it'll fire on schedule now."),
 ]))
 

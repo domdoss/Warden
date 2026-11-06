@@ -27,7 +27,7 @@ import { CAPABILITY_BUILTINS } from './toolsets.js';
 import { askVisionModel, setVisionModelResolver } from './tools/vision-qa.js';
 import { TOOLSETS, resolveToolset, resolveMultipleToolsets } from './toolsets.js';
 import { writeIpcFile, waitForResult, cleanFilePath, log, IPC_DIR, TASKS_DIR, RESULTS_DIR } from './ipc-helpers.js';
-import { noteMarmActivity } from './marm-recall.js';
+import { noteMarmActivity, marmAutoRecall, shouldAutoRecall } from './marm-recall.js';
 import { hooks } from './hooks.js';
 import { extractKeywords, rankTools, buildRelevantPatternsSection } from './dynamic-selection.js';
 import { createProvider } from './providers/index.js';
@@ -979,7 +979,7 @@ const SUBAGENTS: SubAgentDef[] = [
             tools: 'each tool description is its instructions — read it and pick by intent; a capability you do not see listed is one call away: `list_skills`, then `activate_skill`',
             machine: {
                 live: 'a real person\'s live computer with their real accounts — look before you claim',
-                src: '/opt/Warden (capital W): src/ (host), container/agent-runner/ (agent), store/, data/, public/, eyes_ear/; dist/ is build output. Edit source, run `npm run build`, then `systemctl --user restart warden` to deploy',
+                src: process.cwd() + ' (this repo): src/ (host), container/agent-runner/ (agent), store/, data/, public/, eyes_ear/; dist/ is build output. Edit source, run `npm run build`, then restart the Warden service (dashboard Restart) to deploy',
                 user_files: '~/Warden — the user\'s own files, uploads and deliverables',
                 bash: 'persistent shared shell — `cd` holds across calls, so work from the right directory; absolute paths anywhere on the filesystem are available',
                 scheduling: 'the parent scheduler owns reminders and schedules — a task that says remind or schedule: gather the values and return them',
@@ -1019,7 +1019,7 @@ You are Vulkan. You write and change code. The task states what the user needs; 
 Your tools are source edits, builds and tests. Showing a result on screen is Warden's — report what you changed and let it be shown.
 
 # THE CODEBASE
-- Warden's source: \`/opt/Warden\` (capital W) — \`src/\` (host), \`container/agent-runner/src/\` (agent). \`dist/\` is built output.
+- Warden's source: \`${process.cwd()}\` (this repo) — \`src/\` (host), \`container/agent-runner/src/\` (agent). \`dist/\` is built output.
 - After a source change: \`npm run build\`, then \`systemctl --user restart warden\`. A change ships when the build is clean.
 - The user's own projects and deliverables: \`~/Warden\`.
 - Bash is a persistent shared shell; \`cd\` holds across calls.
@@ -1147,8 +1147,8 @@ OUTPUT
                 writes: 'your findings, plus one flag_training_error per fine-tunable failure',
             },
             evidence: {
-                db: '/opt/Warden/store/messages.db, read-only — sqlite3 "file:/opt/Warden/store/messages.db?mode=ro" "SELECT ..."; holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more; run .tables first, then .schema <table>; this file is the live one — the .db files under data/ are empty stubs',
-                logs: '/opt/Warden/logs/warden.log (stdout), /opt/Warden/logs/warden.error.log (stderr) — tail and grep for what the system did and when',
+                db: `${process.cwd()}/store/messages.db, read-only — sqlite3 "file:${process.cwd()}/store/messages.db?mode=ro" "SELECT ..."; holds chats, messages, projects, user_work_tasks, scheduled_tasks, task_run_logs, email_accounts and more; run .tables first, then .schema <table>; this file is the live one — the .db files under data/ are empty stubs`,
+                logs: `${process.cwd()}/logs/warden.log (stdout), ${process.cwd()}/logs/warden.error.log (stderr) — tail and grep for what the system did and when`,
                 bash_vocab: 'SELECT queries, .tables, .schema, tail, grep, cat, ls, date',
             },
             find: [
@@ -2045,6 +2045,15 @@ let drainedDigestJobIds: string[] = [];
 // When the right tool does not surface, fix the ranking signal, not the floor.
 const ATLAS_ALWAYS_INCLUDED_TOOLS = new Set<string>([
     'list_skills', 'activate_skill',
+    // The built-in file primitives are core personal-assistant capability —
+    // the seat must ALWAYS be able to read/write/list a file, not win a
+    // relevance tiebreak for it. list_file especially: it is the only directory
+    // lister, and when it lost the top-12 RAG tiebreak (all generic tools score
+    // equal) the seat kept read/write but had no way to enumerate a directory,
+    // so it refused filesystem-count tasks ("no directory-listing tool") instead
+    // of calling list_file. These are passive tools the model won't fire on a
+    // greeting, so the small-talk near-empty-menu safety is preserved.
+    'read_file', 'write_file', 'list_file',
 ]);
 const ATLAS_DYNAMIC_TOP_K = 12;
 
@@ -2851,6 +2860,39 @@ async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number |
     } catch { return undefined; }
 }
 
+// Per-model "supports thinking" flag, fetched once from Ollama /api/show's
+// top-level `capabilities` array (the same source ollama-native.ts reads).
+// Thinking must be a CAPABILITY decision, never a model-name guess:
+// qwen3-coder-next reports ['completion','tools'] with no 'thinking', so a
+// forced think:true is rejected 400 "does not support thinking" before the
+// model even loads — Vulkan was dead-on-arrival exactly this way (2026-11-06).
+// A model that doesn't advertise thinking gets think:false everywhere; a fetch
+// that fails also resolves to false, which is the safe default (think off
+// never 400s).
+const MODEL_THINKING_CACHE = new Map<string, boolean>();
+async function modelSupportsThinking(ollamaUrl: string, model: string): Promise<boolean> {
+    if (!model) return false;
+    const cached = MODEL_THINKING_CACHE.get(model);
+    if (cached !== undefined) return cached;
+    try {
+        const resp = await fetch(`${ollamaUrl}/api/show`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model }),
+            signal: AbortSignal.timeout(10_000),
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json() as any;
+        const caps = (data && (data.capabilities || data.model_info?.capabilities)) || [];
+        const supports = Array.isArray(caps) && caps.includes('thinking');
+        MODEL_THINKING_CACHE.set(model, supports);
+        return supports;
+    } catch { return false; }
+}
+function modelThinksCached(model: string): boolean {
+    return MODEL_THINKING_CACHE.get(model) === true;
+}
+
 // Per-agent num_ctx. Each agent has its own ctx override in settings (an env
 // var per agent); the caller passes it in explicitly — no model-identity
 // matching, no shared "toolcall" ctx, no `||` fallback chains. The override is
@@ -3598,6 +3640,9 @@ async function runSubAgentInner(
 
     // Warm the native-ctx cache from Ollama so getNumCtx can cap/serve it below.
     await fetchModelCtx(OLLAMA_URL, model);
+    // Also warm the thinking-capability cache so the turn's think decision
+    // (forcedFirstThink/subThink below) gates on capability, not a name guess.
+    await modelSupportsThinking(OLLAMA_URL, model);
 
     // NOTE: we deliberately do NOT evict the orchestrator model here. Evicting
     // the orchestrator to run a granite sub-agent forces it to RELOAD (~16s) on
@@ -3806,9 +3851,9 @@ async function runSubAgentInner(
             // ran no tools" twice in a row, 2026-09-18 14:09 and 14:11). The
             // flag was written for models that needed a planning nudge; granite
             // plans inside its normal turn and acts in the same one.
-            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && !GRANITE_MODEL_RE.test(model);
-            const subThink = forcedFirstThink || modelRequiresThink(model);
-            const chatResult = await provider.chatStream({
+            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && !GRANITE_MODEL_RE.test(model) && modelThinksCached(model);
+            let subThink = (forcedFirstThink || modelRequiresThink(model)) && modelThinksCached(model);
+            const subAgentChatBody = () => ({
                 model,
                 messages,
                 tools,
@@ -3823,7 +3868,24 @@ async function runSubAgentInner(
                 think: subThink,
                 ...(format !== undefined ? { format } : {}),
                 signal: silenceController.signal,
-            }, onChunk);
+            });
+            let chatResult: any;
+            try {
+                chatResult = await provider.chatStream(subAgentChatBody(), onChunk);
+            } catch (err: any) {
+                const msg = String(err?.message || err || '');
+                if (subThink && (msg.includes('does not support thinking') || msg.includes('Bad Request'))) {
+                    // The capability cache said "thinking", but Ollama rejected it —
+                    // record the true capability and retry once without think. This
+                    // is a cache correction, not a retry loop.
+                    log(`[${agentName}] ${model} rejected think:true — retrying without the think parameter`);
+                    MODEL_THINKING_CACHE.set(model, false);
+                    subThink = false;
+                    chatResult = await provider.chatStream(subAgentChatBody(), onChunk);
+                } else {
+                    throw err;
+                }
+            }
             clearTimeout(silenceTimer);
             if (stream.ticker) { clearInterval(stream.ticker); stream.ticker = null; }
 
@@ -4288,19 +4350,32 @@ async function runNativeOllama(input: ContainerInput) {
         // RAG gates the WHOLE menu. Core file/bash/meta tools, MARM and
         // default-provider MCP all compete on relevance like everything else —
         // nothing is exempt except what the user pinned (a pin is a deliberate
-        // "always show me this" of one or two tools, not a bucket). A greeting
-        // or small-talk turn matches no tool description, so it ranks nothing
-        // and the seat gets a near-empty menu: an 8B that sees only its
-        // bookkeeping tools has no unrelated delegate/browser tool to reach
-        // for (2026-10-18 — "hello" was delegating to Vulkan and editing the
-        // navbar, unprompted).
-        const alwaysIn = skillTools.filter((t) => isPinnedTool(nameOf(t)));
+        // "always show me this" of one or two tools, not a bucket) AND the
+        // built-in file primitives below. A greeting or small-talk turn matches
+        // no tool description, so it ranks nothing and the seat gets a near-
+        // empty menu: an 8B that sees only its bookkeeping tools has no
+        // unrelated delegate/browser tool to reach for (2026-10-18 — "hello"
+        // was delegating to Vulkan and editing the navbar, unprompted).
+        //
+        // EXCEPTION — the built-in read_file/write_file/list_file live in the
+        // always-active 'core' skill (skillTools), NOT in activeToolDefs, so
+        // the ALWAYS_IN_CORE filter on activeFiltered (below) never reaches
+        // them. Left to RAG, list_file lost the top-12 tiebreak (every generic
+        // tool scores 4) on turns where MCP filesystem read/write ranked in,
+        // leaving the seat with read/write but NO directory lister — so it
+        // refused filesystem-count tasks ("no directory-listing tool") instead
+        // of calling list_file (2026-10-23, probe 12 across v9d-v9i). Force-
+        // include them from skillTools here. They are passive tools the model
+        // won't fire on a greeting, so the small-talk near-empty-menu safety
+        // is preserved.
+        const ALWAYS_IN_FILE = new Set(['read_file', 'write_file', 'list_file']);
+        const alwaysIn = skillTools.filter((t) => isPinnedTool(nameOf(t)) || ALWAYS_IN_FILE.has(nameOf(t)));
         // Discovery + delegation bookkeeping stay unconditional: the model
         // cannot ask for what it can no longer see (list_skills/activate_skill
         // are the escape hatch to load a skill/MCP server on demand), and a
         // delegated job needs its result reader (read_job_result) and failure
         // reporter (report_task_failure).
-        const ALWAYS_IN_CORE = new Set(['list_skills', 'activate_skill', 'read_job_result', 'report_task_failure']);
+        const ALWAYS_IN_CORE = new Set(['list_skills', 'activate_skill', 'read_job_result', 'report_task_failure', 'read_file', 'write_file', 'list_file']);
         const alwaysInCore = activeFiltered.filter((t) => {
             const n = nameOf(t);
             return ALWAYS_IN_CORE.has(n) || isPinnedTool(n);
@@ -4475,7 +4550,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n{"long_term_recall":{"core":"durable facts live in MARM memory — pull them on demand with mcp__marm__marm_smart_recall when the ask needs past context; memory is never auto-injected into a turn","deep_dig":"mcp__marm__marm_smart_recall (that exact name) — semantic search over facts the memory system already holds","log_new":"only when the user asked you to remember it, or you asked first and they agreed → mcp__marm__marm_log_entry; never log a fact automatically","code_map":"this codebase (/opt/Warden) is indexed in the code graph and re-indexes automatically after edits — when working on Warden's own code: mcp__marm__marm_code_context for the symbols and source a task needs, mcp__marm__marm_graph_trace to follow a call path, mcp__marm__marm_graph_impact to see what a change touches before making it"}}\n`
+    ? `\n{"long_term_recall":{"when":"the ask is about the user's own projects, company, machine, files, accounts, or past work, or names a specific project/person/file → call mcp__marm__marm_smart_recall with search_all:true and include_logs:true, then answer from what it returns","skip":"self-contained questions (math, definitions, general knowledge) → answer directly, no recall call","remember":"when the user asks you to remember something → mcp__marm__marm_log_entry, once per fact","code":"working on Warden's own code → mcp__marm__marm_code_context for symbols, mcp__marm__marm_graph_trace for a call path, mcp__marm__marm_graph_impact before a change"}}\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -4606,7 +4681,13 @@ const marmRecallSection = marmEnabled
               // answered with a confabulated dashboard URL + node port + a fake
               // read_job_result id. Map the words to the tools, answer from the
               // tool result, and forbid inventing an address.
-              + ',"mesh":{"rule":"BBS, BotNet, your node, or friends mentioned → bbs_read or friend_list first, then answer from what they return","address":"your only real address is what bbs_read and friend_list report — there is no public dashboard URL, hostname, or port to give"}}\n';
+              + ',"mesh":{"rule":"BBS, BotNet, your node, or friends mentioned → bbs_read or friend_list first, then answer from what they return","address":"your only real address is what bbs_read and friend_list report — there is no public dashboard URL, hostname, or port to give"}}'
+              // Answer scope (2026-10-23 e2e): the flash seat was resurrecting
+              // stale prior-turn content — bessy project blurbs, an AiOn tax PDF,
+              // Desktop file listings — into neutral questions ("name a benefit
+              // of exercise" got a bessy description). The verbatim tail carries
+              // old topics; without a guardrail the model volunteers them.
+              + ',"scope":{"rule":"answer ONLY the current question — a direct question gets a direct answer with no preamble about other things","no_leak":"if this question does not name a project, file, company, or topic, do not mention one. Stale content from earlier turns is NOT license to bring it up — ignore it unless this specific question asks about it","no_volunteer":"never surface files you once listed, topics you once discussed, or entities from other threads unless the current ask directly needs them","no_echo":"never repeat, copy, or paraphrase an answer from earlier in this conversation — each question is new; read it and answer it fresh from the current ask alone","fs":"you ALWAYS have read_file, write_file, and list_file. list_file lists the entries of ANY directory (pass its path, e.g. ~/Documents/Projects) — use it to count or enumerate directories, never claim you cannot list a directory. write_file creates a file (and its parent dirs); read_file reads it back to verify. For any create/write/count/list task: call list_file and/or write_file and/or read_file and report the real result — do NOT say you have no shell or cannot do it, and do NOT ask the user to run it for you"}}\n';
         return (force ? force + '\n\n' : '') + atlasPrompt
                 // The roster is GENERATED from SUBAGENTS (crewBlock), not typed
                 // out here: a hand-written list goes stale the moment a seat is
@@ -4739,6 +4820,7 @@ const marmRecallSection = marmEnabled
         // the default when no override is set). Cheap: cached per model after the
         // first turn; a dashboard model change just fetches the new model once.
         await fetchModelCtx(OLLAMA_URL, model);
+        await modelSupportsThinking(OLLAMA_URL, model);
         // No per-turn flow-control reminder — the model replies when done and emits a
         // tool call when it needs one. (Completion guidance lives in the system prompt.)
         // The parent composes the prompt with <chat_history> baked in. The
@@ -4765,10 +4847,15 @@ const marmRecallSection = marmEnabled
             }
         }
         isFirstUserTurn = false;
-        // Memory is NOT auto-injected per turn (Dockbox parity): auto-injecting
-        // weeks-old MEMORY.md + MARM recall on every turn is what made the seat
-        // answer questions with stale facts. Long-term recall is on demand, via
-        // the mcp__marm__* tools (see long_term_recall in the system prompt).
+        // Auto-recall MARM memory, gated to entity-naming asks (NOT every turn
+        // — unconditional per-turn injection is what resurrected stale facts,
+        // 2026-10-23). Only an ask that names a specific entity or asks about
+        // the user's own past/decisions pays the recall call; fail-open.
+        let recallSection = '';
+        if (marmEnabled && shouldAutoRecall(cleanedPrompt)) {
+            recallSection = await marmAutoRecall(cleanedPrompt);
+            if (recallSection) log(`[marm] auto-recalled memory (${recallSection.length} chars) for this ask`);
+        }
         // The LAZY default browser provider: dial it EVERY turn, before the
         // tool list is built — the default app IS the pipeline, and the only
         // alternative is the stock built-in fallback, which must never
@@ -4791,7 +4878,7 @@ const marmRecallSection = marmEnabled
                 log(`[lazy-dial] ${lazyBrowserServer} unreachable (${err?.message || err}) — retrying next turn`);
             }
         }
-        const userMsg: any = { role: 'user', content: cleanedPrompt.trim() };
+        const userMsg: any = { role: 'user', content: (recallSection ? recallSection + '\n\n' : '') + cleanedPrompt.trim() };
         // Attach any pending images from Read tool (vision) — but only when the
         // orchestrator's context can hold them; an over-limit attach 400s the
         // next request and kills the turn (same defect as the sub-agent drain).
@@ -4834,6 +4921,7 @@ const marmRecallSection = marmEnabled
         let pastedCallRuns = 0;            // #2b: pasted <function=…> blocks recovered as real calls
         let delegatedThisTurn = false;     // #2: a delegate ran this turn — closing prose after a hand-off is a completion announcement, not unfulfilled intent (nudging it re-dispatches the same job)
         let lastToolBatchWasError = false; // #2: the most recent tool batch returned only errors — a following no-tool-call turn is the terminal REPORT of that failure, and nudging it back into action produces forbidden retries and delegations (2026-10-08 browser-offline incident)
+        let fsRefusalNudgeUsed = false;    // #2c: a flash model sometimes refuses a filesystem ask ("I have no directory-listing tool"/"no shell") even though list_file/write_file/read_file are in its menu — re-prompt once naming the exact tool instead of accepting the refusal
         // Names of delegates actually invoked via a tool_call this turn. Used by
         // the narrated-delegation guard to distinguish a genuine "Atlas is doing
         // X now" promise (name mentioned, no call) from "Atlas reported X"
@@ -4943,8 +5031,8 @@ const marmRecallSection = marmEnabled
                     // fresh runner embeds <chat_history>, and any old playback word
                     // in it mis-flagged the turn (same defect as the stand-down
                     // classifier, 2026-09-21).
-                    requestBody.think = thinkingAlways || modelRequiresThink(model)
-                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk) && !GRANITE_MODEL_RE.test(model));
+                    requestBody.think = modelThinksCached(model) && (thinkingAlways || modelRequiresThink(model)
+                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk) && !GRANITE_MODEL_RE.test(model)));
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
@@ -5491,6 +5579,42 @@ const marmRecallSection = marmEnabled
                         continue;
                     }
                 }
+                // ─── Filesystem-refusal retry guard (#2c) ───────────────
+                // A cornered flash model sometimes refuses a filesystem task —
+                // "I have no directory-listing tool", "I can't count the
+                // directories", "no shell", "give me the count / enable a
+                // listing tool" — even though list_file/write_file/read_file
+                // are in its tool menu THIS turn. It collapses list_file into
+                // "filesystem read/write" and gives up instead of calling it.
+                // The system-prompt "fs" nudge and the tool-description rewrite
+                // both missed on observed turns (probe 12 refused across v9d/
+                // v9e/v9f/v9g), so catch it here at the no-tool-call exit: if
+                // the final answer is a refusal on a filesystem ask and the fs
+                // tools ARE available, inject ONE firm corrective nudge naming
+                // the exact tool and re-run the model — never accept a refusal
+                // to use a tool the seat actually has.
+                if (!fsRefusalNudgeUsed && historyContent && !delegatedThisTurn && !lastToolBatchWasError) {
+                    const fsAsk = /\b(?:count|list|enumerate|how many|director(?:y|ies)|files|write|create|make a file|read|path)\b/i.test(lastUserAsk || '');
+                    const refusal = /\b(?:i can'?t|cannot|can not|no tool|i have no|don'?t have|have no (?:directory|listing|shell|tool)|unable to|won'?t|give me|enable a|no (?:directory-listing|listing|shell))\b/i.test(historyContent);
+                    if (fsAsk && refusal) {
+                        const names = new Set(mergeSkillTools().map((t: any) => String(t?.function?.name || '')));
+                        const hasList = names.has('list_file');
+                        const hasWrite = names.has('write_file');
+                        const hasRead = names.has('read_file');
+                        if (hasList || hasWrite || hasRead) {
+                            fsRefusalNudgeUsed = true;
+                            const which = [
+                                hasList && 'list_file (lists the entries of ANY directory — pass its path, e.g. ~/Documents/Projects; use it to count or enumerate directories)',
+                                hasWrite && 'write_file (creates a file at ANY path and its parent dirs)',
+                                hasRead && 'read_file (reads a file back to verify)',
+                            ].filter(Boolean).join('; ');
+                            log(`[fs-refusal-guard] model refused a filesystem ask without using its fs tools — re-prompting once (list_file=${hasList} write_file=${hasWrite} read_file=${hasRead})`);
+                            appendStatus({ phase: 'thinking', label: 'Filesystem refusal caught — re-prompting with tool reminder' });
+                            messages.push({ role: 'user', content: `You DO have filesystem tools this turn: ${which}. Do NOT claim you have no directory-listing tool, no shell, or that you cannot do it — you can. Use these tools NOW to perform the requested filesystem task (list the directory / write the file / read it back), then report the real result. Do not refuse, do not ask me to do it, and do not write a guessed value.` });
+                            continue;
+                        }
+                    }
+                }
                 finalContent = historyContent;
                 finalThinking += (finalThinking && fullThinking ? '\n' : '') + fullThinking;
                 break;
@@ -5516,7 +5640,7 @@ const marmRecallSection = marmEnabled
                             if (trimmedRetry !== messages) { messages.length = 0; messages.push(...trimmedRetry); }
                             const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: getNumCtx(model, seatCtxOverride(model)), ...graniteSampling(model) } };
                             if (showThinking) {
-                                retryBody.think = thinkingAlways || toolIteration <= 1 || modelRequiresThink(model);
+                                retryBody.think = modelThinksCached(model) && (thinkingAlways || toolIteration <= 1 || modelRequiresThink(model));
                             } else {
                                 retryBody.think = false;
                             }
@@ -5650,7 +5774,7 @@ const marmRecallSection = marmEnabled
                     options: { num_predict: maxOutput('oneshot'), temperature: 0.3, num_ctx: getNumCtx(model, seatCtxOverride(model)), ...graniteSampling(model) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
-                if (modelRequiresThink(model)) forcedBody.think = true; else forcedBody.think = false;
+                forcedBody.think = modelThinksCached(model) && modelRequiresThink(model);
                 Object.assign(forcedBody.options, qwenSampling(model, !!forcedBody.think));
                 const forcedController = new AbortController();
                 const forcedResp = await fetch(CHAT_URL, {
@@ -5783,7 +5907,11 @@ const marmRecallSection = marmEnabled
             log(`WARNING: degenerate word-mash output suppressed (${outputContent.length} chars, model=${ATLAS_MODEL}). First 200 chars: ${outputContent.slice(0, 200)}`);
             outputContent = 'Something went wrong generating my answer on this turn — the model produced garbled output. Please send that request again.';
         }
-        log(`About to writeOutput. outputContent: "${(outputContent || '').slice(0, 100)}"`)
+        // Log the FULL reply (capped at 8000 only as a pathological guard), not
+        // the first 100 chars. The truncated log made stale-reply debugging
+        // blind — the e2e harness also sequences turns on this line and needs
+        // the complete content to grade the reply.
+        log(`About to writeOutput. outputContent: "${(outputContent || '').slice(0, 8000)}"`)
         if (!errorOutputWritten) {
             // `spontaneous:true` tells the host this OUTPUT came from an
             // inbox-digest turn (no user message triggered it). The host
@@ -6821,6 +6949,26 @@ async function main() {
         // after writeOutput because there are no active handles on the event loop.
         // Cleared after runNativeOllama returns so the process can exit normally.
         (globalThis as any)._keepAlive = setInterval(() => {}, 60000);
+        // Orphan guard (2026-10-23 e2e): when the host restarts, launchd reaps
+        // the host but NOT this runner grandchild — it gets reparented to pid 1
+        // and keeps polling the shared IPC dir. Stale orphaned runners then race
+        // the NEW host's own child for IPC messages: an orphan drains a message,
+        // runs the turn, but its writeOutput/callbacks go to the dead parent and
+        // the reply is lost — the seat appears to hang. Watch the ORIGINAL parent
+        // pid (process.ppid becomes 1 after reparenting, so we must capture it
+        // before that) and exit as soon as that host process is gone. This is the
+        // root cause of the persistent-child "IPC deadlock" the e2e loop kept
+        // hitting.
+        const originalParentPid = process.ppid;
+        (globalThis as any)._parentWatch = setInterval(() => {
+            try {
+                process.kill(originalParentPid, 0); // throws if the pid is gone
+            } catch {
+                log(`Parent host (pid ${originalParentPid}) is gone — exiting orphaned runner to avoid racing a new host's IPC child.`);
+                try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+                process.exit(0);
+            }
+        }, 2000);
     }
     catch (err) {
         writeOutput({

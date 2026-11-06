@@ -52,9 +52,9 @@ if (catalogs.length) {
   const catalogFile = catalogs[catalogs.length - 1];
   const catalog = JSON.parse(readFileSync(path.join(CATALOGS_DIR, catalogFile), 'utf8'));
   failures.push(...(catalog.failures || []).filter(
-    (f) => f.classification && f.classification.failure_class && !['not_a_failure', 'unclassified'].includes(f.classification.failure_class),
+    (f) => f.classification && f.classification.failure_class && !['not_a_failure', 'unclassified', 'infra_error'].includes(f.classification.failure_class),
   ));
-  log(`catalog ${catalogFile}: ${catalog.failures?.length || 0} failures, ${failures.length} trainable (skipping not_a_failure/unclassified)`);
+  log(`catalog ${catalogFile}: ${catalog.failures?.length || 0} failures, ${failures.length} trainable (skipping not_a_failure/unclassified/infra_error)`);
 } else {
   log('no audit catalog yet — using Artemis flags only');
 }

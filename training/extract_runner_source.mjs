@@ -233,6 +233,17 @@ export function extractFewModeSystemPrompt(src = runnerSrc()) {
   for (let i = bodyStart; i < src.length; i++) {
     const ch = src[i];
     if (inStr) { if (ch === '\\') i++; else if (ch === "'") inStr = false; continue; }
+    if (ch === '/') {
+      // Skip comments — a ';' inside a // or /* */ comment must not be read
+      // as the statement terminator (a prose "old topics;" once did exactly
+      // that and truncated modeBlock mid-comment).
+      if (src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+      if (src[i + 1] === '*') {
+        i += 2;
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+        i++; continue;
+      }
+    }
     if (ch === "'") { inStr = true; continue; }
     if (ch === ';') { end = i; break; }
   }

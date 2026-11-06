@@ -59,6 +59,7 @@ if (rows.length === 0) throw new Error('input corpus is empty');
 const SYSTEM = rows[0].messages[0].content;
 const TOOLS = rows[0].tools;
 if (!Array.isArray(TOOLS) || TOOLS.length === 0) throw new Error('input rows carry no tools array');
+const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.function.name, t]));
 
 function scrubCaptain(row) {
     const fix = (s) => s
@@ -84,6 +85,19 @@ function scrubCaptain(row) {
 for (const r of rows) scrubCaptain(r);
 
 const hasCalls = (r) => r.messages.some((m) => Array.isArray(m.tool_calls) && m.tool_calls.length > 0);
+// Per-row tools: a prose/greeting row carries no tools (the seat's RAG tool
+// selection ranks 0 tools for it at inference), and a tool row carries only the
+// schemas its calls actually exercise. Stamping all 76 on every row made each
+// row ~15.7k tokens and taught the model to reach for a tool on a bare "hey".
+function exercisedTools(row) {
+    const names = new Set();
+    for (const m of row.messages) {
+        for (const tc of m.tool_calls || []) {
+            if (tc?.function?.name) names.add(tc.function.name);
+        }
+    }
+    return [...names].map((n) => TOOL_BY_NAME.get(n)).filter(Boolean);
+}
 // Tool results a live tool can no longer produce teach the wrong expectation:
 // the youtube tool falls back to its full result pool instead of saying
 // "recently played", and the seat then reports an exhausted artist that isn't.
@@ -348,20 +362,28 @@ const CHAT = {
         count: 28,
     },
     corrections: {
-        asks: ["that's wrong", "you're repeating yourself", 'stop asking me questions', 'just answer',
-            "you're being weird", "that's not what I asked", 'no, the other one', 'you made that up',
-            "don't do that again", 'that was slow', "you're overthinking it", 'just say yes or no',
-            'stop explaining', "you're arguing with me", 'I already said that', 'you keep doing that',
-            'be normal', 'talk like a person', 'why are you like this', "you're confusing me",
-            'that answer made no sense', 'try again', 'no tools, just talk', 'answer the question',
-            'keep it short', "don't guess", 'say it plainly', 'too wordy'],
-        replies: ['Fair — my mistake.', "You're right, that was off.", 'Got it — straight answer from here.',
-            'Okay. Short version: no.', 'That was a bad answer.', "I'll keep it plain.", "No argument — you asked, I'll answer.",
-            'Dropping the extra.', 'My fault.', "I'll stop doing that.", 'Plainly: I was wrong.',
-            "Right. What do you want me to do?", 'Understood — one line.', "I'll say it straight.",
-            "Didn't mean to. I'll answer the question.", 'Fair enough.', "I'll keep it to the point.",
-            'Noted — no guessing.', "You're right to call that out."],
-        count: 28,
+        // Aligned and positive-only. The bad-behaviour asks ("no tools, just
+        // talk", "don't guess", "you made that up", "stop explaining") seeded
+        // the exact self-instructions the model then produced, and the old
+        // random pairing once answered "just answer" with "What do you want me
+        // to do?". Each ask here gets a direct, compliant reply.
+        asks: ["that's wrong", 'no, the other one', 'try again', 'keep it short',
+            'too wordy', 'say it plainly', "you're repeating yourself",
+            "that's not what I asked", 'say it again', 'just the facts'],
+        aligned: true,
+        replies: [
+            "Fair — my mistake. Let me redo that.",
+            'Got it — switching to the other one.',
+            'Sure, here it is again.',
+            'Understood — keeping it to one line.',
+            'Dropping the extra and getting to the point.',
+            'Plainly, then.',
+            "My fault — I'll say it once.",
+            "You're right. Here's the answer you actually asked for.",
+            'Here it is again.',
+            'Just the facts.',
+        ],
+        count: 10,
     },
     jokes: {
         asks: ['tell me a joke', 'say something funny', 'make me laugh', 'got any jokes?',
@@ -539,14 +561,23 @@ for (const r of out) {
     seen.add(key);
     finalRows.push(r);
 }
-// Every row must carry the tools array and a system prompt, and every tool
-// call must still have its result(s) in order (sampling only drops whole rows).
+// Stamp each row with only the schemas its calls exercise (prose rows → none).
+for (const r of finalRows) r.tools = exercisedTools(r);
+// Every row must carry the tools array and a system prompt, every tool call
+// must have its schema present, and every call must still have its result(s)
+// in order (sampling only drops whole rows).
 for (const [i, r] of finalRows.entries()) {
     if (r.messages[0]?.role !== 'system') throw new Error(`row ${i}: missing system message`);
-    if (!Array.isArray(r.tools) || r.tools.length === 0) throw new Error(`row ${i}: missing tools`);
+    if (!Array.isArray(r.tools)) throw new Error(`row ${i}: missing tools array`);
+    const present = new Set(r.tools.map((t) => t?.function?.name));
     let pending = 0;
     for (const m of r.messages) {
-        if (m.role === 'assistant' && m.tool_calls?.length) pending += m.tool_calls.length;
+        if (m.role === 'assistant' && m.tool_calls?.length) {
+            for (const tc of m.tool_calls) {
+                if (!present.has(tc?.function?.name)) throw new Error(`row ${i}: call ${tc?.function?.name} has no schema`);
+                pending += 1;
+            }
+        }
         if (m.role === 'tool') pending = Math.max(0, pending - 1);
     }
     if (pending !== 0) throw new Error(`row ${i}: ${pending} unanswered tool call(s)`);

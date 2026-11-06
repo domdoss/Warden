@@ -250,10 +250,10 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'read_file',
-        description: '{"what":"read a workspace file","path":"workspace-relative or absolute"}',
+        description: '{"what":"read ANY file on disk","path":"absolute path, ~/... (tilde expanded), or relative"}',
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string', description: '{"what":"the file to read","format":"workspace-relative or absolute path"}' } },
+          properties: { path: { type: 'string', description: '{"what":"the file to read","format":"absolute path or ~/... (tilde is expanded); any location on disk, not limited to a workspace"}' } },
           required: ['path'],
         },
       },
@@ -262,11 +262,11 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'write_file',
-        description: '{"what":"write text to a workspace file","overwrites":"the whole file"}',
+        description: '{"what":"write text to a file at ANY path on disk","overwrites":"the whole file","creates":"parent directories as needed"}',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: '{"what":"the file to write","format":"workspace-relative or absolute path","creates":"parent directories as needed"}' },
+            path: { type: 'string', description: '{"what":"the file to write","format":"absolute path or ~/... (tilde is expanded); any location on disk, not limited to a workspace","creates":"parent directories as needed"}' },
             content: { type: 'string', description: '{"what":"the full new file contents","note":"this replaces the whole file"}' },
           },
           required: ['path', 'content'],
@@ -277,10 +277,10 @@ export function buildAlwaysOnTools(): Tool[] {
       type: 'function',
       function: {
         name: 'list_file',
-        description: '{"what":"list entries in a workspace directory","default":"workspace root"}',
+        description: '{"what":"list the entries of ANY directory on disk","use":"pass an absolute path or ~/... to count or enumerate the contents of any folder, e.g. ~/Documents/Projects","default":"current dir"}',
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string', description: '{"what":"the directory to list","format":"workspace-relative or absolute path","default":"workspace root"}' } },
+          properties: { path: { type: 'string', description: '{"what":"the directory to list","format":"absolute path or ~/... (tilde is expanded); any directory on disk, not limited to a workspace","default":"current dir"}' } },
         },
       },
     },
