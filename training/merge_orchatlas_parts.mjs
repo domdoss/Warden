@@ -47,6 +47,7 @@ for (const [name, r] of Object.entries(ROLES)) {
     throw new Error(`tool_schemas.json is missing the ${name} toolset — run node dump_tool_schemas.mjs first.`);
   }
   r.toolNames = new Set(r.tools.map((t) => t.function.name));
+  r.schemas = new Map(r.tools.map((t) => [t.function.name, t.function]));
 }
 
 const ANCHOR = 'Current local time is 2026-09-18T12:05:00 (timezone America/Vancouver).';
@@ -147,6 +148,23 @@ for (const f of files) {
           if (n === 'atlas') errors.push(`${where}: delegates to atlas (the seat IS atlas — it cannot call itself)`);
           if (typeof tc.function?.arguments !== 'object' || tc.function.arguments === null) {
             errors.push(`${where}: arguments not an object (${n})`);
+          } else if (n) {
+            // Validate the arguments against the LIVE tool schema (same source
+            // as the served tool): required fields present, enum values legal.
+            // Drifted arg names/enums are exactly what a stale hand-written row
+            // trains into the seat, so this fails loudly instead of silently.
+            const schema = role.schemas.get(n)?.parameters;
+            if (schema && typeof schema === 'object') {
+              const { properties = {}, required = [] } = schema;
+              for (const req of required) {
+                if (!(req in tc.function.arguments)) errors.push(`${where}: "${n}" missing required arg "${req}"`);
+              }
+              for (const [k, v] of Object.entries(properties)) {
+                if (Array.isArray(v.enum) && k in tc.function.arguments && !v.enum.includes(tc.function.arguments[k])) {
+                  errors.push(`${where}: "${n}" arg "${k}"=${JSON.stringify(tc.function.arguments[k])} not in enum [${v.enum.join(', ')}]`);
+                }
+              }
+            }
           }
         }
       }
