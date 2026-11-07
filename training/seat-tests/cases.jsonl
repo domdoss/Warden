@@ -1,0 +1,22 @@
+# seat test corpus — one JSON object per line. `#` lines are comments.
+# Schema: id, category, ask, rank{ want, above } (Layer A), expect (Layer B tool
+# call or {noTool,replyIncludes}), toolResult (canned result fed back to check the
+# reply), reply{ require, forbid }, fix (train | code | investigate).
+
+# ---- media routing: referential "play that X" → youtube (the 2026-11-07 bug) --
+{"id":"play-that-dark-cyberpunk","category":"media-routing","ask":"play that dark cyberpunk mix","rank":{"want":["youtube"],"above":["mcp__marm__marm_smart_recall","open_app"]},"expect":{"name":"youtube","args":{"action":"play","query":"dark cyberpunk mix"}},"toolResult":"Playing: NIGHT PROTOCOL | Dark Cyberpunk Music\nhttps://www.youtube.com/watch?v=ABCDEFGHIJK","reply":{"require":["playing"],"forbid":["MARM got upgraded","lost it","don't remember","can't find"]},"fix":"train"}
+{"id":"play-that-lofi","category":"media-routing","ask":"put that lofi mix back on","rank":{"want":["youtube"],"above":["mcp__marm__marm_smart_recall"]},"expect":{"name":"youtube","args":{"action":"play","query":"lofi mix"}},"toolResult":"Playing: Lofi Hip Hop Mix — Beats to Study/Relax To\nhttps://www.youtube.com/watch?v=jfKfPfyJRdk","reply":{"require":["back on"],"forbid":["MARM got upgraded","lost it","don't remember"]},"fix":"train"}
+{"id":"play-that-ambient","category":"media-routing","ask":"play that ambient thing from earlier","rank":{"want":["youtube"],"above":["mcp__marm__marm_smart_recall"]},"expect":{"name":"youtube","args":{"action":"play","query":"ambient music"}},"toolResult":"Playing: Ambient Space Music for Sleep & Focus\nhttps://www.youtube.com/watch?v=8TDcGYmQdLM","reply":{"require":["ambient"],"forbid":["MARM got upgraded","lost it","don't remember"]},"fix":"train"}
+{"id":"play-direct","category":"media-routing","ask":"play some synthwave","rank":{"want":["youtube"],"above":["mcp__marm__marm_smart_recall"]},"expect":{"name":"youtube","args":{"action":"play","query":"synthwave"}},"toolResult":"Playing: Synthwave Mix — Retro Future Drive\nhttps://www.youtube.com/watch?v=LMNOPQRSTUV","reply":{"require":["synthwave"],"forbid":["MARM got upgraded","lost it","don't remember"]},"fix":"train"}
+
+# ---- recall: "remember/find/where did I put X" → marm_smart_recall (fix=code: shouldAutoRecall + always-in) ----
+{"id":"remember-vendor","category":"recall","ask":"what did we decide about the vendor renewal?","recall":true,"expect":{"name":"mcp__marm__marm_smart_recall","args":{"query":"vendor renewal"}},"toolResult":"1. [0.92] Vendor renewal — Meridian Tools approved at the enterprise tier; do not downgrade. Priya owns signing it, deadline Sep 30.","reply":{"require":["meridian"],"forbid":["don't remember","i don't know","no record"]},"fix":"train"}
+{"id":"find-garage-guy","category":"recall","ask":"do you remember the garage door guy's number","recall":true,"expect":{"name":"mcp__marm__marm_smart_recall","args":{"query":"garage door"}},"toolResult":"1. [0.89] Garage door repair — call Mark (604-555-0132) when the opener sticks.","reply":{"require":["mark"],"forbid":["don't remember","i don't know"]},"fix":"train"}
+{"id":"find-insurance-policy","category":"recall","ask":"where did I put the insurance policy","recall":true,"expect":{"name":"mcp__marm__marm_smart_recall","args":{"query":"insurance policy"}},"toolResult":"1. [0.88] Insurance policy — scanned into ~/Warden/documents/insurance-policy.pdf.","reply":{"require":["insurance-policy.pdf"],"forbid":["don't remember","i don't know"]},"fix":"train"}
+
+# ---- work task / project routing → project (not iris) ------------------------
+{"id":"add-work-task","category":"project-routing","ask":"add a work task to review the quarterly budget report","rank":{"want":["project"],"above":["iris"]},"expect":{"name":"project","args":{"kind":"task","action":"create","title":"quarterly budget"}},"toolResult":"Work task created: t-251 \"Review the quarterly budget report\" (Personal)","reply":{"require":["t-251"],"forbid":[]},"fix":"train"}
+
+# ---- no-tool: just answer, no call -------------------------------------------
+{"id":"greeting","category":"no-tool","ask":"hello","expect":{"noTool":true,"replyIncludes":"hello"},"reply":{"require":[],"forbid":[]},"fix":"train"}
+{"id":"what-can-you-do","category":"no-tool","ask":"what can you help me with","expect":{"noTool":true},"reply":{"require":[],"forbid":[]},"fix":"train"}
