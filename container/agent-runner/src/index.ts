@@ -4333,7 +4333,21 @@ async function runNativeOllama(input: ContainerInput) {
         // won't fire on a greeting, so the small-talk near-empty-menu safety
         // is preserved.
         const ALWAYS_IN_FILE = new Set(['read_file', 'write_file', 'list_file']);
-        const alwaysIn = skillTools.filter((t) => isPinnedTool(nameOf(t)) || ALWAYS_IN_FILE.has(nameOf(t)));
+        // MARM recall is a core recall capability the RAG ranker structurally
+        // cannot surface: its live description ("Recall memories by semantic
+        // similarity…") carries none of the words people actually say
+        // ("remember", "where did I put", "what did we decide"), so it scores 0
+        // for recall asks and the seat — which the routing prompt tells to call
+        // mcp__marm__marm_smart_recall for recall — is left with no way to
+        // recall (2026-11-07). Force it in only when the ask is recall-shaped
+        // (reuse shouldAutoRecall), so the greeting near-empty-menu safety is
+        // untouched. If marm is enabled-but-down the name simply isn't in
+        // skillTools, so this filter is a no-op.
+        const recallWanted = marmEnabled && shouldAutoRecall(lastUserText);
+        const alwaysIn = skillTools.filter((t) => {
+            const n = nameOf(t);
+            return isPinnedTool(n) || ALWAYS_IN_FILE.has(n) || (recallWanted && n === 'mcp__marm__marm_smart_recall');
+        });
         // Discovery + delegation bookkeeping stay unconditional: the model
         // cannot ask for what it can no longer see (list_skills/activate_skill
         // are the escape hatch to load a skill/MCP server on demand), and a
