@@ -184,5 +184,11 @@ export function shouldAutoRecall(ask: string): boolean {
   const words = s.split(/\s+/).filter(Boolean);
   const properNoun = words.slice(1).some((w) => /^[A-Z][a-zA-Z0-9._-]{2,}/.test(w));
   if (properNoun) return true;
-  return /(remember|remind|decided|prefer|project|repo|company|account|tax|financ|told me|told you|where does|what did we)/i.test(s);
+  // Recall phrasings the gate must catch: the user's own past/decisions/
+  // preferences, and the "where did I put / did I save / did we discuss" family
+  // that names no proper noun but is still a recall ("where did I put the
+  // insurance policy" — 2026-11-07, the seat had no recall for it). Keep it
+  // phrase-based, not a bare word, so neutral asks stay recall-free (the
+  // 2026-10-23 "stale facts on every turn" regression).
+  return /(remember|remind|decided|prefer|project|repo|company|account|tax|financ|told me|told you|where does|what did we|where did (?:i|you|we) put|did (?:i|we) save|did we discuss|did we decide)/i.test(s);
 }
