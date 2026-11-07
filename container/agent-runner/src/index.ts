@@ -1296,7 +1296,7 @@ function defaultsSection(): string {
             ? { provider: server, does: 'reading and acting on any website page (facebook, social media, forums, news): navigate there, read it, act on it' }
             : `${server} MCP tools`)}`);
         if (cap === 'browser') {
-            entries.push(`${JSON.stringify('media')}: ${JSON.stringify({ tool: 'youtube', does: 'music/video: play, pause, resume, skip, seek, now playing; a stop ask = pause', rule: 'one call, its result is the answer' })}`);
+            entries.push(`${JSON.stringify('media')}: ${JSON.stringify({ tool: 'youtube', does: 'music/mix/song/playlist/video: play, pause, resume, skip, seek, now playing; a stop ask = pause', rule: 'one call, its result is the answer; a movie or TV show title is stremio (mcp__stremio__*), not youtube' })}`);
         }
     }
     if (entries.length === 0) return '';

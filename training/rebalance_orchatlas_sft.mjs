@@ -154,7 +154,13 @@ const CAP = {
     iris: 30, Bash: 28, youtube: 28, vulkan: 22, project: 26,
     read_job_result: 18, read_file: 18, write_file: 18, WebFetch: 15,
     chrome_javascript: 12, WebSearch: 10, chrome_navigate: 10, list_running_agents: 10,
-    audio_volume: 8, generate_pdf: 8, mcp__marm__marm_smart_recall: 8, convert_file: 6,
+    audio_volume: 8, generate_pdf: 8, convert_file: 6,
+    // recall was capped at 8 while read_file sat at 18 — the seat's routing
+    // prompt says "recall before a search/lookup/find", but with half the
+    // read_file samples it defaulted to a guessed file path + hallucinated
+    // "lost in a MARM upgrade" (2026-11-07, "play that dark cyberpunk mix").
+    // Match read_file so recall isn't outgunned by the tool it must beat.
+    mcp__marm__marm_smart_recall: 18,
     report_task_failure: 6, open_app: 5, artemis: 5, media_control: 5, desktop_type: 4,
     council: 3, atlas_background: 3, nudge_agent: 3, install_mcp_server: 2, uninstall_mcp_server: 2,
     sentry: 2, get_windows_and_tabs: 2, stop_agent: 2, list_skills: 2, activate_skill: 2,
@@ -193,6 +199,12 @@ function askText(r) {
 // (2026-11-06). These rows force the literal phrase into the balanced sample.
 const MUST_KEEP = [
     { tool: 'project', re: /work task/i },
+    // Referential music asks ("play that X", "put that X back on", "the X we had
+    // going") exist ONLY in the s35 part — the corpus otherwise names music
+    // directly. The hash lottery was dropping all 8 rows, so nothing taught
+    // "play that X" → youtube and the seat improvised recall + raw chrome_navigate
+    // (2026-11-07, "play that dark cyberpunk mix"). Force them through the cap.
+    { tool: 'youtube', re: /\bthat\b|\bwe had going\b/i },
 ];
 const groups = new Map();
 for (const r of toolRows) {
