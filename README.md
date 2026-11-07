@@ -60,7 +60,7 @@ You → Warden ─ does it itself: browser, desktop, shell, files, web ─→ Yo
                    → Iris   (email, calendar, reminders, alarms)
                    → Vulkan (code and builds, background)
                    → Artemis(audit, background)
-                   → Sentry (security scans, background)
+                   → Sentry (security scans, background — currently disabled)
                    → Council(deliberation)
                    → atlas_background (a copy of itself, for long work)
 ```
@@ -73,7 +73,7 @@ flowchart LR
     S -->|"WHAT brief"| I["Iris — email, calendar"]
     S -->|"WHAT brief"| V["Vulkan — code, builds"]
     S -->|"WHAT brief"| A["Artemis — audit"]
-    S -->|"WHAT brief"| SE["Sentry — security"]
+    S -->|"WHAT brief"| SE["Sentry — security (disabled)"]
     S -->|"WHAT brief"| C["Council — deliberation"]
     S -->|"WHAT brief"| BG["atlas_background — long work"]
     I --> S
@@ -236,13 +236,13 @@ The tool loop has multiple circuit breakers to prevent common failure modes:
 - **Deterministic churn detection** — N consecutive read-only calls (Read/Grep/Glob/Bash/WebSearch — the `RESEARCH` set) with no deliverable produced → inject a "stop searching, write now" commit nudge, re-nudged every 10 further read-only calls (12/10 thresholds). It **only nudges** — the runner never aborts on a call count and never auto-escalates; the orchestrator decides (nudge / `stop_agent` / let it run) on its own judgment. Artemis and Sentry are exempt (read-only is their job). *(See [docs/notes/supervision-and-churn.md](docs/notes/supervision-and-churn.md).)*
 - **Per-delegate concurrency cap + same-file backstop** — at most 3 jobs per delegate run at once (`MAX_CONCURRENT_PER_DELEGATE`); a further dispatch for the same delegate is queued and starts when a slot frees. Separately, a dispatch that names a file a running writer already holds is queued behind it, so two jobs can't clobber the same file.
 - **Atlas first-turn thinking** — Atlas thinks on its first iteration only (plan what it needs, then act), paired with a **READ ONCE** prompt rule (read each named file once; don't re-Read it to find the next edit target — that re-reading *is* the loop). Later iterations keep thinking off to preserve context.
-- **Supervisor watchdog (cut out)** — the periodic LLM self-audit that flagged running jobs and let the seat nudge/stop has been removed. It was unneeded once the seat's chain-following could drive a job end to end on its own, and a 3b model kept false-flagging healthy slow reads/composes. The seat still monitors **on demand** (ask it, and it looks + can stop/retry on its own), and the completion verdict still judges finished jobs. Nothing stops jobs automatically — the deterministic churn detector only nudges; the seat (on demand) or you decide when to `stop_agent`.
+- **Supervisor watchdog (cut out)** — the periodic LLM self-audit that flagged running jobs and let the seat nudge/stop has been removed. It was unneeded once the seat's chain-following could drive a job end to end on its own, and a 3b model kept false-flagging healthy slow reads/composes. The seat still monitors **on demand** (ask it, and it looks + can stop/retry on its own), and the completion verdict still judges finished jobs. Nothing stops a job on a call count — the deterministic churn detector only nudges; the only code-enforced stop is a 3-hour wall-clock kill, and otherwise the seat (on demand) or you decide when to `stop_agent`.
 
 ### 📝 Memory System
 
 The seat writes directly to `MEMORY.md`, `TODO.md`, and `HEARTBEAT.md` — no delegation needed. Only `MEMORY.md` is loaded into context every turn; `HEARTBEAT.md` is injected only for scheduled heartbeat tasks, and `TODO.md` is not auto-loaded.
 
-After every conversation, a **memory writeback** pass runs automatically: a local model reads the last ~30 messages of the chat, distills durable facts (preferences, decisions, context the agent should carry forward), and appends them to `MEMORY.md` with a dated entry in `JOURNAL.md`. The distilled facts are visible to the agent on the very next turn — no manual note-taking, no "remember this" prompts. The writeback is fire-and-forget (never blocks the message loop), throttled to once per chat per 15 minutes, and auto-compacts `MEMORY.md` when it grows too large. Both files live at `WORKSPACE_ROOT` — the same place the seat loads from every turn, and the same place Mercury writes `MERCURY_MEMORY.md`.
+After every conversation, a **memory writeback** pass runs automatically: a local model reads the last ~30 messages of the chat, distills durable facts (preferences, decisions, context the agent should carry forward), and appends them to `MEMORY.md` with a dated entry in `JOURNAL.md`. The distilled facts are visible to the agent on the very next turn — no manual note-taking, no "remember this" prompts. The writeback is fire-and-forget (never blocks the message loop), throttled to once per chat per 15 minutes, and auto-compacts `MEMORY.md` when it grows too large. Both files live at `WORKSPACE_ROOT` — the same place the seat loads `MEMORY.md` from every turn, and the same place Mercury writes `MERCURY_MEMORY.md`. (`JOURNAL.md` lives there too but is never injected into the prompt.)
 
 #### 🪞 Mercury — rolling conversation memory
 
@@ -272,7 +272,7 @@ How it integrates (all built in, none of it requires touching Warden's core):
 
 ```mermaid
 flowchart TD
-    S["Seat"] -->|"loaded every turn"| M["MEMORY.md / TODO.md / HEARTBEAT.md"]
+    S["Seat"] -->|"loaded every turn"| M["MEMORY.md (TODO.md and HEARTBEAT.md are not auto-loaded)"]
     W["memory writeback"] -->|"distills durable facts"| M
     W -->|"mirrors facts"| MARM["MARM — semantic long-term recall"]
     MARM -->|"top recalls injected"| S
@@ -381,7 +381,7 @@ Warden controls your actual desktop — mouse movement, keystrokes, window manag
 
 Almost none of Warden's tools are generic wrappers — they're purpose-built, one layer above the real system, and they work out of the box because they bind to what's already there: your real Chrome profile, your real audio hardware, your real CalDAV calendar, your real media players. No adapters to configure, no credentials to paste twice, no "integration setup."
 
-The design rule for the action tools is **one tool per noun, one `action` parameter** (a 2026-09 collapse of 41 flat tools): `email`, `task`, `calendar`, `alarm`, `project` — each a single schema whose `action` selects the operation. Small models stay in-distribution, and every new operation is one enum value, not a new tool.
+The design rule for the action tools is **one tool per noun, one `action` parameter**. Iris's toolcall surface is **four merged tools** — `email`, `task`, `calendar`, `alarm` (a 2026-09 collapse of 41 flat tools). `project` is a separate merged tool (`kind` + `action` over projects, work tasks, deliverables, blockers, priorities and financials) that the seat calls directly, not Iris. Each is a single schema whose `action` selects the operation. Small models stay in-distribution, and every new operation is one enum value, not a new tool.
 
 ### 🌐 Browser automation (via the extension bridge)
 
@@ -423,7 +423,7 @@ The live surface is the extension's own `chrome_*` toolset (~27 tools: `chrome_n
 
 ### 🛡️ Sentry
 
-`sentry_report` — the software-security scanner (read-only sockets/services/crontab audit, one inventory submission, host logs the scan and relays findings).
+`sentry_report` — the software-security scanner (read-only sockets/services/crontab audit, one inventory submission, host logs the scan and relays findings). **Currently disabled**: `SENTRY_ENABLED=false` in the agent-runner and `SENTRY_SCANS_ENABLED=false` on the host, because the fine-tune has no sentry SFT examples and fabricates its inventory. The tool is registered but reports Sentry offline.
 
 ### 🔌 The rest
 
@@ -855,7 +855,7 @@ What each line does and why it's here:
 
 | Setting | What it controls | Why this value |
 |---|---|---|
-| `OLLAMA_NUM_PARALLEL=1` | How many inference requests Ollama will run **concurrently**. The default scales with your CPU count, inviting parallelism. | Warden's seat runs **one conversation at a time** and dispatches one sub-agent at a time. There is no benefit to concurrent inference here — only downside: two models racing for VRAM, evicting each other, or OOMing. Pinning this to `1` serializes requests so a model finishes and frees memory before the next one loads. |
+| `OLLAMA_NUM_PARALLEL=1` | How many inference requests Ollama will run **concurrently**. The default scales with your CPU count, inviting parallelism. | Warden serves **one conversation at a time**, and background jobs are capped at **3 running jobs per delegate** (with a same-file queue behind any writer). Those jobs still fire many short requests across several models, and there is no benefit to running them concurrently — only downside: two models racing for VRAM, evicting each other, or OOMing. Pinning this to `1` serializes requests so a model finishes and frees memory before the next one loads. |
 | `OLLAMA_MAX_LOADED_MODELS=3` | The max number of models Ollama will keep **resident in VRAM at once**. Beyond this, the least-recently-used resident model is evicted. | Room for the three things that matter to Warden: the **Atlas seat** (kept alive always), the shared **Toolcall model** (Iris/Sentry), and a third resident model whose keep-alive you've enabled. (The supervisor no longer holds a slot — its running-job tick was cut out; it only runs the occasional completion verdict on finished jobs.) A fourth request simply evicts the LRU rather than OOMing. (Raise or lower this to match your VRAM; the dashboard's keep-alive checkboxes decide *which* models are candidates for these slots.) |
 | `OLLAMA_KEEP_ALIVE=30m` | How long a model stays loaded in VRAM **after its last request** before Ollama unloads it. Default is `5m`. | The agent loop issues many short, bursty requests separated by seconds-to-minutes of thinking. At `5m` a model often unloads between turns and you pay the multi-second reload latency on the next call. `30m` keeps models hot across a typical work session so repeated calls hit resident weights. Lower it if you're tight on VRAM and want idle models to release memory sooner. |
 | `OLLAMA_KV_CACHE_TYPE=q8_0` | Quantizes the **KV cache** (the per-token attention state that grows with context length) to 8-bit instead of fp16. | Long agent contexts eat VRAM fast, and the KV cache is where it goes. `q8_0` roughly halves that cache footprint at a negligible quality cost, which is what lets you run longer contexts and keep more models resident (see `OLLAMA_MAX_LOADED_MODELS`) on the same GPU. Leave it fp16 only if you have VRAM to spare and want the last bit of fidelity. |

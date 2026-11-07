@@ -549,7 +549,7 @@
       "type": "function",
       "function": {
         "name": "open_app",
-        "description": "{\"what\":\"open a file/app on the host display, fire-and-forget\",\"app\":\"binary name, or xdg-open with an absolute file path\",\"rule\":\"no driving what it opened; web pages belong to the browser tools\"}",
+        "description": "{\"what\":\"open a local file/app via OS default handler (xdg-open /abs/path)\",\"app\":\"binary name; xdg-open /abs/x.html opens local .html in the default browser\",\"rule\":\"remote http(s) → browser tools\"}",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2080,7 +2080,7 @@
       "type": "function",
       "function": {
         "name": "chrome_navigate",
-        "description": "{\"what\":\"navigate a tab to a URL; refresh; history back/forward\",\"returns\":\"tabId of the target tab — pass it in every later call\",\"rule\":\"existing tab default; a new one only when the user asks\"}",
+        "description": "{\"what\":\"navigate a tab to an http(s):// URL; refresh; back/forward\",\"returns\":\"target tabId\",\"urls\":\"http(s):// only; local files go to open_app\",\"rule\":\"existing tab default; new only when asked\"}",
         "parameters": {
           "type": "object",
           "properties": {

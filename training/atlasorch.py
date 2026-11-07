@@ -66,9 +66,13 @@ import torch
 # pinned to cuda:0 by the CUDA_VISIBLE_DEVICES guard above.
 if "LOCAL_RANK" in os.environ:
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+# Unsloth must be imported before transformers (it patches their modules at
+# import time). It is kept AFTER the set_device above on purpose: unsloth's
+# _gpu_init probes a GPU on import, and that must happen on the already-pinned
+# rank, not on GPU 0 (the stray-context hazard the set_device block prevents).
+from unsloth import FastLanguageModel
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments
-from unsloth import FastLanguageModel
 from accelerate import PartialState
 
 
@@ -81,6 +85,55 @@ def load_examples(path: str):
                 continue
             examples.append(json.loads(line))
     return examples
+
+
+def _row_group(row) -> str:
+    """Stratification key: the first tool the row calls, or '__prose__'."""
+    for m in row.get("messages", []):
+        for tc in (m.get("tool_calls") or []):
+            name = (tc.get("function") or {}).get("name")
+            if name:
+                return name
+    return "__prose__"
+
+
+def _stable_hash(text: str) -> int:
+    """FNV-1a, the same hash the rebalance script uses — deterministic split."""
+    h = 2166136261
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def stratified_holdout(examples, frac: float = 0.10, seed: int = 20261106):
+    """Split ~frac of every group into a held-out eval set.
+
+    Groups are the row's primary tool (prose is its own group), so the eval
+    loss measures every capability instead of whichever rows happened to sort
+    last. A group of one stays in train: the trainer needs at least one
+    example of a capability to learn it. Selection is a stable hash of the
+    row, so the same corpus always yields the same split.
+    """
+    if frac <= 0:
+        return examples, []
+    groups = {}
+    for i, row in enumerate(examples):
+        groups.setdefault(_row_group(row), []).append(i)
+    train_idx, eval_idx = [], []
+    for key in sorted(groups):
+        idxs = sorted(groups[key], key=lambda i: _stable_hash(
+            f"{seed}|{json.dumps(examples[i], ensure_ascii=False, sort_keys=True)}"))
+        n = len(idxs)
+        if n < 2:
+            train_idx.extend(idxs)
+            continue
+        k = min(n - 1, max(1, round(n * frac)))
+        eval_idx.extend(idxs[:k])
+        train_idx.extend(idxs[k:])
+    train_idx.sort()
+    eval_idx.sort()
+    return [examples[i] for i in train_idx], [examples[i] for i in eval_idx]
 
 
 # ---------------------------------------------------------------------------
@@ -340,16 +393,27 @@ def main():
     ap.add_argument("--max-len", type=int, default=12032,
                     help="cap rendered seq length; longer examples are left-truncated "
                          "(keep last N) so the assistant labels at the tail are preserved. "
-                         "The orchatlas rows carry the full 57-tool schema and run "
-                         "min/mean/max 10472/10717/11785 on the 4.2-8b tokenizer, so the "
-                         "12032 default clips nothing. A LOWER cap does not save you: it "
-                         "amputates the system prompt and the tool schemas from every row — "
+                         "Rows carry only the tool schemas they exercise (prose rows carry "
+                         "none), so the balanced corpus measures min/mean/max ~1500/1850/4100 "
+                         "and the 12032 default clips nothing. A LOWER cap does not save you: "
+                         "it amputates the system prompt and the tool schemas from every row — "
                          "the two things this fine-tune exists to learn — and reports a clean "
                          "run while doing it. atlasorch.sh measures the data and derives this. "
                          "Pass 0 to disable the cap entirely.")
     ap.add_argument("--measure-only", action="store_true",
                     help="render the dataset, print the seq-length stats, and exit without "
                          "loading the model — what atlasorch.sh uses to derive --max-len.")
+    # Held-out eval: ~10% of each capability group is never trained on, and the
+    # checkpoint with the best eval loss is the one that gets packed. Without
+    # this the run keeps whatever the last optimizer step produced, which is how
+    # verbatim replay of a handful of phrasings went unnoticed (2026-10-18).
+    ap.add_argument("--holdout", type=float, default=0.10,
+                    help="fraction held out per capability group for eval (0 disables; "
+                         "a group of one row always stays in train)")
+    ap.add_argument("--holdout-seed", type=int, default=20261106,
+                    help="seed for the deterministic holdout split")
+    ap.add_argument("--eval-steps", type=int, default=25,
+                    help="eval + checkpoint interval when a holdout is active")
     ap.add_argument("--max-steps", type=int, default=0,
                     help="stop after N optimizer steps (smoke test). 0 = train the full run.")
     ap.add_argument("--resume", action="store_true",
@@ -380,8 +444,9 @@ def main():
         ex = load_examples(args.data)
         ds = OrchatlasSFTDataset(ex, tok, max_len=None)
         ls = [d["length"] for d in ds.cache]
-        print(f"[orchatlas] examples={len(ex)} min={min(ls)} mean={sum(ls)//len(ls)} max={max(ls)}",
-              flush=True)
+        tr, ev = stratified_holdout(ex, args.holdout, args.holdout_seed)
+        print(f"[orchatlas] examples={len(ex)} min={min(ls)} mean={sum(ls)//len(ls)} max={max(ls)} "
+              f"train={len(tr)} holdout={len(ev)}", flush=True)
         return
 
     state = PartialState()
@@ -455,11 +520,20 @@ def main():
     model.print_trainable_parameters()
 
     examples = load_examples(args.data)
-    print(f"[orchatlas] {len(examples)} examples", flush=True)
-    dataset = OrchatlasSFTDataset(examples, tokenizer, max_len=args.max_len)
+    train_examples, eval_examples = stratified_holdout(examples, args.holdout, args.holdout_seed)
+    if not train_examples:
+        raise SystemExit("[orchatlas] holdout consumed every example — lower --holdout")
+    print(f"[orchatlas] {len(train_examples)} train / {len(eval_examples)} holdout", flush=True)
+    dataset = OrchatlasSFTDataset(train_examples, tokenizer, max_len=args.max_len)
+    eval_dataset = (OrchatlasSFTDataset(eval_examples, tokenizer, max_len=args.max_len)
+                    if eval_examples else None)
     lens = [d["length"] for d in dataset.cache]
     print(f"[orchatlas] seq len min/mean/max = {min(lens)}/{sum(lens)//len(lens)}/{max(lens)}"
           + (f" (capped at {args.max_len})" if args.max_len else ""), flush=True)
+    if eval_dataset is not None:
+        ev_lens = [d["length"] for d in eval_dataset.cache]
+        print(f"[orchatlas] holdout seq len min/mean/max = "
+              f"{min(ev_lens)}/{sum(ev_lens)//len(ev_lens)}/{max(ev_lens)}", flush=True)
 
     # Gradient sync is done here, not by DDP's hooks. The tiled MLP runs one
     # nested backward per sequence chunk, and the chunk count follows each
@@ -482,6 +556,25 @@ def main():
                         p.grad.div_(world)
             return loss
 
+    # Eval wiring is passed only when a holdout exists. `eval_strategy` is the
+    # 4.46+ name; older transformers only accept `evaluation_strategy`, so the
+    # kwarg is chosen from the installed signature instead of guessing.
+    eval_kwargs = {}
+    if eval_dataset is not None:
+        import inspect
+        eval_key = ("eval_strategy" if "eval_strategy" in inspect.signature(
+            TrainingArguments.__init__).parameters else "evaluation_strategy")
+        eval_kwargs = {
+            eval_key: "steps",
+            "eval_steps": args.eval_steps,
+            "per_device_eval_batch_size": 1,
+            # Checkpoint selection follows eval loss, not step count: the best
+            # generalization point is what gets packed.
+            "load_best_model_at_end": True,
+            "metric_for_best_model": "eval_loss",
+            "greater_is_better": False,
+        }
+
     targs = TrainingArguments(
         output_dir=args.out,
         num_train_epochs=args.epochs,
@@ -497,7 +590,7 @@ def main():
         # the whole run (2026-10-18, 123/200 steps thrown away). Two
         # checkpoints is ~600 MB; --resume picks the newest.
         save_strategy="steps",
-        save_steps=25,
+        save_steps=args.eval_steps,
         save_total_limit=2,
         report_to=[],
         remove_unused_columns=False,
@@ -506,12 +599,14 @@ def main():
         # which 18k-token rows on 16 GB cards cannot spare (2026-10-14 OOM).
         optim="adamw_8bit",
         ddp_find_unused_parameters=False,
+        **eval_kwargs,
         **({"max_steps": args.max_steps} if args.max_steps else {}),
     )
     trainer = OrchatlasTrainer(
         model=model,
         args=targs,
         train_dataset=dataset,
+        eval_dataset=eval_dataset,
         data_collator=PadCollator(tokenizer.pad_token_id),
     )
     trainer.train(resume_from_checkpoint=True if args.resume else None)

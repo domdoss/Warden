@@ -151,7 +151,7 @@ for (const r of toolRows) {
 // one row keeps at least one (see MIN per group below); the totals land near
 // 330 rows, down from 2,063.
 const CAP = {
-    iris: 30, Bash: 28, youtube: 28, vulkan: 22,
+    iris: 30, Bash: 28, youtube: 28, vulkan: 22, project: 18,
     read_job_result: 18, read_file: 18, write_file: 18, WebFetch: 15,
     chrome_javascript: 12, WebSearch: 10, chrome_navigate: 10, list_running_agents: 10,
     audio_volume: 8, generate_pdf: 8, mcp__marm__marm_smart_recall: 8, convert_file: 6,
@@ -549,8 +549,43 @@ const youtubeRows = [
     ], 'At 14:40.'),
 ];
 
+// ---- 4c. drop repeated youtube destinations -------------------------------
+// A row whose call reissues the same play destination another row already
+// teaches (or the curated block above already teaches) trains the seat to
+// replay one video. Keep one row per destination, and one row per control
+// action; the curated block carries the navigation sequences.
+function youtubeDest(r) {
+    let control = '';
+    for (const m of r.messages) {
+        for (const tc of (m.tool_calls || [])) {
+            const fn = tc.function;
+            if (fn?.name !== 'youtube') continue;
+            const a = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments || {};
+            if (a.action === 'play') {
+                if (a.url) return `url:${a.url}`;
+                if (a.query) return `query:${String(a.query).toLowerCase().trim().replace(/\s+/g, ' ')}`;
+                return 'play:';
+            }
+            if (!control) control = `action:${a.action || 'unknown'}`;
+        }
+    }
+    return control;
+}
+const ytSeen = new Set(youtubeRows.map(youtubeDest).filter(Boolean));
+const keptToolDeduped = [];
+let ytDupDropped = 0;
+for (const r of keptTool) {
+    if (primaryTool(r) !== 'youtube') { keptToolDeduped.push(r); continue; }
+    const d = youtubeDest(r);
+    if (!d) { keptToolDeduped.push(r); continue; }
+    if (ytSeen.has(d)) { ytDupDropped++; continue; }
+    ytSeen.add(d);
+    keptToolDeduped.push(r);
+}
+if (ytDupDropped) report.push(`youtube-dedupe=-${ytDupDropped}`);
+
 // ---- 5. assemble + validate ----------------------------------------------
-const out = [...proseRows, ...chatRows, ...youtubeRows, ...keptTool];
+const out = [...proseRows, ...chatRows, ...youtubeRows, ...keptToolDeduped];
 // No structurally identical conversations.
 const seen = new Set();
 const finalRows = [];

@@ -192,7 +192,7 @@ function jsonReply(res: http.ServerResponse, id: unknown, result: unknown, errCo
 const TOOL_JSON: Record<string, Record<string, unknown>> = {
   get_windows_and_tabs: { what: 'list every open window and tab', returns: 'windows:[{windowId,tabs:[{tabId,url,title}]}]', use_when: 'FIRST call of any browser task: match the task page by url, copy its tabId' },
   chrome_read_page: { what: 'accessibility tree of visible page elements', use_when: 'find refs before click/type; pass the task tabId', fail: 'sparse tree/missing fields → chrome_get_web_content or chrome_javascript' },
-  chrome_navigate: { what: 'navigate a tab to a URL; refresh; history back/forward', returns: 'tabId of the target tab — pass it in every later call', rule: 'existing tab default; a new one only when the user asks' },
+  chrome_navigate: { what: 'navigate a tab to an http(s):// URL; refresh; back/forward', returns: 'target tabId', urls: 'http(s):// only; local files go to open_app', rule: 'existing tab default; new only when asked' },
   chrome_screenshot: { what: 'screenshot the page or one element', to_see_page: 'storeBase64=true, savePng=false' },
   chrome_close_tabs: { what: 'close tabs', by: 'tabIds array, or url match', default: 'active tab' },
   chrome_switch_tab: { what: 'make one tab the active one', tabId: 'required' },
@@ -420,6 +420,15 @@ export async function handleBrowserMcp(req: http.IncomingMessage, res: http.Serv
       case 'tools/call': {
         if (!TOOL_JSON[msg.params?.name]) {
           jsonReply(res, id, undefined, -32602, `browser tool ${String(msg.params?.name)} is not available`);
+          return;
+        }
+        // chrome_navigate takes http(s):// URLs only — the extension's MV3 URL
+        // validator rejects file:// and local paths. Those are open_app's job
+        // (xdg-open), so reject here as a fact instead of forwarding: the
+        // browser bridge is optional and this must fail fast, never hang.
+        const navUrl = msg.params?.name === 'chrome_navigate' ? msg.params?.arguments?.url : undefined;
+        if (typeof navUrl === 'string' && (navUrl.startsWith('file://') || navUrl.startsWith('/') || navUrl.startsWith('~'))) {
+          jsonReply(res, id, undefined, -32000, 'file:// URLs are not supported by the browser bridge — local files are opened by open_app (xdg-open)');
           return;
         }
         const r = await withClient((c) => withTimeout(c.callTool(msg.params || {}), CALL_TIMEOUT_MS));

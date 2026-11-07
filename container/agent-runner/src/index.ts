@@ -1243,7 +1243,8 @@ Decide on the first turn: when the ask needs an action, pick the tool and call i
  "machine": {
   "host": "Arch + KDE + Wayland; the browser is the user's signed-in Chrome",
   "src": "/opt/Warden — src/ (host), container/agent-runner/ (agent); dist/ is build output",
-  "user_files": "~/Warden — the user's files, uploads, deliverables"
+  "user_files": "~/Warden — the user's files, uploads, deliverables",
+  "local_file": "open a local file or app with open_app (xdg-open <absolute path>) — the browser tools only take http(s):// URLs, never file:// or a local path"
  },
  "sudo": "the user types the password: run the install once, say a prompt is waiting, end the turn",
  "jobs": {
@@ -1867,36 +1868,31 @@ const retryLedger = new Map<string, RetryLedgerEntry>();
 function taskSig(task: string): string {
     return task.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
 }
-// Goal identity that survives prose drift. The orchestrator re-words a retry
-// every time it obeys "name the gap" (observed 2026-08-24: "Rebuild the Baben
-// Sushi website from scratch…" → "…in a NEW folder ~/Warden/baben-sushi-v2
-// (create it first…" → "Create a complete, self-contained index.html for the
-// Baben Sushi restaurant site…"), and the old 80-char-prefix sig made the one-
-// retry rail inert against exactly the loop it exists to stop. A goal is a bag
-// of salient tokens (paths split into their parts, filler dropped); two tasks
-// are the same goal when they share >= 4 salient tokens covering at least half
-// of the smaller bag. Tasks too short for 4 salient tokens ("do it") can never
-// match, so the rail stays inert where it has nothing to key on.
-const GOAL_STOPWORDS = new Set(['the','a','an','to','in','on','of','for','and','or','with','it','its','is','are','was','were','at','that','this','these','those','you','your','i','me','my','we','our','they','them','their','there','here','what','which','who','how','why','when','up','out','about','after','before','same','again','once','only','all','any','each','some','one','two','do','does','did','done','be','been','being','as','so','if','now','have','has','had','can','could','should','would','will','just','also','please','make','makes','made','sure','from','into','by','onto','per','via','not','no','yes','then','than','but','over','under','more','most','less','least','other','others','first','second','next','last','new','old','own','let','lets','get','got','want','wants','need','needs','use','using','dont',"don't"]);
-function goalSig(task: string): Set<string> {
-    const toks = task.toLowerCase()
-        .replace(/["'`()[\]{}<>]/g, ' ')
-        .split(/[\s,;:!?/\\~_.-]+/)
-        .filter(t => t.length > 2 && !GOAL_STOPWORDS.has(t));
-    return new Set(toks);
+// Stable goal identity: the literal things a goal names, never its prose. A
+// goal is identified by the file(s) it delivers — paths are stable across any
+// re-wording — or, when it names no file, by its exact normalized task text.
+// The old bag-of-salient-tokens match guessed identity from prose overlap; it
+// both missed re-worded retries and conflated unrelated asks that shared
+// filler. Identity now keys on facts the user stated, and the completion
+// verdict compares the file's actual on-disk content against the stated goal.
+function goalIdentity(task: string): string[] {
+    const files = [...extractFilePaths(task)].sort();
+    if (files.length > 0) return files;
+    const text = String(task || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    return text ? [text] : [];
 }
-function sameGoal(a: Set<string>, b: Set<string>): boolean {
-    if (a.size === 0 || b.size === 0) return false;
-    const shared = [...a].filter(t => b.has(t)).length;
-    return shared >= 4 && shared >= 0.5 * Math.min(a.size, b.size);
+function sameGoal(a: string[], b: string[]): boolean {
+    if (a.length === 0 || b.length === 0) return false;
+    const bSet = new Set(b);
+    return a.some(x => bSet.has(x));
 }
 // Read-only form: is this goal's one automatic retry already consumed?
 // Used by the dedup target-overlap queue (a queued follow-up spawns later via
 // drainFollowups, which bypasses retryGate — so the gate must be able to
 // refuse the queue itself, without consuming a credit as a side effect).
 function goalRetryExhausted(task: string): boolean {
-    const goal = goalSig(task);
-    return [...retryLedger.values()].some(e => e.failCount >= 1 && sameGoal(goal, new Set(e.goal)));
+    const goal = goalIdentity(task);
+    return [...retryLedger.values()].some(e => e.failCount >= 1 && sameGoal(goal, e.goal));
 }
 // Check + (on allowance) consume the single retry credit for a spontaneous
 // re-dispatch. Returns null when the delegation may proceed, otherwise the
@@ -1911,15 +1907,15 @@ function goalRetryExhausted(task: string): boolean {
 const VERDICT_NOT_JUDGED = 'not-judged';
 
 function retryGate(task: string): string | null {
-    const goal = goalSig(task);
+    const goal = goalIdentity(task);
     if (!turnWasInboxDigest) {
         // User turn: fresh user intent outranks the rail for the first two
-        // dispatches of a goal. The third identical dispatch is the churn
-        // signature (2026-09-26: the orchestrator re-delegated the same saga
-        // task on user turns until the user typed "stop calling vulkan we
-        // are done that task"). Aborted jobs don't count — the user stopped
-        // those on purpose and a deliberate re-ask must stay possible.
-        const prior = inbox.all().filter(i => i.status !== 'aborted' && sameGoal(goal, goalSig(String(i.task || ''))));
+        // dispatches of a goal. The third dispatch of the same stable goal is
+        // the churn signature (2026-09-26: the orchestrator re-delegated the
+        // same saga task on user turns until the user typed "stop calling
+        // vulkan we are done that task"). Aborted jobs don't count — the user
+        // stopped those on purpose and a deliberate re-ask must stay possible.
+        const prior = inbox.all().filter(i => i.status !== 'aborted' && sameGoal(goal, goalIdentity(String(i.task || ''))));
         if (prior.length >= 2) {
             log(`[retry-ledger] blocked dispatch #${prior.length + 1} of the same goal on a user turn: ${taskSig(task)}`);
             return `STOP — this goal has already been dispatched ${prior.length} times (${prior.map(p => p.jobId).join(', ')} in your inbox) and it is not producing a new result. Do not dispatch it again. Tell the user in plain sentences what was tried, what happened, and what you would need to succeed.`;
@@ -1927,7 +1923,7 @@ function retryGate(task: string): string | null {
         return null;
     }
     const creditUsed = goalRetryExhausted(task);
-    const failedBefore = inbox.all().some(i => i.verdict === 'failed' && sameGoal(goal, goalSig(String(i.task || ''))));
+    const failedBefore = inbox.all().some(i => i.verdict === 'failed' && sameGoal(goal, goalIdentity(String(i.task || ''))));
     // A digest turn is report-back only: a goal whose result already landed as
     // CONFIRMED or UNVERIFIABLE must never be re-dispatched — that was the
     // "play a song → re-delegate → new job → new digest → re-delegate" loop
@@ -1940,31 +1936,31 @@ function retryGate(task: string): string | null {
     const judged = (i: { verdict?: string; verdictReason?: string }) =>
         i.verdict === 'confirmed'
         || (i.verdict === 'unverifiable' && !String(i.verdictReason || '').startsWith(VERDICT_NOT_JUDGED));
-    const alreadyDone = inbox.all().some(i => judged(i) && sameGoal(goal, goalSig(String(i.task || ''))));
+    const alreadyDone = inbox.all().some(i => judged(i) && sameGoal(goal, goalIdentity(String(i.task || ''))));
     if (alreadyDone && !failedBefore && !creditUsed) {
         log(`[retry-ledger] blocked re-delegation of an already-completed goal: ${taskSig(task)}`);
         return `STOP — this task already ran and its result is in your inbox above. Do not dispatch it again. Report that result to the user, or stay silent if it is media already playing.`;
     }
     if (!failedBefore && !creditUsed) return null; // first dispatch of this goal
     if (creditUsed) {
-        log(`[retry-ledger] blocked re-delegation of reworded retry: ${taskSig(task)}`);
-        return `STOP — this goal already ran and its one automatic retry has been used (the earlier attempts are in your inbox). Do not dispatch it again, and do not re-word it to slip past this rail — re-wording is exactly what this rail watches for. If the deliverable is still missing, tell the user in plain sentences what was tried, what happened, and what you would need to succeed.`;
+        log(`[retry-ledger] blocked re-delegation of same-goal retry: ${taskSig(task)}`);
+        return `STOP — this goal already ran and its one automatic retry has been used (the earlier attempts are in your inbox). Do not dispatch it again. If the deliverable is still missing, tell the user in plain sentences what was tried, what happened, and what you would need to succeed.`;
     }
     retryLedger.set(taskSig(task), { failCount: 1, lastAt: Date.now(), goal: [...goal] });
-    log(`[retry-ledger] consuming the one automatic retry for goal: ${[...goal].slice(0, 12).join(' ')}`);
+    log(`[retry-ledger] consuming the one automatic retry for goal: ${goal.slice(0, 12).join(' ')}`);
     return null;
 }
 // Advisory record of a confirmed failure (via report_task_failure): the hard
 // cap lives in retryGate; this keeps the failure visible in the journal and
-// steers the model's one allowed retry. Matches on goal (not exact text) so a
-// re-worded report still lands on the goal's ledger entry.
+// steers the model's one allowed retry. A re-worded report still lands on the
+// goal's ledger entry when it names the same deliverable file(s).
 function recordConfirmedFailure(task: string, reason: string): void {
-    const goal = goalSig(task);
-    const key = [...retryLedger.entries()].find(([, e]) => sameGoal(new Set(e.goal), goal))?.[0] ?? taskSig(task);
+    const goal = goalIdentity(task);
+    const key = [...retryLedger.entries()].find(([, e]) => sameGoal(e.goal, goal))?.[0] ?? taskSig(task);
     const entry = retryLedger.get(key) ?? { failCount: 0, lastAt: 0, goal: [...goal] };
     entry.lastAt = Date.now();
     retryLedger.set(key, entry);
-    log(`[retry-ledger] confirmed failure reported for goal: ${[...goal].slice(0, 12).join(' ')} — ${reason.slice(0, 160)}`);
+    log(`[retry-ledger] confirmed failure reported for goal: ${goal.slice(0, 12).join(' ')} — ${reason.slice(0, 160)}`);
 }
 // ─── In-flight duplicate-dispatch gate ─────────────────────────────────────
 // The orchestrator can dispatch a background job for a task while an
@@ -2054,6 +2050,14 @@ const ATLAS_ALWAYS_INCLUDED_TOOLS = new Set<string>([
     // of calling list_file. These are passive tools the model won't fire on a
     // greeting, so the small-talk near-empty-menu safety is preserved.
     'read_file', 'write_file', 'list_file',
+    // `project` is the seat's own work-task/project/deliverable/blocker tool and
+    // the routing prompt points "work tasks, projects, blockers" straight at it,
+    // but RAG never ranked it for those asks (its description has no "create"/
+    // "add" verbs; 2026-11-06 "create a work task" ranked time/chrome tools and
+    // the seat fell back to write_file, then wrote to a missing dir and claimed
+    // success). It is a direct capability (like the file primitives, not a
+    // delegate) and needs kind+action args, so it is inert on a greeting.
+    'project',
 ]);
 const ATLAS_DYNAMIC_TOP_K = 12;
 
@@ -2421,7 +2425,26 @@ function filePathFromArgs(args: string): string | null {
 // false-fail → re-delegate → one-atlas-gate murder cycle. Feeding the model
 // "file X exists, NNN bytes" lets it judge ground truth; the deterministic
 // override below is the backstop for when it still false-fails.
-interface WrittenFile { rel: string; exists: boolean; size: number; mtime: string | null; prevJobId?: string; unchanged?: boolean }
+interface WrittenFile { rel: string; exists: boolean; size: number; mtime: string | null; prevJobId?: string; unchanged?: boolean; preview?: string }
+
+// The verdict judges what a deliverable ACTUALLY contains against the stated
+// goal, so every on-disk file carries a short text preview in the prompt —
+// existence and byte count alone cannot tell a finished menu page from an
+// empty shell. Text only (binary files get no preview), capped per file so a
+// large deliverable cannot crowd out the request and activity digest.
+const WRITTEN_PREVIEW_CHARS = 1200;
+function readTextPreview(resolved: string): string | undefined {
+    try {
+        const fd = fs.openSync(resolved, 'r');
+        try {
+            const buf = Buffer.alloc(WRITTEN_PREVIEW_CHARS * 4);
+            const read = fs.readSync(fd, buf, 0, buf.length, 0);
+            const slice = buf.subarray(0, read);
+            if (slice.includes(0)) return undefined; // binary — no text preview
+            return slice.toString('utf8').slice(0, WRITTEN_PREVIEW_CHARS).replace(/\s+/g, ' ').trim();
+        } finally { fs.closeSync(fd); }
+    } catch { return undefined; }
+}
 
 // Cross-run change detection (2026-09-18, the "ask for a change and it loops
 // the same wrong thing verbatim" defect): a correction run that rewrites the
@@ -2450,6 +2473,7 @@ function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string
             const st = fs.statSync(resolved);
             if (st.isFile()) { exists = true; size = st.size; mtime = new Date(st.mtimeMs).toISOString().replace('T', ' ').slice(0, 19); }
         } catch { /* not on disk */ }
+        const preview = exists && size > 0 ? readTextPreview(resolved) : undefined;
         let prevJobId: string | undefined, unchanged: boolean | undefined;
         if (exists && size > 0 && size <= WRITTEN_HASH_CAP_BYTES) {
             try {
@@ -2466,7 +2490,7 @@ function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string
             // it shrinks, but say nothing this run.
             writtenFileHistory.set(resolved, { hash: '', jobId });
         }
-        seen.set(resolved, { rel: raw, exists, size, mtime, prevJobId, unchanged });
+        seen.set(resolved, { rel: raw, exists, size, mtime, prevJobId, unchanged, preview });
     }
     return [...seen.values()];
 }
@@ -2486,6 +2510,7 @@ function writtenFilesSummary(files: WrittenFile[]): string {
         let line = `- ${f.rel}: EXISTS on disk, ${f.size} bytes (modified ${f.mtime})`;
         if (f.unchanged === true) line += ` — UNCHANGED from job ${f.prevJobId} (byte-identical: this run made NO change to it)`;
         else if (f.unchanged === false) line += ` — changed since job ${f.prevJobId}`;
+        if (f.preview) line += `\n  content preview: ${f.preview}`;
         return line;
     }));
     if (absent.length) lines.push(...absent.map(f => `- ${f.rel}: NOT on disk (or empty)`));
@@ -2560,12 +2585,13 @@ const COMPLETION_VERDICT_FORMAT = {
 };
 const COMPLETION_VERDICT_PROMPT = `You are the Warden completion verifier. You judge whether a finished background job actually delivered what the user asked for.
 
-CAPABILITIES: Read the user's request, the job's task, its final result text, a compact list of the tool calls it made, AND a ground-truth list of which files the job wrote and whether each one actually exists on disk. Decide confirmed, failed, or unverifiable. When the request has a next step the result did not start, name it as a follow-up.
+CAPABILITIES: Read the user's request, the job's task, its final result text, a compact list of the tool calls it made, AND a ground-truth list of which files the job wrote, whether each one actually exists on disk, and a preview of what each one actually contains. Decide confirmed, failed, or unverifiable. When the request has a next step the result did not start, name it as a follow-up.
 
 GUIDELINES:
-- CONFIRMED: the deliverable the user asked for is present and matches the request — the right file written (and it EXISTS on disk per the ground-truth list), the right answer given, the right action named with a concrete outcome.
-- FAILED: the deliverable is genuinely wrong or missing. For a task whose deliverable is a file or an edit: a result that claims a write but the ground-truth list shows the file is NOT on disk (or is empty), a result that claims edit work but the activity shows zero Edit/Write/Bash calls, or a result that contradicts the request. A task whose deliverable is an on-screen or system action (play a video, open a page, launch an app, send a message) has no file to check — judge a result that reports the action done as UNVERIFIABLE, never FAILED for having no write calls.
-- UNVERIFIABLE: whether it worked depends on screen or system state the text cannot show (a page rendered, an app launched), OR the deliverable file EXISTS on disk with real content but you cannot judge from text alone whether its content fully matches the request. Trust the on-disk file; do NOT mark failed merely because the result prose does not explicitly say "I wrote X" — the ground-truth list is authoritative for whether a file was written.
+- CONFIRMED: the deliverable the user asked for is present and matches the request — the right file written (it EXISTS on disk per the ground-truth list), its on-disk content matches the stated goal, the right answer given, the right action named with a concrete outcome.
+- FAILED: the deliverable is genuinely wrong or missing. For a task whose deliverable is a file or an edit: a result that claims a write but the ground-truth list shows the file is NOT on disk (or is empty), an on-disk content preview that does not match the stated goal, a result that claims edit work but the activity shows zero Edit/Write/Bash calls, or a result that contradicts the request. A task whose deliverable is an on-screen or system action (play a video, open a page, launch an app, send a message) has no file to check — judge a result that reports the action done as UNVERIFIABLE, never FAILED for having no write calls.
+- UNVERIFIABLE: whether it worked depends on screen or system state the text cannot show (a page rendered, an app launched), OR the deliverable file EXISTS on disk with real content but the preview is too partial to judge whether it fully matches the request. Trust the on-disk file; do NOT mark failed merely because the result prose does not explicitly say "I wrote X" — the ground-truth list is authoritative for whether a file was written.
+- Goal identity is stable: the files a task names identify the goal across re-wordings. Compare the content preview against the stated goal — never against how the result is phrased.
 - Use followup only when the user's request named a next step (e.g. "then redesign it") that this result did not start. Write the task as plain intent: the goal and the facts.
 
 FORMAT: Output one JSON object only.
@@ -2630,7 +2656,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     // Ground truth: which files did the job write, and do they exist on disk?
     const writtenFiles = verifyWrittenFiles(activityLog, jobId);
     const filesBlock = writtenFiles.length
-        ? `\nWritten files verified on disk (authoritative — a file listed EXISTS was really written):\n${writtenFilesSummary(writtenFiles)}\n`
+        ? `\nWritten files verified on disk (authoritative — a file listed EXISTS was really written; the content preview is what the file actually contains right now):\n${writtenFilesSummary(writtenFiles)}\n`
         : '\nNo file-writing tool calls recorded in the activity log.\n';
 
     // Compact activity digest: tool names + one-line args only, never payloads.
@@ -2641,7 +2667,7 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
         `Final result:\n${fullResult.slice(0, 3000)}\n\n` +
         `Tool calls (most recent last, names + one-line args only):\n${activity}\n` +
         filesBlock +
-        `\nOutput the JSON verdict. Judge against the on-disk file list: if a deliverable file EXISTS with real content, do not mark failed only because the result text does not spell that out. But a file marked UNCHANGED is byte-identical to the previous run's version — if the task asked for a change to that file, the change was NOT made, and that is a failure no matter what the result text claims.`;
+        `\nOutput the JSON verdict. Judge the on-disk file state against the stated goal: compare each content preview with what the user asked for. If a deliverable file EXISTS with real content that matches the goal, do not mark failed only because the result text does not spell that out. But a file marked UNCHANGED is byte-identical to the previous run's version — if the task asked for a change to that file, the change was NOT made, and that is a failure no matter what the result text claims.`;
 
     const apiProxyUrl = process.env.API_PROXY_URL || '';
     const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
@@ -2736,31 +2762,12 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
     return verdict;
 }
 
-// kimi-k2.6:cloud is the known offender: when a request is sent with think:false
-// (iterations after planning), Ollama stops separating the reasoning stream and
-// kimi dumps its full chain-of-thought as plain UNTAGGED text in message.content —
-// bypassing the <think>/<reasoning> tag stripping and leaking to users.
-// For these models we keep think:true on every request so reasoning arrives in the
-// separate message.thinking field, which the stream handlers already route to
-// fullThinking (never shown to users). Models that already behave with the
-// iteration-1-only policy (nemotron, deepseek, etc.) are deliberately NOT listed,
-// to avoid changing their token usage/latency; extend the pattern if another model
-// is caught leaking untagged reasoning. glm leaks: with think off (atlas/vulkan
-// only think on iteration 0), glm-5.3:cloud streamed tool-mechanics reasoning as
-// CONTENT on later iterations (atlas-10gs iter 44, vulkan-8vzh iter 5, both
-// narrating about browser_type internals instead of calling it).
-const ALWAYS_THINK_MODEL_RE = /^(kimi|glm)/i;
-function modelRequiresThink(model: string): boolean {
-    return ALWAYS_THINK_MODEL_RE.test(model || '');
-}
-
 // Granite 4.x models — including the orchatlas-ft seat fine-tune, which is
-// granite4.2 under a non-granite name — plan inside their normal turn. Forcing
-// a separate think pass on them spends the whole turn in the think channel and
-// comes back with no content (2026-10-18: "Dominic asked whether…" rumination
-// then a clean stop, 0 content, 0 tools). They are deliberately excluded from
-// every forced-think decision, matching the sub-agent loop's long-standing
-// granite exclusion.
+// granite4.2 under a non-granite name — get the granite model-card sampling
+// below. Thinking decisions never use this regex: they read the model's
+// advertised capability from Ollama (modelThinksCached), so a granite model
+// that reasons inside its normal turn is excluded by not advertising thinking,
+// not by its name.
 const GRANITE_MODEL_RE = /granite|orchatlas/i;
 
 // Max tokens one reply may generate — the dashboard's "Max output" row
@@ -2822,16 +2829,27 @@ function qwenSampling(model: string, thinking = false): Record<string, number> {
         : { temperature: 0.7, top_p: 0.8, top_k: 20 };
 }
 
-// Per-model native context window, fetched once from Ollama /api/show and
-// cached. Ollama reports it as model_info.<architecture>.context_length (e.g.
-// gemma4.context_length = 262144). This is the model's individual cap — the
-// ceiling for any dashboard override, and the value used when no override is
-// set. Nothing is hardcoded here; the cap is whatever Ollama says it is.
+// Per-model native context window AND thinking capability, fetched once from
+// Ollama /api/show and cached in sibling maps. Ollama reports the window as
+// model_info.<architecture>.context_length (e.g. gemma4.context_length =
+// 262144) — this is the model's individual cap, the ceiling for any dashboard
+// override and the value used when no override is set. Nothing is hardcoded
+// here; the cap is whatever Ollama says it is.
+//
+// Thinking is a CAPABILITY, never a model-name guess. Ollama lists it in the
+// top-level `capabilities` array (the same source ollama-native.ts reads):
+// qwen3-coder-next reports ['completion','tools'] with no 'thinking', so a
+// forced think:true is rejected 400 "does not support thinking" before the
+// model even loads — Vulkan was dead-on-arrival exactly this way (2026-11-06).
+// One /api/show call fills both caches. A fetch that fails leaves the thinking
+// entry cold, and modelThinksCached resolves cold to false — the safe default
+// (think off never 400s).
 const MODEL_CTX_CACHE = new Map<string, number>();
+const MODEL_THINKING_CACHE = new Map<string, boolean>();
 async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number | undefined> {
     if (!model) return undefined;
     const cached = MODEL_CTX_CACHE.get(model);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && MODEL_THINKING_CACHE.has(model)) return cached;
     try {
         const resp = await fetch(`${ollamaUrl}/api/show`, {
             method: 'POST',
@@ -2839,9 +2857,11 @@ async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number |
             body: JSON.stringify({ model }),
             signal: AbortSignal.timeout(10_000),
         });
-        if (!resp.ok) return undefined;
+        if (!resp.ok) return cached;
         const data = await resp.json() as any;
         const info = (data && typeof data.model_info === 'object') ? data.model_info : {};
+        const caps = (data && (data.capabilities || data.model_info?.capabilities)) || [];
+        MODEL_THINKING_CACHE.set(model, Array.isArray(caps) && caps.includes('thinking'));
         let ctx: number | undefined;
         const arch = info['general.architecture'];
         if (arch && typeof info[`${arch}.context_length`] === 'number') {
@@ -2856,38 +2876,8 @@ async function fetchModelCtx(ollamaUrl: string, model: string): Promise<number |
             MODEL_CTX_CACHE.set(model, ctx);
             return ctx;
         }
-        return undefined;
-    } catch { return undefined; }
-}
-
-// Per-model "supports thinking" flag, fetched once from Ollama /api/show's
-// top-level `capabilities` array (the same source ollama-native.ts reads).
-// Thinking must be a CAPABILITY decision, never a model-name guess:
-// qwen3-coder-next reports ['completion','tools'] with no 'thinking', so a
-// forced think:true is rejected 400 "does not support thinking" before the
-// model even loads — Vulkan was dead-on-arrival exactly this way (2026-11-06).
-// A model that doesn't advertise thinking gets think:false everywhere; a fetch
-// that fails also resolves to false, which is the safe default (think off
-// never 400s).
-const MODEL_THINKING_CACHE = new Map<string, boolean>();
-async function modelSupportsThinking(ollamaUrl: string, model: string): Promise<boolean> {
-    if (!model) return false;
-    const cached = MODEL_THINKING_CACHE.get(model);
-    if (cached !== undefined) return cached;
-    try {
-        const resp = await fetch(`${ollamaUrl}/api/show`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model }),
-            signal: AbortSignal.timeout(10_000),
-        });
-        if (!resp.ok) return false;
-        const data = await resp.json() as any;
-        const caps = (data && (data.capabilities || data.model_info?.capabilities)) || [];
-        const supports = Array.isArray(caps) && caps.includes('thinking');
-        MODEL_THINKING_CACHE.set(model, supports);
-        return supports;
-    } catch { return false; }
+        return cached;
+    } catch { return cached; }
 }
 function modelThinksCached(model: string): boolean {
     return MODEL_THINKING_CACHE.get(model) === true;
@@ -3639,10 +3629,10 @@ async function runSubAgentInner(
     log(`[${agentName}] Starting sub-agent: model=${model}, tools=${tools.length}, maxIter=${maxIterations > 0 ? maxIterations : '∞ (ceiling ' + HARD_CEILING + ')'}, task="${task.slice(0, 80)}"`);
 
     // Warm the native-ctx cache from Ollama so getNumCtx can cap/serve it below.
+    // Warm both native-ctx and thinking-capability caches from the same
+    // /api/show call, so the turn's think decision (subThink below) gates on
+    // real capability, never a model-name guess.
     await fetchModelCtx(OLLAMA_URL, model);
-    // Also warm the thinking-capability cache so the turn's think decision
-    // (forcedFirstThink/subThink below) gates on capability, not a name guess.
-    await modelSupportsThinking(OLLAMA_URL, model);
 
     // NOTE: we deliberately do NOT evict the orchestrator model here. Evicting
     // the orchestrator to run a granite sub-agent forces it to RELOAD (~16s) on
@@ -3844,15 +3834,15 @@ async function runSubAgentInner(
                     jobsList: currentJobsList(),
                 });
             }, 2000);
-            // Granite reasons on its own, so the forced first-iteration think
-            // pass is pure cost: the whole turn goes into the think channel and
-            // comes back with no content and no tool call, which the loop below
-            // scores as a dead turn and ends the job ("produced no output and
-            // ran no tools" twice in a row, 2026-09-18 14:09 and 14:11). The
-            // flag was written for models that needed a planning nudge; granite
-            // plans inside its normal turn and acts in the same one.
-            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && !GRANITE_MODEL_RE.test(model) && modelThinksCached(model);
-            let subThink = (forcedFirstThink || modelRequiresThink(model)) && modelThinksCached(model);
+            // Atlas/vulkan get one planning pass on iteration 0 — a planning
+            // step up front stops them diving into a read-edit-read-edit loop.
+            // The flag is gated on the model's advertised thinking CAPABILITY
+            // (never a name guess): a model that does not advertise thinking
+            // gets think:false and can never 400 "does not support thinking" on
+            // turn 1. Models that reason inside their normal turn (granite)
+            // simply do not advertise thinking, so they stay on the plain path.
+            const forcedFirstThink = (agentName === 'atlas' || agentName === 'vulkan') && i === 0 && modelThinksCached(model);
+            let subThink = forcedFirstThink;
             const subAgentChatBody = () => ({
                 model,
                 messages,
@@ -3863,8 +3853,8 @@ async function runSubAgentInner(
                 // planning step up front stops it diving into a read-edit-read-edit
                 // re-reading loop (it decides what it needs once, then reads each
                 // file a single time). Later iterations keep think off to preserve
-                // context for the visible answer. kimi and other leak-when-disabled
-                // models keep think on every request.
+                // context for the visible answer. subThink is already gated on the
+                // model's advertised thinking capability.
                 think: subThink,
                 ...(format !== undefined ? { format } : {}),
                 signal: silenceController.signal,
@@ -4649,7 +4639,7 @@ const marmRecallSection = marmEnabled
         // one rule set.
         const modeBlock = '\n\n{"crew":{\n'
               + crewBlock()
-              + '\n},"routing":{"mail":"email/calendar/reminders/tasks → always iris","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → call the specialists directly, one piece at a time, verify each result with read_job_result, keep talking","long_text":"a long written piece for the user to read (post, document, report) → call vulkan once with the ask inline, then deliver what it returns","else":"do it yourself — one call per intent"}'
+              + '\n},"routing":{"mail":"email/calendar/reminders → always iris","project":"work tasks, projects, deliverables, blockers → your own project tool, one call","long_work":"minutes of browsing, multi-step builds → atlas_background, keep talking","chains":"multi-specialist → call the specialists directly, one piece at a time, verify each result with read_job_result, keep talking","long_text":"a long written piece for the user to read (post, document, report) → call vulkan once with the ask inline, then deliver what it returns","else":"do it yourself — one call per intent"}'
               // Proactive: the seat owns the machine it sits on — a broken thing
               // it can fix with its own tools is its job, not a report to the
               // user (2026-09-21: "it reports easily fixable things instead of
@@ -4819,8 +4809,8 @@ const marmRecallSection = marmEnabled
         // cap the dashboard override at the model's real window (and serve it as
         // the default when no override is set). Cheap: cached per model after the
         // first turn; a dashboard model change just fetches the new model once.
+        // The same call also warms the thinking-capability cache.
         await fetchModelCtx(OLLAMA_URL, model);
-        await modelSupportsThinking(OLLAMA_URL, model);
         // No per-turn flow-control reminder — the model replies when done and emits a
         // tool call when it needs one. (Completion guidance lives in the system prompt.)
         // The parent composes the prompt with <chat_history> baked in. The
@@ -5014,15 +5004,11 @@ const marmRecallSection = marmEnabled
                 const _orchCtx = getNumCtx(model, seatCtxOverride(model));
                 const requestBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: _orchCtx, ...graniteSampling(model) } };
                 // First turn uses thinking so the orchestrator can plan; later iterations
-                // keep it off to preserve context for the visible answer. Models that leak
-                // reasoning when thinking is disabled (kimi) stay on every round.
+                // keep it off to preserve context for the visible answer.
                 // 'max' forces thinking on every iteration; 'false'/'off' disables it.
+                // The flag is gated on the model's advertised thinking CAPABILITY,
+                // never a name guess — a model without it gets think:false.
                 if (showThinking) {
-                    // Same reason the sub-agent loop stopped forcing it (see
-                    // forcedFirstThink): granite plans inside its normal turn,
-                    // so spending iteration 1 in the think channel buys nothing
-                    // and risks a turn with no content. An explicit 'max' from
-                    // the user still wins — that knob is theirs.
                     // A one-call mechanical ask (play/skip/pause — the playback
                     // classifier) skips the planning pass entirely: 4.4k think
                     // tokens before a single youtube call was ten seconds of
@@ -5031,8 +5017,8 @@ const marmRecallSection = marmEnabled
                     // fresh runner embeds <chat_history>, and any old playback word
                     // in it mis-flagged the turn (same defect as the stand-down
                     // classifier, 2026-09-21).
-                    requestBody.think = modelThinksCached(model) && (thinkingAlways || modelRequiresThink(model)
-                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk) && !GRANITE_MODEL_RE.test(model)));
+                    requestBody.think = modelThinksCached(model) && (thinkingAlways
+                        || (toolIteration === 1 && !PLAYBACK_ASK_RE.test(lastUserAsk)));
                 } else {
                     // Explicitly disable thinking — otherwise thinking-capable models
                     // (granite4/gemma4) emit a `thinking` field with empty `content`,
@@ -5083,6 +5069,9 @@ const marmRecallSection = marmEnabled
                     const errorText = await response.text().catch(() => '');
                     if (errorText.includes('does not support thinking') || errorText.includes('Bad Request')) {
                         log('Model does not support thinking, retrying without think parameter');
+                        // The capability cache said "thinking", but Ollama rejected
+                        // it — record the true capability for every later turn.
+                        MODEL_THINKING_CACHE.set(model, false);
                         delete requestBody.think;
                         response = await fetch(CHAT_URL, {
                             method: 'POST',
@@ -5307,11 +5296,12 @@ const marmRecallSection = marmEnabled
                 // 'length' (budget), missing/empty reason (qwen emitted a malformed
                 // tool call at 21:15 — Ollama's parser dropped it server-side and
                 // returned 200 with no done_reason, 0 content, 0 tool calls), or
-                // any other dead end. A clean 'stop' is NOT retried: the granite
-                // seats are never forced into the think channel (GRANITE_MODEL_RE
-                // at the think decision below), so an empty clean stop is the
-                // model's own finish — handled by the empty-reply fallback, not by
-                // forcing thinking off.
+                // any other dead end. A clean 'stop' is NOT retried: a model
+                // that does not advertise thinking is never forced into the
+                // think channel (modelThinksCached at the think decision
+                // above), so an empty clean stop is the model's own finish —
+                // handled by the empty-reply fallback, not by forcing thinking
+                // off.
                 if (doneReason !== 'stop' && !fullContent.trim() && collectedToolCalls.length === 0
                     && thinkBudgetRetries < 1) {
                     thinkBudgetRetries++;
@@ -5640,7 +5630,7 @@ const marmRecallSection = marmEnabled
                             if (trimmedRetry !== messages) { messages.length = 0; messages.push(...trimmedRetry); }
                             const retryBody: any = { model, messages, tools: mergeSkillTools(), stream: true, keep_alive: orchestratorKeepAlive(), options: { num_predict: maxOutput('orchestrator'), temperature: 0.3, num_ctx: getNumCtx(model, seatCtxOverride(model)), ...graniteSampling(model) } };
                             if (showThinking) {
-                                retryBody.think = modelThinksCached(model) && (thinkingAlways || toolIteration <= 1 || modelRequiresThink(model));
+                                retryBody.think = modelThinksCached(model) && (thinkingAlways || toolIteration <= 1);
                             } else {
                                 retryBody.think = false;
                             }
@@ -5774,7 +5764,9 @@ const marmRecallSection = marmEnabled
                     options: { num_predict: maxOutput('oneshot'), temperature: 0.3, num_ctx: getNumCtx(model, seatCtxOverride(model)), ...graniteSampling(model) },
                 };
                 // No `tools` key — model cannot emit tool_calls, must produce text.
-                forcedBody.think = modelThinksCached(model) && modelRequiresThink(model);
+                // Capability-safe: the forced final round exists to spend the
+                // whole budget on visible text, so it never asks for thinking.
+                forcedBody.think = false;
                 Object.assign(forcedBody.options, qwenSampling(model, !!forcedBody.think));
                 const forcedController = new AbortController();
                 const forcedResp = await fetch(CHAT_URL, {
@@ -6566,7 +6558,7 @@ async function executeXmlTool(toolName: string, args: any, context: any, modifie
                 // a follow-up is new work and must not consume a credit. But a
                 // queued follow-up spawns later via drainFollowups, gate-free,
                 // so refuse HERE (read-only) when the goal's retry is spent —
-                // a re-worded retry of a failed goal must not skip the rail by
+                // a same-goal retry of a failed task must not skip the rail by
                 // arriving while a same-file job is running (observed 2026-08-24).
                 if (goalRetryExhausted(task)) {
                     log(`[dedup] target-overlap: refusing queue — goal's retry credit already spent (${taskSig(task)})`);
