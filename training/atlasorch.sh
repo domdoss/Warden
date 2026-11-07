@@ -29,13 +29,14 @@
 #   UNLOAD_OLLAMA 0 = keep resident Ollama models       (default: 1)
 #   LLAMA_CPP    path to a built llama.cpp checkout     (default: ~/src/llama.cpp)
 #
-# MAX_LEN matters more here than anywhere else in this directory. Every row
-# carries the whole 57-tool schema block, so the SHORTEST row is already far
-# past the trainer's 6144 default — and the trainer left-truncates, which would
-# amputate the system prompt and the tool schemas from every single example
-# while still reporting a clean run. Left unset, this script measures the real
-# dataset with check_seqlen.py and rounds the max up to the next multiple of
-# 256, so the cap can never silently clip a row.
+# MAX_LEN matters more here than anywhere else in this directory. Rows carry
+# the live seat prompt plus only the tool schemas they exercise (prose rows
+# carry none), so the shortest rows are short — but the tool rows still run
+# past the trainer's 6144 default, and the trainer left-truncates, which would
+# amputate the system prompt and the tool schemas from those examples while
+# still reporting a clean run. Left unset, this script measures the real
+# dataset and rounds the max up to the next multiple of 256, so the cap can
+# never silently clip a row.
 #
 # Usage:
 #   ./atlasorch.sh

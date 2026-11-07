@@ -9,10 +9,8 @@ function writeCallback(tool: string, args: unknown): void {
 registry.register({
     name: 'open_app',
     // One-line JSON ≤200 chars: stripTier clamps anything longer to the first
-    // line, slicing mid-JSON — and the old prose (which named the retired
-    // browser_navigate tool) was ~600 chars, so the seat only ever saw its
-    // first sentence anyway.
-    description: '{"what":"open a file/app on the host display, fire-and-forget","app":"binary name, or xdg-open with an absolute file path","rule":"no driving what it opened; web pages belong to the browser tools"}',
+    // line, slicing mid-JSON — so the description is dense facts, no prose.
+    description: '{"what":"open a local file/app via OS default handler (xdg-open /abs/path)","app":"binary name; xdg-open /abs/x.html opens local .html in the default browser","rule":"remote http(s) → browser tools"}',
     schema: {
         type: 'object',
         properties: {

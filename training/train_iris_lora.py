@@ -51,9 +51,10 @@ if "LOCAL_RANK" not in os.environ and "CUDA_VISIBLE_DEVICES" not in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
+# Unsloth before transformers (it patches their modules at import time).
+from unsloth import FastLanguageModel
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments
-from unsloth import FastLanguageModel
 from accelerate import PartialState
 
 
