@@ -150,8 +150,15 @@ for (const r of toolRows) {
 // cap = the most rows a single primary tool may keep. Every tool with at least
 // one row keeps at least one (see MIN per group below); the totals land near
 // 330 rows, down from 2,063.
+// youtube is 72 (not ~28) because MUST_KEEP front-loads every referential
+// "play that X" row (s35 + s37, 62 rows) ahead of the direct "play <genre>"
+// rows. At cap 28 the referential family alone overflowed the cap, dropping all
+// direct rows AND still leaving only 2 "from earlier" rows — so "play that
+// ambient thing from earlier" kept folding into media_control{"action":"play"}
+// (the base model's resume prior). 72 keeps all 62 referential + a 10-row floor
+// of direct rows, so both "play that X from earlier" and "play some X" survive.
 const CAP = {
-    iris: 30, Bash: 28, youtube: 28, vulkan: 22, project: 26,
+    iris: 30, Bash: 28, youtube: 72, vulkan: 22, project: 26,
     read_job_result: 18, read_file: 18, write_file: 18, WebFetch: 15,
     chrome_javascript: 12, WebSearch: 10, chrome_navigate: 10, list_running_agents: 10,
     audio_volume: 8, generate_pdf: 8, convert_file: 6,
@@ -193,6 +200,11 @@ function askText(r) {
     }
     return '';
 }
+// Referential "play that X" asks (demonstrative "that") — a play-verb + "that",
+// NOT bare \bthat\b (the descriptive asks "music that disappears", "vaporwave
+// does that to me" also contain "that" and a broad match would overflow the cap).
+const REFERENTIAL_RE = /\b(bring back|go back to|put on|play|put|resume|restart)\s+that\b|\bwe had going\b/i;
+
 // Rows that MUST survive the hash lottery regardless of cap. The seat's routing
 // prompt says "work tasks → project", but the corpus only ever taught "add a
 // task"/"todo" → project, so "create a work task" fell through to write_file
@@ -200,11 +212,11 @@ function askText(r) {
 const MUST_KEEP = [
     { tool: 'project', re: /work task/i },
     // Referential music asks ("play that X", "put that X back on", "the X we had
-    // going") exist ONLY in the s35 part — the corpus otherwise names music
+    // going") exist ONLY in the s35/s37 parts — the corpus otherwise names music
     // directly. The hash lottery was dropping all 8 rows, so nothing taught
     // "play that X" → youtube and the seat improvised recall + raw chrome_navigate
     // (2026-11-07, "play that dark cyberpunk mix"). Force them through the cap.
-    { tool: 'youtube', re: /\bthat\b|\bwe had going\b/i },
+    { tool: 'youtube', re: REFERENTIAL_RE },
 ];
 const groups = new Map();
 for (const r of toolRows) {
@@ -613,6 +625,14 @@ const keptToolDeduped = [];
 let ytDupDropped = 0;
 for (const r of keptTool) {
     if (primaryTool(r) !== 'youtube') { keptToolDeduped.push(r); continue; }
+    // Referential rows ("play that X from earlier", "the X we had going") teach
+    // a PHRASING, not a destination — "play that ambient thing from earlier" and
+    // "play ambient music" both reach query "ambient music" but must both
+    // survive, or the "from earlier" → youtube (not media_control resume) signal
+    // is dropped and the seat folds it back into media_control (2026-11-07).
+    // Exempt them from the one-row-per-destination dedupe; the exact-duplicate
+    // guard at assemble still collapses true repeats.
+    if (REFERENTIAL_RE.test(askText(r))) { keptToolDeduped.push(r); continue; }
     const d = youtubeDest(r);
     if (!d) { keptToolDeduped.push(r); continue; }
     if (ytSeen.has(d)) { ytDupDropped++; continue; }

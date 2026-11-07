@@ -98,7 +98,96 @@ R.append(row(
     reply("Playing the dark synthwave mix.")
 ))
 
-assert len(R) == 8, f"expected 8 rows, got {len(R)}"
+# 9-20. More referential "play that X" shapes (2026-11-07): 8 rows still left the
+# seat narrating a memory-loss excuse ("you lost it when MARM got upgraded")
+# before naming the song — the demonstrative "that" kept triggering a recall
+# step the play tool does not need. These widen the phrasings, and every reply
+# is the clean "Playing X" the tool result carries, with no memory narrative.
+R.append(row(
+    "play that synthwave mix again",
+    call("youtube", {"action": "play", "query": "synthwave mix"}),
+    tool("youtube", "Playing: Synthwave Mix — Retro Future Drive\nhttps://www.youtube.com/watch?v=ABCDEFGHIJK"),
+    reply("Playing the synthwave mix.")
+))
+
+R.append(row(
+    "put that chillhop radio back on",
+    call("youtube", {"action": "play", "query": "chillhop radio"}),
+    tool("youtube", "Playing: Chillhop Radio — Beats to Relax\nhttps://www.youtube.com/watch?v=LMNOPQRSTUV"),
+    reply("Chillhop radio's back on.")
+))
+
+R.append(row(
+    "resume that ambient playlist",
+    call("youtube", {"action": "play", "query": "ambient playlist"}),
+    tool("youtube", "Playing: Ambient Playlist — Deep Space\nhttps://www.youtube.com/watch?v=WXYZABCDEFG"),
+    reply("Playing the ambient playlist.")
+))
+
+R.append(row(
+    "go back to that lo-fi station",
+    call("youtube", {"action": "play", "query": "lo-fi station"}),
+    tool("youtube", "Playing: Lo-Fi Station — Study Beats\nhttps://www.youtube.com/watch?v=HIJKLMNOPQR"),
+    reply("Lo-fi station is back.")
+))
+
+R.append(row(
+    "play that rain sounds thing",
+    call("youtube", {"action": "play", "query": "rain sounds"}),
+    tool("youtube", "Playing: Rain Sounds for Sleep\nhttps://www.youtube.com/watch?v=STUVWXYZABC"),
+    reply("Playing rain sounds.")
+))
+
+R.append(row(
+    "bring back that jazz playlist",
+    call("youtube", {"action": "play", "query": "jazz playlist"}),
+    tool("youtube", "Playing: Jazz Playlist — Coffee Shop\nhttps://www.youtube.com/watch?v=DEFGHIJKLMN"),
+    reply("Jazz playlist is back.")
+))
+
+R.append(row(
+    "play that techno mix from earlier",
+    call("youtube", {"action": "play", "query": "techno mix"}),
+    tool("youtube", "Playing: Techno Mix — Warehouse Set\nhttps://www.youtube.com/watch?v=OPQRSTUVWXY"),
+    reply("Playing the techno mix.")
+))
+
+R.append(row(
+    "put that white noise track on again",
+    call("youtube", {"action": "play", "query": "white noise"}),
+    tool("youtube", "Playing: White Noise — 10 Hours\nhttps://www.youtube.com/watch?v=ZABCDEFGHIJ"),
+    reply("White noise is on.")
+))
+
+R.append(row(
+    "play that classical thing",
+    call("youtube", {"action": "play", "query": "classical music"}),
+    tool("youtube", "Playing: Classical Music — Focus\nhttps://www.youtube.com/watch?v=KLMNOPQRSTU"),
+    reply("Playing classical.")
+))
+
+R.append(row(
+    "restart that focus playlist",
+    call("youtube", {"action": "play", "query": "focus playlist"}),
+    tool("youtube", "Playing: Focus Playlist — Deep Work\nhttps://www.youtube.com/watch?v=VWXYZABCDEF"),
+    reply("Focus playlist is back on.")
+))
+
+R.append(row(
+    "play that instrumental we had going",
+    call("youtube", {"action": "play", "query": "instrumental music"}),
+    tool("youtube", "Playing: Instrumental — Study\nhttps://www.youtube.com/watch?v=GHIJKLMNOPQ"),
+    reply("Playing instrumental.")
+))
+
+R.append(row(
+    "put that binaural beats thing back",
+    call("youtube", {"action": "play", "query": "binaural beats"}),
+    tool("youtube", "Playing: Binaural Beats — Focus\nhttps://www.youtube.com/watch?v=RSTUVWXYZAB"),
+    reply("Binaural beats are on.")
+))
+
+assert len(R) == 20, f"expected 20 rows, got {len(R)}"
 path = os.path.join(HERE, "s35-referential-play.jsonl")
 with open(path, "w") as f:
     for r in R:
