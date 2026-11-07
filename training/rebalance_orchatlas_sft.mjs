@@ -151,7 +151,7 @@ for (const r of toolRows) {
 // one row keeps at least one (see MIN per group below); the totals land near
 // 330 rows, down from 2,063.
 const CAP = {
-    iris: 30, Bash: 28, youtube: 28, vulkan: 22, project: 18,
+    iris: 30, Bash: 28, youtube: 28, vulkan: 22, project: 26,
     read_job_result: 18, read_file: 18, write_file: 18, WebFetch: 15,
     chrome_javascript: 12, WebSearch: 10, chrome_navigate: 10, list_running_agents: 10,
     audio_volume: 8, generate_pdf: 8, mcp__marm__marm_smart_recall: 8, convert_file: 6,
@@ -179,6 +179,21 @@ function hash(s) {
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
     return h >>> 0;
 }
+// Ask text of a row = the first plain user message (excludes the stamped system
+// prompt, so a "work task" routing line there does not false-positive).
+function askText(r) {
+    for (const m of r.messages) {
+        if (m.role === 'user' && typeof m.content === 'string') return m.content;
+    }
+    return '';
+}
+// Rows that MUST survive the hash lottery regardless of cap. The seat's routing
+// prompt says "work tasks → project", but the corpus only ever taught "add a
+// task"/"todo" → project, so "create a work task" fell through to write_file
+// (2026-11-06). These rows force the literal phrase into the balanced sample.
+const MUST_KEEP = [
+    { tool: 'project', re: /work task/i },
+];
 const groups = new Map();
 for (const r of toolRows) {
     const k = primaryTool(r);
@@ -191,7 +206,17 @@ for (const [name, list] of [...groups.entries()].sort((a, b) => b[1].length - a[
     const cap = CAP[name] ?? DEFAULT_CAP;
     const sorted = [...list].sort((a, b) => hash(JSON.stringify(a)) - hash(JSON.stringify(b)));
     const keep = Math.min(sorted.length, Math.max(1, cap));
-    keptTool.push(...sorted.slice(0, keep));
+    // Must-keep rows go to the front of the slice, the rest fill to `keep`.
+    const mk = MUST_KEEP.filter((m) => m.tool === name);
+    let selected;
+    if (mk.length) {
+        const yes = [], no = [];
+        for (const r of sorted) (mk.some((m) => m.re.test(askText(r))) ? yes : no).push(r);
+        selected = [...yes, ...no].slice(0, keep);
+    } else {
+        selected = sorted.slice(0, keep);
+    }
+    keptTool.push(...selected);
     report.push(`${name}=${keep}/${sorted.length}`);
 }
 

@@ -2495,13 +2495,6 @@ function verifyWrittenFiles(activityLog: { t: number; tool: string; args: string
     return [...seen.values()];
 }
 
-// Heuristic: does a `failed` reason indicate the deliverable CONTENT is wrong
-// (a real failure we must respect) vs. the result TEXT not confirming a file
-// (the false-fail signature we override)? Keywords that signal a genuine
-// content problem → keep `failed`. Everything else with a file on disk is a
-// textual false-fail.
-const REAL_FAIL_KEYWORDS = /\b(empty|blank|0 bytes|placeholder|wrong|incorrect|broken|malformed|garbled|missing the (menu|content|images|sections)|does not include the (menu|requested))\b/i;
-
 function writtenFilesSummary(files: WrittenFile[]): string {
     const present = files.filter(f => f.exists && f.size > 0);
     const absent = files.filter(f => !f.exists || f.size === 0);
@@ -2722,31 +2715,12 @@ async function runCompletionVerdict(opts: { task: string; fullResult: string; ac
         return { verdict: 'unverifiable', reason: 'verifier returned no verdict' };
     }
 
-    // Deterministic backstop: the verifier historically false-fails jobs that
-    // wrote a real file whenever the result prose didn't explicitly confirm it,
-    // and each false `failed` pushes the orchestrator toward report_task_failure
-    // → re-delegation → the one-atlas-gate murder cycle. If the model says
-    // `failed` but a file the job wrote is actually on disk with real content
-    // (>=100 bytes) AND the reason doesn't name a genuine content problem
-    // (empty/placeholder/wrong/missing-menu/…), this is a textual false-fail:
-    // downgrade to `unverifiable` so the orchestrator trusts the on-disk result
-    // instead of churning. A real content failure (reason names the defect) is
-    // respected and stays `failed`.
-    if (verdict.verdict === 'failed') {
-        // A file UNCHANGED from a previous run cannot rescue the verdict: the
-        // backstop exists for textual false-fails where the FILE is real work,
-        // but byte-identical output from a correction run is proof the
-        // correction did NOT happen — downgrading that to `unverifiable` would
-        // send the "claimed update, nothing changed" loop straight to the
-        // orchestrator as a success.
-        const realFile = writtenFiles.find(f => f.exists && f.size >= 100 && f.unchanged !== true);
-        const reason = String(verdict.reason || '');
-        if (realFile && !REAL_FAIL_KEYWORDS.test(reason)) {
-            const present = writtenFiles.filter(f => f.exists && f.size > 0).map(f => `${f.rel} (${f.size}B)`).join(', ');
-            log(`[completion-verdict] (model=${model}) OVERRODE failed→unverifiable: deliverable file(s) present on disk [${present}] but reason was textual, not a content defect — "${reason.slice(0, 120)}"`);
-            return { verdict: 'unverifiable', reason: `Deliverable file(s) present on disk [${present}]; verifier flagged the result text, not the file content — trusting the on-disk result.`, followup: verdict.followup };
-        }
-    }
+    // The verdict prompt already carries the ground-truth on-disk file state
+    // (which files the job wrote, whether each exists, a preview of each), so a
+    // `failed` verdict is now the verifier's genuine call against the file
+    // contents — there is no post-hoc "file exists, so trust it" override to
+    // second-guess it. A `failed` stays `failed`; the orchestrator's retry rail
+    // and re-delegation logic own the next move.
 
     // The verbatim-loop guard runs in BOTH directions: when the judge marks the
     // job confirmed but a deliverable is UNCHANGED from a previous run, the
