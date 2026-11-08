@@ -1296,7 +1296,7 @@ function defaultsSection(): string {
             ? { provider: server, does: 'reading and acting on any website page (facebook, social media, forums, news): navigate there, read it, act on it' }
             : `${server} MCP tools`)}`);
         if (cap === 'browser') {
-            entries.push(`${JSON.stringify('media')}: ${JSON.stringify({ tool: 'youtube', does: 'music/mix/song/playlist/video: play, pause, resume, skip, seek, now playing; a stop ask = pause', rule: 'one call, its result is the answer; a movie or TV show title is stremio (mcp__stremio__*), not youtube' })}`);
+            entries.push(`${JSON.stringify('media')}: ${JSON.stringify({ tool: 'youtube', does: 'music/mix/song/playlist/video: play, pause, resume, skip, seek, now playing; a play/put-on ask = action play, a stop ask = action pause', rule: 'one call, its result is the answer' })}`);
         }
     }
     if (entries.length === 0) return '';
@@ -2778,6 +2778,10 @@ function graniteSampling(model: string): Record<string, number> {
     // Toolcall-trained small granite (iris/byte/dexter, toolcall-ft): the
     // fine-tune transcribes tool calls — deterministic is the point.
     if (/toolcall-ft|granite4\.1:3b/i.test(m)) return { temperature: 0 };
+    // The seat fine-tune (orchatlas-ft) is trained and scored at temperature 0
+    // (see the seat test loop) — its job is deterministic routing, and a play
+    // ask must come back as the youtube:play call, not "Playing X now" text.
+    if (/orchatlas-ft/i.test(m)) return { temperature: 0 };
     // Conversational granite (the 8b/30b seats): argmax replayed the last
     // successful path verbatim — "play X" came back as chillstep again
     // (2026-09-19), and at 0.6 the seat kept answering Facebook asks with
@@ -4528,7 +4532,7 @@ const marmEnabled = (() => {
     }
 })();
 const marmRecallSection = marmEnabled
-    ? `\n{"long_term_recall":{"when":"the ask is about the user's own projects, company, machine, files, accounts, or past work, or names a specific project/person/file → call mcp__marm__marm_smart_recall with search_all:true and include_logs:true, then answer from what it returns","skip":"self-contained questions (math, definitions, general knowledge) → answer directly, no recall call","remember":"when the user asks you to remember something → mcp__marm__marm_log_entry, once per fact","code":"working on Warden's own code → mcp__marm__marm_code_context for symbols, mcp__marm__marm_graph_trace for a call path, mcp__marm__marm_graph_impact before a change"}}\n`
+    ? `\n{"long_term_recall":{"when":"the ask is about the user's own projects, company, machine, files, accounts, or past work, or names a specific project/person/file → call mcp__marm__marm_smart_recall with search_all:true and include_logs:true, then answer from what it returns","skip":"self-contained questions (math, definitions, general knowledge) → answer directly, no recall call; a play/music/song/mix/video ask is NEVER a recall — search fresh and play it with the youtube tool, one play call, no memory lookup","remember":"when the user asks you to remember something → mcp__marm__marm_log_entry, once per fact","code":"working on Warden's own code → mcp__marm__marm_code_context for symbols, mcp__marm__marm_graph_trace for a call path, mcp__marm__marm_graph_impact before a change"}}\n`
     : '';
 
 // SUPERVISOR DISABLED 2026-08-29 — removed the [Supervisor flag] instruction that used to
@@ -4653,7 +4657,7 @@ const marmRecallSection = marmEnabled
               // "playback is paused" while the music kept playing — the tool
               // card read play/search only, so control asks mapped to no tool).
               // Positive shape: the ask→action mapping + proof rule.
-              + ',"control":{"rule":"youtube or playing-music mention → the youtube tool; pause/stop = action pause, resume/unpause/continue = action resume","proof":"the tool result is the reply — never state a playback change without the call"}'
+              + ',"control":{"rule":"youtube or playing-music mention → the youtube tool; play/start/put on/put that → action play (one call, its result is the answer); pause/stop = action pause, resume/unpause/continue = action resume","proof":"the tool result is the reply — never state a playback change without the call"}'
               // BBS/BotNet grounding (2026-10-18): the friends/BBS tools joined
               // atlas-core with no prompt grounding, so a question about the BBS
               // answered with a confabulated dashboard URL + node port + a fake
