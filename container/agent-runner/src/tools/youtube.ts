@@ -764,7 +764,7 @@ registry.register({
     // JSON one-liner — the orchestrator seat (granite4.1:8b) reads this every
     // turn, and granite reads structure, not prose. Must stay under 200 chars
     // (stripTier clamps longer descriptions to the first line).
-    description: `{"what":"play/search/control YouTube","rule":"youtube mention → this tool; playback ask = one call, its result is the answer","query":"artist/genre/title as typed","other_players":"media_control"}`,
+    description: `{"what":"play/search/control music, songs, videos, mixes, playlists (lofi, chill, ambient) on YouTube","rule":"music/song/video/mix/playlist/play ask → this tool; one call, its result is the answer","query":"artist/genre/title as typed"}`,
     schema: {
         type: 'object',
         properties: {
