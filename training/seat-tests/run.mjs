@@ -13,7 +13,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import {
-  HERE, loadCases, loadToolSchemas, systemPrompt, selection, rankPass, recallOk, runModelCase,
+  HERE, loadCases, loadToolSchemas, systemPrompt, selection, rankPass, recallOk, runModelCase, chatRaw, ANCHOR,
 } from './lib.mjs';
 
 const MODEL = process.env.MODEL || 'orchatlas-ft';
@@ -33,6 +33,20 @@ const doA = LAYER === 'both' || LAYER === 'A';
 const doB = LAYER === 'both' || LAYER === 'B';
 
 console.log(`seat-tests → model=${MODEL} layer=${LAYER} cases=${cases.length}\n`);
+
+// Warm the model before scoring. The packed orchatlas-ft is served lazily by
+// Ollama: a freshly-created/reloaded model returns degraded, non-deterministic
+// output on its first call (observed 2026-11-07 — "put that lofi mix back on"
+// flipped between now_playing/media_control/search until the weights settled).
+// One real tool-call prompt loads the weights so the scored cases are stable.
+if (doB) {
+  try {
+    await chatRaw({ model: MODEL, messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: `${ANCHOR}\n\nplay some jazz` },
+    ], tools: merged.filter((t) => t.function.name === 'youtube') });
+  } catch { /* warm-up is best-effort */ }
+}
 
 const results = [];
 const failures = [];

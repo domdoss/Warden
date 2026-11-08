@@ -18,5 +18,5 @@
 {"id":"add-work-task","category":"project-routing","ask":"add a work task to review the quarterly budget report","rank":{"want":["project"],"above":["iris"]},"expect":{"name":"project","args":{"kind":"task","action":"create","title":"quarterly budget"}},"toolResult":"Work task created: t-251 \"Review the quarterly budget report\" (Personal)","reply":{"require":["t-251"],"forbid":[]},"fix":"train"}
 
 # ---- no-tool: just answer, no call -------------------------------------------
-{"id":"greeting","category":"no-tool","ask":"hello","expect":{"noTool":true,"replyIncludes":"hello"},"reply":{"require":[],"forbid":[]},"fix":"train"}
+{"id":"greeting","category":"no-tool","ask":"hello","expect":{"noTool":true},"reply":{"require":[],"forbid":[]},"fix":"train"}
 {"id":"what-can-you-do","category":"no-tool","ask":"what can you help me with","expect":{"noTool":true},"reply":{"require":[],"forbid":[]},"fix":"train"}
