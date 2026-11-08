@@ -150,15 +150,15 @@ for (const r of toolRows) {
 // cap = the most rows a single primary tool may keep. Every tool with at least
 // one row keeps at least one (see MIN per group below); the totals land near
 // 330 rows, down from 2,063.
-// youtube is 72 (not ~28) because MUST_KEEP front-loads every referential
-// "play that X" row (s35 + s37, 62 rows) ahead of the direct "play <genre>"
-// rows. At cap 28 the referential family alone overflowed the cap, dropping all
-// direct rows AND still leaving only 2 "from earlier" rows — so "play that
-// ambient thing from earlier" kept folding into media_control{"action":"play"}
-// (the base model's resume prior). 72 keeps all 62 referential + a 10-row floor
-// of direct rows, so both "play that X from earlier" and "play some X" survive.
+// youtube is 98 (not ~28) because MUST_KEEP front-loads every referential
+// "play that X" row (s35 + s37 + s38, ~88 rows) ahead of the direct "play
+// <genre>" rows. At cap 28 the referential family alone overflowed the cap,
+// dropping all direct rows AND leaving only 2 "from earlier" rows — so "play
+// that ambient thing from earlier" kept folding into media_control{"action":
+// "play"} (the base model's resume prior). 98 keeps all referential rows plus a
+// 10-row floor of direct rows, so every referential suffix family survives.
 const CAP = {
-    iris: 30, Bash: 28, youtube: 72, vulkan: 22, project: 26,
+    iris: 30, Bash: 28, youtube: 98, vulkan: 22, project: 26,
     read_job_result: 18, read_file: 18, write_file: 18, WebFetch: 15,
     chrome_javascript: 12, WebSearch: 10, chrome_navigate: 10, list_running_agents: 10,
     audio_volume: 8, generate_pdf: 8, convert_file: 6,
