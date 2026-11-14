@@ -38,7 +38,7 @@ registry.register({
             limit: { type: 'number', description: 'read: max emails to fetch before date filtering (default: 500)' },
             preview_only: { type: 'boolean', description: 'read: return previews only (default: true)' },
             folder: { type: 'string', description: 'read: mail folder (default: INBOX)' },
-            search: { type: 'string', description: 'read: optional text search (provider query, e.g. Gmail q=)' },
+            search: { type: 'string', description: 'read: optional LITERAL text/field query (provider q=, e.g. "from:support" or "invoice"). NOT a semantic filter — "important"/"urgent" are not text: for those omit search and judge from the read previews; "unread"/"starred" = is:unread / is:starred' },
             since: { type: 'string', description: 'read: ISO 8601 timestamp — only emails received at/after this' },
             before: { type: 'string', description: 'read: ISO 8601 timestamp — only emails received before this' },
             email_id: { type: 'string', description: 'get/download: the email id from a read result' },
@@ -180,7 +180,7 @@ registry.register({
 // ─── calendar: create | list | update | delete ────────────────────────────
 registry.register({
     name: 'calendar',
-    description: 'Local calendar (DB). action=create adds an event; action=list shows events in a date range; action=update changes an event by event_id (only provided fields); action=delete removes one by event_id.',
+    description: 'The user\'s calendar. action=list reads events between start and end (local ISO, e.g. "2026-11-14T00:00:00") — for "today" set start to today 00:00 and end to tomorrow 00:00; for "tomorrow" shift both one day later; for "this week" use now to +7 days. action=create adds an event (title + start_time required); action=update changes one by event_id; action=delete removes one by event_id. Use for "what events/meetings/appointments do I have", "what\'s on today/tomorrow/this week", "am I busy or free".',
     schema: {
         type: 'object',
         properties: {
@@ -217,7 +217,22 @@ registry.register({
                     const start = e.start || e.start_time || '';
                     const end = e.end || e.end_time || '';
                     const allDay = e.all_day || e.allDay;
-                    const when = allDay ? start : `${start}${end ? ' → ' + end : ''}`;
+                    // State the weekday in Vancouver time. Handing the model a bare
+                    // ISO timestamp made it compute the day itself and it drifted a
+                    // day ("Wed Nov 17" for a Tuesday, 2026-11-13).
+                    const vc = (iso: string, opts: Intl.DateTimeFormatOptions) => {
+                        const d = new Date(iso);
+                        return Number.isNaN(d.getTime())
+                            ? iso
+                            : d.toLocaleString('en-CA', { timeZone: 'America/Vancouver', ...opts });
+                    };
+                    const day = (iso: string) => vc(iso, { weekday: 'short', month: 'short', day: 'numeric' });
+                    const tm = (iso: string) => vc(iso, { hour: 'numeric', minute: '2-digit' });
+                    const when = !start
+                        ? ''
+                        : allDay
+                            ? `${day(start)} (all day)`
+                            : `${day(start)}, ${tm(start)}${end ? `–${tm(end)}` : ''}`;
                     const desc = e.description ? `\n      ${String(e.description).slice(0, 280)}` : '';
                     return `${i + 1}. ${when} | ${e.title}${e.location ? ' @ ' + e.location : ''} (uid ${e.uid || e.event_id})${desc}`;
                 }).join('\n\n');

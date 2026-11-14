@@ -1325,6 +1325,13 @@ const ORCHESTRATOR_SHARED_TOOLS = new Set<string>([
     // stays; anything that touches the internet delegates.
     'Bash', 'Read', 'open_app',
     'audio_volume', 'mic_volume', 'media_control',
+    // `calendar` reads directly on the seat (2026-11-13): a "what's on
+    // tomorrow / any meetings today" ask used to route through the `iris`
+    // delegate, whose `task` expects a bespoke JSON brief ({"intent":"list",
+    // ...}) that a non-fine-tuned seat model (qwen) does not emit — it hunted
+    // calendar files on disk instead. A first-class read is one call, no
+    // sub-agent, no wire format. Writes still go through iris.
+    'calendar',
     // Vision capture is NOT here any more (2026-09-18). This seat runs a
     // visionless local model, so a capture it cannot read was never an answer:
     // it captured, then guessed. Capture belongs to vulkan (the cloud seat that
@@ -1575,13 +1582,13 @@ function delegateToolDef(s: SubAgentDef) {
             type: 'function',
             function: {
                 name: s.delegate,
-                description: JSON.stringify({ delegate: s.label, does: s.summary, web: 'a website page = browser-driving tools', brief: 'one JSON object in, one JSON result back' }),
+                description: JSON.stringify({ delegate: s.label, does: s.summary + ' — email, mail, inbox, unread messages, attachments, check mail, read mail, send, reply, forward, draft, download, anything that came in or arrived or was received (past hour, today, this week), events, meetings, appointments, schedule, agenda, reminders, alarms', web: 'a website page = browser-driving tools', brief: 'one JSON object in, one JSON result back' }),
                 parameters: {
                     type: 'object',
                     properties: {
                         task: {
                             type: 'string',
-                            description: '{"what":"one JSON object, nothing else","keys":"intent (read|send|download|schedule|list|create|update|delete) + every id, address, filename, date, value inline","pick_by_user_ask":{"user_names_an_email":{"intent":"read","email_id":"<the id the user named>"},"user_gives_no_id_check_or_recent":{"intent":"read"},"user_wants_a_download":{"intent":"download","email_id":"<id>","filename":"<name>"}},"id_source":"every id key — email_id, alarm_id, task_id, event_id — carries a value one of iris earlier list/read results returned for that same noun, quoted exactly as it came back; hold no id for the noun and the brief omits the key, so the intent is the matching list/read and the id arrives from its result","rule":"no id = read/list every connected source, recent first","note":"no preamble, no time — the runner prepends local time"}',
+                            description: '{"what":"one JSON object, nothing else","keys":"intent (read|send|download|schedule|list|create|update|delete) + every id, address, filename, date, value inline — never invent extra keys like filter/detail/source","pick_by_user_ask":{"user_names_an_email":{"intent":"read","email_id":"<the id the user named>"},"user_gives_no_id_check_or_recent":{"intent":"read"},"user_wants_a_download":{"intent":"download","email_id":"<id>","filename":"<name>"}},"qualifier":"a word the user attaches to a read (important, urgent, unread, starred, recent, from X, about Y) is NOT search text: important/urgent → intent read with no extra keys, iris reads recent mail and reports what matters; unread → search is:unread; starred → search is:starred; from X / about Y / a literal term → search that term","id_source":"every id key — email_id, alarm_id, task_id, event_id — carries a value one of iris earlier list/read results returned for that same noun, quoted exactly as it came back; hold no id for the noun and the brief omits the key, so the intent is the matching list/read and the id arrives from its result","rule":"no id = read/list every connected source, recent first","note":"no preamble, no time — the runner prepends local time"}',
                         },
                     },
                     required: ['task'],
@@ -4302,8 +4309,32 @@ async function runNativeOllama(input: ContainerInput) {
             const n = t?.function?.name;
             return typeof n === 'string' && orchToolBlocked(n);
         };
-        const skillTools = (skillToolDefs() as any[]).filter((t) => !blocked(t));
-        const activeFiltered = (activeToolDefs as any[]).filter((t) => !blocked(t));
+        // Seat-level MCP trim. The menu is 12 slots and plumbing crowds out the
+        // tools that do the work: on 2026-11-13 marm took 1-4 slots and the time
+        // server 3, leaving 2-4 for anything actionable — "start the mix again"
+        // arrived with clocks, file readers and memory-curation tools and no
+        // player. Each of these servers exposes a pile of tools; the seat needs
+        // the few that answer a chat ask, not the ones that curate the store
+        // behind it. Unlisted servers pass through untouched.
+        const MCP_SEAT_ALLOW = new Map<string, Set<string>>([
+            ['mcp__marm__', new Set(['marm_smart_recall', 'marm_log_entry'])],
+            ['mcp__mcp-server-time__', new Set(['get_current_time'])],
+            // The built-in `Bash` tool is the seat's hand. The MCP shell server
+            // exposes a second shell tool whose `command` is an ARRAY, while
+            // `Bash` takes a STRING — the model mixed the two schemas and every
+            // terminal call died on "is not of type 'array'" (2026-11-13).
+            // One shell, one signature.
+            ['mcp__shell__', new Set<string>()],
+        ]);
+        const mcpAllowed = (n: string): boolean => {
+            for (const [prefix, allow] of MCP_SEAT_ALLOW) {
+                if (n.startsWith(prefix)) return allow.has(n.slice(prefix.length));
+            }
+            return true;
+        };
+        const seatOk = (t: any) => !blocked(t) && mcpAllowed(String(t?.function?.name || ''));
+        const skillTools = (skillToolDefs() as any[]).filter(seatOk);
+        const activeFiltered = (activeToolDefs as any[]).filter(seatOk);
         const nameOf = (t: any) => String(t?.function?.name || '');
         // The CURRENT ask, not a messages scan. This runs BEFORE this turn's
         // user message is pushed, so the scan picked up an EARLIER user turn.

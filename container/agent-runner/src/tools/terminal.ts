@@ -6,7 +6,7 @@ const EXIT_FILE = '/tmp/.warden_last_exit';
 
 registry.register({
     name: 'Bash',
-    description: 'Execute a bash command.',
+    description: 'Execute a bash command. Use for anything on the machine: disk space (df -h), folder sizes (du -sh), processes (ps), services (systemctl --user), memory, git, python3/node scripts, curl, installing packages, reading system state. One single-line command per call.',
     schema: {
         type: 'object',
         properties: {
