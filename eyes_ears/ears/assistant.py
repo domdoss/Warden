@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -70,6 +71,20 @@ class WardenBridge:
         # ("The story has been told.") for the same turn.
         self._spoke_message: bool = False
 
+        # Warden-initiated pushes (alarms, tasks, unsolicited replies from
+        # scheduled/background runs) are spoken without a local wake word.
+        # Gated by voice.warden_push_enabled.
+        voice_cfg = getattr(self.config, "voice", {}) or {}
+        self.push_enabled: bool = bool(voice_cfg.get("warden_push_enabled", True))
+        self._on_push: Optional[Callable[[str], None]] = None
+        self._is_idle: Optional[Callable[[], bool]] = None
+        # True between our own send_text/send_image and the chat_complete that
+        # answers it. A chat_complete seen while this is false did not come
+        # from the user's turn — it is a Warden push.
+        self._awaiting_user_turn: bool = False
+        self._awaiting_since: float = 0.0
+        self._last_push_preview: Optional[str] = None
+
     # ---------- lifecycle ----------
 
     async def aclose(self) -> None:
@@ -95,15 +110,44 @@ class WardenBridge:
         """Called when the server marks a turn complete (event type 'done' or 'turn_end')."""
         self._on_turn_end = cb
 
+    def on_push(self, cb: Callable[[str], None]) -> None:
+        """Called with text to announce for a Warden-initiated push event."""
+        self._on_push = cb
+
+    def set_idle_check(self, cb: Callable[[], bool]) -> None:
+        """Predicate telling the bridge whether the app is idle (safe to speak
+        an unsolicited chat reply without stepping on a user turn)."""
+        self._is_idle = cb
+
     # ---------- send ----------
 
+    def _begin_user_turn(self) -> None:
+        """Mark that the next chat_complete answers a send we initiated."""
+        self._awaiting_user_turn = True
+        self._awaiting_since = time.monotonic()
+
+    def _is_awaiting_user_turn(self) -> bool:
+        if not self._awaiting_user_turn:
+            return False
+        # A dropped SSE event must not make every later push look like a user
+        # turn. Voice/typed turns can run for minutes, so use a generous cap.
+        if time.monotonic() - self._awaiting_since > 900.0:
+            self._awaiting_user_turn = False
+            return False
+        return True
+
     async def send_text(self, text: str, sender_name: Optional[str] = None) -> dict:
-        return await self.client.send_message(
-            text=text,
-            jid=self.active_jid,
-            sender_name=sender_name,
-            model=self.model,
-        )
+        self._begin_user_turn()
+        try:
+            return await self.client.send_message(
+                text=text,
+                jid=self.active_jid,
+                sender_name=sender_name,
+                model=self.model,
+            )
+        except Exception:
+            self._awaiting_user_turn = False
+            raise
 
     async def send_image(
         self,
@@ -116,14 +160,19 @@ class WardenBridge:
 
         The reply streams back over SSE exactly like ``send_text``.
         """
-        return await self.client.send_image(
-            image_bytes=image_bytes,
-            jid=self.active_jid,
-            caption=caption,
-            sender_name=sender_name,
-            model=self.model,
-            ext=ext,
-        )
+        self._begin_user_turn()
+        try:
+            return await self.client.send_image(
+                image_bytes=image_bytes,
+                jid=self.active_jid,
+                caption=caption,
+                sender_name=sender_name,
+                model=self.model,
+                ext=ext,
+            )
+        except Exception:
+            self._awaiting_user_turn = False
+            raise
 
     async def stop(self) -> None:
         try:
@@ -156,6 +205,9 @@ class WardenBridge:
         et = (event.get("type") or "").lower()
         if et in ("connected", "ping", "keepalive"):
             return
+        if et in ("alarm", "alarm_created", "task"):
+            self._announce_event(et, event)
+            return
         if et == "agent_activity":
             line = event.get("line") or ""
             try:
@@ -186,6 +238,14 @@ class WardenBridge:
             self._dim_active = False
             self._in_tool_result = False
             preview = self._strip_attachments((event.get("message") or "").strip())
+            if et == "chat_complete" and not self._is_awaiting_user_turn():
+                # Not the answer to a turn we started: a Warden-initiated
+                # reply (scheduled run, background task). Announce it only
+                # when push is enabled and the app is idle, and never treat it
+                # as this app's turn (no on_turn_end / _turn_done signalling).
+                await self._announce_warden_reply(preview)
+                return
+            self._awaiting_user_turn = False
             if preview:
                 # Deduplicate: if we already spoke this exact content, don't repeat it.
                 if preview == getattr(self, "_last_spoken_preview", None):
@@ -197,7 +257,7 @@ class WardenBridge:
                 # Echo the full reply to stdout so it's visible in the run.sh
                 # terminal, not just spoken over TTS. The SSE event print above only
                 # carries a truncated preview.
-                print(f"[Jarvis] {full}")
+                print(f"[Warden] {full}")
                 if self._on_chunk is not None:
                     try:
                         self._on_chunk(full)
@@ -211,6 +271,53 @@ class WardenBridge:
             else:
                 self._finish_turn()
             return
+
+    # ---------- Warden pushes ----------
+
+    def _push_ready(self, require_idle: bool = False) -> bool:
+        """True when a push announcement may be spoken."""
+        if not (self.push_enabled and self._on_push is not None):
+            return False
+        if require_idle and self._is_idle is not None:
+            try:
+                if not self._is_idle():
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _announce(self, text: str) -> None:
+        text = self._strip_attachments(text).strip()
+        if not text or self._on_push is None:
+            return
+        try:
+            self._on_push(text)
+        except Exception as e:
+            print(f"[bridge] push announce failed: {e}")
+
+    def _announce_event(self, et: str, event: dict) -> None:
+        """Speak a short phrase for an alarm/task push."""
+        if not self._push_ready():
+            return
+        msg = (event.get("message") or event.get("title") or "").strip()
+        if not msg:
+            return
+        if et == "task":
+            self._announce(f"New task: {msg}")
+        else:
+            self._announce(f"Alarm: {msg}")
+
+    async def _announce_warden_reply(self, preview: str) -> None:
+        """Speak an unsolicited chat_complete (a Warden-initiated reply)."""
+        if not preview or not self._push_ready(require_idle=True):
+            return
+        if preview == self._last_push_preview:
+            return
+        if preview == getattr(self, "_last_spoken_preview", None):
+            return
+        self._last_push_preview = preview
+        full = await self._full_message(preview)
+        self._announce(full)
 
     async def _full_message(self, preview: str) -> str:
         """Resolve a truncated chat_complete preview to the full stored reply.

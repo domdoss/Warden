@@ -34,7 +34,7 @@ def _run(cmd: List[str], outfile: str) -> bool:
 
 def capture_screen() -> Optional[bytes]:
     """Grab the full screen. Tries Wayland (grim), KDE (spectacle), X11 (import)."""
-    fd, path = tempfile.mkstemp(suffix=".png", prefix="jarvis-shot-")
+    fd, path = tempfile.mkstemp(suffix=".png", prefix="warden-shot-")
     os.close(fd)
     try:
         attempts: List[List[str]] = []
@@ -74,7 +74,7 @@ def capture_webcam(device: str = "/dev/video0") -> Optional[bytes]:
     if not shutil.which("ffmpeg"):
         print("[capture] ffmpeg not installed; cannot capture webcam")
         return None
-    fd, path = tempfile.mkstemp(suffix=".jpg", prefix="jarvis-cam-")
+    fd, path = tempfile.mkstemp(suffix=".jpg", prefix="warden-cam-")
     os.close(fd)
     try:
         cmd = ["ffmpeg", "-y", "-f", "v4l2", "-i", device, "-frames:v", "1", path]

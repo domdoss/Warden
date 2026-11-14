@@ -58,22 +58,15 @@ voice:
   # alongside GPU STT on NVIDIA (the old CPU-only default was an AMD-ROCm
   # workaround that doesn't apply here).
   tts_device: ""
-  # Double-clap wake: clap twice to activate. clap_threshold is the
-  # AC-coupled int16 peak (DC offset removed) that counts as a clap onset.
-  # It's an amplitude floor: set it above your mic's speech peaks so only a
-  # deliberate, loud double-clap wakes the assistant. Raise it if talking false-
-  # triggers; lower it if loud claps get missed.
-  clap_enabled: true
-  # Sample rate (Hz) for the clap detector's mic stream. Independent of the STT
-  # sample_rate above (which must stay 16000 for Whisper). 48000 is the most
-  # universally supported by PipeWire/ALSA input nodes; 16000 can be rejected on
-  # some nodes on reopen (pause/resume), surfacing as "Invalid sample rate".
-  clap_sample_rate: 48000
-  clap_threshold: 7200
-  # Minimum peak/RMS (crest factor) for an onset to count as a clap. A clap is
-  # impulsive (high crest); speech/music/steady noise are flatter. Raise it to
-  # reject more non-clap sounds, lower it if real claps get missed.
-  clap_crest: 4.0
+  # Wake-word detection. Say the wake word to start a turn. The word has no
+  # pre-trained low-power model, so it is spotted by transcribing a rolling
+  # mic window with a small local Whisper model ("tiny.en") and matching the
+  # word in the result — works for any word, no training required.
+  wake_word: warden
+  wake_word_enabled: true
+  # Warden-initiated push: speak alarms/tasks and unsolicited chat replies
+  # (e.g. from scheduled/background runs) without a local wake word.
+  warden_push_enabled: true
 
 ui:
   button_color: '#DC143C'
@@ -100,7 +93,7 @@ satellite:
   # per press; no auto-listen loop after the reply. true = button (default for a
   # Pi with a push button); false = VAD auto-stop (for a buttonless remote mic
   # that should record until speech pauses). Only affects satellite mode; the
-  # local laptop hologram always uses VAD + clap + the listen loop.
+  # local laptop hologram always uses VAD + wake word + the listen loop.
   push_to_talk: true
 
 # Widget companion feed — the band of auto-refreshing tiles shown below the

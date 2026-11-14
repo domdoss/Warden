@@ -1,6 +1,6 @@
-"""Jarvis pywebview window wrapper.
+"""Warden pywebview window wrapper.
 
-Hosts the Jarvis HTML UI inside a pywebview window and exposes the same
+Hosts the Warden HTML UI inside a pywebview window and exposes the same
 public interface as ``BigRedButtonWindow`` so ``main.py`` can swap it in
 with minimal churn.
 """
@@ -20,12 +20,12 @@ from typing import Callable, List, Optional, Tuple
 # or unavailable (e.g. inside a VM with no GPU passthrough).
 #
 # We deliberately do NOT pin --use-angle=swiftshader here — that forces
-# software rendering even on capable GPUs and tanks the jarvis to <5fps.
+# software rendering even on capable GPUs and tanks the hologram to <5fps.
 # --enable-unsafe-swiftshader lets Chromium choose SwiftShader as a fallback
 # when no usable GPU is present. --ignore-gpu-blocklist stops Chromium
 # refusing on integrated graphics it considers old.
 #
-# In a VM the jarvis will still be slow because it's CPU-rendered; that's a
+# In a VM the hologram will still be slow because it's CPU-rendered; that's a
 # property of the VM, not these flags. On production hardware it should be
 # smooth.
 os.environ.setdefault(
@@ -56,7 +56,7 @@ class _JsApi:
     ``window.pywebview.api.<method>()``.
     """
 
-    def __init__(self, owner: "JarvisWindow"):
+    def __init__(self, owner: "WardenWindow"):
         self._owner = owner
 
     def button_press(self) -> None:
@@ -135,6 +135,36 @@ class _JsApi:
         """Return the widget companion config as a JSON string so the page can
         lay out the feed band and start the heartbeat fetch loop."""
         return json.dumps(self._owner._widget_config)
+
+    def get_state(self) -> str:
+        """Return the live voice/wake/connection snapshot as a JSON string.
+
+        The SPA calls this once at boot to paint the status bar, then keeps it
+        current from the ``holoBroadcast`` push channel. Never raises: a dead
+        snapshot is ``{}`` and the page falls back to its own defaults.
+        """
+        try:
+            return json.dumps(self._owner.state_snapshot())
+        except Exception:
+            logger.exception("get_state failed")
+            return "{}"
+
+    def get_wake_state(self) -> str:
+        """Return the wake-listener state as JSON: {"active": bool, "mode": str}.
+
+        Reports ``{"active": false, "mode": ""}`` when no wake source is wired
+        — the page renders that as "unavailable" rather than guessing.
+        """
+        try:
+            return json.dumps(self._owner.get_wake_state_dict())
+        except Exception:
+            logger.exception("get_wake_state failed")
+            return json.dumps({"active": False, "mode": ""})
+
+    def set_wake_state(self, active: bool, mode: str = "") -> None:
+        """Let the page-side reporter push a wake-state change. Optional —
+        Python-side changes use ``WardenWindow.set_wake_state`` instead."""
+        self._owner.set_wake_state(bool(active), mode or "")
 
     def warden_api(self, path: str, method: str = "GET", body: str = "") -> str:
         """Proxy an HTTP request to the Warden API. Returns JSON string or '' on error.
@@ -230,7 +260,7 @@ class _JsApi:
             return _json.dumps({"ok": False, "error": str(exc)})
 
     def chat_send(self, text: str) -> str:
-        """Send a text message to Jarvis. Returns the reply string (or "")."""
+        """Send a text message to Warden. Returns the reply string (or "")."""
         try:
             if self._owner.on_chat_send is not None:
                 return self._owner.on_chat_send(text) or ""
@@ -408,8 +438,8 @@ class _JsApi:
         return json.dumps(out)
 
 
-class JarvisWindow:
-    """pywebview-backed window hosting Jarvis's HTML UI.
+class WardenWindow:
+    """pywebview-backed window hosting Warden's HTML UI.
 
     Public interface mirrors ``BigRedButtonWindow``. All state setters are
     threadsafe and become no-ops if the window hasn't finished loading yet
@@ -431,6 +461,7 @@ class JarvisWindow:
         on_get_satellite_host: Optional[Callable[[], str]] = None,
         on_save_satellite_host: Optional[Callable[[str], None]] = None,
         on_chat_send: Optional[Callable[[str], str]] = None,
+        on_get_wake_state: Optional[Callable[[], dict]] = None,
     ):
         self.on_button_press = on_button_press
         self.on_hologram_click = on_hologram_click
@@ -439,6 +470,11 @@ class JarvisWindow:
         self.on_get_satellite_host = on_get_satellite_host
         self.on_save_satellite_host = on_save_satellite_host
         self.on_chat_send = on_chat_send
+        # Optional live wake-listener source. A host that owns the wake
+        # detector can pass a callback returning {"active": bool, "mode": str};
+        # callers that don't are still able to push via set_wake_state().
+        self.on_get_wake_state = on_get_wake_state
+        self._wake_state = {"active": False, "mode": ""}
         self.width = width
         self.height = height
         # Height of the widget companion feed band below the hologram. The
@@ -448,10 +484,9 @@ class JarvisWindow:
         self._widget_config = widget_config or {}
 
         # Resolve the HTML file path next to this module. The single window
-        # hosts panels.html; the hologram (jarvis.html) is an iframe inside it,
-        # so both files must exist.
+        # hosts panels.html, the self-contained SPA (no iframes).
         ui_dir = Path(__file__).resolve().parent
-        for _name in ("panels.html", "jarvis.html"):
+        for _name in ("panels.html",):
             if not (ui_dir / _name).exists():
                 raise RuntimeError(
                     f"{_name} not found at expected path: {ui_dir / _name}"
@@ -485,14 +520,18 @@ class JarvisWindow:
         with self._lock:
             if self._closed:
                 return
-            # One combined window: panels.html hosts every panel (digest,
-            # chat, the hologram, ops, upload) plus the agents + ambient
-            # strips — all as iframes. The hologram is no longer a separate
-            # always-on-top window; it sits in the row where Agents used to.
-            # One window instead of two cuts the Qt WebEngine renderer-process
-            # cold-start that dominated the ~3min load.
-            stage_w = 420 + 14 + 400 + 14 + 340 + 14 + 320 + 14 + 300 + 28  # row + gaps + side padding
-            stage_h = 220 + (540 + 28) + 260  # agents strip + row (frame + side padding) + ambient strip
+            # Fill the primary monitor so the deck reads as a full-screen HUD
+            # ("always on my monitor"), and pin it on top.
+            stage_w = 1480
+            stage_h = 940
+            try:
+                screens = webview.screens
+                if screens:
+                    s = screens[0]
+                    stage_w = int(getattr(s, "width", stage_w) or stage_w)
+                    stage_h = int(getattr(s, "height", stage_h) or stage_h)
+            except Exception:
+                pass
             self.width = stage_w
             self.height = stage_h
             self._window = webview.create_window(
@@ -505,7 +544,7 @@ class JarvisWindow:
                 resizable=True,
                 frameless=True,
                 transparent=True,
-                on_top=False,
+                on_top=True,
                 background_color="#000000",
             )
             # Subscribe to the ready event so we know when evaluate_js is safe.
@@ -539,7 +578,7 @@ class JarvisWindow:
             window.destroy()
         except Exception:
             # pywebview can raise if the window is already gone.
-            logger.debug("JarvisWindow.close: window.destroy() raised", exc_info=True)
+            logger.debug("WardenWindow.close: window.destroy() raised", exc_info=True)
 
     def after(self, ms: int, callback: Callable[[], None]) -> None:
         """Schedule ``callback`` after ``ms`` milliseconds. Threadsafe.
@@ -561,7 +600,7 @@ class JarvisWindow:
         try:
             callback()
         except Exception:
-            logger.exception("JarvisWindow.after callback raised")
+            logger.exception("WardenWindow.after callback raised")
 
     # ------------------------------------------------------------------
     # JS bridge helpers
@@ -624,9 +663,9 @@ class JarvisWindow:
         try:
             window.evaluate_js(snippet)
         except Exception as e:
-            # The page's `jarvis` JS object is defined after THREE.js init. If
-            # WebGL fails, the init script aborts and `jarvis` is never bound,
-            # so every subsequent state/audio update raises ReferenceError.
+            # The page's holoBroadcast handler is defined after THREE.js init.
+            # If WebGL fails, the init script aborts and holoBroadcast is never
+            # bound, so every subsequent state/audio update raises ReferenceError.
             # Log once, then stay quiet to avoid a traceback per audio tick.
             if not getattr(self, "_eval_js_warned", False):
                 logger.warning(
@@ -648,9 +687,61 @@ class JarvisWindow:
             # Only revert to idle if this state is the one currently showing.
             if self._current_state == state:
                 self._current_state = "idle"
-        # The hologram now lives in an iframe; holoBroadcast() (defined in
-        # panels.html) postMessages the command into the hologram iframe.
+        # The SPA's holoBroadcast() paints the status pill directly (there is
+        # no iframe to relay into anymore).
         self._eval_js(f"holoBroadcast({{cmd:'state', state:{json.dumps(self._current_state)}}});")
+
+    def state_snapshot(self) -> dict:
+        """Everything the SPA's status bar needs to paint itself at boot."""
+        cfg = self._widget_config or {}
+        satellite = cfg.get("satellite_host", "") or ""
+        if self.on_get_satellite_host is not None:
+            try:
+                satellite = self.on_get_satellite_host() or ""
+            except Exception:
+                logger.exception("on_get_satellite_host callback raised")
+        return {
+            "state": self._current_state,
+            "listening": self._current_state == "listening",
+            "processing": self._current_state == "processing",
+            "speaking": self._current_state == "speaking",
+            "error": self._current_state == "error",
+            "warden_url": cfg.get("warden_url", "") or "",
+            "satellite_host": satellite,
+            "wake": self.get_wake_state_dict(),
+        }
+
+    def get_wake_state_dict(self) -> dict:
+        """Current wake-listener state: {"active": bool, "mode": str}.
+
+        A host-supplied ``on_get_wake_state`` callback wins; otherwise the
+        last value pushed via ``set_wake_state`` is reported.
+        """
+        if self.on_get_wake_state is not None:
+            try:
+                live = self.on_get_wake_state()
+                if isinstance(live, dict):
+                    return {
+                        "active": bool(live.get("active")),
+                        "mode": str(live.get("mode") or ""),
+                    }
+            except Exception:
+                logger.exception("on_get_wake_state callback raised")
+        with self._lock:
+            return dict(self._wake_state)
+
+    def set_wake_state(self, active: bool, mode: str = "") -> None:
+        """Publish a wake-listener state change to the SPA (live push).
+
+        Threadsafe; safe before the window loads (the JS snippet is buffered).
+        """
+        with self._lock:
+            self._wake_state = {"active": bool(active), "mode": str(mode or "")}
+            wake = dict(self._wake_state)
+        self._eval_js(
+            "holoBroadcast({cmd:'wake', active:%s, mode:%s});"
+            % ("true" if wake["active"] else "false", json.dumps(wake["mode"]))
+        )
 
     def set_listening_state(self, listening: bool) -> None:
         self._apply_state("listening", listening)

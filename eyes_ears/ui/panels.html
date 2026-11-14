@@ -1,535 +1,209 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Warden Dashboard</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{
-    width:100%;height:100%;overflow:hidden;background:transparent!important;
-    font-family:'Segoe UI',system-ui,sans-serif;
-  }
-  /* One transparent window holding the Iron Man panels as iframes.
-     Layout (top→bottom): Agents horizontal chip strip, the panel row
-     (digest | chat | HOLOGRAM | ops | upload), and a tightened Ambient
-     strip. The hologram now lives in the row where Agents used to sit —
-     one physical window instead of two. Collapsing the windows into 1
-     cuts Qt WebEngine renderer-process startup (the ~3min cold load). */
-  .stage{
-    display:flex;flex-direction:column;width:100%;height:100%;
-  }
-  .top-strip{
-    flex:0 0 220px;height:220px;padding:8px 14px;width:100%;
-  }
-  .row{
-    display:flex;gap:14px;padding:14px;width:100%;flex:1;min-height:0;
-  }
-  .strip{
-    flex:0 0 260px;height:260px;padding:0 14px 14px;width:100%;
-  }
-  .frame-host{
-    position:relative;flex:0 0 auto;border-radius:6px;overflow:hidden;
-  }
-  .frame-host.hidden{display:none}
-  .strip.hidden{display:none}
-  .frame-host iframe{
-    width:100%;height:100%;border:0;display:block;background:transparent;
-  }
-  /* A panel expanded ITSELF (galaxy's ⛶): the iframe alone fills the window
-     — a pseudo-fullscreen inside the panels window, not an OS fullscreen of
-     the whole voice window (the other panels stay laid out underneath). */
-  .frame-host iframe.expanded, iframe.expanded{
-    position:fixed;inset:0;width:100vw;height:100vh;z-index:9998;
-    border:0;border-radius:0;background:#050508;
-  }
-
-  /* ── Top-right window controls + settings ── */
-  /* Close/minimize/fullscreen/settings pinned top-right. Close sits in the
-     corner and goes red on hover so it's obvious; the frameless window has
-     no native title bar, so these are the only window controls. */
-  .win-ctrl{
-    position:fixed;top:10px;z-index:100;
-    width:26px;height:26px;display:flex;justify-content:center;align-items:center;
-    font-size:15px;color:rgba(0,255,255,0.45);cursor:pointer;user-select:none;
-    transition:color .15s,transform .15s,text-shadow .15s;
-    text-shadow:0 0 6px rgba(0,255,255,0.3);
-  }
-  .win-ctrl:hover{color:#00ffff}
-  .win-ctrl:active{transform:scale(.9)}
-  #close-btn{right:12px;color:rgba(255,120,120,0.7);font-size:16px}
-  #close-btn:hover{color:#ff6666;text-shadow:0 0 8px rgba(255,80,80,0.5)}
-  #min-btn{right:40px;font-size:18px}
-  #fs-btn{right:68px}
-  #settings-gear{
-    right:96px;width:26px;height:26px;display:flex;align-items:center;
-    justify-content:center;font-size:16px;color:rgba(0,255,255,0.4);
-    cursor:pointer;user-select:none;transition:color .15s,transform .5s;
-    text-shadow:0 0 6px rgba(0,255,255,0.3);position:fixed;top:10px;z-index:100;
-  }
-  #settings-gear:hover{color:#00ffff}
-  #settings-gear:active{transform:rotate(60deg)}
-  .settings-overlay{
-    display:none;position:fixed;top:42px;right:12px;z-index:101;
-    background:rgba(0,10,20,0.94);border:1px solid rgba(0,255,255,0.4);
-    border-radius:8px;padding:14px 16px;min-width:260px;color:#cfefff;
-    box-shadow:0 0 18px rgba(0,255,255,0.25);font-size:12px;
-  }
-  .settings-overlay.show{display:block}
-  .settings-overlay h4{
-    font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#7fdfff;
-    margin-bottom:8px;font-weight:600;
-  }
-  .settings-overlay .section{margin-bottom:12px}
-  .settings-overlay .section:last-child{margin-bottom:0}
-  .widget-toggle{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:4px 0;cursor:pointer;color:#cfefff;
-  }
-  .widget-toggle:hover{color:#eafcff}
-  .widget-toggle .wname{font-size:11px}
-  .switch{
-    position:relative;width:30px;height:16px;background:rgba(0,255,255,0.12);
-    border:1px solid rgba(0,255,255,0.3);border-radius:10px;transition:background .15s;flex:0 0 auto;
-  }
-  .switch::after{
-    content:'';position:absolute;top:1px;left:1px;width:12px;height:12px;
-    background:rgba(0,255,255,0.5);border-radius:50%;transition:transform .15s,background .15s;
-  }
-  .widget-toggle.off .switch{background:rgba(255,255,255,0.04)}
-  .widget-toggle.off .switch::after{transform:translateX(0);background:rgba(127,127,127,0.5)}
-  .widget-toggle.on .switch::after{transform:translateX(14px);background:#00ffff}
-  .s-row{display:flex;align-items:center;gap:6px;margin:6px 0}
-  .s-row label{font-size:10px;color:#7fdfff;min-width:74px}
-  .s-row input{
-    flex:1;min-width:0;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,255,0.3);
-    border-radius:4px;color:#eafcff;font-size:11px;padding:5px 7px;outline:none;font-family:inherit;
-  }
-  .s-row input:focus{border-color:#00ffff}
-  .s-row button{
-    background:rgba(0,255,255,0.15);border:1px solid rgba(0,255,255,0.5);color:#eafcff;
-    font-size:9px;padding:5px 10px;border-radius:4px;cursor:pointer;letter-spacing:1px;
-    text-transform:uppercase;flex:0 0 auto;
-  }
-  .s-row button:hover{background:rgba(0,255,255,0.3)}
-  .s-status{font-size:9px;color:#7fff7f;min-height:10px;margin-left:2px}
-  .s-status.err{color:#ff8888}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warden — Command Deck</title>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<div class="stage">
-<!-- Top: Agents horizontal chip strip -->
-<div class="top-strip" id="agents-host">
-  <div class="frame-host" style="width:100%;height:100%">
-    <iframe id="agents" data-src="agents.html"></iframe>
-  </div>
-</div>
-<!-- Middle: panel row (hologram takes Agents' old center slot) -->
-<div class="row" id="row">
-  <div class="frame-host" style="width:340px;height:540px">
-    <iframe id="digest" data-src="digest.html"></iframe>
-  </div>
-  <div class="frame-host" style="width:380px;height:540px">
-    <iframe id="chat" data-src="chat.html"></iframe>
-  </div>
-  <!-- Center slot: the memory galaxy (replaced the old hologram — the
-       standalone hologram window keeps jarvis.html). id stays "hologram"
-       so the widget toggle and host state wiring keep matching. -->
-  <div class="frame-host" style="width:340px;height:540px;background:rgba(0,0,0,0.9)">
-    <iframe id="hologram" data-src="memory-galaxy.html" allowfullscreen></iframe>
-  </div>
-  <div class="frame-host" style="width:380px;height:540px">
-    <iframe id="tasks" data-src="tasks.html"></iframe>
-  </div>
-  <div class="frame-host" style="width:340px;height:540px">
-    <iframe id="upload" data-src="upload.html"></iframe>
-  </div>
-</div>
-<!-- Bottom: tightened Ambient strip -->
-<div class="strip" id="today-host">
-  <div class="frame-host" style="width:100%;height:100%">
-    <iframe id="today" data-src="today.html"></iframe>
-  </div>
-</div>
-</div>
+  <div class="bridge-ui">
+    <!-- HEADER -->
+    <header class="top-bar">
+      <div class="fleet-id">
+        <svg class="fleet-logo" viewBox="0 0 100 100">
+          <polygon points="50,6 92,30 92,70 50,94 8,70 8,30" fill="none" stroke="currentColor" stroke-width="4"/>
+          <circle cx="50" cy="50" r="10" fill="currentColor"/>
+        </svg>
+        <div class="fleet-text">
+          <h1>WARDEN</h1>
+          <span>PERSONAL COMMAND DECK</span>
+        </div>
+      </div>
 
-<!-- Window controls + settings -->
-<div class="win-ctrl" id="close-btn" title="Close">✕</div>
-<div class="win-ctrl" id="min-btn" title="Minimize">—</div>
-<div class="win-ctrl" id="fs-btn" title="Fullscreen — fit to display">⛶</div>
-<div id="settings-gear" title="Settings">⚙</div>
-<div class="settings-overlay" id="settings-overlay">
-  <div class="section">
-    <h4>Widgets</h4>
-    <div class="widget-toggle on" data-widget="agents"><span class="wname">Agents</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="digest"><span class="wname">Digest</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="chat"><span class="wname">Direct Line</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="hologram"><span class="wname">Galaxy</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="tasks"><span class="wname">Ops</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="upload"><span class="wname">Upload</span><span class="switch"></span></div>
-    <div class="widget-toggle on" data-widget="today"><span class="wname">Ambient Strip</span><span class="switch"></span></div>
-  </div>
-  <div class="section">
-    <h4>Warden URL</h4>
-    <div class="s-row">
-      <label>URL</label>
-      <input type="text" id="warden-url-input" placeholder="http://localhost:3200">
-      <button id="warden-url-save">Save</button>
+      <div class="stardate-clock">
+        <div class="clock-time" id="clock">—</div>
+      </div>
+
+      <div class="alert-status">
+        <span class="chip" id="reach-chip" style="display:inline-flex;align-items:center;gap:8px"><span class="alert-dot"></span><span id="reach-host">ONLINE</span></span>
+        <span style="color:var(--text-dim)">|</span>
+        <span id="orbstate" style="color:var(--cyan)">READY</span>
+        <span class="chip" id="wake-chip" style="display:inline-flex;align-items:center;gap:6px"><span id="wake-label">WAKE: —</span></span>
+        <span class="chip" id="timer-chip" hidden><span id="timer-label"></span></span>
+        <span class="winctl">
+          <button id="fs-btn" title="Fullscreen">⛶</button>
+          <button id="min-btn" title="Minimize">–</button>
+          <button id="close-btn" title="Close">✕</button>
+        </span>
+      </div>
+    </header>
+
+    <!-- MAIN VIEWER -->
+    <main class="main-viewer">
+      <!-- LEFT: missions -->
+      <div class="col">
+        <div class="panel" style="flex:1">
+          <span class="corner-bl"></span><span class="corner-br"></span>
+          <div class="panel-header" data-module="tasks">TASKS <span class="status-tag" id="mission-count"></span></div>
+          <div class="panel-content"><div class="mission-list" id="mission-list"></div></div>
+        </div>
+      </div>
+
+      <!-- CENTER: voice core + directives -->
+      <div class="col">
+        <div class="panel voice-panel" id="voice-panel" style="flex:1">
+          <span class="corner-bl"></span><span class="corner-br"></span>
+          <div class="panel-header">VOICE <span class="status-tag" id="voice-label">READY</span></div>
+          <div class="voice-content">
+            <div class="voice-wave" id="voice-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <form class="cmdrow" id="chat-form">
+              <input id="chat-input" placeholder="type a command…" autocomplete="off">
+              <button id="chat-send" type="submit">➤</button>
+            </form>
+            <div id="heard" style="opacity:0"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <span class="corner-bl"></span><span class="corner-br"></span>
+          <div class="panel-header" data-module="tasks">PRIORITIES <span class="status-tag">TODAY</span></div>
+          <div class="panel-content"><div id="directive-list"></div></div>
+        </div>
+      </div>
+
+      <!-- RIGHT: bio + anomaly + comms -->
+      <div class="col">
+        <div class="panel bio-panel">
+          <span class="corner-bl"></span><span class="corner-br"></span>
+          <div class="panel-header">STATUS <span class="status-tag">AT A GLANCE</span></div>
+          <div class="panel-content">
+            <div class="glance-section">
+              <div class="glance-title">NEXT 3 EVENTS</div>
+              <div class="glance-list" id="next-events"></div>
+            </div>
+            <div class="glance-section">
+              <div class="glance-title">EMAILS</div>
+              <div class="glance-list" id="important-emails"></div>
+            </div>
+            <div class="glance-stats">
+              <div class="bio-gauge"><div class="bio-val" id="bio-1">0</div><div class="bio-label">TASKS</div></div>
+              <div class="bio-gauge"><div class="bio-val" id="bio-4">0</div><div class="bio-label">AGENTS</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel anomaly-panel">
+          <span class="corner-bl"></span><span class="corner-br"></span>
+          <div class="panel-header" data-module="tasks">CONFLICTS <span class="status-tag" style="color:var(--red)">ATTENTION</span></div>
+          <div class="panel-content anomaly-content">
+            <div class="anomaly-count" id="anomaly-count">00</div>
+            <div class="anomaly-text" id="anomaly-text">NO CONFLICTS DETECTED</div>
+          </div>
+        </div>
+
+        <div class="panel comms-panel" style="flex:1">
+          <span class="corner-bl"></span><span class="corner-br"></span>
+          <div class="panel-header" data-module="comms">DIRECT MESSAGES <span class="status-tag" id="comms-count"></span></div>
+          <div class="panel-content"><div class="comms-list" id="comms-list"></div></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- BOTTOM DATA STREAM -->
+    <footer class="bottom-bar">
+      <div class="data-stream" id="data-stream"></div>
+    </footer>
+
+    <!-- HOLOGRAM (rendered behind the panels) + tap/hint UI (above) -->
+    <div class="holo-layer">
+      <div class="core-orb" id="core-orb"></div>
     </div>
-    <div class="s-status" id="warden-url-status"></div>
-  </div>
-  <div class="section">
-    <h4>Satellite Host</h4>
-    <div class="s-row">
-      <label>Host</label>
-      <input type="text" id="satellite-host-input" placeholder="satellite.local">
-      <button id="satellite-host-save">Save</button>
+    <div class="holo-ui">
+      <div class="holo-tap" id="orbbtn" title="Tap to speak"></div>
+      <div class="voice-hint">SAY “OK WARDEN”</div>
     </div>
-    <div class="s-status" id="satellite-host-status"></div>
   </div>
-  <div class="section">
-    <h4>Weather Location</h4>
-    <div class="s-row">
-      <label>Loc</label>
-      <input type="text" id="weather-loc-input" placeholder="City or lat,lon">
-      <button id="weather-loc-save">Save</button>
+
+  <!-- ============ deep-dive module panels ============ -->
+  <div class="module" id="mod-chat"><div class="module-head"><span class="t">DIRECT LINE</span><button class="close" data-close>✕</button></div><div class="module-body" id="chat-list"></div></div>
+  <div class="module" id="mod-comms"><div class="module-head"><span class="t">MESSAGES</span><button class="close" data-close>✕</button></div><div class="module-body" id="comms-body"></div></div>
+  <div class="module" id="mod-digest">
+    <div class="module-head"><span class="t">BRIEFING</span><button class="close" data-close>✕</button></div>
+    <div class="module-toolbar"><button class="btn" id="digest-generate">Generate</button><button class="btn ghost" id="digest-refresh">Refresh</button></div>
+    <div class="tabs" id="digest-tabs">
+      <button class="tab active" data-span="hourly">Hourly</button><button class="tab" data-span="daily">Daily</button>
+      <button class="tab" data-span="weekly">Weekly</button><button class="tab" data-span="actionable">Actionable</button>
     </div>
-    <div class="s-status" id="weather-loc-status"></div>
+    <div class="module-body" id="digest-body"></div>
+    <div id="digest-scan" hidden><button class="btn" id="scan-now">Scan now</button><button class="sw" id="scan-auto" role="switch"></button><span id="scan-meta"></span><div id="scan-status"></div></div>
+    <div class="lookout" id="lookout"><label>Lookout</label><textarea id="lookout-input" rows="2"></textarea><span id="lookout-status"></span></div>
+    <div class="module-ts" id="digest-ts"></div>
   </div>
-</div>
+  <div class="module" id="mod-tasks">
+    <div class="module-head"><span class="t">OPS</span><button class="close" data-close>✕</button></div>
+    <div class="module-toolbar"><button class="btn" id="ops-add">+ Add</button><button class="btn ghost" id="ops-refresh">Refresh</button></div>
+    <div class="tabs" id="ops-tabs">
+      <button class="tab active" data-tab="work">Work <span class="cnt" id="count-work"></span></button>
+      <button class="tab" data-tab="inbox">Inbox <span class="cnt" id="count-inbox"></span></button>
+      <button class="tab" data-tab="reminders">Reminders <span class="cnt" id="count-reminders"></span></button>
+      <button class="tab" data-tab="tasks">Schedules <span class="cnt" id="count-tasks"></span></button>
+      <button class="tab" data-tab="calendar">Calendar <span class="cnt" id="count-calendar"></span></button>
+      <button class="tab" data-tab="projects">Projects <span class="cnt" id="count-projects"></span></button>
+    </div>
+    <div class="new-row" id="new-row" hidden><input id="new-name" type="text" placeholder="…"><input id="new-sched" type="text" placeholder="schedule" hidden><button class="btn" id="new-create">Create</button></div>
+    <div class="module-body" id="ops-body"></div>
+    <div class="module-ts" id="ops-ts"></div>
+  </div>
+  <div class="module" id="mod-agents"><div class="module-head"><span class="t">AGENTS</span><button class="close" data-close>✕</button></div><div class="module-toolbar"><span id="agent-count"></span><button class="btn ghost" id="agents-refresh">Refresh</button></div><div class="module-body" id="agent-list"></div><div class="module-ts" id="agents-ts"></div></div>
+  <div class="module" id="mod-systems"><div class="module-head"><span class="t">SYSTEMS</span><button class="close" data-close>✕</button></div><div class="module-body" id="systems-body"></div></div>
+  <div class="module" id="mod-galaxy">
+    <div class="module-head"><span class="t">MEMORY</span><button class="close" data-close>✕</button></div>
+    <div class="galaxy-toolbar"><input id="galaxy-search" type="text" placeholder="Search memory…"><div id="galaxy-results"></div><button class="btn ghost" id="galaxy-reset">Reset</button></div>
+    <div id="galaxy-host"><div id="galaxy-scene"></div></div>
+    <div id="galaxy-node-panel" hidden><div class="np-head"><span id="galaxy-np-name"></span><button id="galaxy-close-panel">✕</button></div><div id="galaxy-np-mini"></div><div id="galaxy-np-conns"></div><button class="btn" id="galaxy-np-open">Open memory</button></div>
+    <div class="galaxy-hint" id="galaxy-hint"></div><div class="galaxy-boot-error" id="galaxy-boot-error"></div>
+  </div>
+  <div class="module" id="mod-upload">
+    <div class="module-head"><span class="t">FILES</span><button class="close" data-close>✕</button></div>
+    <div class="drop" id="drop">Drop files or click to upload</div><input type="file" id="file-input" multiple hidden><div id="upload-status"></div>
+    <div class="module-body" id="upload-list"></div><button class="btn ghost" id="downloads-refresh">Refresh files</button><div class="module-body" id="download-list"></div>
+  </div>
 
-<script>
-(function(){
-  // Each panel iframe calls window.pywebview.api.<method>(...). pywebview
-  // injects the bridge only into this top-level window, and file:// iframes
-  // are cross-origin so we can't assign onto their contentWindow. Instead we
-  // act as a postMessage bridge: each iframe forwards api calls here, we
-  // dispatch them on the real window.pywebview.api, and post the result back.
-  // The panels include a shim that builds the proxy when window.pywebview is
-  // absent (i.e. when running inside this iframe). The hologram iframe now
-  // uses the same shim, so its callApi('hologram_click') etc. route here too.
+  <!-- settings -->
+  <div class="overlay" id="settings-overlay">
+    <div class="modal">
+      <div class="modal-head"><span>SETTINGS</span><button id="settings-close">✕</button></div>
+      <div class="kv-grid">
+        <div class="kv"><label>Bridge</label><span id="set-bridge-state">—</span></div>
+        <div class="kv"><label>Voice</label><span id="set-voice-state">—</span></div>
+        <div class="kv"><label>Wake</label><span id="set-wake-state">—</span></div>
+        <div class="kv"><label>Warden</label><span id="set-reach-state">—</span></div>
+      </div>
+      <div class="field"><label>Warden URL</label><input id="set-warden-url" type="text"><button class="btn" id="set-warden-save">Save</button><span class="stat" id="set-warden-status"></span></div>
+      <div class="field"><label>Satellite host</label><input id="set-satellite-host" type="text"><button class="btn" id="set-satellite-save">Save</button><span class="stat" id="set-satellite-status"></span></div>
+      <div class="field"><label>Weather location</label><input id="set-weather-loc" type="text"><button class="btn" id="set-weather-save">Save</button><span class="stat" id="set-weather-status"></span></div>
+      <div class="modal-actions"><button class="btn ghost" id="set-minimize">Minimize</button><button class="btn ghost" id="set-fullscreen">Fullscreen</button><button class="btn danger" id="set-close">Close</button></div>
+    </div>
+  </div>
 
-  // pywebview injects window.pywebview.api AFTER the iframes load, but each
-  // iframe's shim is a Proxy that returns a function for ANY method — so
-  // window.pywebview.api.warden_api is truthy before the real bridge exists,
-  // and every panel fires its first API call too early. Rejecting those
-  // early calls made weather spin and panels sit empty. Instead we QUEUE
-  // calls made before the bridge is ready and flush them once pywebview
-  // truly exists — that's what makes every panel auto-load.
-  var _bridgeReady = false, _queued = [];
-  function dispatch(method, args){
-    if(_bridgeReady && window.pywebview && window.pywebview.api && typeof window.pywebview.api[method] === 'function'){
-      try { return Promise.resolve(window.pywebview.api[method].apply(window.pywebview.api, args)); }
-      catch (e) { return Promise.reject(e); }
-    }
-    return new Promise(function(resolve, reject){
-      _queued.push({ method: method, args: (args || []), resolve: resolve, reject: reject });
-    });
-  }
-  function flushQueued(){
-    if(_bridgeReady) return;
-    _bridgeReady = true;
-    var q = _queued; _queued = [];
-    q.forEach(function(item){
-      if(!window.pywebview || !window.pywebview.api || typeof window.pywebview.api[item.method] !== 'function'){
-        item.reject(new Error('bridge method "'+item.method+'" not available')); return;
-      }
-      try {
-        Promise.resolve(window.pywebview.api[item.method].apply(window.pywebview.api, item.args))
-          .then(item.resolve, item.reject);
-      } catch (e) { item.reject(e); }
-    });
-  }
+  <!-- agent popover -->
+  <div class="overlay" id="pop-overlay">
+    <div class="modal">
+      <div class="modal-head"><span id="pop-name"></span><button id="pop-close">✕</button></div>
+      <div id="pop-note" hidden></div>
+      <div class="field"><label>Model</label><select id="pop-model"></select></div>
+      <div class="field"><label>Context</label><select id="pop-ctx"></select></div>
+      <div id="pop-status"></div>
+      <div class="modal-actions"><button class="btn ghost" id="pop-cancel">Cancel</button><button class="btn primary" id="pop-save">Save</button></div>
+    </div>
+  </div>
 
-  // ── Host → hologram-iframe state channel ──────────────────────────────
-  // The host (Python) used to eval `jarvis.setState(...)` on the hologram's
-  // own top-level window. Now the hologram is an iframe, so `window.jarvis`
-  // doesn't live on THIS document. We expose a `holoBroadcast(msg)` global
-  // that the host evals instead; it postMessages the command into the
-  // hologram iframe. Two-stage buffering: Python's _pending_js holds calls
-  // until this page loads; _holoQ holds them until the hologram iframe
-  // announces it has bound `window.jarvis` (hologram_ready).
-  var _holoReady = false, _holoQ = [];
-  function holoBroadcast(msg){
-    if(!_holoReady){
-      // The center slot now hosts the galaxy, which never announces
-      // hologram_ready — cap the queue so the host's state stream can't
-      // grow unbounded. (The standalone hologram window isn't affected.)
-      if(_holoQ.length < 100) _holoQ.push(msg);
-      return;
-    }
-    var f = document.getElementById('hologram');
-    if(!f || !f.contentWindow) return;
-    try { f.contentWindow.postMessage(Object.assign({__pm:true}, msg), '*'); } catch(e){}
-  }
-  // Expose holoBroadcast on window so the Python host can call it via
-  // window.evaluate_js("holoBroadcast(...)"). This whole <script> is wrapped
-  // in an IIFE, so without this export the eval throws ReferenceError and no
-  // state/audio/timer command ever reaches the hologram iframe (it stayed
-  // cyan/idle instead of turning red on listening, amber on processing, etc.).
-  window.holoBroadcast = holoBroadcast;
+  <button id="settings-btn" title="Settings" style="position:fixed;right:14px;bottom:14px;background:var(--bg-panel);border:1px solid var(--cyan-dim);color:var(--text-dim);width:32px;height:32px;cursor:pointer;z-index:50">⚙</button>
 
-  window.addEventListener('message', function(ev){
-    var d = ev.data;
-    if(!d || !d.__pm) return;
-    // Iframes request the saved weather location (they can't read our
-    // localStorage across file:// origins).
-    if(d.type === 'weather_loc_request'){
-      try { ev.source.postMessage({__pm:true, type:'weather_loc', loc:localStorage.getItem(WX_KEY)||''}, '*'); } catch(e){}
-      return;
-    }
-    // Hologram iframe signals its window.jarvis is bound and ready.
-    if(d.type === 'hologram_ready'){
-      _holoReady = true;
-      var q = _holoQ; _holoQ = [];
-      q.forEach(holoBroadcast);
-      return;
-    }
-    // A panel asks to expand/collapse ITSELF (the galaxy's ⛶): toggle the
-    // .expanded class on that iframe — it alone fills the window.
-    if(d.type === 'panel_expand'){
-      var pf = d.panel ? document.getElementById(d.panel) : null;
-      if(pf) pf.classList.toggle('expanded', !!d.expand);
-      return;
-    }
-    if(!d.id || !d.method) return;
-    dispatch(d.method, d.args || []).then(function(result){
-      try { ev.source.postMessage({__pm:true, id:d.id, result:result}, '*'); } catch(e){}
-    }, function(err){
-      try { ev.source.postMessage({__pm:true, id:d.id, error:String(err && err.message || err)}, '*'); } catch(e){}
-    });
-  });
-
-  // Tell iframes the host is ready so they can retry any early calls that
-  // fired before this listener was wired.
-  function announceReady(){
-    document.querySelectorAll('iframe').forEach(function(f){
-      try { f.contentWindow.postMessage({__pm:true, type:'host_ready'}, '*'); } catch(e){}
-    });
-  }
-
-  // Start the iframes after the proxy listener is in place.
-  document.querySelectorAll('iframe').forEach(function(f){
-    f.addEventListener('load', announceReady);
-    f.src = f.dataset.src;
-  });
-
-  // Re-announce once pywebview itself is ready (it may inject after load).
-  var t = setInterval(function(){
-    if(window.pywebview && window.pywebview.api){
-      announceReady();
-      // Flush any api calls the iframes fired before the real bridge existed
-      // (weather, digest, every panel's boot fetch) — now they can run.
-      flushQueued();
-      clearInterval(t);
-    }
-  }, 200);
-  setInterval(announceReady, 3000);
-
-  // ── Host-driven digest refresh ────────────────────────────────────────
-  // Automated digests land on the Pi's cron and POST to /api/summaries, but
-  // the digest iframe's own setInterval poll stalled in the live pywebview
-  // iframe — the panel sat 8h behind while automated runs kept landing. The
-  // host's timers run reliably (weather, hologram, announceReady all work),
-  // so the host polls the summary itself via the real warden_api and pushes
-  // the fresh JSON into the digest iframe, which just renders it. Manual
-  // Generate is unaffected (it still drives its own fetch on click).
-  var DIGEST_SPANS = ['hourly','daily','weekly'];
-  function pushDigests(){
-    if(!window.pywebview || !window.pywebview.api || typeof window.pywebview.api.warden_api !== 'function') return;
-    DIGEST_SPANS.forEach(function(span){
-      dispatch('warden_api', ['/api/summaries?span='+span]).then(function(raw){
-        if(!raw) return;
-        var f = document.getElementById('digest');
-        if(f && f.contentWindow){ try { f.contentWindow.postMessage({__pm:true, type:'digest_push', span:span, raw:raw}, '*'); } catch(e){} }
-      });
-    });
-  }
-  setInterval(pushDigests, 20000);
-  var _digestKick = setInterval(function(){
-    if(window.pywebview && window.pywebview.api){ pushDigests(); clearInterval(_digestKick); }
-  }, 300);
-
-  // ── Settings overlay ──────────────────────────────────────────────────
-  // Widget show/hide is persisted to localStorage so the layout survives a
-  // restart. The hologram is now a normal frame-host, so it uses the same
-  // hidden-set path as the other panels (no separate window to show/hide).
-  var HIDDEN_KEY = 'warden.widgets.hidden';
-  var gear = document.getElementById('settings-gear');
-  var overlay = document.getElementById('settings-overlay');
-  var toggles = document.querySelectorAll('.widget-toggle');
-
-  function hiddenSet(){
-    try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]')); }
-    catch(e){ return new Set(); }
-  }
-  function saveHidden(set){
-    localStorage.setItem(HIDDEN_KEY, JSON.stringify(Array.from(set)));
-  }
-  function applyWidget(widgetId, visible){
-    var el = document.getElementById(widgetId);
-    if(!el) return;
-    // Hide the panel's frame-host (or the whole strip for agents/today)
-    // rather than the iframe itself, so the slot collapses out of the row/strip.
-    var host;
-    if(widgetId === 'today') host = document.getElementById('today-host') || el;
-    else if(widgetId === 'agents') host = document.getElementById('agents-host') || el;
-    else host = el.closest('.frame-host') || el;
-    host.classList.toggle('hidden', !visible);
-  }
-
-  // Restore saved visibility on load.
-  (function restore(){
-    var hidden = hiddenSet();
-    toggles.forEach(function(tg){
-      var wid = tg.getAttribute('data-widget');
-      var isHidden = hidden.has(wid);
-      tg.classList.toggle('on', !isHidden);
-      tg.classList.toggle('off', isHidden);
-      applyWidget(wid, !isHidden);
-    });
-  })();
-
-  toggles.forEach(function(tg){
-    tg.addEventListener('click', function(){
-      var wid = tg.getAttribute('data-widget');
-      var turningOn = tg.classList.contains('off');
-      tg.classList.toggle('on', turningOn);
-      tg.classList.toggle('off', !turningOn);
-      var hidden = hiddenSet();
-      if(turningOn) hidden.delete(wid); else hidden.add(wid);
-      saveHidden(hidden);
-      applyWidget(wid, turningOn);
-    });
-  });
-
-  var urlInput = document.getElementById('warden-url-input');
-  var urlSave  = document.getElementById('warden-url-save');
-  var urlStat = document.getElementById('warden-url-status');
-  var satInput = document.getElementById('satellite-host-input');
-  var satSave  = document.getElementById('satellite-host-save');
-  var satStat = document.getElementById('satellite-host-status');
-  var wxInput = document.getElementById('weather-loc-input');
-  var wxSave  = document.getElementById('weather-loc-save');
-  var wxStat = document.getElementById('weather-loc-status');
-  var WX_KEY = 'warden.weather.loc';
-
-  function broadcastWeatherLoc(loc){
-    document.querySelectorAll('iframe').forEach(function(f){
-      try { f.contentWindow.postMessage({__pm:true, type:'weather_loc', loc:loc||''}, '*'); } catch(e){}
-    });
-  }
-
-  function openOverlay(){
-    overlay.classList.add('show');
-    urlStat.textContent=''; satStat.textContent=''; wxStat.textContent='';
-    dispatch('get_warden_url',[]).then(function(u){
-      if(typeof u === 'string') urlInput.value = u;
-    }, function(){});
-    dispatch('get_satellite_host',[]).then(function(h){
-      if(typeof h === 'string') satInput.value = h;
-    }, function(){});
-    try { wxInput.value = localStorage.getItem(WX_KEY) || ''; } catch(e){}
-  }
-  function closeOverlay(){ overlay.classList.remove('show'); }
-
-  gear.addEventListener('click', function(e){
-    e.stopPropagation();
-    if(overlay.classList.contains('show')) closeOverlay(); else openOverlay();
-  });
-  overlay.addEventListener('mousedown', function(e){ e.stopPropagation(); });
-  // Click outside closes the overlay.
-  document.addEventListener('mousedown', function(e){
-    if(!overlay.classList.contains('show')) return;
-    if(e.target === gear || overlay.contains(e.target)) return;
-    closeOverlay();
-  });
-
-  // ── Window controls ──────────────────────────────────────────────────
-  document.getElementById('close-btn').addEventListener('click', function(){
-    dispatch('close_window', []);
-  });
-  document.getElementById('min-btn').addEventListener('click', function(){
-    dispatch('minimize_window', []);
-  });
-
-  // ── Fullscreen: fill the screen at any display size ───────────────────
-  // The dashboard content is a fixed 1864x858 design (matches the window
-  // size in jarvis_window.py). On fullscreen we fix the stage to that size
-  // and scale it to fit the screen (centered), so every panel stays laid out
-  // correctly on 1080p, 1440p, 4K — anything — instead of spilling off-screen.
-  var fsBtn = document.getElementById('fs-btn');
-  var fsOn = false;
-  var STAGE_W = 1864, STAGE_H = 1048;
-  function fitStage(){
-    var stage = document.querySelector('.stage');
-    if(!stage) return;
-    if(!fsOn){
-      stage.style.transform=''; stage.style.transformOrigin='';
-      stage.style.position=''; stage.style.left=''; stage.style.top='';
-      stage.style.width=''; stage.style.height='';
-      return;
-    }
-    var w = window.innerWidth, h = window.innerHeight;
-    var s = Math.min(w/STAGE_W, h/STAGE_H);
-    stage.style.width = STAGE_W+'px';
-    stage.style.height = STAGE_H+'px';
-    stage.style.position = 'absolute';
-    stage.style.left = '50%';
-    stage.style.top = '50%';
-    stage.style.transformOrigin = 'center center';
-    stage.style.transform = 'translate(-50%, -50%) scale(' + s + ')';
-  }
-  fsBtn.addEventListener('click', function(e){
-    e.stopPropagation();
-    dispatch('toggle_panels_fullscreen', []).then(function(on){
-      fsOn = !!on;
-      fsBtn.textContent = fsOn ? '❐' : '⛶';
-      fsBtn.title = fsOn ? 'Exit fullscreen' : 'Fullscreen — fit to display';
-      // The window resizes asynchronously after toggle_fullscreen(); re-fit
-      // once it has settled, and again on every resize (covers the transition).
-      setTimeout(fitStage, 300);
-    }, function(){ /* bridge not ready yet — ignore */ });
-  });
-  window.addEventListener('resize', fitStage);
-
-  urlSave.addEventListener('click', function(){
-    urlStat.classList.remove('err');
-    urlStat.textContent = 'Saving…';
-    dispatch('save_warden_url', [urlInput.value.trim()]).then(function(){
-      urlStat.textContent = 'Saved — restart to rebind SSE.';
-    }, function(err){
-      urlStat.classList.add('err');
-      urlStat.textContent = 'Error: ' + String(err && err.message || err);
-    });
-  });
-  satSave.addEventListener('click', function(){
-    satStat.classList.remove('err');
-    satStat.textContent = 'Saving…';
-    dispatch('save_satellite_host', [satInput.value.trim()]).then(function(){
-      satStat.textContent = 'Saved — restart to apply audio routing.';
-    }, function(err){
-      satStat.classList.add('err');
-      satStat.textContent = 'Error: ' + String(err && err.message || err);
-    });
-  });
-  wxSave.addEventListener('click', function(){
-    var v = wxInput.value.trim();
-    try { localStorage.setItem(WX_KEY, v); } catch(e){}
-    broadcastWeatherLoc(v);
-    wxStat.classList.remove('err');
-    wxStat.textContent = 'Saved — weather updating.';
-    setTimeout(function(){ wxStat.textContent = ''; }, 3000);
-  });
-  [urlInput, satInput, wxInput].forEach(function(inp){
-    inp.addEventListener('keydown', function(e){
-      if(e.key === 'Enter'){
-        e.preventDefault();
-        (inp === urlInput ? urlSave : inp === satInput ? satSave : wxSave).click();
-      }
-      else if(e.key === 'Escape'){ e.preventDefault(); closeOverlay(); }
-    });
-  });
-})();
-</script>
+  <script src="marm-memory-map/bundle.js"></script>
+  <script src="hud.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Jarvis — Warden thin-client entry point.
+"""Warden — Warden thin-client entry point.
 
 Architecture:
-- Main thread: pywebview UI (Jarvis HTML window) + tkinter companion windows.
+- Main thread: pywebview UI (Warden HTML window) + tkinter companion windows.
 - Background thread: single asyncio event loop.
 - WardenBridge owns the HTTP/SSE connection to the server.
 - Local Whisper transcribes voice; transcribed text is sent to /api/messages.
@@ -28,20 +28,20 @@ from typing import Optional
 # When packaged (PyInstaller --windowed), there is no console and any accidental
 # write to stdout/stderr on Windows can raise. Library warnings/debug logs are
 # pure noise for end users — but we still want a record when the app crashes
-# silently. Redirect stdout+stderr to a log file under %APPDATA%\Jarvis so the
+# silently. Redirect stdout+stderr to a log file under %APPDATA%\Warden so the
 # user (and us) can see what went wrong. In source / dev mode (not frozen) we
 # leave output intact.
 if getattr(sys, "frozen", False):
     try:
         _appdata = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
-        _log_dir = os.path.join(_appdata, "Jarvis")
+        _log_dir = os.path.join(_appdata, "Warden")
         os.makedirs(_log_dir, exist_ok=True)
-        _log_path = os.path.join(_log_dir, "jarvis.log")
+        _log_path = os.path.join(_log_dir, "warden.log")
         _log_fh = open(_log_path, "a", encoding="utf-8", buffering=1)
         sys.stdout = _log_fh
         sys.stderr = _log_fh
         import datetime as _dt
-        print(f"\n=== Jarvis start {_dt.datetime.now().isoformat()} ===")
+        print(f"\n=== Warden start {_dt.datetime.now().isoformat()} ===")
     except Exception:
         pass
     warnings.filterwarnings("ignore")
@@ -54,11 +54,11 @@ if getattr(sys, "frozen", False):
 from ears.assistant import WardenBridge
 from core.config import Config
 from ears.session_store import SessionStore
-from ui.jarvis_window import JarvisWindow
+from ui.warden_window import WardenWindow
 from ears.audio import AudioPlayer, AudioRecorder, BeepGenerator, find_device
 from ears.capture import capture
-from ears.clap import ClapDetector, SatelliteClapDetector
 from ears.satellite import SatelliteAudioPlayer, SatelliteAudioRecorder
+from ears.wake import WakeWordDetector
 from ears.stt import STT
 from ears.tts import TTS
 
@@ -82,7 +82,7 @@ _EMOJI_RE = _re.compile(
 
 
 class ControlServer:
-    """Tiny HTTP listener so a remote Pi button can trigger a Jarvis turn.
+    """Tiny HTTP listener so a remote Pi button can trigger a Warden turn.
 
     Mirrors satellite/satellite_server.py's ThreadingHTTPServer skeleton (silenced
     logging, configurable bind). Binds 0.0.0.0 on a port distinct from the
@@ -94,7 +94,7 @@ class ControlServer:
     Endpoints:
         POST /press   → trigger a turn. Calls ``app._on_button_press()`` which
                         schedules ``_handle_interaction`` on the main loop. That
-                        handler already implements barge-in: if Jarvis is
+                        handler already implements barge-in: if Warden is
                         mid-conversation, the press interrupts (stops playback,
                         aborts in-flight request/recording) and starts a new
                         turn — exactly like clicking the on-screen button or
@@ -106,7 +106,7 @@ class ControlServer:
         GET  /status  → {"ok": true, "remote": <bool>, "busy": <bool>}
     """
 
-    def __init__(self, app: "JarvisApp", host: str = "0.0.0.0", port: int = 8767):
+    def __init__(self, app: "WardenApp", host: str = "0.0.0.0", port: int = 8767):
         self.app = app
         self.host = host
         self.port = port
@@ -160,11 +160,11 @@ class ControlServer:
         try:
             self._httpd = ThreadingHTTPServer((self.host, self.port), Handler)
         except OSError as e:
-            print(f"[jarvis] control server could not bind {self.host}:{self.port} ({e})")
+            print(f"[warden] control server could not bind {self.host}:{self.port} ({e})")
             return False
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
-        print(f"[jarvis] control server on http://{self.host}:{self.port}")
+        print(f"[warden] control server on http://{self.host}:{self.port}")
         return True
 
     def stop(self) -> None:
@@ -178,7 +178,7 @@ class ControlServer:
         self._thread = None
 
 
-class JarvisApp:
+class WardenApp:
     def __init__(self, mic_host: Optional[str] = None,
                  speaker_host: Optional[str] = None,
                  control_port: int = 8767,
@@ -188,7 +188,7 @@ class JarvisApp:
         self._control_port = control_port
         # UI-only mode: render the same window + Warden bridge (text chat +
         # dashboard panels) WITHOUT any audio plumbing — no mic/speaker/STT/
-        # TTS/clap/control-server/hotkey. Same HTML, no audio routing. Lets a
+        # TTS/wake-word/control-server/hotkey. Same HTML, no audio routing. Lets a
         # machine run just the UI against the Warden server.
         self._ui_only = ui_only
 
@@ -196,7 +196,7 @@ class JarvisApp:
         # or a remote Pi running the dumb audio relay
         # (satellite/satellite_server.py, started via run.sh --satellite). The
         # app always does STT/TTS/UI locally; only the audio I/O for that side
-        # is piped to/from the remote unit. Recorder, clap detector, and
+        # is piped to/from the remote unit. Recorder, wake-word detector, and
         # push-to-talk follow the MIC choice (they're all mic-side); the player
         # follows the SPEAKER choice.
         self._mic_host = mic_host
@@ -231,14 +231,17 @@ class JarvisApp:
             self._setup_audio(mic_host, speaker_host, voice_cfg, audio_cfg,
                               sat_cfg, sat_port)
 
-        self.window: Optional[JarvisWindow] = None
-        self.clap_detector: Optional[ClapDetector] = None
-        # True while a clap-initiated interaction is running in push-to-talk
+        self.window: Optional[WardenWindow] = None
+        self.wake_detector: Optional[WakeWordDetector] = None
+        # Wake-listener state surfaced to the SPA's top-bar "wake" chip via the
+        # window bridge: {"active": bool, "mode": ""|"wake_word"|"push"|"disabled"|"remote"}.
+        self._wake_state = {"active": False, "mode": ""}
+        # True while a wake-word-initiated interaction is running in push-to-talk
         # mode. Push-to-talk normally records on hold (no VAD, button release
-        # ends the turn), but a clap wake has no button to release — so a
-        # clap-initiated turn uses VAD recording + the auto-listen loop, just
-        # like the local hologram. Cleared when the interaction ends.
-        self._clap_turn = False
+        # ends the turn), but a wake-word wake has no button to release — so a
+        # wake-word-initiated turn uses VAD recording + the auto-listen loop,
+        # just like the local hologram. Cleared when the interaction ends.
+        self._wake_turn = False
 
         self.running = False
         self._conversation_active = False
@@ -253,9 +256,10 @@ class JarvisApp:
         # pw-play test). Barge-in still cancels: _external_cancel POSTs /cancel
         # to the Pi, which kills the in-flight pw-play and releases the lock.
         self._speak_lock = asyncio.Lock()
-        # When Jarvis last finished speaking. The clap detector ignores claps
-        # for _SPEAK_COOLDOWN seconds after, so Jarvis's own voice/echo (or a
-        # trailing word) can't wake it and start a self-triggered loop.
+        # When Warden last finished speaking. The wake-word detector ignores
+        # detections for _SPEAK_COOLDOWN seconds after, so Warden's own
+        # voice/echo (or a trailing word) can't wake it and start a
+        # self-triggered loop.
         self._last_spoke_at = 0.0
         self._record_task: Optional[asyncio.Task] = None
         self._send_task: Optional[asyncio.Task] = None
@@ -270,7 +274,7 @@ class JarvisApp:
         # TTS buffer has finished speaking. _single_turn awaits this before looping.
         self._turn_done: asyncio.Event = asyncio.Event()
         self._turn_done.set()
-        # Set at turn end when Jarvis's reply was a farewell/sign-off, so the
+        # Set at turn end when Warden's reply was a farewell/sign-off, so the
         # conversation loop stops after speaking it.
         self._end_conversation: bool = False
 
@@ -287,7 +291,7 @@ class JarvisApp:
         self._sat_mic_host = None
         self._sat_mic_port = None
         if mic_host:
-            print(f"[jarvis] remote mic via {mic_host}:{sat_port}")
+            print(f"[warden] remote mic via {mic_host}:{sat_port}")
             self._sat_mic_host = mic_host
             self._sat_mic_port = sat_port
             self._satellite_host = mic_host
@@ -302,7 +306,7 @@ class JarvisApp:
             # (no VAD), release to send — one turn per press, no auto-listen
             # loop. false = VAD auto-stop (for a buttonless remote mic). Only the
             # mic side decides this (the Pi has a button); the local mic always
-            # uses VAD + clap + the listen loop.
+            # uses VAD + wake word + the listen loop.
             self._push_to_talk = bool(sat_cfg.get("push_to_talk", True))
         else:
             # Resolve audio devices. pyaudio's "default" device can't capture/play
@@ -312,7 +316,7 @@ class JarvisApp:
             if in_dev is None:
                 in_dev = find_device("input")
             self._input_device = in_dev
-            print(f"[jarvis] local mic device={in_dev}")
+            print(f"[warden] local mic device={in_dev}")
             self.audio_recorder = AudioRecorder(
                 sample_rate=voice_cfg.get("sample_rate", 48000),
                 channels=voice_cfg.get("channels", 1),
@@ -327,7 +331,7 @@ class JarvisApp:
         self._sat_speaker_host = None
         self._sat_speaker_port = None
         if speaker_host:
-            print(f"[jarvis] remote speaker via {speaker_host}:{sat_port}")
+            print(f"[warden] remote speaker via {speaker_host}:{sat_port}")
             self._sat_speaker_host = speaker_host
             self._sat_speaker_port = sat_port
             # If the mic is local, expose the speaker's host for the panel.
@@ -339,7 +343,7 @@ class JarvisApp:
             out_dev = audio_cfg.get("playback_device")
             if out_dev is None:
                 out_dev = find_device("output")
-            print(f"[jarvis] local speaker device={out_dev}")
+            print(f"[warden] local speaker device={out_dev}")
             self.audio_player = AudioPlayer(
                 output_device=out_dev,
                 sample_rate=voice_cfg.get("sample_rate", 48000),
@@ -400,7 +404,7 @@ class JarvisApp:
                 pass
 
     async def _wait_until_quiet(self) -> None:
-        """Block until Jarvis has nothing left to output, so the mic never
+        """Block until Warden has nothing left to output, so the mic never
         opens while he's still speaking and records himself.
 
         Holds until: not mid-utterance, no TTS chunks still queued (covers the
@@ -418,12 +422,12 @@ class JarvisApp:
             return
 
     async def _record_audio_async(self) -> bytes:
-        if self._push_to_talk and not self._clap_turn:
+        if self._push_to_talk and not self._wake_turn:
             # Hold-to-record (satellite/Pi): record the whole hold until the
             # button is released; no VAD. Falls back to VAD if the recorder
             # somehow lacks record_held (it shouldn't in satellite mode).
-            # A clap-initiated turn (self._clap_turn) has no button to release,
-            # so it falls through to VAD recording below.
+            # A wake-word-initiated turn (self._wake_turn) has no button to
+            # release, so it falls through to VAD recording below.
             fn = getattr(self.audio_recorder, "record_held", None)
             if fn is None:
                 fn = self.audio_recorder.record_until_silence
@@ -443,8 +447,8 @@ class JarvisApp:
 
     @staticmethod
     def _is_signoff(reply: str) -> bool:
-        """True when Jarvis's reply bids the user farewell, so the conversation
-        loop can stop. Matched on Jarvis's own (clean, grammatical) output —
+        """True when Warden's reply bids the user farewell, so the conversation
+        loop can stop. Matched on Warden's own (clean, grammatical) output —
         not the user's noisy transcription."""
         t = reply.lower()
         cues = (
@@ -463,7 +467,7 @@ class JarvisApp:
     @staticmethod
     def _user_ended(text: str) -> bool:
         """True when the user clearly signals they're done ("that's it for now",
-        "that's all", "goodbye"). Jarvis doesn't always reply with a farewell to
+        "that's all", "goodbye"). Warden doesn't always reply with a farewell to
         these, so catch the user's own close directly. Word-boundary matched on
         a punctuation-stripped copy so "that's it." or "okay, that's it" still
         hit."""
@@ -513,13 +517,13 @@ class JarvisApp:
 
     async def _single_turn(self) -> bool:
         try:
-            # Keep the mic closed until Jarvis is done outputting audio (still
+            # Keep the mic closed until Warden is done outputting audio (still
             # speaking, or a reply queued but not yet spoken) and the echo tail
             # has died, so the recorder can't capture his own voice and keep the
-            # loop self-feeding. The clap detector honors the same cooldown via
+            # loop self-feeding. The wake-word detector honors the same cooldown via
             # _last_spoke_at, but it's paused mid-conversation, so the
             # in-conversation recorder has to apply this itself.
-            if not self._push_to_talk or self._clap_turn:
+            if not self._push_to_talk or self._wake_turn:
                 await self._wait_until_quiet()
             self._update_ui_state("listening")
             await self._play_beep_async(self.beep_generator.start_beep)
@@ -544,7 +548,7 @@ class JarvisApp:
 
             user_ended = self._user_ended(text)
             if user_ended:
-                print("[jarvis] user ended conversation; not sending to server")
+                print("[warden] user ended conversation; not sending to server")
                 await self._play_beep_async(self.beep_generator.stop_beep)
                 return False
 
@@ -557,18 +561,18 @@ class JarvisApp:
                     None, capture, vision_source
                 )
                 if image:
-                    print(f"[jarvis] vision request ({vision_source}) — sending image")
+                    print(f"[warden] vision request ({vision_source}) — sending image")
                     self._send_task = asyncio.create_task(
                         self.bridge.send_image(
-                            image, caption=text, sender_name="Jarvis",
+                            image, caption=text, sender_name="Warden",
                             ext="jpg" if vision_source == "webcam" else "png",
                         )
                     )
                 else:
-                    print(f"[jarvis] {vision_source} capture failed; sending text only")
-                    self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Jarvis"))
+                    print(f"[warden] {vision_source} capture failed; sending text only")
+                    self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Warden"))
             else:
-                self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Jarvis"))
+                self._send_task = asyncio.create_task(self.bridge.send_text(text, sender_name="Warden"))
             try:
                 await self._send_task
             except asyncio.CancelledError:
@@ -632,7 +636,7 @@ class JarvisApp:
 
         self._conversation_active = True
         self._stop_requested = False
-        self._pause_clap()
+        self._pause_wake()
         try:
             while not self._stop_requested:
                 keep_going = await self._single_turn()
@@ -641,9 +645,9 @@ class JarvisApp:
         finally:
             self._conversation_active = False
             self._stop_requested = False
-            self._clap_turn = False
+            self._wake_turn = False
             self._update_ui_state("idle")
-            self._resume_clap()
+            self._resume_wake()
 
     async def _hold_turn(self, prev_task: Optional[asyncio.Task]) -> None:
         """Push-to-talk turn (satellite/Pi only): exactly one turn per button
@@ -656,7 +660,7 @@ class JarvisApp:
         let it unwind, then start a fresh recording so the held button records
         the user's new utterance immediately."""
         if prev_task is not None and not prev_task.done():
-            print("[jarvis] push-to-talk barge-in: aborting in-flight turn")
+            print("[warden] push-to-talk barge-in: aborting in-flight turn")
             self._stop_requested = True
             self._abort_in_flight()
             try:
@@ -668,14 +672,14 @@ class JarvisApp:
                     pass
         self._conversation_active = True
         self._stop_requested = False
-        self._pause_clap()
+        self._pause_wake()
         try:
             await self._single_turn()
         finally:
             self._conversation_active = False
             self._stop_requested = False
             self._update_ui_state("idle")
-            self._resume_clap()
+            self._resume_wake()
 
     def _abort_in_flight(self) -> None:
         """Synchronous teardown of whatever an in-flight turn is doing, so a
@@ -719,6 +723,38 @@ class JarvisApp:
         if not self.loop:
             return
         self.loop.call_soon_threadsafe(self._tts_queue.put_nowait, None)
+
+    def _is_push_idle(self) -> bool:
+        """True when no user-initiated conversation/speech is in progress.
+
+        Used by the bridge to decide whether an unsolicited ``chat_complete``
+        (a Warden-initiated reply, e.g. from a scheduled run) should be
+        announced. Replies to the user's own turn never reach that path.
+        """
+        return not (self._conversation_active or self._is_speaking)
+
+    def _on_push_announce(self, text: str) -> None:
+        """Speak a Warden-initiated push event (alarm/task/reply) via TTS.
+
+        Called from the SSE consumer. Scheduling on the main loop serializes
+        the announcement with normal reply speech through ``_speak``'s lock.
+        """
+        if self._ui_only or not text:
+            return
+        if not (self.loop and self.loop.is_running()):
+            return
+        self._set_wake_state(True, "push")
+        try:
+            asyncio.run_coroutine_threadsafe(self._announce_push(text), self.loop)
+        except Exception as e:
+            print(f"[warden] push announce failed: {e}")
+
+    async def _announce_push(self, text: str) -> None:
+        """Speak a Warden push and clear the "push" wake chip afterwards."""
+        try:
+            await self._speak(text)
+        finally:
+            self._set_wake_state(False, "")
 
     @staticmethod
     def _join_chunks(chunks: list[str]) -> str:
@@ -863,21 +899,21 @@ class JarvisApp:
         push-to-talk hold path used by the physical Pi button (/press + /release,
         which records the whole hold and re-records on a barge-in press). The
         push-to-talk barge-in re-recording was why a second click "prompted anew"
-        instead of stopping. _clap_turn forces VAD recording even in
-        satellite/push-to-talk mode, exactly like a clap wake; the interrupt
+        instead of stopping. _wake_turn forces VAD recording even in
+        satellite/push-to-talk mode, exactly like a wake-word wake; the interrupt
         branch in _handle_interaction handles the stop-on-second-click."""
         if self._ui_only:
             return
         if not (self.loop and self.loop.is_running()):
             return
-        self._clap_turn = True  # force VAD recording in satellite/push-to-talk mode
+        self._wake_turn = True  # force VAD recording in satellite/push-to-talk mode
         asyncio.run_coroutine_threadsafe(self._hologram_interaction(), self.loop)
 
     def _on_chat_send(self, text: str) -> str:
-        """Send a text message to Jarvis and return the reply. Called from the
+        """Send a text message to Warden and return the reply. Called from the
         Direct Line chat panel via pywebview's JS bridge (sync → async bridge)."""
         if not (self.loop and self.loop.is_running()):
-            return "[Jarvis offline]"
+            return "[Warden offline]"
         if not text or not text.strip():
             return ""
         future = asyncio.run_coroutine_threadsafe(
@@ -918,7 +954,7 @@ class JarvisApp:
         # care about on_chunk for collecting the text reply.
 
         try:
-            await self.bridge.send_text(text, sender_name="Jarvis")
+            await self.bridge.send_text(text, sender_name="Warden")
             # Wait for content (chat_complete event), not the premature
             # on_turn_end from _finish_turn which fires before the real reply.
             try:
@@ -958,7 +994,7 @@ class JarvisApp:
         try:
             self.audio_recorder.stop()
         except Exception as e:
-            print(f"[jarvis] button release stop failed: {e}")
+            print(f"[warden] button release stop failed: {e}")
 
     # ----- Warden URL settings (in-app field + --set-warden-url) -----
 
@@ -980,8 +1016,8 @@ class JarvisApp:
         try:
             self.bridge.client.base_url = url.rstrip("/")
         except Exception as e:
-            print(f"[jarvis] apply warden url to bridge failed: {e}")
-        print(f"[jarvis] saved warden.base_url={url} (restart Jarvis to rebind the SSE stream)")
+            print(f"[warden] apply warden url to bridge failed: {e}")
+        print(f"[warden] saved warden.base_url={url} (restart Warden to rebind the SSE stream)")
 
     # ----- Satellite host settings (in-app field; mirrors --remote) -----
 
@@ -1004,9 +1040,9 @@ class JarvisApp:
         self.config.set("satellite.host", host)
         self.config.save()
         if host:
-            print(f"[jarvis] saved satellite.host={host} (restart Jarvis to use the remote mic/speaker)")
+            print(f"[warden] saved satellite.host={host} (restart Warden to use the remote mic/speaker)")
         else:
-            print("[jarvis] cleared satellite.host (restart Jarvis for standalone/local audio)")
+            print("[warden] cleared satellite.host (restart Warden for standalone/local audio)")
 
     def _external_cancel(self):
         """Thread-safe barge-in from the control server (POST /cancel).
@@ -1046,41 +1082,64 @@ class JarvisApp:
                 break
         self._turn_done.set()
 
-    # ----- clap wake -----
+    # ----- wake word -----
 
     GREETING = "Hello. I'm ready to get to work."
-    # Seconds the clap detector stays deaf after Jarvis stops speaking.
+    # Seconds the wake-word detector stays deaf after Warden stops speaking.
     _SPEAK_COOLDOWN = 1.5
 
-    def _pause_clap(self) -> None:
-        if self.clap_detector is not None:
-            self.clap_detector.pause()
+    def _pause_wake(self) -> None:
+        if self.wake_detector is not None:
+            self.wake_detector.pause()
+        self._set_wake_state(False, "disabled")
 
-    def _resume_clap(self) -> None:
-        if self.clap_detector is not None:
-            self.clap_detector.resume()
+    def _resume_wake(self) -> None:
+        if self.wake_detector is not None:
+            self.wake_detector.resume()
+        self._set_wake_state(False, "")
 
-    def _on_clap(self) -> None:
-        """Clap-detector callback (fires on the detector's background thread)."""
+    def _get_wake_state(self) -> dict:
+        """Current wake-listener state, read by the window's on_get_wake_state hook."""
+        return dict(self._wake_state)
+
+    def _set_wake_state(self, active: bool, mode: str = "") -> None:
+        """Record a wake-listener state change and push it to the SPA if the
+        window is up. Safe to call from any thread and before the window exists."""
+        self._wake_state = {"active": bool(active), "mode": str(mode or "")}
+        if self.window is not None:
+            try:
+                self.window.set_wake_state(bool(active), mode or "")
+            except Exception:
+                pass
+
+    def _on_wake(self) -> None:
+        """Wake-detector callback (fires on the detector's background thread)."""
+        self._set_wake_state(True, "wake_word")
         if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._clap_wake(), self.loop)
+            asyncio.run_coroutine_threadsafe(self._wake_word_wake(), self.loop)
 
-    async def _clap_wake(self) -> None:
+    async def _wake_word_wake(self) -> None:
         if self._conversation_active:
             return
-        self._pause_clap()
-        # A clap wake has no button release to end a hold recording, so force
-        # VAD recording (record_until_silence) for every turn of the
+        self._pause_wake()
+        # Re-affirm the wake source now that _pause_wake flipped the chip to
+        # "disabled" — keep "wake_word" visible through the greeting. The
+        # conversation body's own _pause_wake will show "disabled" while
+        # listening/speaking, and _resume_wake clears it back to idle at the end.
+        self._set_wake_state(True, "wake_word")
+        # A wake-word wake has no button release to end a hold recording, so
+        # force VAD recording (record_until_silence) for every turn of the
         # conversation this kicks off. The auto-listen loop then runs until the
         # user says the end phrase ("that's all for now") — same continuous
-        # behavior as the local hologram. _handle_interaction clears _clap_turn
+        # behavior as the local hologram. _handle_interaction clears _wake_turn
         # in its finally.
-        self._clap_turn = True
-        # A clap wake uses VAD recording (no button release), and the recorder's
-        # silence_timeout comes from config (~0.6s) — a natural speech pause
-        # ends the turn immediately and cuts the user off. Loosen it for the
-        # whole clap-initiated conversation so the user can pause between
-        # sentences, then restore the original value when the loop ends.
+        self._wake_turn = True
+        # A wake-word wake uses VAD recording (no button release), and the
+        # recorder's silence_timeout comes from config (~0.6s) — a natural
+        # speech pause ends the turn immediately and cuts the user off. Loosen
+        # it for the whole wake-word-initiated conversation so the user can
+        # pause between sentences, then restore the original value when the
+        # loop ends.
         saved_silence_timeout = getattr(self.audio_recorder, "silence_timeout", None)
         try:
             try:
@@ -1103,7 +1162,7 @@ class JarvisApp:
         record-until-silence auto-listen loop (the first click). Loosen the
         VAD silence timeout for the whole click-initiated conversation so a
         natural pause between sentences doesn't cut the user off (satellite
-        silence_timeout is ~0.6s) — same trick _clap_wake uses. Restored when
+        silence_timeout is ~0.6s) — same trick _wake_word_wake uses. Restored when
         the loop ends."""
         saved_silence_timeout = getattr(self.audio_recorder, "silence_timeout", None)
         try:
@@ -1154,14 +1213,14 @@ class JarvisApp:
         listener.daemon = True
         listener.start()
 
-    def _setup_clap_detector(self):
+    def _setup_wake_detector(self):
         voice_cfg = self.config.voice
-        if not voice_cfg.get("clap_enabled", True):
+        if not voice_cfg.get("wake_word_enabled", True):
+            self._set_wake_state(False, "disabled")
             return
-        threshold = int(voice_cfg.get("clap_threshold", 9000))
-        crest = float(voice_cfg.get("clap_crest", 4.0))
-        # Don't wake mid-conversation, while Jarvis is speaking, or in the
-        # brief tail after speech — otherwise Jarvis's own voice/echo can
+        wake_word = str(voice_cfg.get("wake_word", "warden") or "warden")
+        # Don't wake mid-conversation, while Warden is speaking, or in the
+        # brief tail after speech — otherwise Warden's own voice/echo can
         # self-trigger a new prompt and loop.
         can_fire = lambda: not (
             self._conversation_active
@@ -1169,34 +1228,22 @@ class JarvisApp:
             or (time.monotonic() - self._last_spoke_at) < self._SPEAK_COOLDOWN
         )
         if self._mic_host:
-            # Remote mic: clap into the Pi's mic over its /mic PCM stream
-            # instead of a local device. The detector holds its own /mic
-            # connection and releases it on pause() so the recorder can take
-            # the mic exclusively during a turn (same release pattern as the
-            # local detector's PyAudio open/close). Clap follows the MIC: if
-            # the mic is remote, clap listens remotely regardless of speaker.
-            self.clap_detector = SatelliteClapDetector(
-                host=self._sat_mic_host,
-                port=self._sat_mic_port,
-                on_double_clap=self._on_clap,
-                can_fire=can_fire,
-                threshold=threshold,
-                crest_factor=crest,
-            )
-            self.clap_detector.start()
-            print(f"[jarvis] clap detection on — double-clap to wake "
-                  f"(satellite mic {self._sat_mic_host}:{self._sat_mic_port})")
+            # The wake detector reads a local PyAudio device. With a remote
+            # satellite mic the mic side already has push-to-talk, so there is
+            # nothing to listen to here — skip instead of opening a second
+            # stream against the wrong device.
+            print("[warden] remote mic: wake word disabled "
+                  "(use push-to-talk on the satellite)")
+            self._set_wake_state(False, "remote")
             return
-        self.clap_detector = ClapDetector(
-            on_double_clap=self._on_clap,
+        self.wake_detector = WakeWordDetector(
+            on_wake=self._on_wake,
             can_fire=can_fire,
-            sample_rate=int(voice_cfg.get("clap_sample_rate", 48000)),
-            threshold=threshold,
-            crest_factor=crest,
+            wake_word=wake_word,
             input_device=self._input_device,
         )
-        self.clap_detector.start()
-        print("[jarvis] clap detection on — double-clap to wake")
+        self.wake_detector.start()
+        print(f"[warden] wake word detection on — say \"OK {wake_word}\" to wake")
 
     # ----- bootstrap -----
 
@@ -1205,15 +1252,19 @@ class JarvisApp:
         # no login (no session/user_id) and no default group/jid by design, so
         # we only warn instead of blocking the boot.
         if not self.config.warden.get("base_url"):
-            print("[jarvis] no server configured. Run `python single.py` first.")
+            print("[warden] no server configured. Run `python single.py` first.")
             return False
         if not self.bridge.active_jid:
-            print("[jarvis] no default group set — sending messages will need a jid.")
+            print("[warden] no default group set — sending messages will need a jid.")
         return True
 
     async def _bootstrap_async(self):
         self.bridge.on_chunk(self._enqueue_chunk)
         self.bridge.on_turn_end(self._on_turn_end)
+        # Warden-initiated pushes (alarms, tasks, unsolicited replies) are
+        # spoken through the same TTS path, but only while the app is idle.
+        self.bridge.on_push(self._on_push_announce)
+        self.bridge.set_idle_check(self._is_push_idle)
         self.bridge.start_stream()
         if self._ui_only:
             # No TTS worker, no spoken greeting — the SSE stream is still
@@ -1225,7 +1276,7 @@ class JarvisApp:
         # Doing it here (not lazily on the first turn) also keeps its load
         # churn from garbling the greeting and stalls off the user's first turn.
         if self.stt is not None:
-            print("[jarvis] warming STT before greeting…")
+            print("[warden] warming STT before greeting…")
             await asyncio.get_running_loop().run_in_executor(None, self.stt.warmup)
         # No try/except: if the bootstrap speak fails, _speak prints the TTS
         # error (and a raised exception surfaces via the run_coroutine_threadsafe
@@ -1247,7 +1298,7 @@ class JarvisApp:
 
         if not self._ui_only:
             self._setup_global_hotkey()
-            self._setup_clap_detector()
+            self._setup_wake_detector()
 
             # Control server: lets a remote Pi button trigger a turn over HTTP.
             # Distinct from the satellite audio relay (port 8766); default 8767.
@@ -1264,7 +1315,7 @@ class JarvisApp:
             "warden_url": self._get_warden_url(),
             "notes_folder": (self.config.notes or {}).get("default_folder", "Inbox"),
         }
-        self.window = JarvisWindow(
+        self.window = WardenWindow(
             on_button_press=self._on_button_press,
             on_hologram_click=self._on_hologram_click,
             width=ui_cfg.get("window_width", 480),
@@ -1276,6 +1327,7 @@ class JarvisApp:
             on_get_satellite_host=self._get_satellite_host,
             on_save_satellite_host=self._save_satellite_host,
             on_chat_send=self._on_chat_send,
+            on_get_wake_state=self._get_wake_state,
         )
 
         asyncio.run_coroutine_threadsafe(self._bootstrap_async(), self.loop)
@@ -1288,8 +1340,8 @@ class JarvisApp:
         self.running = False
         if self._control_server is not None:
             self._control_server.stop()
-        if self.clap_detector is not None:
-            self.clap_detector.stop()
+        if self.wake_detector is not None:
+            self.wake_detector.stop()
         try:
             self.audio_recorder.cancel()
         except Exception:
@@ -1341,11 +1393,11 @@ def main():
             return v[len("remote:"):].strip() or _need_sat("'remote:' audio")
         return v  # bare host/ip → remote
 
-    p = argparse.ArgumentParser(description="Jarvis — Warden thin voice client")
+    p = argparse.ArgumentParser(description="Warden — Warden thin voice client")
     p.add_argument("--mic", metavar="local|remote|remote:HOST", default=None,
                    help="Mic source: 'local' (this machine) or 'remote[:HOST]' "
                         "(a Pi running the dumb audio relay, "
-                        "satellite/satellite_server.py). The recorder, clap "
+                        "satellite/satellite_server.py). The recorder, wake-word "
                         "detector, and push-to-talk follow the mic choice.")
     p.add_argument("--speaker", metavar="local|remote|remote:HOST", default=None,
                    help="Speaker sink: 'local' (this machine) or 'remote[:HOST]' "
@@ -1363,7 +1415,7 @@ def main():
                         "the in-app settings field.")
     p.add_argument("--ui-only", action="store_true", default=False,
                    help="Launch just the UI (hologram + panels + text chat) with "
-                        "NO audio: no mic/speaker/STT/TTS/clap/control-server/"
+                        "NO audio: no mic/speaker/STT/TTS/wake-word/control-server/"
                         "hotkey. Same HTML as --ears, runs against the Warden "
                         "server. No --mic/--speaker/--remote needed.")
     args = p.parse_args()
@@ -1371,12 +1423,12 @@ def main():
     if args.set_warden_url is not None:
         cfg.set("warden.base_url", args.set_warden_url)
         cfg.save()
-        print(f"[jarvis] saved warden.base_url={args.set_warden_url} → {cfg.config_path}")
+        print(f"[warden] saved warden.base_url={args.set_warden_url} → {cfg.config_path}")
         return
 
     if args.ui_only:
         # No audio source resolution — UI-only skips all mic/speaker/STT/TTS.
-        JarvisApp(control_port=args.control_port, ui_only=True).run()
+        WardenApp(control_port=args.control_port, ui_only=True).run()
         return
 
     mic_host = _parse_side(args.mic)
@@ -1396,7 +1448,7 @@ def main():
         mic_host = _need_sat("no audio source given")
         speaker_host = mic_host
 
-    JarvisApp(mic_host=mic_host, speaker_host=speaker_host,
+    WardenApp(mic_host=mic_host, speaker_host=speaker_host,
               control_port=args.control_port).run()
 
 
