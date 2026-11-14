@@ -102,19 +102,31 @@ export function extractKeywords(messages: ChatMessage[], limit = KEYWORD_LIMIT):
         // memory / friend tools and the seat reached for one of them
         // (2026-10-18). No keywords in the current ask means no keyword-driven
         // ranking this turn: the menu falls back to discovery + bookkeeping.
-        if (tokenize(String(textTurns[textTurns.length - 1]?.content || '').slice(0, TURN_CHAR_CAP)).length === 0) return [];
+        // The runner prepends a "Current local time is …" anchor to every user
+        // turn. Tokenized, it feeds "current/local/time" into the ranker and the
+        // clock tool wins slots on unrelated asks. Strip it before ranking.
+        const stripAnchor = (s: string) => String(s || '').replace(/^Current local time is[^\n]*\n?/i, '').trim();
+        if (tokenize(stripAnchor(textTurns[textTurns.length - 1]?.content || '').slice(0, TURN_CHAR_CAP)).length === 0) return [];
+        const latestTokens = tokenize(stripAnchor(textTurns[textTurns.length - 1]?.content || '').slice(0, TURN_CHAR_CAP));
         const lastUserIdx = (() => {
             for (let i = textTurns.length - 1; i >= 0; i--) {
                 if (textTurns[i].role === 'user') return i;
             }
             return -1;
         })();
-        const start = Math.max(0, textTurns.length - CONTEXT_TURNS);
+        // Prior turns' keywords must not follow the user into an unrelated ask:
+        // "how much disk space is left" ranked `calendar` top because the
+        // previous turns were about a calendar event (2026-11-13). The latest
+        // ask drives the menu; earlier turns contribute only when the latest is
+        // a bare follow-up ("and the second one?") with no words of its own.
+        const start = latestTokens.length >= 2
+            ? Math.max(0, textTurns.length - 1)
+            : Math.max(0, textTurns.length - CONTEXT_TURNS);
         const scores = new Map<string, number>();
         const bump = (k: string, by: number) => scores.set(k, (scores.get(k) || 0) + by);
         for (let i = start; i < textTurns.length; i++) {
             const weight = i === lastUserIdx ? LATEST_USER_WEIGHT : 1;
-            const tokens = tokenize((textTurns[i].content || '').slice(0, TURN_CHAR_CAP));
+            const tokens = tokenize(stripAnchor(textTurns[i].content || '').slice(0, TURN_CHAR_CAP));
             for (const t of tokens) bump(t, weight);
             for (let j = 0; j < tokens.length - 1; j++) {
                 bump(`${tokens[j]} ${tokens[j + 1]}`, weight);

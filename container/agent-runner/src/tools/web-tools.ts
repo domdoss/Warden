@@ -12,7 +12,7 @@ const MAX_CHARS = 50_000;
 
 registry.register({
     name: 'WebSearch',
-    description: '{"what":"find URLs — ranked results, not page content","read_a_result":"WebFetch","show_or_interact":"chrome_navigate","rule":"a URL you already know goes straight to WebFetch"}',
+    description: '{"what":"search the web — find URLs and ranked results for a research, lookup, or current-information ask","use_when":"research, look up, find out, what is the best/top, reviews, ratings, prices, news, latest, who is, compare, near me — anything not already in memory","read_a_result":"WebFetch","show_or_interact":"chrome_navigate","rule":"a URL you already know goes straight to WebFetch"}',
     schema: {
         type: 'object',
         properties: {
@@ -171,7 +171,7 @@ function cleanMd(md: string): string {
 
 registry.register({
     name: 'WebFetch',
-    description: '{"what":"read a page server-side as clean Markdown, no browser","use_when":"look up a fact, scrape an article, get a number from a URL","js_or_empty":"chrome_navigate + chrome_get_web_content"}',
+    description: '{"what":"read a page server-side as clean Markdown, no browser","use_when":"look up a fact, research a topic, read reviews or ratings, scrape an article, get a number or price from a URL","js_or_empty":"chrome_navigate + chrome_get_web_content"}',
     schema: {
         type: 'object',
         properties: {
