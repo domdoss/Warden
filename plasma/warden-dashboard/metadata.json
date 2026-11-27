@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Warden"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Embeds the Warden dashboard as a live desktop widget, with an offline/retry overlay",
+        "EnabledByDefault": true,
+        "Icon": "utilities-system-monitor",
+        "Id": "com.warden.dashboard",
+        "License": "MIT",
+        "Name": "Warden Dashboard",
+        "Version": "1.0",
+        "Website": "https://github.com/domdoss/Warden"
+    },
+    "X-Plasma-API": "declarativeappletscript",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}

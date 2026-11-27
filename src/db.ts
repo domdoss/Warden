@@ -479,6 +479,55 @@ function createSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       last_seen TEXT
     );
+
+    -- Mentions: @handle references parsed out of a post. This is a caller's
+    -- inbox — a cheap "was I named?" without scanning every board.
+    CREATE TABLE IF NOT EXISTS bbs_mentions (
+      id TEXT PRIMARY KEY,
+      post_id TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      board TEXT DEFAULT '',
+      thread_id TEXT,
+      author_host TEXT NOT NULL,
+      excerpt TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      read INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_bbs_mentions_handle ON bbs_mentions(handle, created_at);
+
+    -- Votes: one upvote per (post, voter). Karma is the sum of a handle's posts.
+    CREATE TABLE IF NOT EXISTS bbs_votes (
+      post_id TEXT NOT NULL,
+      voter TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (post_id, voter)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bbs_votes_post ON bbs_votes(post_id);
+
+    -- Join requests: a foreign agent asks to dial in. A clean request
+    -- auto-approves; a flagged one (keyword_score > 0) waits for the sysop.
+    CREATE TABLE IF NOT EXISTS bbs_join_requests (
+      id TEXT PRIMARY KEY,
+      handle TEXT NOT NULL,
+      profile TEXT DEFAULT '',
+      intent TEXT DEFAULT '',
+      capabilities TEXT DEFAULT '[]',
+      keyword_score INTEGER DEFAULT 0,
+      keyword_hits TEXT DEFAULT '[]',
+      status TEXT DEFAULT 'pending',     -- pending | approved | denied | revoked
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bbs_join_requests_handle ON bbs_join_requests(handle, created_at);
+
+    -- Idempotency: a caller's client_key maps to the post it created, so a
+    -- retried write never duplicates.
+    CREATE TABLE IF NOT EXISTS bbs_post_keys (
+      handle TEXT NOT NULL,
+      client_key TEXT NOT NULL,
+      post_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (handle, client_key)
+    );
   `);
 
 }
@@ -539,6 +588,20 @@ export function initDatabase(): void {
     ['friend_requests', 'from_pubkey', "TEXT DEFAULT ''"],
     ['bbs_threads', 'host', "TEXT NOT NULL DEFAULT ''"],
     ['bbs_posts', 'host', "TEXT NOT NULL DEFAULT ''"],
+    // BBS enrichment (typed posts, trust grading, caller feed/cursors/identity).
+    ['bbs_posts', 'kind', "TEXT DEFAULT 'note'"],
+    ['bbs_posts', 'trust', 'INTEGER DEFAULT 1'],
+    ['bbs_threads', 'kind', "TEXT DEFAULT 'discussion'"],
+    ['bbs_callers', 'read_cursor', 'TEXT'],
+    ['bbs_callers', 'profile', "TEXT DEFAULT ''"],
+    ['bbs_callers', 'interests', "TEXT DEFAULT '[]'"],
+    ['bbs_callers', 'webhook', "TEXT DEFAULT ''"],
+    ['bbs_callers', 'capabilities', "TEXT DEFAULT '[]'"],
+    ['bbs_callers', 'status', "TEXT DEFAULT 'active'"],
+    // Telnet login: scrypt password hash + access level ('caller' | 'sysop').
+    ['bbs_callers', 'password_hash', 'TEXT'],
+    ['bbs_callers', 'password_salt', 'TEXT'],
+    ['bbs_callers', 'level', "TEXT DEFAULT 'caller'"],
   ] as const) {
     try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
   }
@@ -998,7 +1061,7 @@ export function getMessagesForDashboard(
     : `AND (idea = '' OR idea IS NULL)`;
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, channel
       FROM messages
       WHERE chat_jid IN (${placeholders}) AND timestamp > ?
         AND content != '' AND content IS NOT NULL
@@ -3298,6 +3361,7 @@ export interface BbsThread {
   title: string;
   created_at: string;
   host: string;
+  kind?: string;
   post_count?: number;
 }
 
@@ -3311,6 +3375,9 @@ export interface BbsPost {
   body: string;
   created_at: string;
   host: string;
+  kind?: string;
+  trust?: number;
+  vote_count?: number;
 }
 
 export function seedBbsBoards(): void {
@@ -3358,11 +3425,12 @@ export function createBbsThread(row: {
   title: string;
   created_at: string;
   host: string;
+  kind?: string;
 }): boolean {
   const r = db.prepare(
-    `INSERT OR IGNORE INTO bbs_threads (id, board, author_host, author_kind, title, created_at, host)
-     VALUES (@id, @board, @author_host, @author_kind, @title, @created_at, @host)`,
-  ).run(row);
+    `INSERT OR IGNORE INTO bbs_threads (id, board, author_host, author_kind, title, created_at, host, kind)
+     VALUES (@id, @board, @author_host, @author_kind, @title, @created_at, @host, @kind)`,
+  ).run({ ...row, kind: row.kind ?? 'discussion' });
   return r.changes > 0;
 }
 
@@ -3377,11 +3445,13 @@ export function createBbsPost(row: {
   body: string;
   created_at: string;
   host: string;
+  kind?: string;
+  trust?: number;
 }): boolean {
   const r = db.prepare(
-    `INSERT OR IGNORE INTO bbs_posts (id, board, thread_id, reply_to, author_host, author_kind, body, created_at, host)
-     VALUES (@id, @board, @thread_id, @reply_to, @author_host, @author_kind, @body, @created_at, @host)`,
-  ).run(row);
+    `INSERT OR IGNORE INTO bbs_posts (id, board, thread_id, reply_to, author_host, author_kind, body, created_at, host, kind, trust)
+     VALUES (@id, @board, @thread_id, @reply_to, @author_host, @author_kind, @body, @created_at, @host, @kind, @trust)`,
+  ).run({ ...row, kind: row.kind ?? 'note', trust: row.trust ?? 1 });
   return r.changes > 0;
 }
 
@@ -3394,6 +3464,29 @@ export function deleteBbsPost(id: string): boolean {
   return db.prepare('DELETE FROM bbs_posts WHERE id = ?').run(id).changes > 0;
 }
 
+/** Cascade: a deleted post takes its votes and mentions with it. */
+export function deleteBbsVotesForPost(postId: string): void {
+  db.prepare('DELETE FROM bbs_votes WHERE post_id = ?').run(postId);
+}
+
+export function deleteBbsMentionsForPost(postId: string): void {
+  db.prepare('DELETE FROM bbs_mentions WHERE post_id = ?').run(postId);
+}
+
+/** Remove a board. Callers must refuse canonical boards and non-empty ones. */
+export function deleteBbsBoard(name: string): boolean {
+  return db.prepare('DELETE FROM bbs_boards WHERE name = ?').run(name).changes > 0;
+}
+
+export function countBbsPostsOnBoard(name: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM bbs_posts WHERE board = ?').get(name) as { n: number };
+  return row?.n || 0;
+}
+
+export function deleteBbsJoinRequest(handle: string): void {
+  db.prepare('DELETE FROM bbs_join_requests WHERE handle = ?').run(handle);
+}
+
 /** Drop a thread row once it has no posts left — the message area lives in posts. */
 export function deleteBbsThreadIfEmpty(id: string): boolean {
   return db.prepare(
@@ -3401,16 +3494,21 @@ export function deleteBbsThreadIfEmpty(id: string): boolean {
   ).run(id, id).changes > 0;
 }
 
-export function listBbsPosts(opts: { board?: string; thread_id?: string; host?: string; limit?: number } = {}): BbsPost[] {
+export function listBbsPosts(opts: { board?: string; thread_id?: string; host?: string; limit?: number; since?: string; kind?: string } = {}): BbsPost[] {
   const limit = Math.max(1, opts.limit ?? 200);
   const where: string[] = [];
   const args: any[] = [];
   if (opts.board) { where.push('board = ?'); args.push(opts.board); }
   if (opts.thread_id) { where.push('thread_id = ?'); args.push(opts.thread_id); }
   if (opts.host) { where.push('host = ?'); args.push(opts.host); }
+  if (opts.since) { where.push('created_at > ?'); args.push(opts.since); }
+  if (opts.kind) { where.push('kind = ?'); args.push(opts.kind); }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const order = opts.thread_id ? 'ASC' : 'DESC';
-  return db.prepare(`SELECT * FROM bbs_posts ${w} ORDER BY created_at ${order} LIMIT ?`).all(...args, limit) as BbsPost[];
+  return db.prepare(
+    `SELECT p.*, (SELECT COUNT(*) FROM bbs_votes v WHERE v.post_id = p.id) AS vote_count
+     FROM bbs_posts p ${w} ORDER BY p.created_at ${order} LIMIT ?`,
+  ).all(...args, limit) as BbsPost[];
 }
 
 /** Backfill rows created before the `host` column existed as owned by this node. */
@@ -3426,11 +3524,66 @@ export interface BbsCaller {
   token_hash: string;
   created_at: string;
   last_seen: string | null;
+  read_cursor?: string | null;
+  profile?: string;
+  interests?: string;
+  webhook?: string;
+  capabilities?: string;
+  status?: string;
+  level?: string;
+  password_hash?: string | null;
+  password_salt?: string | null;
 }
 
-export function createBbsCaller(handle: string, tokenHash: string): void {
-  db.prepare('INSERT INTO bbs_callers (handle, token_hash, created_at) VALUES (?, ?, ?)')
-    .run(handle, tokenHash, new Date().toISOString());
+export function createBbsCaller(handle: string, tokenHash: string, meta: { profile?: string; capabilities?: string; status?: string } = {}): void {
+  db.prepare('INSERT INTO bbs_callers (handle, token_hash, created_at, profile, capabilities, status) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(handle, tokenHash, new Date().toISOString(), meta.profile ?? '', meta.capabilities ?? '[]', meta.status ?? 'active');
+}
+
+export function getBbsCaller(handle: string): BbsCaller | undefined {
+  return db.prepare('SELECT * FROM bbs_callers WHERE handle = ?').get(handle) as BbsCaller | undefined;
+}
+
+/** Advance a caller's read cursor and mark its mentions read. */
+export function setBbsCallerCursor(handle: string, cursor: string): void {
+  db.prepare('UPDATE bbs_callers SET read_cursor = ?, last_seen = ? WHERE handle = ?')
+    .run(cursor, new Date().toISOString(), handle);
+  db.prepare('UPDATE bbs_mentions SET read = 1 WHERE handle = ?').run(handle);
+}
+
+export function setBbsCallerMeta(handle: string, meta: { profile?: string; interests?: string; webhook?: string; capabilities?: string }): void {
+  const sets: string[] = [];
+  const args: any[] = [];
+  if (meta.profile !== undefined) { sets.push('profile = ?'); args.push(meta.profile); }
+  if (meta.interests !== undefined) { sets.push('interests = ?'); args.push(meta.interests); }
+  if (meta.webhook !== undefined) { sets.push('webhook = ?'); args.push(meta.webhook); }
+  if (meta.capabilities !== undefined) { sets.push('capabilities = ?'); args.push(meta.capabilities); }
+  if (!sets.length) return;
+  db.prepare(`UPDATE bbs_callers SET ${sets.join(', ')} WHERE handle = ?`).run(...args, handle);
+}
+
+export function setBbsCallerStatus(handle: string, status: string): boolean {
+  return db.prepare('UPDATE bbs_callers SET status = ? WHERE handle = ?').run(status, handle).changes > 0;
+}
+
+export function listBbsCallersByStatus(status: string): BbsCaller[] {
+  return db.prepare('SELECT * FROM bbs_callers WHERE status = ? ORDER BY created_at DESC').all(status) as BbsCaller[];
+}
+
+/** Store a caller's scrypt password + access level (telnet login). */
+export function setBbsCallerPassword(handle: string, salt: string, hash: string, level: string): void {
+  db.prepare('UPDATE bbs_callers SET password_salt = ?, password_hash = ?, level = ? WHERE handle = ?')
+    .run(salt, hash, level, handle);
+}
+
+export function getBbsCallerPassword(handle: string): { salt: string | null; hash: string | null; level: string } | undefined {
+  return db.prepare('SELECT password_salt AS salt, password_hash AS hash, level FROM bbs_callers WHERE handle = ?')
+    .get(handle) as { salt: string | null; hash: string | null; level: string } | undefined;
+}
+
+export function listBbsUsers(): { handle: string; level: string; created_at: string; last_seen: string | null }[] {
+  return db.prepare('SELECT handle, level, created_at, last_seen FROM bbs_callers ORDER BY created_at ASC')
+    .all() as { handle: string; level: string; created_at: string; last_seen: string | null }[];
 }
 
 export function getBbsCallerByHash(tokenHash: string): BbsCaller | undefined {
@@ -3447,4 +3600,154 @@ export function touchBbsCaller(handle: string): void {
 
 export function deleteBbsCaller(handle: string): boolean {
   return db.prepare('DELETE FROM bbs_callers WHERE handle = ?').run(handle).changes > 0;
+}
+
+// ── Mentions ────────────────────────────────────────────────────────────────
+
+export interface BbsMention {
+  id: string;
+  post_id: string;
+  handle: string;
+  board: string;
+  thread_id: string | null;
+  author_host: string;
+  excerpt: string;
+  created_at: string;
+  read: number;
+}
+
+export function createBbsMention(row: {
+  post_id: string;
+  handle: string;
+  board: string;
+  thread_id: string | null;
+  author_host: string;
+  excerpt: string;
+  created_at: string;
+}): void {
+  db.prepare(
+    'INSERT INTO bbs_mentions (id, post_id, handle, board, thread_id, author_host, excerpt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(crypto.randomUUID(), row.post_id, row.handle, row.board, row.thread_id, row.author_host, row.excerpt, row.created_at);
+}
+
+export function listBbsMentions(handle: string, limit = 50): BbsMention[] {
+  return db.prepare('SELECT * FROM bbs_mentions WHERE handle = ? ORDER BY created_at DESC LIMIT ?')
+    .all(handle, limit) as BbsMention[];
+}
+
+export function countBbsUnreadMentions(handle: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM bbs_mentions WHERE handle = ? AND read = 0').get(handle) as { n: number };
+  return row?.n || 0;
+}
+
+export function markBbsMentionsRead(handle: string): void {
+  db.prepare('UPDATE bbs_mentions SET read = 1 WHERE handle = ?').run(handle);
+}
+
+// ── Votes / karma ───────────────────────────────────────────────────────────
+
+export function addBbsVote(postId: string, voter: string): boolean {
+  return db.prepare('INSERT OR IGNORE INTO bbs_votes (post_id, voter, created_at) VALUES (?, ?, ?)')
+    .run(postId, voter, new Date().toISOString()).changes > 0;
+}
+
+export function removeBbsVote(postId: string, voter: string): boolean {
+  return db.prepare('DELETE FROM bbs_votes WHERE post_id = ? AND voter = ?').run(postId, voter).changes > 0;
+}
+
+export function getBbsVoteCount(postId: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM bbs_votes WHERE post_id = ?').get(postId) as { n: number };
+  return row?.n || 0;
+}
+
+/** Karma = total upvotes across a handle's posts on this node. */
+export function getBbsKarma(handle: string): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) AS n FROM bbs_votes v JOIN bbs_posts p ON p.id = v.post_id WHERE p.author_host = ?`,
+  ).get(handle) as { n: number };
+  return row?.n || 0;
+}
+
+/** Vote counts for a set of posts, keyed by post id. */
+export function getBbsVoteCounts(postIds: string[]): Record<string, number> {
+  if (!postIds.length) return {};
+  const placeholders = postIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT post_id, COUNT(*) AS n FROM bbs_votes WHERE post_id IN (${placeholders}) GROUP BY post_id`,
+  ).all(...postIds) as { post_id: string; n: number }[];
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.post_id] = r.n;
+  return out;
+}
+
+// ── Join requests ───────────────────────────────────────────────────────────
+
+export interface BbsJoinRequest {
+  id: string;
+  handle: string;
+  profile: string;
+  intent: string;
+  capabilities: string;
+  keyword_score: number;
+  keyword_hits: string;
+  status: string;
+  created_at: string;
+}
+
+export function createBbsJoinRequest(row: {
+  handle: string;
+  profile: string;
+  intent: string;
+  capabilities: string;
+  keyword_score: number;
+  keyword_hits: string;
+  status: string;
+}): BbsJoinRequest {
+  const id = crypto.randomUUID();
+  const created_at = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO bbs_join_requests (id, handle, profile, intent, capabilities, keyword_score, keyword_hits, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, row.handle, row.profile, row.intent, row.capabilities, row.keyword_score, row.keyword_hits, row.status, created_at);
+  return { id, ...row, created_at };
+}
+
+export function listBbsJoinRequests(limit = 100): BbsJoinRequest[] {
+  return db.prepare('SELECT * FROM bbs_join_requests ORDER BY created_at DESC LIMIT ?').all(limit) as BbsJoinRequest[];
+}
+
+export function getBbsJoinRequest(handle: string): BbsJoinRequest | undefined {
+  return db.prepare('SELECT * FROM bbs_join_requests WHERE handle = ? ORDER BY created_at DESC LIMIT 1').get(handle) as BbsJoinRequest | undefined;
+}
+
+export function setBbsJoinRequestStatus(handle: string, status: string): void {
+  db.prepare('UPDATE bbs_join_requests SET status = ? WHERE handle = ?').run(status, handle);
+}
+
+// ── Idempotency keys ────────────────────────────────────────────────────────
+
+export function getBbsPostKey(handle: string, clientKey: string): string | null {
+  const row = db.prepare('SELECT post_id FROM bbs_post_keys WHERE handle = ? AND client_key = ?')
+    .get(handle, clientKey) as { post_id: string } | undefined;
+  return row?.post_id ?? null;
+}
+
+export function createBbsPostKey(handle: string, clientKey: string, postId: string): void {
+  db.prepare('INSERT OR IGNORE INTO bbs_post_keys (handle, client_key, post_id, created_at) VALUES (?, ?, ?, ?)')
+    .run(handle, clientKey, postId, new Date().toISOString());
+}
+
+// ── Boards (node-defined) ───────────────────────────────────────────────────
+
+/** Add or update a board. The seed list stays as the default; a node may add
+ *  its own rooms (e.g. "trading", "security") without losing the canonical set. */
+export function upsertBbsBoard(name: string, description: string, position: number): void {
+  db.prepare(
+    `INSERT INTO bbs_boards (name, description, position) VALUES (?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET description = excluded.description, position = excluded.position`,
+  ).run(name, description, position);
+}
+
+/** Posts newer than a cursor (exclusive), newest first. */
+export function listBbsPostsSince(host: string, since: string, board?: string, limit = 200): BbsPost[] {
+  return listBbsPosts({ host, since, board, limit });
 }

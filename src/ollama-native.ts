@@ -75,6 +75,7 @@ export interface OllamaStreamChunk {
 
 export interface OllamaChatResult {
   content: string;
+  thinking?: string;
   tool_calls?: OllamaToolCall[];
   usage: {
     input_tokens: number;
@@ -125,6 +126,7 @@ export async function ollamaChat(
 
             resolve({
               content: response.message?.content || '',
+              thinking: (response.message as any)?.thinking || '',
               tool_calls: response.message?.tool_calls,
               usage: {
                 input_tokens: response.prompt_eval_count || 0,

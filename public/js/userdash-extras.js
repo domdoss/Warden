@@ -2177,6 +2177,110 @@ window.UserDash = (() => {
     }
   }
 
+  // ===== Blog Autoposter (nightly research loop + poster) =====
+  function blogEsc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  async function loadBlog() {
+    try {
+      const [cfgR, qR, hR] = await Promise.all([
+        fetch('/api/blog/config').then(r => r.json()),
+        fetch('/api/blog/queue').then(r => r.json()),
+        fetch('/api/blog/history').then(r => r.json()),
+      ]);
+      const cfg = cfgR || {};
+      const q = (qR && qR.queue) || [];
+      const hist = (hR && hR.history) || [];
+      const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+      const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+      setVal('blogCron', cfg.cron || '0 2 * * *');
+      setVal('blogCount', cfg.perRunCount || 1);
+      setVal('blogTopics', cfg.topicsHint || '');
+      setChk('blogAutoPublish', cfg.autoPublish);
+      setChk('blogEnabled', cfg.enabled);
+      const st = document.getElementById('blogStatus');
+      if (st) {
+        st.textContent = (cfg.enabled ? 'Enabled' : 'Disabled') + ' · '
+          + (cfg.autoPublish ? 'auto-publish' : 'review queue') + ' · '
+          + (cfg.blogRoot || '');
+      }
+      const qEl = document.getElementById('blogQueue');
+      if (qEl) {
+        qEl.innerHTML = q.length ? q.map(function (d) {
+          return '<div class="auto-card" style="border-left:3px solid var(--color-primary);margin-bottom:10px;padding:12px">'
+            + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">'
+            + '<div><strong>' + blogEsc(d.title) + '</strong>'
+            + '<div style="font-size:12px;opacity:.7">' + blogEsc(d.category) + ' · ' + blogEsc(d.date) + '</div></div>'
+            + '<div style="display:flex;gap:6px">'
+            + '<button class="btn btn-accent btn-sm" onclick="UserDash.publishBlog(\'' + blogEsc(d.id) + '\')">Publish</button>'
+            + '<button class="btn btn-sm" onclick="UserDash.dismissBlog(\'' + blogEsc(d.id) + '\')">Discard</button>'
+            + '</div></div>'
+            + '<p style="font-size:13px;opacity:.85;margin:8px 0 0">' + blogEsc(d.excerpt) + '</p>'
+            + '</div>';
+        }).join('') : '<div class="empty-state"><p class="empty-desc">No drafts waiting. Click &ldquo;Run now&rdquo; to generate one, or wait for the nightly run.</p></div>';
+      }
+      const hEl = document.getElementById('blogHistory');
+      if (hEl) {
+        hEl.innerHTML = hist.length ? hist.slice(0, 20).map(function (d) {
+          return '<div style="padding:8px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.08));font-size:13px">'
+            + '<span style="opacity:.6">' + blogEsc(d.date) + '</span> · <strong>' + blogEsc(d.title) + '</strong>'
+            + ' <span style="opacity:.6">(' + blogEsc(d.status || '') + ')</span></div>';
+        }).join('') : '<div class="empty-state"><p class="empty-desc">No runs yet.</p></div>';
+      }
+    } catch (e) {
+      console.error('loadBlog', e);
+    }
+  }
+
+  async function saveBlogConfig() {
+    const payload = {
+      cron: (document.getElementById('blogCron') || {}).value || '0 2 * * *',
+      perRunCount: parseInt((document.getElementById('blogCount') || {}).value || '1', 10) || 1,
+      topicsHint: (document.getElementById('blogTopics') || {}).value || '',
+      autoPublish: !!(document.getElementById('blogAutoPublish') || {}).checked,
+      enabled: !!(document.getElementById('blogEnabled') || {}).checked,
+    };
+    try {
+      await fetch('/api/blog/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (typeof toast === 'function') toast('Blog settings saved', 'success');
+      loadBlog();
+    } catch (e) {
+      if (typeof toast === 'function') toast('Blog save failed', 'error');
+    }
+  }
+
+  async function runBlogNow() {
+    const st = document.getElementById('blogStatus');
+    if (st) st.textContent = 'Running research + drafting… (this can take a minute)';
+    try {
+      const r = await fetch('/api/blog/run', { method: 'POST' });
+      const d = await r.json();
+      if (typeof toast === 'function') toast(d.message || (d.ok ? 'Done' : 'Run failed'), d.ok ? 'success' : 'error');
+      loadBlog();
+    } catch (e) {
+      if (typeof toast === 'function') toast('Blog run failed', 'error');
+    }
+  }
+
+  async function publishBlog(id) {
+    try {
+      const r = await fetch('/api/blog/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+      const d = await r.json();
+      if (typeof toast === 'function') toast(d.message || 'Published', d.ok ? 'success' : 'error');
+      loadBlog();
+    } catch (e) {
+      if (typeof toast === 'function') toast('Publish failed', 'error');
+    }
+  }
+
+  async function dismissBlog(id) {
+    try {
+      await fetch('/api/blog/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+      loadBlog();
+    } catch (e) { /* ignore */ }
+  }
+
   function showNotification(data) {
     lastNotifType = data.type || '';
 
@@ -3742,6 +3846,11 @@ window.UserDash = (() => {
     initTalkView,
     loadHeartbeat,
     loadAlarms,
+    loadBlog,
+    saveBlogConfig,
+    runBlogNow,
+    publishBlog,
+    dismissBlog,
     initChatDropZone,
   };
 })();

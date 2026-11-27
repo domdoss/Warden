@@ -11,6 +11,7 @@
 // fine-tunable classes. A pair teaching around a bug trains the model to work
 // around it (data/skills/log-mining/SKILL.md).
 import crypto from 'crypto';
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -45,6 +46,9 @@ export interface TrainingFlag {
   // Set by modify-parts.mjs when it processes the flag.
   consumed_at?: string;
   outcome?: string;
+  // Absolute path to a snapshot of the last hour of logs captured at report
+  // time (user-submitted flags), so the reasoning pass sees real context.
+  context_log?: string;
 }
 
 export function listTrainingFlags(): TrainingFlag[] {
@@ -59,8 +63,42 @@ export function listTrainingFlags(): TrainingFlag[] {
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
+/**
+ * Capture the last hour of the warden.service log and save it next to a flag,
+ * returning the absolute path. Journald first (real timestamps, full window),
+ * falling back to the tail of warden.log when journald is empty/unreachable.
+ */
+export function snapshotLastHourLogs(id: string): string {
+  const dir = path.join(path.dirname(FLAGS_FILE), 'context');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${id}.log`);
+  let text = '';
+  try {
+    const r = spawnSync(
+      'journalctl',
+      ['--user', '-u', 'warden.service', '--since', '1 hour ago', '-o', 'cat', '--no-pager'],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    );
+    text = r.status === 0 && r.stdout ? r.stdout : '';
+  } catch {
+    /* fall through to the file */
+  }
+  if (!text.trim()) {
+    try {
+      text = fs.readFileSync(path.join(process.cwd(), 'logs', 'warden.log'), 'utf8');
+    } catch {
+      text = '';
+    }
+  }
+  fs.writeFileSync(file, text, 'utf8');
+  return file;
+}
+
 /** Validate + append one flag. Duplicate excerpts return the existing id. */
-export function addTrainingFlag(args: any): { ok: true; id: string; duplicate: boolean } | { ok: false; error: string } {
+export function addTrainingFlag(
+  args: any,
+  opts: { detectedBy?: string; snapshotLogs?: boolean } = {},
+): { ok: true; id: string; duplicate: boolean } | { ok: false; error: string } {
   const failureClass = str(args?.failure_class);
   if (!(TRAINABLE_CLASSES as readonly string[]).includes(failureClass)) {
     return { ok: false, error: `failure_class must be one of: ${TRAINABLE_CLASSES.join(', ')}` };
@@ -82,7 +120,8 @@ export function addTrainingFlag(args: any): { ok: true; id: string; duplicate: b
     id,
     flagged_at: new Date().toISOString(),
     status: 'pending',
-    detected_by: ['artemis'],
+    detected_by: [opts.detectedBy || 'artemis'],
+    ...(opts.snapshotLogs ? { context_log: snapshotLastHourLogs(id) } : {}),
     log_timestamp: str(args?.log_timestamp),
     log_excerpt: excerpt.slice(0, 3000),
     classification: {

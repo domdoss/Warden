@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE, TRIGGER_PATTERN, WORKSPACE_ROOT } from './config.js';
+import { runBlogAutoposter } from './blog-autoposter.js';
 import {
   getDueTasks,
   getTaskById,
@@ -14,6 +15,7 @@ import {
   updateTaskAfterRun,
 } from './db.js';
 import { resolveGroupFolderPath, type RegisteredGroup } from './group-folder.js';
+import { isChatLocked } from './chat-lock.js';
 import { logger } from './logger.js';
 import { ScheduledTask } from './types.js';
 
@@ -613,6 +615,13 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
   const loop = async () => {
     try {
+      // A heavy job (training loop, bug-fix loop, Alpha Stack analysis) holds
+      // the chat seat while it runs. Pause all scheduled tasks so they don't
+      // contend for the model/GPU — they resume once the lock clears.
+      if (isChatLocked()) {
+        setTimeout(loop, SCHEDULER_POLL_INTERVAL);
+        return;
+      }
       // Prune task-run logs every loop tick (cheap; getDueTasks runs frequently).
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {
@@ -634,6 +643,20 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           try {
             const nextRun = computeNextRun(currentTask);
             if (nextRun) updateTaskAfterRun(task.id, nextRun, 'skipped (fired by checkDigestsDue)');
+          } catch { /* ignore */ }
+          continue;
+        }
+
+        // Blog autoposter: run the host-side pipeline directly (never injected
+        // into chat), then advance next_run. Works with the GPU disabled /
+        // Ollama stopped provided a cloud LLM (or Ollama) is configured.
+        if (task.id === 'blog-autoposter') {
+          try {
+            void runBlogAutoposter()
+              .then((r) => logger.info({ ok: r.ok, msg: r.message }, 'blog autoposter run'))
+              .catch((e) => logger.warn({ err: e }, 'blog autoposter run failed'));
+            const nextRun = computeNextRun(currentTask);
+            if (nextRun) updateTaskAfterRun(task.id, nextRun, 'blog autoposter ran');
           } catch { /* ignore */ }
           continue;
         }

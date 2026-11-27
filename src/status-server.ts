@@ -1,4 +1,3 @@
-import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { execSync, spawn, spawnSync } from 'child_process';
 import http from 'http';
@@ -7,7 +6,98 @@ import os from 'os';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 import { readEnvFile } from './env.js';
+
+// Local image generation (dashboard tab). No defaults: the prompt is exactly
+// what the user types, plus any optional scene/aesthetic/location they add.
+function composeImagegenPrompt(input: any): string {
+    return [input?.prompt, input?.scene, input?.aesthetic, input?.location]
+        .map((v: any) => String(v || '').trim())
+        .filter(Boolean)
+        .join(', ');
+}
+
+/**
+ * Unload every resident Ollama model so the local image generator (SD.cpp:
+ * ~7.6 GB denoiser + ~8.7 GB text encoder) has the VRAM it needs. Called while
+ * the `imagegen` chat lock is held, so no chat turn can grab it back mid-run.
+ */
+async function unloadOllamaForImagegen(): Promise<string[]> {
+  const unloaded: string[] = [];
+  try {
+    const ps = await fetch(`${OLLAMA_URL}/api/ps`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!ps.ok) return unloaded;
+    const data = (await ps.json()) as { models?: Array<{ name?: string }> };
+    for (const m of data.models || []) {
+      if (!m?.name) continue;
+      try {
+        await fetch(`${OLLAMA_URL}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ model: m.name, keep_alive: 0 }),
+        });
+        unloaded.push(m.name);
+      } catch {
+        /* best effort */
+      }
+    }
+    if (unloaded.length) await new Promise((r) => setTimeout(r, 1500));
+  } catch {
+    /* Ollama down — nothing to unload */
+  }
+  return unloaded;
+}
+
+/**
+ * In-flight image-generation job. One at a time. The POST starts it and returns
+ * immediately; the app polls /api/imagegen/status until `running` goes false, so
+ * no request timeout can cut a slow render short.
+ */
+let imagegenJob: {
+  running: boolean;
+  name?: string;
+  url?: string;
+  error?: string;
+  startedAt?: number;
+} = { running: false };
+
+// Generated images live outside the volatile app tree so an update/rebuild can't
+// wipe them: AppImage → $WARDEN_HOME/images; dev → <root>/data/images (data/ is
+// the durable state dir and is excluded from the release payload).
+const IMAGEGEN_DIR = process.env.WARDEN_HOME
+  ? path.join(process.env.WARDEN_HOME, 'images')
+  : path.join(DATA_DIR, 'images');
+
+/** Ensure the durable dir exists and migrate any legacy ./images/*.png once. */
+function ensureImagegenDir(): void {
+  try {
+    fs.mkdirSync(IMAGEGEN_DIR, { recursive: true });
+  } catch {
+    return;
+  }
+  const legacy = path.join(process.cwd(), 'images');
+  if (legacy === IMAGEGEN_DIR) return;
+  try {
+    if (!fs.existsSync(legacy)) return;
+    for (const f of fs.readdirSync(legacy)) {
+      if (!/\.png$/i.test(f)) continue;
+      const dst = path.join(IMAGEGEN_DIR, f);
+      if (!fs.existsSync(dst)) fs.copyFileSync(path.join(legacy, f), dst);
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function imagegenDir(): string {
+  ensureImagegenDir();
+  return IMAGEGEN_DIR;
+}
+
 import { logger } from './logger.js';
+import { clearChatLock, getChatLock, setChatLock } from './chat-lock.js';
 import { transcribeLocal } from './transcription.js';
 import { killCurrentAgent, cancelCurrentTurn, getLiveStatus, getLiveJobs, getProgressHistory } from './agent-spawn.js';
 import { syncAgentCtxEnv, runFriendTurn, runColab, getColabStatus } from './index.js';
@@ -33,6 +123,15 @@ import {
   isCustomApiAllowed,
   WORKSPACE_ROOT,
 } from './config.js';
+import {
+  readBlogConfig,
+  writeBlogConfig,
+  getBlogQueue,
+  getBlogHistory,
+  runBlogAutoposter,
+  publishDraftById,
+  dismissDraft,
+} from './blog-autoposter.js';
 import { ollamaIsAvailable } from './ollama-client.js';
 import { ollamaModelSupportsThinking } from './ollama-native.js';
 import {
@@ -176,6 +275,8 @@ import { encryptApiKey } from './encryption.js';
 import httpProxy from 'http-proxy';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawnPty, nodePtyIsAvailable, type PtySession } from './pty-server.js';
+import { handleMobileRequest, initMobile } from './mobile.js';
+import { handleSysRequest } from './sysview.js';
 
 // Quick HTTP probe — confirms an in-container service is actually serving,
 // not just that the docker port mapping exists.
@@ -191,7 +292,8 @@ function probeLocalPort(port: number, path: string): Promise<boolean> {
   });
 }
 import { fetchEmails, sendEmail, testConnection } from './email.js';
-import { listTrainingFlags } from './training-flags.js';
+import { addTrainingFlag, listTrainingFlags } from './training-flags.js';
+import { detectTrainingCapability } from './training-capability.js';
 
 const STATUS_PORT = parseInt(process.env.STATUS_PORT || '3200', 10);
 
@@ -404,6 +506,9 @@ const MIME: Record<string, string> = {
   '.webp': 'image/webp',
   '.pdf': 'application/pdf',
   '.ico': 'image/x-icon',
+  '.ttf': 'font/ttf',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
 };
 
 // --- Helpers ---
@@ -760,6 +865,7 @@ function getStatusData() {
     // parse-the-label-string approach).
     jobs: getLiveJobs(),
     progress: getProgressHistory(),
+    chatLocked: getChatLock(),
     groups: groupList,
     timestamp: new Date().toISOString(),
     ollamaChatModel: process.env.OLLAMA_CHAT_MODEL || OLLAMA_CHAT_MODEL,
@@ -834,7 +940,7 @@ function getMainJid(): string | null {
 function resolveMessageJid(params: URLSearchParams): string {
   const jid = params.get('jid');
   if (jid) return jid;
-  return WEB_DASHBOARD_JID;
+  return getMainJid() || WEB_DASHBOARD_JID;
 }
 
 async function handleMessages(
@@ -867,7 +973,7 @@ async function handleMessages(
     };
     if (!body.text) return error(res, 'text required');
 
-    const jid = body.jid || WEB_DASHBOARD_JID;
+    const jid = body.jid || getMainJid() || WEB_DASHBOARD_JID;
 
     // Panic word: a bare "stop" hard-kills the whole system instead of being
     // delivered to the agent as a chat message. The message is NOT stored,
@@ -1414,242 +1520,15 @@ async function readToolPool(): Promise<string[]> {
   return cachedToolPool;
 }
 
-// --- MARM memory canvas -----------------------------------------------------
-// The MARM dash rebuilt natively on a Warden canvas — no iframe. The Warden
-// host reads MARM's SQLite store directly (same queries the MARM console uses)
-// and checks the live MARM API for health. MARM is optional: a down API or a
-// missing store degrades the canvas to "offline" and never blocks anything
-// else (the same optional-component contract as the browser capability).
-
-const MARM_URL = process.env.MARM_URL || 'http://127.0.0.1:8001';
-const MARM_DB_PATH = process.env.MARM_DB_PATH || path.join(os.homedir(), '.marm', 'marm_memory.db');
-let marmDb: Database.Database | null = null;
-
-function getMarmDb(): Database.Database | null {
-  if (marmDb) return marmDb;
-  try {
-    marmDb = new Database(MARM_DB_PATH, { fileMustExist: true });
-    // MARM's own service writes through the same file (WAL) — never wedge on a lock.
-    marmDb.pragma('busy_timeout = 3000');
-    return marmDb;
-  } catch {
-    return null;
-  }
-}
-
-/** Bounded health probe of the MARM API — both connect and body reads time out. */
-function marmHealth(): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v: Record<string, unknown>) => { if (!settled) { settled = true; resolve(v); } };
-    try {
-      const probe = http.get(`${MARM_URL}/health`, (r) => {
-        let body = '';
-        r.on('data', (c: Buffer) => { body += c.toString(); if (body.length > 65536) probe.destroy(); });
-        r.on('end', () => {
-          try { done(JSON.parse(body) as Record<string, unknown>); } catch { done({ reachable: false }); }
-        });
-        r.on('error', () => done({ reachable: false }));
-      });
-      probe.on('error', () => done({ reachable: false }));
-      // Bounds the whole request: if no response within 3s, the canvas shows offline.
-      probe.setTimeout(3000, () => { probe.destroy(); done({ reachable: false }); });
-    } catch {
-      done({ reachable: false });
-    }
-  });
-}
-
-function marmCount(db: Database.Database, sql: string): number {
-  const n = db.prepare(sql).pluck().get();
-  return typeof n === 'number' ? n : 0;
-}
-
-/** Bounded JSON call into the live MARM API — connect AND response are timed out. */
-function marmApi(method: string, marmPath: string, body: unknown, timeoutMs: number): Promise<{ status: number; data: unknown }> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (msg: string) => { if (!settled) { settled = true; reject(new Error(msg)); } };
-    try {
-      const u = new URL(MARM_URL + marmPath);
-      const payload = body == null ? null : Buffer.from(JSON.stringify(body));
-      const r = http.request(
-        {
-          hostname: u.hostname, port: u.port, path: u.pathname + u.search, method,
-          headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {},
-        },
-        (r2) => {
-          let buf = '';
-          r2.on('data', (c: Buffer) => { buf += c.toString(); if (buf.length > 8 * 1024 * 1024) r2.destroy(); });
-          r2.on('end', () => {
-            try { resolve({ status: r2.statusCode || 0, data: buf ? JSON.parse(buf) : null }); }
-            catch { fail(`MARM API returned non-JSON (HTTP ${r2.statusCode})`); }
-          });
-          r2.on('error', (e: Error) => fail(e.message));
-        }
-      );
-      r.on('error', (e) => fail(e.message));
-      r.setTimeout(timeoutMs, () => { r.destroy(); fail('MARM API timed out'); });
-      if (payload) r.write(payload);
-      r.end();
-    } catch (e: any) { fail(e.message); }
-  });
-}
-
-async function handleMarm(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  pathname: string,
-  params: URLSearchParams,
-): Promise<void> {
-  const db = getMarmDb();
-  if (!db) return error(res, `MARM store unavailable at ${MARM_DB_PATH}`, 503);
-
-  const limit = Math.min(Math.max(Number(params.get('limit')) || 50, 1), 200);
-  const offset = Math.max(Number(params.get('offset')) || 0, 0);
-
-  // DELETE memories / logs — { ids: [...] }
-  if (req.method === 'DELETE' && (pathname === '/api/marm/memories' || pathname === '/api/marm/logs')) {
-    const body = parseJson(await parseBody(req)) as { ids?: (string | number)[] };
-    const ids = (Array.isArray(body.ids) ? body.ids : []).filter((x) => typeof x === 'string' || typeof x === 'number').slice(0, 500);
-    if (!ids.length) return error(res, 'ids required');
-    const table = pathname === '/api/marm/memories' ? 'memories' : 'log_entries';
-    const stmt = db.prepare(`DELETE FROM ${table} WHERE id = ?`);
-    const deleted = db.transaction((list: (string | number)[]) => {
-      let n = 0;
-      for (const id of list) n += stmt.run(id).changes;
-      return n;
-    })(ids);
-    return json(res, { ok: true, deleted });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/marm/overview') {
-    const health = await marmHealth();
-    return json(res, {
-      health,
-      db: MARM_DB_PATH,
-      stats: {
-        active_memories: marmCount(db, "SELECT COUNT(*) FROM memories WHERE compaction_role IS NULL OR compaction_role != 'source'"),
-        compacted_sources: marmCount(db, "SELECT COUNT(*) FROM memories WHERE compaction_role = 'source'"),
-        missing_embeddings: marmCount(db, 'SELECT COUNT(*) FROM memories WHERE embedding IS NULL'),
-        sessions: marmCount(db, 'SELECT COUNT(*) FROM sessions'),
-        log_entries: marmCount(db, 'SELECT COUNT(*) FROM log_entries'),
-        notebook_entries: marmCount(db, 'SELECT COUNT(*) FROM notebook_entries'),
-        pending_compaction: marmCount(db, "SELECT COUNT(*) FROM compaction_staging WHERE status IN ('pending_summary','ready')"),
-        staged_compaction: marmCount(db, "SELECT COUNT(*) FROM compaction_staging WHERE status = 'staged'"),
-      },
-      projects: db.prepare("SELECT DISTINCT project FROM memories WHERE project IS NOT NULL AND project != '' ORDER BY project COLLATE NOCASE").pluck().all(),
-      platforms: db.prepare("SELECT DISTINCT platform FROM memories WHERE platform IS NOT NULL AND platform != '' ORDER BY platform COLLATE NOCASE").pluck().all(),
-    });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/marm/memories') {
-    const clauses: string[] = [];
-    const args: (string | number)[] = [];
-    const role = params.get('role');
-    if (role === 'compacted') clauses.push("compaction_role = 'source'");
-    else if (role !== 'all') clauses.push("(compaction_role IS NULL OR compaction_role != 'source')");
-    const session = params.get('session');
-    if (session) { clauses.push('session_name = ?'); args.push(session); }
-    const project = params.get('project');
-    if (project) { clauses.push('project = ?'); args.push(project); }
-    const q = params.get('q');
-    if (q) {
-      clauses.push("content LIKE ? ESCAPE '\\'");
-      args.push('%' + q.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_') + '%');
-    }
-    const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
-    const total = db.prepare(`SELECT COUNT(*) FROM memories${where}`).pluck().get(...args) as number;
-    const memories = db.prepare(
-      `SELECT id, session_name, project, platform, context_type, compaction_role, created_at, substr(content, 1, 500) AS content FROM memories${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-    ).all(...args, limit, offset);
-    return json(res, { total, memories });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/marm/logs') {
-    const clauses: string[] = [];
-    const args: (string | number)[] = [];
-    const session = params.get('session');
-    if (session) { clauses.push('session_name = ?'); args.push(session); }
-    const q = params.get('q');
-    if (q) {
-      clauses.push("summary LIKE ? ESCAPE '\\'");
-      args.push('%' + q.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_') + '%');
-    }
-    const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
-    const total = db.prepare(`SELECT COUNT(*) FROM log_entries${where}`).pluck().get(...args) as number;
-    const logs = db.prepare(
-      `SELECT id, session_name, entry_date, topic, project, platform, created_at, substr(summary, 1, 400) AS summary FROM log_entries${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-    ).all(...args, limit, offset);
-    return json(res, { total, logs });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/marm/sessions') {
-    const sessions = db.prepare(
-      'SELECT session_name, marm_active, created_at, last_accessed FROM sessions ORDER BY last_accessed DESC LIMIT ?'
-    ).all(limit);
-    return json(res, { sessions });
-  }
-
-  // Session create/delete straight in the store (same rows the console manages).
-  if (req.method === 'POST' && pathname === '/api/marm/sessions') {
-    const body = parseJson(await parseBody(req)) as { session_name?: string };
-    const name = String(body.session_name || '').trim().slice(0, 255);
-    if (!name) return error(res, 'session_name required');
-    db.prepare(
-      "INSERT OR IGNORE INTO sessions (session_name, marm_active, created_at, last_accessed) VALUES (?, 0, datetime('now'), datetime('now'))"
-    ).run(name);
-    return json(res, { ok: true, session_name: name });
-  }
-  if (req.method === 'DELETE' && pathname === '/api/marm/sessions') {
-    const body = parseJson(await parseBody(req)) as { names?: string[] };
-    const names = (Array.isArray(body.names) ? body.names : []).filter((x) => typeof x === 'string').slice(0, 500);
-    if (!names.length) return error(res, 'names required');
-    const stmt = db.prepare('DELETE FROM sessions WHERE session_name = ?');
-    const deleted = db.transaction((list: string[]) => {
-      let n = 0;
-      for (const nm of list) n += stmt.run(nm).changes;
-      return n;
-    })(names);
-    return json(res, { ok: true, deleted });
-  }
-
-  // Live MARM API passthroughs — every canvas action that belongs to the
-  // running service (recall, compaction, notebook, concepts, summary) goes
-  // through the API, never by second-guessing its internals in SQL.
-  const marmPassthrough: Record<string, [string, string]> = {
-    '/api/marm/memory':        ['POST', '/internal/memories'],
-    '/api/marm/log-entry':     ['POST', '/marm_log_entry'],
-    '/api/marm/smart-recall':  ['POST', '/marm_smart_recall'],
-    '/api/marm/compaction':    ['POST', '/marm_compaction'],
-    '/api/marm/notebook':      ['POST', '/marm_notebook'],
-    '/api/marm/concept-build': ['POST', '/marm_concept_build'],
-    '/api/marm/summary':       ['GET',  '/marm_summary'],
-  };
-  if (marmPassthrough[pathname]) {
-    const [method, marmPath] = marmPassthrough[pathname];
-    try {
-      const body = method === 'POST' ? parseJson(await parseBody(req)) : null;
-      const query = method === 'GET' && params.toString() ? '?' + params.toString() : '';
-      const out = await marmApi(method, marmPath + query, body, 60_000);
-      if (out.status >= 400) {
-        return error(res, `MARM said HTTP ${out.status}: ${JSON.stringify(out.data).slice(0, 300)}`, 502);
-      }
-      return json(res, out.data);
-    } catch (e: any) {
-      return error(res, `MARM API: ${e.message}`, 502);
-    }
-  }
-
-  return error(res, 'Not found', 404);
-}
-
 async function handleSettings(res: http.ServerResponse): Promise<void> {
   const envVals = readEnvFile([
     'CALENDAR_TOKEN',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     'MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET',
     'TZ', 'OLLAMA_URL',
+    'SELECTION_SEMANTIC', 'SELECTION_EMBED_MODEL', 'SELECTION_EMBED_KEEP_ALIVE',
+    'SELECTION_SEMANTIC_WEIGHT', 'SELECTION_LEXICAL_WEIGHT', 'SELECTION_NAME_BONUS',
+    'SELECTION_EMBED_TIMEOUT_MS',
   ]);
   const googleId = process.env.GOOGLE_CLIENT_ID || envVals.GOOGLE_CLIENT_ID || '';
   const googleSecret = process.env.GOOGLE_CLIENT_SECRET || envVals.GOOGLE_CLIENT_SECRET || '';
@@ -1683,6 +1562,13 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     // a blank row means the built-in default applies.
     maxOutputTokens: getRouterState('local:max_output_tokens') || '',
     vulkanModel: getRouterState('vulkan:model') || '',
+    // One-tap escalation: while on, Atlas (the chat/background seat) runs the
+    // Vulkan model. The previous Atlas model is remembered so turning it off
+    // restores it.
+    escalateVulkan: !!(
+      getRouterState('vulkan:model') &&
+      getRouterState('atlas:model') === getRouterState('vulkan:model')
+    ),
     // Supervisor = the completion verdict on finished jobs. Blank = verdicts
     // run the Atlas model. supervisorEnabled toggles the verdict pass.
     supervisorModel: getRouterState('supervisor:model') || '',
@@ -1767,6 +1653,15 @@ async function handleSettings(res: http.ServerResponse): Promise<void> {
     // downtime: also compact after this long with no user activity (default 5, 0 = off).
     mercuryIntervalMinutes: getRouterState('mercury:interval_minutes') || '30',
     mercuryDowntimeMinutes: getRouterState('mercury:downtime_minutes') || '5',
+    // Tool retrieval (semantic + lexical). Read live so a save shows the new
+    // value without a restart; defaults match the agent-runner module.
+    selectionSemantic: process.env.SELECTION_SEMANTIC || envVals.SELECTION_SEMANTIC || '1',
+    selectionEmbedModel: process.env.SELECTION_EMBED_MODEL || envVals.SELECTION_EMBED_MODEL || 'qwen3-embedding:0.6b',
+    selectionEmbedKeepAlive: process.env.SELECTION_EMBED_KEEP_ALIVE || envVals.SELECTION_EMBED_KEEP_ALIVE || '24h',
+    selectionSemanticWeight: process.env.SELECTION_SEMANTIC_WEIGHT || envVals.SELECTION_SEMANTIC_WEIGHT || '0.8',
+    selectionLexicalWeight: process.env.SELECTION_LEXICAL_WEIGHT || envVals.SELECTION_LEXICAL_WEIGHT || '0.2',
+    selectionNameBonus: process.env.SELECTION_NAME_BONUS || envVals.SELECTION_NAME_BONUS || '0.25',
+    selectionEmbedTimeoutMs: process.env.SELECTION_EMBED_TIMEOUT_MS || envVals.SELECTION_EMBED_TIMEOUT_MS || '2500',
   });
 }
 
@@ -1792,6 +1687,13 @@ async function handleSettingsSave(
     google_client_secret: 'GOOGLE_CLIENT_SECRET',
     microsoft_client_id: 'MICROSOFT_CLIENT_ID',
     microsoft_client_secret: 'MICROSOFT_CLIENT_SECRET',
+    selectionSemantic: 'SELECTION_SEMANTIC',
+    selectionEmbedModel: 'SELECTION_EMBED_MODEL',
+    selectionEmbedKeepAlive: 'SELECTION_EMBED_KEEP_ALIVE',
+    selectionSemanticWeight: 'SELECTION_SEMANTIC_WEIGHT',
+    selectionLexicalWeight: 'SELECTION_LEXICAL_WEIGHT',
+    selectionNameBonus: 'SELECTION_NAME_BONUS',
+    selectionEmbedTimeoutMs: 'SELECTION_EMBED_TIMEOUT_MS',
   };
 
   // Router-state settings (not env vars)
@@ -1803,6 +1705,21 @@ async function handleSettingsSave(
   }
   if (body.vulkanModel !== undefined) {
     setRouterState('vulkan:model', String(body.vulkanModel || ''));
+  }
+  if (body.escalateVulkan !== undefined) {
+    const on = !!body.escalateVulkan;
+    const vulkan = getRouterState('vulkan:model') || '';
+    if (on) {
+      const cur = getRouterState('atlas:model') || '';
+      if (cur && cur !== getRouterState('local:atlas_prev_model')) {
+        setRouterState('local:atlas_prev_model', cur);
+      }
+      if (vulkan) setRouterState('atlas:model', vulkan);
+    } else {
+      const prev = getRouterState('local:atlas_prev_model') || '';
+      if (prev) setRouterState('atlas:model', prev);
+      setRouterState('local:atlas_prev_model', '');
+    }
   }
   if (body.supervisorModel !== undefined) {
     setRouterState('supervisor:model', String(body.supervisorModel || ''));
@@ -2646,10 +2563,7 @@ async function handleChatStop(
   scopeUserId?: string,
 ): Promise<void> {
   const body = parseJson(await parseBody(req)) as any;
-  const jid = body.jid;
-  if (!jid || typeof jid !== 'string') {
-    return error(res, 'jid required');
-  }
+  const jid = typeof body.jid === 'string' && body.jid ? body.jid : (getMainJid() || '');
   // Multi-user scope check removed; single-user Warden has no per-user gates.
   void scopeUserId;
   // For the single-user backend, also stop the in-process agent directly.
@@ -2705,10 +2619,7 @@ async function handleClearContext(
   res: http.ServerResponse,
 ): Promise<void> {
   const body = parseJson(await parseBody(req)) as any;
-  const jid = body.jid;
-  if (!jid || typeof jid !== 'string') {
-    return error(res, 'jid required');
-  }
+  const jid = typeof body.jid === 'string' && body.jid ? body.jid : (getMainJid() || '');
   const now = new Date().toISOString();
   setRouterState('atlas:context_clear_at', now);
   setRouterState('last_agent_timestamp', now);
@@ -2726,10 +2637,7 @@ async function handleClearConversation(
   res: http.ServerResponse,
 ): Promise<void> {
   const body = parseJson(await parseBody(req)) as any;
-  const jid = body.jid;
-  if (!jid || typeof jid !== 'string') {
-    return error(res, 'jid required');
-  }
+  const jid = typeof body.jid === 'string' && body.jid ? body.jid : (getMainJid() || '');
   const now = new Date().toISOString();
   // Same context-reset semantics as New Thought: the agent-runner drops its
   // in-memory conversation when the marker changes, and the cursor advance
@@ -2937,6 +2845,37 @@ function syncHeartbeatTask(cfg: { enabled: boolean; cron: string }): void {
 // is visible in the Ops Scheduled tab before the user ever opens the dashboard.
 function ensureHeartbeatTask(): void {
   if (!getTaskById(HEARTBEAT_TASK_ID)) syncHeartbeatTask(readHeartbeatConfig());
+}
+
+// ── Blog Autoposter seed ──────────────────────────────────────────────────
+// Mirrors the heartbeat seed: a real scheduled_tasks row that shows up in the
+// Ops Scheduled tab. Unlike heartbeat, its prompt is never injected into chat —
+// task-scheduler.ts runs the host-side blog pipeline directly (so it works with
+// the GPU disabled / Ollama stopped, as long as a cloud LLM or Ollama is set).
+const BLOG_TASK_ID = 'blog-autoposter';
+const BLOG_TASK_PROMPT = 'Blog autoposter nightly run (handled in task-scheduler.ts).';
+
+function syncBlogAutoposterTask(cfg: { enabled: boolean; cron: string }): void {
+  const cron = cfg.cron || '0 2 * * *';
+  let nextRun: string | null = null;
+  try { nextRun = CronExpressionParser.parse(cron, { tz: TIMEZONE }).next().toISOString(); } catch {}
+  const status: 'active' | 'paused' = cfg.enabled ? 'active' : 'paused';
+  const existing = getTaskById(BLOG_TASK_ID);
+  if (existing) {
+    updateTask(BLOG_TASK_ID, {
+      schedule_type: 'cron', schedule_value: cron, status, prompt: BLOG_TASK_PROMPT,
+      ...(nextRun ? { next_run: nextRun } : {}),
+    });
+  } else {
+    createTask({
+      id: BLOG_TASK_ID, chat_jid: OWNER_JID, prompt: BLOG_TASK_PROMPT,
+      schedule_type: 'cron', schedule_value: cron, context_mode: 'isolated',
+      next_run: nextRun ?? new Date().toISOString(), status, created_at: new Date().toISOString(),
+    });
+  }
+}
+function ensureBlogAutoposterTask(): void {
+  syncBlogAutoposterTask(readBlogConfig());
 }
 
 export function startStatusServer(d: StatusDeps): void {
@@ -3727,7 +3666,7 @@ export function startStatusServer(d: StatusDeps): void {
       // Friends surface guard: a non-local (tailnet) source may reach ONLY the
       // peer-facing friends routes. Everything else — dashboard, owner API,
       // browser MCP gate — is local/LAN only. Placed before every other route.
-      if (!isLoopbackOrLan(req.socket.remoteAddress || '') && !PEER_FRIENDS_ROUTES.has(pathname)) {
+      if (!isLoopbackOrLan(req.socket.remoteAddress || '') && !PEER_FRIENDS_ROUTES.has(pathname) && !pathname.startsWith('/botnet/') && pathname !== '/botnet') {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'forbidden' }));
         return;
@@ -3750,6 +3689,8 @@ export function startStatusServer(d: StatusDeps): void {
       // Browser-driving MCP gate: stateless front for the extension bridge's
       // single slot (see browser-mcp-gate.ts). Mounted before everything else.
       if (pathname === '/mcp/browser') return await handleBrowserMcp(req, res);
+      if (pathname.startsWith('/api/mobile')) return await handleMobileRequest(req, res, pathname);
+      if (pathname === '/api/sys') return await handleSysRequest(req, res, pathname);
       // --- Dropped route trees (single-user Warden: no admin, no per-user APIs) ---
       // The old multi-user / admin / group / company / work-task / session-link
       // route trees are gone. Surviving endpoints live directly under /api/*
@@ -3860,6 +3801,53 @@ export function startStatusServer(d: StatusDeps): void {
 
       // No auth gate — single-user Warden. All /api/* routes are open.
       // (Admin/user route trees are dropped above with 410 Gone.)
+
+      // Client diagnostics — the mobile app reports errors (e.g. TTS) here so
+      // they land in the server log where they can be read.
+      if (pathname === '/api/debug-log' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { tag?: string; data?: unknown };
+          logger.warn({ tag: body?.tag || 'client', data: body?.data }, 'client-debug');
+          return json(res, { ok: true });
+        } catch (err: any) {
+          return error(res, String(err?.message ?? err), 400);
+        }
+      }
+
+      // --- Blog Autoposter ---
+      if (pathname.startsWith('/api/blog/')) {
+        try {
+          if (pathname === '/api/blog/config' && req.method === 'GET') {
+            return json(res, readBlogConfig());
+          }
+          if (pathname === '/api/blog/config' && req.method === 'POST') {
+            const body = JSON.parse((await parseBody(req)).toString() || '{}');
+            const cfg = writeBlogConfig(body);
+            syncBlogAutoposterTask(cfg);
+            return json(res, cfg);
+          }
+          if (pathname === '/api/blog/queue' && req.method === 'GET') {
+            return json(res, { queue: getBlogQueue() });
+          }
+          if (pathname === '/api/blog/history' && req.method === 'GET') {
+            return json(res, { history: getBlogHistory() });
+          }
+          if (pathname === '/api/blog/run' && req.method === 'POST') {
+            return json(res, await runBlogAutoposter());
+          }
+          if (pathname === '/api/blog/publish' && req.method === 'POST') {
+            const body = JSON.parse((await parseBody(req)).toString() || '{}');
+            return json(res, await publishDraftById(body.id));
+          }
+          if (pathname === '/api/blog/dismiss' && req.method === 'POST') {
+            const body = JSON.parse((await parseBody(req)).toString() || '{}');
+            return json(res, dismissDraft(body.id));
+          }
+          return error(res, 'not found', 404);
+        } catch (e) {
+          return error(res, String((e as Error)?.message || e), 500);
+        }
+      }
 
       // --- Authenticated admin routes ---
       if (pathname === '/api/stress-test' && req.method === 'POST')
@@ -4078,8 +4066,8 @@ export function startStatusServer(d: StatusDeps): void {
       // BotNet MCP gate — third-party agents (non-Warden) dial into the BBS
       // with a caller token. Token-gated at the handler itself, so it sits
       // outside any of the /api trees (see src/botnet-mcp.ts).
-      if (pathname === '/mcp/botnet') {
-        if (await handleBotnetMcp(req, res, pathname)) return;
+      if (pathname === '/mcp/botnet' || pathname === '/botnet' || pathname.startsWith('/botnet/')) {
+        if (await handleBotnetMcp(req, res, pathname, params)) return;
       }
       if (pathname.startsWith('/api/friends')) {
         const handled = await handleFriendsRequest(req, res, pathname, params, runFriendTurn, runColab, getColabStatus);
@@ -4087,8 +4075,31 @@ export function startStatusServer(d: StatusDeps): void {
       }
       if (pathname.startsWith('/api/files'))
         return await handleFiles(req, res, pathname, params);
-      if (pathname.startsWith('/api/marm'))
-        return await handleMarm(req, res, pathname, params);
+      // MARM Console status — the MARM tab embeds MARM's own Console webapp
+      // (marm-memory console, served on 127.0.0.1:8002). Probe it here and tell
+      // the dashboard whether this viewer is on the same machine: the Console is
+      // loopback-only and its TrustedHostMiddleware rejects non-loopback hosts,
+      // so a phone/LAN viewer must see a "desktop-only" note, not a dead iframe.
+      if (pathname === '/api/marm-console/status' && req.method === 'GET') {
+        const consoleUrl = process.env.MARM_CONSOLE_URL || 'http://127.0.0.1:8002';
+        const up = await new Promise<boolean>((resolve) => {
+          let settled = false;
+          const done = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
+          try {
+            const probe = http.get(`${consoleUrl}/health`, (r) => {
+              r.resume();
+              r.on('end', () => done((r.statusCode || 0) >= 200 && (r.statusCode || 0) < 300));
+              r.on('error', () => done(false));
+            });
+            probe.on('error', () => done(false));
+            // Bound the whole probe: no response within 3s means "not up".
+            probe.setTimeout(3000, () => { probe.destroy(); done(false); });
+          } catch { done(false); }
+        });
+        const a = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+        const viewerLocal = a === '127.0.0.1' || a === '::1' || a === 'localhost';
+        return json(res, { ok: true, up, viewerLocal, url: consoleUrl });
+      }
       if (pathname === '/api/settings' && req.method === 'GET')
         return handleSettings(res);
       if (pathname === '/api/settings' && req.method === 'POST')
@@ -4132,6 +4143,112 @@ export function startStatusServer(d: StatusDeps): void {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }
       }
+      // Local image generation — tab-only, no agent tool.
+      // Local image generation runs as a background job: POST starts it and
+      // returns immediately; the app polls /api/imagegen/status until done. No
+      // request timeout can cut a slow render short.
+      if (pathname === '/api/imagegen' && req.method === 'POST') {
+        try {
+          if (imagegenJob.running) return json(res, { ok: false, error: 'An image is already generating.' });
+          const body = parseJson(await parseBody(req)) as any;
+          const w = Number.isInteger(body?.width) && body.width >= 512 && body.width <= 2048 ? body.width : 1024;
+          const h = Number.isInteger(body?.height) && body.height >= 512 && body.height <= 2048 ? body.height : 1024;
+          if (w % 32 !== 0 || h % 32 !== 0) return json(res, { ok: false, error: 'width and height must be multiples of 32' });
+          if (!String(body?.prompt || '').trim()) return json(res, { ok: false, error: 'prompt is required' }, 400);
+          const prompt = composeImagegenPrompt(body);
+          const negative = String(body?.negative ?? '').trim();
+          const seed = Number.isFinite(Number(body?.seed)) ? String(Number(body.seed)) : '';
+          const dir = imagegenDir();
+          fs.mkdirSync(dir, { recursive: true });
+          const name = `image-${Date.now()}.png`;
+          const out = path.join(dir, name);
+          const script = path.join(process.cwd(), 'imagegen', 'generate.sh');
+          if (!fs.existsSync(script)) return json(res, { ok: false, error: 'imagegen/generate.sh not found (image models not installed on this host)' });
+
+          // Mark running + take the chat lock before returning so a second
+          // request can't start, and chat/schedules pause for the whole render.
+          imagegenJob = { running: true, name, startedAt: Date.now() };
+          setChatLock('imagegen', 'Generating image');
+
+          void (async () => {
+            try {
+              const unloaded = await unloadOllamaForImagegen();
+              if (unloaded.length) logger.info({ unloaded }, 'imagegen: cleared Ollama VRAM');
+              const args = [script, prompt, out, String(w), String(h), negative, seed];
+              await new Promise<void>((resolve, reject) => {
+                let err = '';
+                // No artificial timeout — a slow machine may legitimately take
+                // several minutes. The job runs to completion in the background.
+                const child = spawn('bash', args, { cwd: process.cwd() });
+                child.stderr?.on('data', (d) => { err = (err + d.toString()).slice(-2000); });
+                child.on('error', (e) => reject(e));
+                child.on('close', (code) => { if (code === 0) resolve(); else reject(new Error(err.trim() || `imagegen exited ${code}`)); });
+              });
+              if (!fs.existsSync(out)) throw new Error('generation completed but no image was written');
+              imagegenJob = { running: false, name, url: `/api/imagegen/file/${encodeURIComponent(name)}` };
+              logger.info({ name, w, h, seed }, 'image generated');
+            } catch (err: any) {
+              imagegenJob = { running: false, error: String(err?.message ?? err) };
+              logger.warn({ err }, 'imagegen failed');
+            } finally {
+              clearChatLock('imagegen');
+            }
+          })();
+
+          return json(res, { ok: true, running: true, name });
+        } catch (err: any) {
+          clearChatLock('imagegen');
+          imagegenJob = { running: false, error: String(err?.message ?? err) };
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname === '/api/imagegen/status' && req.method === 'GET') {
+        return json(res, { ok: true, ...imagegenJob });
+      }
+      if (pathname === '/api/imagegen/history' && req.method === 'GET') {
+        try {
+          const dir = imagegenDir();
+          if (!fs.existsSync(dir)) return json(res, { ok: true, files: [] });
+          const files = fs.readdirSync(dir)
+            .filter((f) => /\.png$/i.test(f))
+            .map((f) => {
+              const st = fs.statSync(path.join(dir, f));
+              return { name: f, url: `/api/imagegen/file/${encodeURIComponent(f)}`, mtime: st.mtimeMs, size: st.size };
+            })
+            .sort((a, b) => b.mtime - a.mtime)
+            .slice(0, 24);
+          return json(res, { ok: true, files });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname.startsWith('/api/imagegen/file/') && req.method === 'DELETE') {
+        try {
+          const name = decodeURIComponent(pathname.slice('/api/imagegen/file/'.length));
+          if (!/^[A-Za-z0-9._-]+\.png$/i.test(name)) return json(res, { ok: false, error: 'bad filename' }, 400);
+          const dir = imagegenDir();
+          const file = path.join(dir, name);
+          if (path.dirname(file) !== dir) return json(res, { ok: false, error: 'bad filename' }, 400);
+          if (fs.existsSync(file)) fs.unlinkSync(file);
+          return json(res, { ok: true, deleted: name });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname.startsWith('/api/imagegen/file/') && req.method === 'GET') {
+        try {
+          const name = decodeURIComponent(pathname.slice('/api/imagegen/file/'.length));
+          if (!/^[A-Za-z0-9._-]+\.png$/i.test(name)) return json(res, { ok: false, error: 'bad filename' }, 400);
+          const dir = imagegenDir();
+          const file = path.join(dir, name);
+          if (path.dirname(file) !== dir || !fs.existsSync(file)) return json(res, { ok: false, error: 'not found' }, 404);
+          const buf = fs.readFileSync(file);
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': buf.length, 'Cache-Control': 'no-store' });
+          return res.end(buf);
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
       // Training loop (audit → modify → train) — same detached-spawn + pgrep
       // poll pattern as /api/audit above. Each step's stdout/stderr lands in
       // training/loop/logs/<step>.log, which /api/training/status tails.
@@ -4146,7 +4263,12 @@ export function startStatusServer(d: StatusDeps): void {
           // parallel ones (HF base downloads: network only, one per base, run
           // alongside anything).
           type TrainingStep = { cmd: string; script: string; marker: string; group: 'loop' | 'bot'; clearsVram: boolean; parallel?: boolean };
-          const botBases = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'training', 'chatbot', 'bases.json'), 'utf-8')) as Record<string, { label: string; hf: string; ollama: string }>;
+          // The chatbot sub-tab's base list is optional — a host that never set
+          // up training/chatbot/ must still be able to audit/modify/train.
+          let botBases: Record<string, { label: string; hf: string; ollama: string }> = {};
+          try {
+            botBases = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'training', 'chatbot', 'bases.json'), 'utf-8'));
+          } catch { /* chatbot not configured on this host */ }
           const TRAINING_STEPS: Record<string, TrainingStep> = {
             ...Object.fromEntries(Object.keys(botBases).map((k) => [`bot-pull-${k}`, {
               cmd: 'bash', script: 'training/chatbot/pull-base.sh', marker: `chatbot/pull-base.sh ${k}`, group: 'bot' as const, clearsVram: false, parallel: true,
@@ -4166,6 +4288,18 @@ export function startStatusServer(d: StatusDeps): void {
           };
           const launchStep = (step: keyof typeof TRAINING_STEPS, extraArgs: string[] = []): { ok: boolean; error?: string; step?: string; log?: string; pid?: number } => {
             const def = TRAINING_STEPS[step];
+            // Hardware gate: the loop is a CUDA job needing >16 GB VRAM. Refuse
+            // to start on a machine that can't run it — the app shows the
+            // "Have us train it" (cloud) upsell in that case.
+            if (def.group === 'loop') {
+              const cap = detectTrainingCapability();
+              if (cap.locked) {
+                return {
+                  ok: false,
+                  error: `Training loop locked — needs an NVIDIA GPU with >${cap.requiredGb} GB VRAM (this machine reports ${cap.gb} GB). Use "Have us train it".`,
+                };
+              }
+            }
             const jobs = def.clearsVram ? getLiveJobs() : [];
             if (jobs.length > 0)
               return { ok: false, error: `An agent turn is running (${jobs.length} live job${jobs.length === 1 ? '' : 's'}) — wait for it to finish before clearing VRAM` };
@@ -4260,7 +4394,8 @@ export function startStatusServer(d: StatusDeps): void {
                 try { pullTails[st.replace('bot-pull-', '')] = fs.readFileSync(stepLog(st), 'utf-8').trim().split('\n').slice(-1)[0] || ''; } catch {}
               }
             }
-            return json(res, { ok: true, running, pulls: pulls.map((st) => st.replace('bot-pull-', '')), step: logStep, tail, pullTails });
+            const cap = detectTrainingCapability();
+            return json(res, { ok: true, running, pulls: pulls.map((st) => st.replace('bot-pull-', '')), step: logStep, tail, pullTails, locked: cap.locked, hardware: cap });
           }
           if (pathname === '/api/training/catalogs' && req.method === 'GET') {
             const dir = path.join(process.cwd(), 'training', 'loop', 'catalogs');
@@ -4289,6 +4424,51 @@ export function startStatusServer(d: StatusDeps): void {
             const flags = listTrainingFlags().reverse();
             const pending = flags.filter((f) => f.status === 'pending').length;
             return json(res, { ok: true, flags, counts: { pending, consumed: flags.length - pending, total: flags.length } });
+          }
+          // Analyst model = the model that reads the logs (audit) and writes
+          // the corrective rows (modify). Stored in training/loop/config.json
+          // and read by lib.mjs; pickable from the app.
+          if (pathname === '/api/training/models' && req.method === 'GET') {
+            const cfgPath = path.join(process.cwd(), 'training', 'loop', 'config.json');
+            let current = 'granite4.2:30b';
+            try { current = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')).analystModel || current; } catch {}
+            let models: string[] = [];
+            try {
+              const url = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+              const resp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(4000) });
+              if (resp.ok) {
+                const data = (await resp.json()) as { models?: Array<{ name?: string }> };
+                models = (data.models || []).map((m) => m.name).filter((n): n is string => !!n);
+              }
+            } catch { /* ollama down — return the current value alone */ }
+            if (current && !models.includes(current)) models.unshift(current);
+            return json(res, { ok: true, models, current });
+          }
+          if (pathname === '/api/training/model' && req.method === 'GET') {
+            const cfgPath = path.join(process.cwd(), 'training', 'loop', 'config.json');
+            let current = 'granite4.2:30b';
+            try { current = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')).analystModel || current; } catch {}
+            return json(res, { ok: true, model: current });
+          }
+          if (pathname === '/api/training/model' && req.method === 'POST') {
+            const body = parseJson(await parseBody(req)) as { model?: string };
+            const model = String(body?.model || '').trim();
+            if (!model) return json(res, { ok: false, error: 'model required' });
+            const cfgPath = path.join(process.cwd(), 'training', 'loop', 'config.json');
+            let cfg: Record<string, unknown> = {};
+            try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')); } catch {}
+            cfg.analystModel = model;
+            fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+            fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
+            return json(res, { ok: true, model });
+          }
+          // User-entered training error — folded into the next modify run
+          // alongside the audit catalog (same file Artemis's tool writes).
+          if (pathname === '/api/training/flag' && req.method === 'POST') {
+            const body = parseJson(await parseBody(req)) as Record<string, unknown>;
+            // User-submitted report: mark the source and snapshot the last hour
+            // of logs so the reasoning pass sees the real context around it.
+            return json(res, addTrainingFlag(body, { detectedBy: 'user', snapshotLogs: true }));
           }
           // Custom chatbot sub-tab: an intake form (who the bot is, what it
           // does, who it does it for) → granite writes persona pairs
@@ -4470,6 +4650,204 @@ export function startStatusServer(d: StatusDeps): void {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }
       }
+      // ── Warden Phone (Twilio voice line) ────────────────────────────────
+      // The phone is a systemd user service (`warden-phone.service`, aiohttp on
+      // :8771). This tab surfaces its state, config (secrets masked) and recent
+      // call transcript, and lets the owner start/stop/restart the service.
+      const PHONE_DIR = '/home/user/your-project/warden-phone';
+      const readPhoneConfig = () => {
+        const cfg: Record<string, Record<string, string>> = {};
+        let section = '';
+        try {
+          for (const raw of fs.readFileSync(path.join(PHONE_DIR, 'config.toml'), 'utf8').split('\n')) {
+            const line = raw.split('#', 1)[0].trim();
+            if (!line) continue;
+            if (line.startsWith('[') && line.endsWith(']')) { section = line.slice(1, -1).trim(); cfg[section] ??= {}; continue; }
+            const eq = line.indexOf('=');
+            if (eq > 0 && section) cfg[section][line.slice(0, eq).trim()] = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+          }
+        } catch {}
+        return cfg;
+      };
+      const readPhoneEnv = () => {
+        const env: Record<string, string> = {};
+        try {
+          for (const raw of fs.readFileSync(path.join(PHONE_DIR, '.env'), 'utf8').split('\n')) {
+            const line = raw.trim();
+            if (!line || line.startsWith('#')) continue;
+            const eq = line.indexOf('=');
+            if (eq > 0) env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+          }
+        } catch {}
+        return env;
+      };
+      const phoneServiceState = () => {
+        try {
+          return execSync('systemctl --user is-active warden-phone.service', { encoding: 'utf8' }).trim();
+        } catch (e: any) {
+          return String(e?.stdout || '').trim() || 'inactive';
+        }
+      };
+      const phoneRecentCalls = () => {
+        try {
+          const out = execSync(
+            'journalctl --user -u warden-phone.service --no-pager -o short-iso -n 500 2>/dev/null',
+            { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 },
+          );
+          const rows: { ts: string; kind: string; text: string }[] = [];
+          for (const raw of out.split('\n')) {
+            const idx = raw.indexOf('[call] ');
+            if (idx < 0) continue;
+            const ts = raw.slice(0, idx).trim().split(' ')[0] || '';
+            const body = raw.slice(idx + '[call] '.length).trim();
+            const colon = body.indexOf(':');
+            const kind = colon > 0 ? body.slice(0, colon).trim() : body;
+            const text = colon > 0 ? body.slice(colon + 1).trim().replace(/^['"]|['"]$/g, '') : '';
+            if (!/^(heard|reply|authenticated|auth failed)/.test(kind)) continue;
+            rows.push({ ts, kind, text });
+          }
+          return rows.slice(-40);
+        } catch { return []; }
+      };
+      if (pathname === '/api/phone/status' && req.method === 'GET') {
+        try {
+          const cfg = readPhoneConfig();
+          const env = readPhoneEnv();
+          const stt = cfg.stt || {};
+          const tts = cfg.tts || {};
+          const auth = cfg.auth || {};
+          const call = cfg.call || {};
+          return json(res, {
+            ok: true,
+            running: phoneServiceState() === 'active',
+            state: phoneServiceState(),
+            number: env.TWILIO_NUMBER || '',
+            publicBase: (cfg.public || {}).base || '',
+            stt: { model: stt.model || '', device: stt.device || '', language: stt.language || '' },
+            tts: { voice: tts.voice || '', speed: tts.speed || '', device: tts.device || '' },
+            greeting: call.greeting || '',
+            prompt: auth.prompt || '',
+            passphraseSet: !!auth.passphrase,
+            calls: phoneRecentCalls(),
+          });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname === '/api/phone/control' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { action?: string };
+          const action = String(body.action || '').trim();
+          if (!['start', 'stop', 'restart'].includes(action)) return json(res, { ok: false, error: 'action must be start|stop|restart' });
+          execSync(`systemctl --user ${action} warden-phone.service`, { encoding: 'utf8' });
+          return json(res, { ok: true, state: phoneServiceState() });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.stderr || err?.message || err) });
+        }
+      }
+
+      // ── MentaraIQ local bug-fix loop (iframe-embedded webapp) ────────────
+      // Own Node app (server.mjs) on 127.0.0.1:4317. Spawned on demand like the
+      // Alpha Stack webapp; the tab embeds its UI in an iframe. Active-run state
+      // drives the chat lock (see chat-lock.ts).
+      const BUGLOOP_DIR = '/home/user/Projects/MentaraIQ/local-bug-pipeline';
+      const BUGLOOP_CONFIG = path.join(BUGLOOP_DIR, 'config.json');
+      const bugloopUp = async () => {
+        try {
+          const resp = await fetch('http://127.0.0.1:4317/api/health', { signal: AbortSignal.timeout(1500) });
+          return resp.ok;
+        } catch { return false; }
+      };
+      const bugloopActive = () => {
+        try {
+          const run = JSON.parse(fs.readFileSync(path.join(BUGLOOP_DIR, 'work', 'run.json'), 'utf8'));
+          return run && run.status === 'running';
+        } catch { return false; }
+      };
+      const readBugloopConfig = (): Record<string, unknown> => {
+        try { return JSON.parse(fs.readFileSync(BUGLOOP_CONFIG, 'utf8')); } catch { return {}; }
+      };
+      const writeBugloopConfig = (patch: Record<string, unknown>): Record<string, unknown> => {
+        const next = { ...readBugloopConfig(), ...patch };
+        fs.writeFileSync(BUGLOOP_CONFIG, JSON.stringify(next, null, 2), 'utf8');
+        return next;
+      };
+      // Local-only Ollama models (exclude the *:cloud / *-cloud proxies).
+      const bugloopLocalModels = async () => {
+        try {
+          const url = String(readBugloopConfig().ollamaUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+          const resp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(4000) });
+          if (!resp.ok) return [];
+          const data = (await resp.json()) as { models?: Array<{ name: string }> };
+          return (data.models || []).map((m) => m.name).filter((n) => n && !/cloud/i.test(n));
+        } catch { return []; }
+      };
+      if (pathname === '/api/bugloop/status' && req.method === 'GET') {
+        const cfg = readBugloopConfig();
+        return json(res, {
+          ok: true,
+          up: await bugloopUp(),
+          active: bugloopActive(),
+          dir: BUGLOOP_DIR,
+          dirPresent: fs.existsSync(BUGLOOP_DIR),
+          diagnosisModel: String(cfg.diagnosisModel || ''),
+          codingModel: String(cfg.codingModel || ''),
+        });
+      }
+      if (pathname === '/api/bugloop/models' && req.method === 'GET') {
+        const cfg = readBugloopConfig();
+        return json(res, {
+          ok: true,
+          models: await bugloopLocalModels(),
+          diagnosisModel: String(cfg.diagnosisModel || ''),
+          codingModel: String(cfg.codingModel || ''),
+        });
+      }
+      if (pathname === '/api/bugloop/config' && req.method === 'POST') {
+        try {
+          const body = parseJson(await parseBody(req)) as { diagnosisModel?: string; codingModel?: string };
+          const patch: Record<string, unknown> = {};
+          if (typeof body.diagnosisModel === 'string' && body.diagnosisModel.trim()) patch.diagnosisModel = body.diagnosisModel.trim();
+          if (typeof body.codingModel === 'string' && body.codingModel.trim()) patch.codingModel = body.codingModel.trim();
+          if (!Object.keys(patch).length) return json(res, { ok: false, error: 'diagnosisModel or codingModel required' });
+          const next = writeBugloopConfig(patch);
+          return json(res, { ok: true, diagnosisModel: next.diagnosisModel, codingModel: next.codingModel });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname === '/api/bugloop/start' && req.method === 'POST') {
+        try {
+          if (await bugloopUp()) return json(res, { ok: true, up: true, note: 'already running' });
+          if (!fs.existsSync(path.join(BUGLOOP_DIR, 'server.mjs')))
+            return json(res, { ok: false, error: 'bug-loop server.mjs not found at ' + BUGLOOP_DIR });
+          // Kill any stale copy first (single instance; state lives on disk).
+          try { spawnSync('pkill', ['-f', 'node server.mjs'], { stdio: 'ignore' }); } catch {}
+          fs.mkdirSync(path.join(BUGLOOP_DIR, 'work'), { recursive: true });
+          const out = fs.openSync(path.join(BUGLOOP_DIR, 'work', 'server.log'), 'a');
+          const child = spawn('node', ['server.mjs'], { cwd: BUGLOOP_DIR, detached: true, stdio: ['ignore', out, out] });
+          child.unref();
+          fs.closeSync(out);
+          logger.info({ pid: child.pid }, 'bug-loop server started');
+          let up = false;
+          for (let i = 0; i < 12 && !up; i++) { await new Promise((r) => setTimeout(r, 500)); up = await bugloopUp(); }
+          return up
+            ? json(res, { ok: true, up: true, pid: child.pid })
+            : json(res, { ok: false, error: 'bug-loop did not come up within 6s — check work/server.log' });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (pathname === '/api/bugloop/stop' && req.method === 'POST') {
+        try {
+          try { spawnSync('pkill', ['-f', 'node server.mjs'], { stdio: 'ignore' }); } catch {}
+          await new Promise((r) => setTimeout(r, 500));
+          return json(res, { ok: true, up: await bugloopUp() });
+        } catch (err: any) {
+          return json(res, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+
       if (pathname === '/api/open-terminal' && req.method === 'POST') {
         try {
           // Launch a desktop terminal attached to the `warden-shell` tmux session
@@ -5384,6 +5762,8 @@ export function startStatusServer(d: StatusDeps): void {
   server.listen(STATUS_PORT, bindHost, () => {
     logger.info({ port: STATUS_PORT, host: bindHost }, 'Warden Dashboard started');
     try { ensureHeartbeatTask(); } catch (e) { logger.warn({ err: e }, 'Heartbeat seed failed'); }
+    try { ensureBlogAutoposterTask(); } catch (e) { logger.warn({ err: e }, 'Blog autoposter seed failed'); }
+    try { initMobile(); } catch (e) { logger.warn({ err: e }, 'mobile init failed'); }
   });
 
   // Hourly cleanup of expired user sessions removed (multi-user session table gone).

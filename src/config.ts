@@ -5,7 +5,7 @@ import { readEnvFile } from './env.js';
 
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OLLAMA_URL', 'OLLAMA_CHAT_MODEL', 'LOCAL_ASSISTANT_NAME', 'DEFAULT_MODEL_MODE', 'IDLE_TIMEOUT', 'CONTAINER_TIMEOUT', 'ADMIN_DOMAIN', 'OAUTH_REDIRECT_BASE', 'WORKSPACE_ROOT']);
+const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'OLLAMA_URL', 'OLLAMA_CHAT_MODEL', 'LOCAL_ASSISTANT_NAME', 'DEFAULT_MODEL_MODE', 'IDLE_TIMEOUT', 'CONTAINER_TIMEOUT', 'ADMIN_DOMAIN', 'OAUTH_REDIRECT_BASE', 'WORKSPACE_ROOT', 'BLOG_FTP_HOST', 'BLOG_FTP_USER', 'BLOG_FTP_PASS', 'SELECTION_SEMANTIC', 'SELECTION_EMBED_MODEL', 'SELECTION_EMBED_KEEP_ALIVE', 'SELECTION_SEMANTIC_WEIGHT', 'SELECTION_LEXICAL_WEIGHT', 'SELECTION_NAME_BONUS', 'SELECTION_EMBED_TIMEOUT_MS']);
 
 // Propagate env-file values into process.env so child processes (agent-runner,
 // MCP servers, etc.) inherit them via spawn. Without this, a parent launched

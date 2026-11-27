@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../config/app_config.dart';
 import '../../config/theme.dart';
 import '../../models/server_config.dart';
+import '../../providers/conversation_provider.dart';
 import '../../providers/settings_provider.dart';
+import '../../services/tailscale_service.dart';
 
 /// Settings screen for configuring the Dockbox server connection.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -20,6 +22,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _modelController = TextEditingController();
   final _senderNameController = TextEditingController();
   bool _loading = true;
+  bool _retrying = false;
 
   @override
   void initState() {
@@ -30,7 +33,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _loadConfig() async {
     final config = ref.read(serverConfigProvider).valueOrNull;
     if (config != null) {
-      _serverUrlController.text = config.serverUrl;
+      _serverUrlController.text = config.serverUrl.isEmpty
+          ? AppConfig.defaultServerUrl
+          : config.serverUrl;
       _jidController.text = config.defaultJid;
       _modelController.text = config.model ?? '';
       _senderNameController.text = config.senderName;
@@ -88,6 +93,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            _buildTunnelStatus(),
+            const SizedBox(height: 24),
             _buildField(
               label: 'Server URL',
               controller: _serverUrlController,
@@ -134,6 +141,86 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Live state of the Tailscale node baked into the APK. When it is connected,
+  /// the app talks to Warden over `127.0.0.1` and no Tailscale app is needed.
+  Widget _buildTunnelStatus() {
+    final embeddedUrl = ref.watch(embeddedBaseUrlProvider).valueOrNull;
+    final connected = embeddedUrl != null;
+    final error = TailscaleService.lastError;
+    final statusColor = connected
+        ? const Color(0xFF00FF88)
+        : (error == null ? AppTheme.cyan : AppTheme.red);
+    final statusText = connected
+        ? 'CONNECTED · $embeddedUrl'
+        : (error == null ? 'CONNECTING…' : 'FAILED · $error');
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: statusColor.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'TAILSCALE TUNNEL (BUILT IN)',
+            style: TextStyle(
+              color: AppTheme.cyan,
+              fontFamily: 'monospace',
+              fontSize: 12,
+              letterSpacing: 2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            statusText,
+            style: TextStyle(
+              color: statusColor,
+              fontFamily: 'monospace',
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            connected
+                ? 'Server URL below is ignored while the tunnel is up.'
+                : 'Works without the Tailscale app once connected.',
+            style: TextStyle(
+              color: AppTheme.cyan.withValues(alpha: 0.5),
+              fontSize: 11,
+            ),
+          ),
+          if (!connected) ...[
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: _retrying
+                  ? null
+                  : () async {
+                      setState(() => _retrying = true);
+                      final ok = await TailscaleService.retry();
+                      if (!mounted) return;
+                      setState(() => _retrying = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(ok
+                              ? 'Tunnel connected'
+                              : 'Tunnel failed: ${TailscaleService.lastError ?? 'unknown'}'),
+                        ),
+                      );
+                    },
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.cyan,
+                side: BorderSide(color: AppTheme.cyan.withValues(alpha: 0.5)),
+              ),
+              child: Text(_retrying ? 'RETRYING…' : 'RETRY'),
+            ),
+          ],
+        ],
       ),
     );
   }

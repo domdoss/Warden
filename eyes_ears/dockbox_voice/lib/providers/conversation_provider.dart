@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/app_config.dart';
 import '../models/app_state.dart';
 import '../models/conversation_state.dart';
 import '../services/audio_service.dart';
 import '../services/dockbox_api_service.dart';
 import '../services/dockbox_bridge.dart';
 import '../services/speech_service.dart';
+import '../services/tailscale_service.dart';
 import '../services/tts_service.dart';
 import '../utils/sentence_splitter.dart';
 import '../utils/text_utils.dart';
@@ -15,9 +17,18 @@ import 'settings_provider.dart';
 
 // ---- service providers ----
 
+/// The localhost URL of the embedded Tailscale tunnel, once it is healthy.
+/// Null while the tunnel is still coming up (or unavailable).
+final embeddedBaseUrlProvider =
+    StreamProvider<String?>((ref) => TailscaleService.baseUrlStream);
+
 final dockboxApiProvider = Provider<DockboxApiService>((ref) {
+  // Prefer the in-app Tailscale tunnel: it works with no Tailscale app
+  // installed. Otherwise use the configured server (default: the tailnet
+  // HTTPS address, which needs the Tailscale app on the phone).
+  final embedded = ref.watch(embeddedBaseUrlProvider).valueOrNull;
   final config = ref.watch(serverConfigProvider).valueOrNull;
-  final url = config?.serverUrl ?? 'http://10.0.0.47:3200';
+  final url = embedded ?? config?.serverUrl ?? AppConfig.defaultServerUrl;
   return DockboxApiService(baseUrl: url);
 });
 
@@ -63,8 +74,11 @@ class ConversationNotifier extends AsyncNotifier<ConversationState> {
     // Initialize speech service
     ref.read(speechServiceProvider).initialize();
 
-    // Wire up the bridge callbacks
-    final bridge = ref.read(dockboxBridgeProvider);
+    // Wire up the bridge callbacks. Watching the API provider means the bridge
+    // is rebuilt the moment the embedded Tailscale tunnel comes up and the base
+    // URL flips to the localhost proxy.
+    final api = ref.watch(dockboxApiProvider);
+    final bridge = DockboxBridge(api);
     bridge.onChunk = _enqueueChunk;
     bridge.onTurnEnd = _onTurnEnd;
 

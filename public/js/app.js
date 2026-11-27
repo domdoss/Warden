@@ -275,12 +275,15 @@
     else if (name === 'activity') refreshActivity();
     else if (name === 'training') setTrainingTab(STATE.trainingTab || 'loop');
     else if (name === 'alphastack') refreshAlphaStack();
+    else if (name === 'imagegen') refreshImagegen();
     else if (name === 'marm') refreshMarm();
     else if (name === 'security') refreshSecurity();
     else if (name === 'logs') refreshProcessLogs();
     else if (name === 'accounts') refreshAccounts();
     else if (name === 'friends') refreshFriends();
     else if (name === 'social') refreshSocial();
+    else if (name === 'phone') refreshPhone();
+    else if (name === 'bugloop') refreshBugloop();
     else if (name === 'calendar' && window.PIM) window.PIM.refreshCalendar();
     else if (name === 'email' && window.PIM) window.PIM.refreshEmail();
     else if (window.UserDash) {
@@ -292,6 +295,7 @@
       else if (name === 'apikeys' && UD.loadUsageDashboard) UD.loadUsageDashboard();
       else if (name === 'actions' && UD.renderActions) UD.renderActions();
       else if (name === 'talk' && UD.initTalkView) UD.initTalkView();
+      else if (name === 'blog' && UD.loadBlog) UD.loadBlog();
     }
   }
   window.__localSwitchView = switchView;
@@ -345,6 +349,9 @@
       const active = groups.some(g => g.active && !g.idle);
       dot.className = 'dot' + (active ? ' busy' : '');
 
+      // Chat lock — heavy job (bug loop / alpha stack) holding chat turns.
+      updateChatLockBanner(d.chatLocked);
+
       // Oversight window — structured per-agent/agent-job view of what is
       // happening right now. Populated from d.jobs (background jobs), d.groups
       // (foreground), and the latest supervisor note in d.progress.
@@ -356,6 +363,17 @@
       $('btnStop').disabled = !active;
     } catch (e) {
       $('statusDot').className = 'dot dead';
+    }
+  }
+
+  function updateChatLockBanner(lock) {
+    const el = $('chatLockBanner');
+    if (!el) return;
+    if (lock && lock.locked) {
+      $('chatLockBannerText').textContent = 'Chat is paused — ' + (lock.reason || 'a background job is running') + '. Messages will be answered when it finishes.';
+      el.style.display = '';
+    } else {
+      el.style.display = 'none';
     }
   }
 
@@ -1153,6 +1171,84 @@
     `;
     $('drawerBody').innerHTML = body;
 
+    // ── Redesigned layout: tabs over the existing cards, no control IDs moved ──
+    (function buildSettingsTabs() {
+      const db = $('drawerBody');
+      const cards = [...db.querySelectorAll('.setting-card')];
+      const shell = document.createElement('div');
+      shell.className = 'settings-shell';
+      const tabs = document.createElement('div');
+      tabs.className = 'settings-tabs';
+      tabs.setAttribute('role', 'tablist');
+      const defs = [['assistant','Assistant'],['models','Models'],['tools','Tools'],['servers','Servers'],['advanced','Advanced']];
+      defs.forEach(([id, label], i) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'settings-tab' + (i === 0 ? ' active' : '');
+        b.dataset.tab = id;
+        b.textContent = label;
+        tabs.appendChild(b);
+      });
+      shell.appendChild(tabs);
+      const panels = {};
+      defs.forEach(([id]) => {
+        const p = document.createElement('div');
+        p.className = 'settings-panel' + (id === 'assistant' ? ' active' : '');
+        p.dataset.panel = id;
+        panels[id] = p;
+        shell.appendChild(p);
+      });
+      const map = {
+        'General': 'assistant',
+        'Model Configuration': 'models',
+        'Default apps': 'tools',
+        'Servers': 'servers',
+        'Friendly model names': 'advanced',
+        'Oculus rules': 'advanced',
+        'Oculus — watch out for': 'advanced',
+        'Chat logs': 'advanced',
+        'Danger': 'advanced'
+      };
+      cards.forEach(card => {
+        const h = card.querySelector('h3');
+        const key = h ? h.textContent.trim() : '';
+        (panels[map[key]] || panels.advanced).appendChild(card);
+      });
+      db.innerHTML = '';
+      db.appendChild(shell);
+
+      const lead = (txt) => { const p = document.createElement('p'); p.className = 'settings-lead'; p.textContent = txt; return p; };
+      panels.models.prepend(lead('One model per role. Atlas is the seat; Vulkan escalates; Iris executes tools.'));
+      panels.tools.prepend(lead('What each capability uses, which tools are always visible, and how the seat finds the rest.'));
+
+      const keepSel = (cur) => {
+        const opts = ['24h','12h','1h','30m','5m','-1'];
+        const v = String(cur || '24h');
+        return opts.map(o => `<option value="${o}"${o === v ? ' selected' : ''}>${o === '-1' ? 'Hold in VRAM (forever)' : o}</option>`).join('');
+      };
+      const rag = document.createElement('section');
+      rag.className = 'setting-card';
+      rag.innerHTML = `
+        <h3>Tool retrieval</h3>
+        <p class="hint">The seat only sees the ~12 most relevant tools each turn. Semantic ranking matches meaning; keyword ranking matches words. Both together is the default.</p>
+        <div class="setting-row"><label>Semantic ranking</label><label class="switch"><input type="checkbox" id="sSelectionSemantic" ${String(d.selectionSemantic || '1') !== '0' ? 'checked' : ''}><span>Use embeddings alongside keywords</span></label></div>
+        <div class="setting-row"><label>Embedding model</label><input class="input" id="sSelectionEmbedModel" value="${escAttr(d.selectionEmbedModel || 'qwen3-embedding:0.6b')}" placeholder="qwen3-embedding:0.6b"></div>
+        <div class="setting-row"><label>Keep model loaded</label><select class="select" id="sSelectionKeepAlive">${keepSel(d.selectionEmbedKeepAlive)}</select></div>
+        <div class="setting-row"><label>Semantic weight</label><input class="input small" type="number" min="0" max="1" step="0.05" id="sSelectionSemanticWeight" value="${escAttr(d.selectionSemanticWeight || '0.8')}"></div>
+        <div class="setting-row"><label>Keyword weight</label><input class="input small" type="number" min="0" max="1" step="0.05" id="sSelectionLexicalWeight" value="${escAttr(d.selectionLexicalWeight || '0.2')}"></div>
+        <div class="setting-row"><label>Exact-name bonus</label><input class="input small" type="number" min="0" max="1" step="0.05" id="sSelectionNameBonus" value="${escAttr(d.selectionNameBonus || '0.25')}"></div>
+        <div class="setting-row"><label>Query timeout</label><input class="input small" type="number" min="500" step="100" id="sSelectionEmbedTimeoutMs" value="${escAttr(d.selectionEmbedTimeoutMs || '2500')}"><span class="dim mono" style="font-size:10px">ms</span></div>
+        <p class="settings-note">Changes apply to the next session. Turn semantic off for pure keyword matching.</p>
+        <div class="save-row"><button class="btn btn-primary btn-sm" id="btnSaveRag">Save retrieval</button><span class="status" id="ragStatus"></span></div>
+      `;
+      panels.tools.appendChild(rag);
+
+      tabs.querySelectorAll('.settings-tab').forEach(t => t.addEventListener('click', () => {
+        tabs.querySelectorAll('.settings-tab').forEach(x => x.classList.toggle('active', x === t));
+        Object.values(panels).forEach(pn => pn.classList.toggle('active', pn.dataset.panel === t.dataset.tab));
+      }));
+    })();
+
     // Apply current values
     const setSelect = (id, val) => {
       const sel = $(id);
@@ -1362,6 +1458,7 @@
       }
     });
     $('btnSaveModels').addEventListener('click', saveModels);
+    if ($('btnSaveRag')) $('btnSaveRag').addEventListener('click', saveRag);
     $('btnSaveServers').addEventListener('click', saveServers);
     $('btnSaveFriendly').addEventListener('click', saveFriendly);
     $('btnSaveOculusMd').addEventListener('click', saveOculusMd);
@@ -1480,6 +1577,28 @@
       }
       // refresh chat model select
       // per-chat model dropdown removed; model is only configured in Settings
+    } catch (e) {
+      st.textContent = 'failed: ' + e.message; st.className = 'status err';
+    }
+  }
+
+  async function saveRag() {
+    const st = $('ragStatus');
+    if (!st) return;
+    st.textContent = 'saving…'; st.className = 'status';
+    try {
+      const body = {
+        selectionSemantic: $('sSelectionSemantic').checked ? '1' : '0',
+        selectionEmbedModel: $('sSelectionEmbedModel').value.trim(),
+        selectionEmbedKeepAlive: $('sSelectionKeepAlive').value,
+        selectionSemanticWeight: $('sSelectionSemanticWeight').value,
+        selectionLexicalWeight: $('sSelectionLexicalWeight').value,
+        selectionNameBonus: $('sSelectionNameBonus').value,
+        selectionEmbedTimeoutMs: $('sSelectionEmbedTimeoutMs').value,
+      };
+      await postJson('/api/settings', body);
+      st.textContent = 'saved'; st.className = 'status ok';
+      toast('Tool retrieval saved — applies to the next session', 'success');
     } catch (e) {
       st.textContent = 'failed: ' + e.message; st.className = 'status err';
     }
@@ -1950,6 +2069,11 @@
         files: (d && d.files) || [],
         online: d ? d.online : undefined,
       });
+      // bulletins (for the menu ticker + connect screen) — non-fatal
+      try {
+        const b = await api('/api/friends/bbs/bulletins');
+        BBS_UI.bulletins = (b && b.bulletins) || [];
+      } catch { BBS_UI.bulletins = []; }
       draw();
     } catch (e) {
       $('bbsStatus').textContent = 'LINK DOWN: ' + e.message;
@@ -1962,12 +2086,15 @@
   // Keyboard and mouse drive the same runAct() dispatcher. Late-80s feel:
   // block-letter banners, framed menus, per-conference color identity, modem
   // result codes. Doors: FORTUNE / GUESS / HANGMAN / 8-BALL, all local play.
-  let SCREEN = 'welcome';
+  let SCREEN = 'connect';
   let BBS_UI = {
     items: [],          // numbered entries on the current screen (digit keys + clicks hit the same act)
+    barIdx: 0,          // lightbar selection index over `items`
     msgIndex: 0,        // which message in the open thread is on screen
     prompt: null,       // {kind,…} while the command input is open
     callerN: 0,         // "you are caller #N" (stable for the session)
+    handle: '',         // the handle entered at the connect screen
+    animate: true,      // baud-emulated line-by-line draw on arrival screens
     threadTitle: '',    // two-step new-thread flow
     saveFileName: '',   // two-step save-file flow
     file: null,         // {name, content} while a file is open
@@ -1978,7 +2105,46 @@
     door: null,         // active door-game state ({kind,…} per game)
     doorsList: [],      // third-party doors in the rack (fetched with the DOORS menu)
     search: [],         // last search results ([{board,thread_id,title,excerpt}])
+    searchTerm: '',
+    mail: { messages: [], mentions: [], unread: 0 },  // the node's inbox (DMs + @mentions)
+    profile: '',       // the caller's own self-description (bio)
+    profileFull: null, // {handle,name,bio,level,joined} for the profile page
+    mailOpen: null,    // {kind:'dm'|'mention', from, body, board, thread_id} while reading
+    bulletins: [],      // sysop bulletins (newest first)
+    bulletinId: '',     // the bulletin being read
   };
+
+  // ── themes ── a real BBS ships a color set; the picker re-tints the tube ──
+  const THEMES = {
+    'dos-blue':  { name: 'DOS BLUE' },
+    'phosphor':  { name: 'PHOSPHOR GREEN' },
+    'amber':     { name: 'AMBER CRT' },
+    'mono-blue': { name: 'MONO BLUE' },
+    '3d-ansi':   { name: '3D ANSI' },
+    'ice':       { name: 'ICE' },
+    'magenta':   { name: 'MAGENTA' },
+  };
+  let BBS_THEME = (function () { try { return localStorage.getItem('bbsThemeV2'); } catch { return null; } })() || 'dos-blue';
+  if (!THEMES[BBS_THEME]) BBS_THEME = 'dos-blue';
+  function applyTheme() {
+    const c = document.querySelector('.bbs-case');
+    if (c) c.setAttribute('data-theme', BBS_THEME);
+    try { localStorage.setItem('bbsThemeV2', BBS_THEME); } catch {}
+  }
+  function cycleTheme(dir) {
+    const keys = Object.keys(THEMES);
+    const i = (keys.indexOf(BBS_THEME) + (dir || 1) + keys.length) % keys.length;
+    BBS_THEME = keys[i];
+    applyTheme();
+    $('bbsStatus').textContent = 'THEME: ' + THEMES[BBS_THEME].name;
+  }
+
+  // ── frame geometry: single-line box, or the double-line "3D ANSI" set ──
+  function FC() {
+    return (BBS_THEME === '3d-ansi' || BBS_THEME === 'dos-blue')
+      ? { tl:'╔', tr:'╗', bl:'╚', br:'╝', ml:'╠', mr:'╣', h:'═', v:'║' }
+      : { tl:'┌', tr:'┐', bl:'└', br:'┘', ml:'├', mr:'┤', h:'─', v:'│' };
+  }
 
   const BBS_FONT = {
     A:["  █  "," █ █ ","█████","█   █","█   █"],
@@ -2025,20 +2191,24 @@
   // Conference identities — every board is its own room: its own color, icon,
   // pace, and list behavior (see renderThreads for the per-board flavor).
   const BOARD_THEME = {
-    'shoutbox':      { c: 'green',   icon: '●', label: 'SHOUTBOX',    kind: 'the live channel' },
-    'general':       { c: 'cyan',    icon: '►', label: 'GENERAL',     kind: 'open discussion' },
-    'ideas':         { c: 'amber',   icon: '♦', label: 'IDEAS',       kind: 'the idea pool' },
-    'help':          { c: 'magenta', icon: '▲', label: 'HELP',        kind: 'the repair desk' },
-    'show-and-tell': { c: 'blue',    icon: '■', label: 'SHOW & TELL', kind: 'the build wall' },
+    'shoutbox':      { c: 'green',   icon: '>', label: 'SHOUTBOX',    kind: 'the live channel' },
+    'general':       { c: 'cyan',    icon: '#', label: 'GENERAL',     kind: 'open discussion' },
+    'ideas':         { c: 'amber',   icon: '*', label: 'IDEAS',       kind: 'the idea pool' },
+    'help':          { c: 'magenta', icon: '!', label: 'HELP',        kind: 'the repair desk' },
+    'show-and-tell': { c: 'blue',    icon: '=', label: 'SHOW & TELL', kind: 'the build wall' },
   };
-  function boardTheme(name) { return BOARD_THEME[name] || { c: 'green', icon: '·', label: String(name || '').toUpperCase(), kind: 'conference' }; }
+  function boardTheme(name) { return BOARD_THEME[name] || { c: 'green', icon: '-', label: String(name || '').toUpperCase(), kind: 'conference' }; }
 
   // ── text helpers ──
   function ansiC(s, c) { return '<span class="c-' + c + '">' + esc(s) + '</span>'; }
   function visLen(s) { return String(s).replace(/<[^>]*>/g, '').replace(/&(?:[a-z]+|#\d+);/gi, '·').length; }
   function padR(s, w) { return s + ' '.repeat(Math.max(0, w - visLen(s))); }
+  // exact-width fit for card cells: truncate then pad to w *plain* chars (ASCII,
+  // so JS length == cell width — this is what keeps the cubes aligned).
+  function fit(s, w) { const str = String(s == null ? '' : s); return str.length > w ? str.slice(0, w) : str + ' '.repeat(w - str.length); }
   function padL(s, w) { return ' '.repeat(Math.max(0, w - visLen(s))) + s; }
-  function hl(n) { return '─'.repeat(n); }
+  function hl(n) { return FC().h.repeat(n); }
+  function hr(w) { return FC().v + hl(w) + FC().v; }
   function center(s, w) { return padL(s, w - Math.floor((w - visLen(s)) / 2)); }
   function centerBlock(block, w) { return String(block).split('\n').map(l => padL(l, w - Math.floor((w - visLen(l)) / 2))).join('\n'); }
   function bigText(text, c) {
@@ -2048,6 +2218,32 @@
       for (let r = 0; r < 5; r++) rows[r] += (g[r] || '     ') + ' ';
     }
     return rows.map(r => ansiC(r.replace(/\s+$/, ''), c)).join('\n');
+  }
+  // Chiseled ANSI block letters: the top of each stroke reads as a highlight
+  // (░) with the body solid (█) and a dim drop-shadow (▒) underneath — the
+  // shaded-block look that flat █ glyphs never had.
+  function bevelText(text, c) {
+    const glyphs = [...String(text).toUpperCase()].map(ch => BBS_FONT[ch] || BBS_FONT[' ']);
+    const rows = [];
+    for (let r = 0; r < 5; r++) {
+      let line = '';
+      for (const g of glyphs) {
+        for (let col = 0; col < 5; col++) {
+          const cell = (g[r] || '     ')[col];
+          if (cell === '█') {
+            let top = true;
+            for (let rr = 0; rr < r; rr++) if ((g[rr] || '')[col] === '█') { top = false; break; }
+            line += top ? '░' : '█';
+          } else line += ' ';
+        }
+        line += ' ';
+      }
+      rows.push(ansiC(line.replace(/\s+$/, ''), c));
+    }
+    let shadow = '';
+    for (const g of glyphs) { for (let col = 0; col < 5; col++) shadow += (g[4] || '')[col] === '█' ? '▒' : ' '; shadow += ' '; }
+    rows.push(ansiC(shadow.replace(/\s+$/, ''), 'dim'));
+    return rows.join('\n');
   }
   function wrapText(text, width) {
     const words = String(text || '').split(/\s+/).filter(Boolean);
@@ -2075,22 +2271,65 @@
     return ' ' + ansiC(String(num).padStart(2, ' '), color || 'gray') + '  ' +
       '<span class="bbs-hit" data-act="' + escAttr(act) + '" data-arg="' + escAttr(a) + '">' + text + '</span>';
   }
+  // window a long list around the lightbar so the selection stays visible
+  const LIST_PAGE = 14;
+  function listRange(total) {
+    if (total <= LIST_PAGE) return { start: 0, end: total, above: false, below: false };
+    let start = Math.max(0, BBS_UI.barIdx - Math.floor(LIST_PAGE / 2));
+    start = Math.min(start, total - LIST_PAGE);
+    return { start, end: start + LIST_PAGE, above: start > 0, below: start + LIST_PAGE < total };
+  }
+  function listHead(s, w, above, n) { if (above) s += frameLine(ansiC('  ▲ ' + n + ' more above', 'gray'), '', w) + '\n'; }
+  function listFoot(s, w, below, n) { if (below) s += frameLine(ansiC('  ▼ ' + n + ' more below', 'gray'), '', w) + '\n'; }
 
-  const BW = 66; // inner width of framed screens (chars)
+  const BW = 78; // inner width of framed screens — a real 80-column BBS
   function frameTitle(title, w) {
     const t = visLen(title);
     const l = Math.max(1, Math.floor((w - t) / 2));
     const r = Math.max(1, w - t - l);
-    return '┌' + hl(w) + '┐\n│' + ' '.repeat(l) + title + ' '.repeat(r) + '│\n├' + hl(w) + '┤';
+    return FC().tl + hl(w) + FC().tr + '\n' + FC().v + ' '.repeat(l) + title + ' '.repeat(r) + FC().v + '\n' + FC().ml + hl(w) + FC().mr;
   }
-  function frameClose(w) { return '└' + hl(w) + '┘'; }
-  function frameLine(left, right, w) {
-    if (right == null || right === '') return '│' + padR(left, w) + '│';
-    const gap = w - visLen(left) - visLen(right);
-    return '│' + left + ' '.repeat(Math.max(1, gap)) + right + '│';
+  function frameClose(w) { return FC().bl + hl(w) + FC().br; }
+  function frameLine(left, right, w, bar) {
+    let inner;
+    if (right == null || right === '') inner = padR(left, w);
+    else {
+      const gap = w - visLen(left) - visLen(right);
+      inner = left + ' '.repeat(Math.max(1, gap)) + right;
+    }
+    return FC().v + (bar ? '<span class="bar">' + inner + '</span>' : inner) + FC().v;
   }
 
   // ── screens ──
+  function renderConnect() {
+    BBS_UI.items = [];
+    const w = BW;
+    const host = bbsShortHost(SOCIAL.node || (SOCIAL.self || {}).hostname || 'this-warden');
+    const s = [];
+    s.push('');
+    s.push(center(ansiC('CONNECT 2400', 'green'), w));
+    s.push(center(ansiC('CARRIER DETECT · 8N1 · HALF DUPLEX', 'dim'), w));
+    s.push(center(ansiC('WELCOME TO THE WARDEN MESH', 'dim'), w));
+    s.push('');
+    s.push(centerBlock(bevelText('WARDEN', 'amber'), w + 2));
+    s.push(center(ansiC('▓ TRM-87 · a node on the mesh · ' + host + ' ▓', 'dim'), w));
+    s.push('');
+    s.push(center('<span class="blink">' + ansiC('[ PRESS ENTER TO LOG IN ]', 'white') + '</span>', w));
+    try {
+      const last = JSON.parse(localStorage.getItem('bbsCallers') || '[]');
+      if (last.length) {
+        s.push('');
+        s.push(center(ansiC('LAST FROM THIS TERMINAL: ' + last.slice(0, 5).map(c => bbsShortHost(c.handle)).join(' · '), 'gray'), w));
+      }
+    } catch {}
+    const bull = (BBS_UI.bulletins || [])[0];
+    if (bull) {
+      s.push('');
+      s.push(center(ansiC('● BULLETIN: ' + String(bull.title).slice(0, 50), 'magenta'), w));
+    }
+    return s.join('\n');
+  }
+
   function renderWelcome() {
     BBS_UI.items = [];
     const w = BW;
@@ -2101,8 +2340,8 @@
     const files = (SOCIAL.files || []).length;
     if (!BBS_UI.callerN) BBS_UI.callerN = 137 + (msgs % 900);
     let s = '\n';
-    s += centerBlock(bigText('WARDEN', 'amber'), w + 12) + '\n';
-    s += centerBlock(bigText('BBS', 'green'), w + 12) + '\n\n';
+    s += centerBlock(bevelText('WARDEN', 'amber'), w + 2) + '\n';
+    s += centerBlock(bevelText('BBS', 'green'), w + 2) + '\n\n';
     s += center(ansiC('· the warden mesh · node ' + host + ' · est. 2026 ·', 'dim'), w) + '\n\n';
     s += frameTitle(ansiC(' CONNECT ' + host.toUpperCase() + ' — 2400 BAUD ', 'green'), w) + '\n';
     s += frameLine(ansiC('  YOU ARE CALLER ', 'dim') + ansiC('#' + BBS_UI.callerN, 'amber'), '', w) + '\n';
@@ -2113,67 +2352,118 @@
     return s;
   }
 
+  // a "cube" — a self-contained info-card for the grid menu. Each carries its
+  // own icon, name, and stats, like a useful Tetris block.
+  function menuCard(card, selected) {
+    const w = 23;
+    const hb = selected ? '═' : '─';
+    const side = selected ? '║' : '│';
+    const rows = [
+      (selected ? '╔' : '┌') + hb.repeat(w) + (selected ? '╗' : '┐'),
+      side + ansiC(fit(card.icon + ' ' + card.label, w), selected ? 'white' : card.color) + side,
+      side + ansiC(fit(card.stat, w), 'dim') + side,
+      side + ansiC(fit(card.sub, w), 'gray') + side,
+      (selected ? '╚' : '└') + hb.repeat(w) + (selected ? '╝' : '┘'),
+    ];
+    return selected ? rows.map((r) => '<span class="bar">' + r + '</span>') : rows;
+  }
+
+  // lay cards out in a grid; registers each into BBS_UI.items for keys/clicks
+  function cardGrid(cards, cols) {
+    const CW = 25, GAP = 1, H = 5;
+    const rows = Math.ceil(cards.length / cols);
+    let s = '';
+    for (let r = 0; r < rows; r++) {
+      const rowCards = [];
+      for (let c = 0; c < cols; c++) {
+        const idx = r * cols + c;
+        const card = cards[idx];
+        if (!card) { rowCards.push(null); continue; }
+        BBS_UI.items.push({ act: card.act, arg: card.arg || '' });
+        rowCards.push(menuCard(card, idx === BBS_UI.barIdx));
+      }
+      for (let line = 0; line < H; line++) {
+        let lineStr = '';
+        for (let c = 0; c < cols; c++) {
+          const cc = rowCards[c];
+          lineStr += (cc ? cc[line] : ' '.repeat(CW)) + (c < cols - 1 ? ' '.repeat(GAP) : '');
+        }
+        s += lineStr.replace(/\s+$/, '') + '\n';
+      }
+    }
+    return s;
+  }
+
   function renderMenu() {
     BBS_UI.items = [];
     const w = BW;
     const host = bbsShortHost(SOCIAL.node || (SOCIAL.self || {}).hostname || 'self');
     const online = (SOCIAL.systems || []).filter(s => s.status === 'online').length;
-    let s = '\n';
-    s += frameTitle(ansiC(' WARDEN BBS — MAIN MENU ', 'amber'), w) + '\n';
-    s += frameLine(ansiC('  connected to ', 'dim') + ansiC(host, 'green') + ansiC('  ·  ' + online + ' nodes up', 'dim'), '', w) + '\n';
-    s += frameLine(' ', '', w) + '\n';
     const cs = BBS_UI.colabStatus;
-    const menu = [
-      ['MESSAGE AREAS', 'conferences', String((SOCIAL.boards || []).length) + ' confs', 'green'],
-      ['FILE AREAS', 'files', String((SOCIAL.files || []).length) + ' files', 'cyan'],
-      ["WHO'S ONLINE", 'online', String(online) + ' up', 'amber'],
-      ['LAST CALLERS', 'callers', 'recent calls', 'magenta'],
-      ['COLAB', 'colab', cs && cs.busy ? 'SWARM: ' + String(cs.phase || '').toUpperCase() : 'idle', 'white'],
-      ['DIAL A NODE', 'dial', String((SOCIAL.systems || []).length) + ' nodes', 'blue'],
-      ['DOORS', 'doors', 'the game room', 'red'],
-      ['SYSOP', 'sysop', 'node ledger', 'white'],
-      ['SEARCH', 'search', 'grep the base', 'green'],
+    const boards = (SOCIAL.boards || []).length;
+    const files = (SOCIAL.files || []).length;
+    const msgs = (SOCIAL.posts || []).length;
+    let s = '\n';
+    s += centerBlock(bevelText('WARDEN', 'amber'), w + 2) + '\n';
+    s += center(ansiC('▓ TRM-87 · NODE ' + host.toUpperCase() + ' · 2400 BAUD ▓', 'dim'), w) + '\n';
+    const cards = [
+      { icon: '>', label: 'MESSAGES',  stat: boards + ' conferences', sub: msgs + ' posts',       color: 'green',   act: 'conferences' },
+      { icon: '#', label: 'FILES',     stat: files + ' files',       sub: 'the shared rack',      color: 'cyan',    act: 'files' },
+      { icon: '@', label: 'MAIL',      stat: 'your inbox',           sub: 'DMs & mentions',       color: 'cyan',    act: 'mail' },
+      { icon: '!', label: 'BULLETINS', stat: (BBS_UI.bulletins || []).length + ' posted', sub: 'from the sysop', color: 'magenta', act: 'bulletins' },
+      { icon: '*', label: 'ONLINE',    stat: online + ' up',         sub: 'the mesh, live',       color: 'amber',   act: 'online' },
+      { icon: '~', label: 'CALLERS',   stat: 'recent calls',         sub: 'who called',           color: 'magenta', act: 'callers' },
+      { icon: '+', label: 'COLAB',     stat: cs && cs.busy ? 'SWARM ' + String(cs.phase || '').toUpperCase() : 'idle', sub: 'the workshop', color: 'white', act: 'colab' },
+      { icon: '%', label: 'DIAL',      stat: (SOCIAL.systems || []).length + ' nodes', sub: 'call a node', color: 'blue', act: 'dial' },
+      { icon: '=', label: 'DOORS',     stat: '4 games',              sub: 'the game room',        color: 'red',     act: 'doors' },
+      { icon: '&', label: 'SYSOP',     stat: 'node ledger',          sub: 'disk & sweep',         color: 'white',   act: 'sysop' },
+      { icon: '?', label: 'SEARCH',    stat: 'grep the base',        sub: 'full-text',            color: 'green',   act: 'search' },
+      { icon: 'i', label: 'PROFILE',   stat: BBS_UI.profile ? BBS_UI.profile.slice(0, 20) : 'not set yet', sub: 'who you are', color: 'cyan', act: 'profile' },
     ];
-    for (let i = 0; i < menu.length; i++) {
-      const [label, act, tag, color] = menu[i];
-      s += frameLine(hitLine(i + 1, ansiC(label, color), act, '', color), ansiC(tag, cs && cs.busy && act === 'colab' ? 'amber' : 'gray'), w) + '\n';
+    const COLS = 3, CW = 25, GAP = 1, H = 5;
+    const rows = Math.ceil(cards.length / COLS);
+    for (let r = 0; r < rows; r++) {
+      const rowCards = [];
+      for (let c = 0; c < COLS; c++) {
+        const idx = r * COLS + c;
+        const card = cards[idx];
+        if (!card) { rowCards.push(null); continue; }
+        BBS_UI.items.push({ act: card.act, arg: '' });
+        rowCards.push(menuCard(card, idx === BBS_UI.barIdx));
+      }
+      for (let line = 0; line < H; line++) {
+        let lineStr = '';
+        for (let c = 0; c < COLS; c++) {
+          const cc = rowCards[c];
+          lineStr += (cc ? cc[line] : ' '.repeat(CW)) + (c < COLS - 1 ? ' '.repeat(GAP) : '');
+        }
+        s += lineStr.replace(/\s+$/, '') + '\n';
+      }
     }
-    s += frameLine(' ', '', w) + '\n';
-    s += frameLine(' ' + ansiC('A '.padStart(2), 'gray') + '  ' + ansiC('AUTONOMY', 'green'), ansiC(BOTNET.enabled ? 'sweep on · ' + (BOTNET.agent || 'atlas') : 'sweep off', 'gray'), w) + '\n';
-    s += frameLine(' ' + ansiC('Q '.padStart(2), 'gray') + '  ' + ansiC('HANG UP', 'red'), ansiC('drop the line', 'gray'), w) + '\n';
-    // ticker — the last thing said on the channel, so the menu is never dead air
-    const last = (SOCIAL.posts || []).filter(p => p.board === 'shoutbox').slice(-1)[0];
-    if (last) {
-      s += '│' + hl(w) + '│\n';
-      const tick = String(last.body || '').replace(/\s+/g, ' ').slice(0, w - 24);
-      s += frameLine(ansiC('  LAST SHOUT ', 'dim') + ansiC('<' + bbsShortHost(last.author_host) + '>', 'green'), ansiC(tick, 'gray'), w) + '\n';
-    }
-    s += frameClose(w);
     return s;
   }
 
   function renderConferences() {
     BBS_UI.items = [];
     const w = BW;
-    let s = '\n' + frameTitle(ansiC(' MESSAGE AREAS ', 'green'), w) + '\n';
-    s += frameLine(' ', '', w) + '\n';
     const boards = SOCIAL.boards || [];
-    if (!boards.length) s += frameLine(ansiC('  no conferences on this node', 'dim'), '', w) + '\n';
-    boards.forEach((b, i) => {
+    let s = '\n' + center(ansiC('MESSAGE AREAS', 'green'), w) + '\n';
+    s += center(ansiC('pick a conference', 'dim'), w) + '\n';
+    const cards = boards.map((b) => {
       const th = boardTheme(b.name);
       const posts = (SOCIAL.posts || []).filter(p => p.board === b.name);
       const threads = (SOCIAL.threads || []).filter(t => t.board === b.name);
-      let count;
-      if (b.name === 'shoutbox') count = posts.length + ' shouts';
-      else if (b.name === 'ideas') count = threads.length + ' ideas';
-      else if (b.name === 'help') count = threads.filter(t => (t.post_count || 0) <= 1).length + '/' + threads.length + ' open';
-      else if (b.name === 'show-and-tell') count = threads.length + ' builds';
-      else count = posts.length + ' msgs';
-      s += frameLine(
-        hitLine(i + 1, ansiC(th.icon + ' ' + th.label, th.c) + '  ' + ansiC(count, 'dim'), 'board', b.name, th.c),
-        ansiC('« ' + th.kind, 'gray'), w) + '\n';
+      let stat, sub;
+      if (b.name === 'shoutbox') { stat = posts.length + ' shouts'; sub = 'flat chat - live'; }
+      else if (b.name === 'ideas') { stat = threads.length + ' ideas'; sub = 'share & build'; }
+      else if (b.name === 'help') { stat = threads.filter(t => (t.post_count || 0) <= 1).length + ' open'; sub = 'ask for help'; }
+      else if (b.name === 'show-and-tell') { stat = threads.length + ' builds'; sub = 'show your work'; }
+      else { stat = posts.length + ' msgs'; sub = th.kind || 'conference'; }
+      return { icon: th.icon, label: th.label, stat, sub, color: th.c, act: 'board', arg: b.name };
     });
-    s += frameClose(w);
+    if (!cards.length) { s += ansiC('  no conferences on this node', 'dim'); return s; }
+    s += cardGrid(cards, 3);
+    s += center(ansiC('↵ open a conference · [Q] back', 'gray'), w);
     return s;
   }
 
@@ -2184,7 +2474,7 @@
     const online = (SOCIAL.systems || []).filter(s => s.status === 'online');
     let s = '\n' + frameTitle(ansiC(' ● SHOUTBOX — THE LIVE CHANNEL ', 'green'), w) + '\n';
     s += frameLine(ansiC('  on the line: ', 'dim') + ansiC(online.map(x => bbsShortHost(x.hostname)).join(' · ') || 'nobody', 'green'), '', w) + '\n';
-    s += '│' + hl(w) + '│\n';
+    s += hr(w) + '\n';
     if (!posts.length) {
       s += '  ' + ansiC('the channel is silent — press R and be the first voice', 'dim') + '\n';
     } else {
@@ -2224,13 +2514,17 @@
     s += frameLine(ansiC('  ' + (blurb || '—'), 'dim'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
     if (!threads.length) s += frameLine(ansiC('  no threads yet — press N to start the first one', 'dim'), '', w) + '\n';
-    threads.forEach((t, i) => {
+    const rg = listRange(threads.length);
+    listHead(s, w, rg.above, rg.start);
+    for (let i = rg.start; i < rg.end; i++) {
+      const t = threads[i];
       let tail = '· ' + bbsShortHost(t.author_host) + ' · ' + (t.post_count || 0) + ' replies';
       if (SOCIAL_BOARD === 'help') tail += (t.post_count || 0) <= 1 ? ' · OPEN' : ' · ANSWERED';
       if (SOCIAL_BOARD === 'ideas' && (t.post_count || 0) >= 2) tail += ' · HOT';
       const text = ansiC(String(t.title || '').slice(0, 44), th.c) + '  ' + ansiC(tail, 'dim');
-      s += frameLine(hitLine(i + 1, text, 'thread', t.id, th.c), '', w) + '\n';
-    });
+      s += frameLine(hitLine(i + 1, text, 'thread', t.id, th.c), '', w, i === BBS_UI.barIdx) + '\n';
+    }
+    listFoot(s, w, rg.below, threads.length - rg.end);
     s += frameClose(w);
     return s;
   }
@@ -2256,7 +2550,7 @@
     s += frameLine(ansiC('  FROM ', 'dim') + ansiC('<' + bbsShortHost(p.author_host) + '>', p.author_kind === 'human' ? 'white' : 'amber') + ansiC(p.author_kind === 'human' ? ' (human)' : ' (bot)', 'gray'), '', w) + '\n';
     s += frameLine(ansiC('  SUBJ ', 'dim') + ansiC(String(thread ? thread.title : '(untitled)').slice(0, w - 10), th.c), '', w) + '\n';
     s += frameLine(ansiC('  DATE ', 'dim') + ansiC(fmtWhen(p.created_at), 'dim'), '', w) + '\n';
-    s += '│' + hl(w) + '│\n';
+    s += hr(w) + '\n';
     for (const line of wrapText(p.body, w - 6)) s += '  ' + esc(line) + '\n';
     s += frameClose(w);
     return s;
@@ -2270,10 +2564,14 @@
     s += frameLine(ansiC('  the shared rack — colab reports, notes and builds, filed here', 'dim'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
     if (!files.length) s += frameLine(ansiC('  the rack is empty — press S to file the first artifact', 'dim'), '', w) + '\n';
-    files.forEach((f, i) => {
+    const frg = listRange(files.length);
+    listHead(s, w, frg.above, frg.start);
+    for (let i = frg.start; i < frg.end; i++) {
+      const f = files[i];
       const text = ansiC(String(f.name).slice(0, 40), 'cyan') + '  ' + ansiC('· ' + fmtSize(f.size) + ' · ' + fmtWhen(f.mtime), 'dim');
-      s += frameLine(hitLine(i + 1, text, 'file', f.name, 'cyan'), '', w) + '\n';
-    });
+      s += frameLine(hitLine(i + 1, text, 'file', f.name, 'cyan'), '', w, i === BBS_UI.barIdx) + '\n';
+    }
+    listFoot(s, w, frg.below, files.length - frg.end);
     s += frameClose(w);
     return s;
   }
@@ -2299,14 +2597,18 @@
     let s = '\n' + frameTitle(ansiC(" WHO'S ONLINE ", 'amber'), w) + '\n';
     s += frameLine(ansiC('  the mesh, live — dial in on any node', 'dim'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
-    systems.forEach((sys, i) => {
+    const org = listRange(systems.length);
+    listHead(s, w, org.above, org.start);
+    for (let i = org.start; i < org.end; i++) {
+      const sys = systems[i];
       const name = bbsShortHost(sys.hostname);
       const on = sys.self || sys.status === 'online';
       const stat = sys.self ? ansiC('HOME ', 'green') : (on ? ansiC('UP   ', 'green') : ansiC('DOWN ', 'red'));
       const text = stat + ansiC(name, on ? (sys.self ? 'white' : 'amber') : 'gray') + '  ' + ansiC('· ' + (String(sys.profile || '').slice(0, 32) || 'no profile'), 'dim');
-      s += frameLine(hitLine(i + 1, text, 'dialnode', sys.self ? 'self' : sys.hostname, on ? 'amber' : 'gray'), '', w) + '\n';
+      s += frameLine(hitLine(i + 1, text, 'dialnode', sys.self ? 'self' : sys.hostname, on ? 'amber' : 'gray'), '', w, i === BBS_UI.barIdx) + '\n';
       if ((sys.specialists || []).length) s += frameLine(ansiC('        crew: ' + sys.specialists.join(', '), 'gray'), '', w) + '\n';
-    });
+    }
+    listFoot(s, w, org.below, systems.length - org.end);
     s += frameClose(w);
     return s;
   }
@@ -2329,10 +2631,14 @@
     s += frameLine(ansiC('  who has been on this node most recently', 'dim'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
     if (!callers.length) s += frameLine(ansiC('  the log is empty — nobody has called yet', 'dim'), '', w) + '\n';
-    callers.forEach((c, i) => {
+    const crg = listRange(callers.length);
+    listHead(s, w, crg.above, crg.start);
+    for (let i = crg.start; i < crg.end; i++) {
+      const c = callers[i];
       const text = ansiC('<' + bbsShortHost(c.host) + '>', 'magenta') + '  ' + ansiC('· last seen ' + (c.last ? fmtWhen(c.last) : '—'), 'dim');
-      s += frameLine(hitLine(i + 1, text, 'dialnode', c.host, 'magenta'), '', w) + '\n';
-    });
+      s += frameLine(hitLine(i + 1, text, 'dialnode', c.host, 'magenta'), '', w, i === BBS_UI.barIdx) + '\n';
+    }
+    listFoot(s, w, crg.below, callers.length - crg.end);
     s += frameClose(w);
     return s;
   }
@@ -2388,11 +2694,11 @@
         });
       }
       if (st.phase === 'done' && st.report) {
-        s += '│' + hl(w) + '│\n';
+        s += hr(w) + '\n';
         for (const line of String(st.report).split('\n').slice(0, 36)) {
           for (const seg of wrapText(line, w - 4)) s += '  ' + esc(seg) + '\n';
         }
-        s += '│' + hl(w) + '│\n';
+        s += hr(w) + '\n';
         if (st.file) s += frameLine(ansiC('  FILED: ', 'dim') + ansiC(String(st.file).slice(0, w - 14), 'cyan'), '', w) + '\n';
       }
     } else {
@@ -2402,7 +2708,7 @@
     s += frameLine(ansiC('  ARTIFACTS', 'cyan') + ansiC('  (filed reports)', 'dim'), '', w) + '\n';
     const files = (SOCIAL.files || []).slice().sort((a, b) => ((a.mtime || '') < (b.mtime || '') ? 1 : -1)).slice(0, 8);
     files.forEach((f, i) => {
-      s += frameLine(hitLine(i + 1, ansiC(String(f.name).slice(0, 36), 'cyan') + ansiC(' · ' + fmtSize(f.size) + ' · ' + fmtWhen(f.mtime), 'dim'), 'file', f.name, 'cyan'), '', w) + '\n';
+      s += frameLine(hitLine(i + 1, ansiC(String(f.name).slice(0, 36), 'cyan') + ansiC(' · ' + fmtSize(f.size) + ' · ' + fmtWhen(f.mtime), 'dim'), 'file', f.name, 'cyan'), '', w, i === BBS_UI.barIdx) + '\n';
     });
     if (!files.length) s += frameLine(ansiC('  (nothing filed yet)', 'gray'), '', w) + '\n';
     s += frameClose(w);
@@ -2421,7 +2727,7 @@
       const on = sys.self || sys.status === 'online';
       const stat = sys.self ? ansiC('[HOME] ', 'green') : (on ? ansiC('[UP]   ', 'green') : ansiC('[DOWN] ', 'red'));
       const text = stat + ansiC(name, on ? 'amber' : 'gray') + '  ' + ansiC('· ' + (String(sys.profile || '').slice(0, 30) || 'no profile'), 'dim');
-      s += frameLine(hitLine(i + 1, text, 'dialnode', sys.self ? 'self' : sys.hostname, 'amber'), '', w) + '\n';
+      s += frameLine(hitLine(i + 1, text, 'dialnode', sys.self ? 'self' : sys.hostname, 'amber'), '', w, i === BBS_UI.barIdx) + '\n';
     });
     s += frameClose(w);
     return s;
@@ -2478,17 +2784,22 @@
   function renderDoors() {
     BBS_UI.items = [];
     const w = BW;
-    let s = '\n' + frameTitle(ansiC(' DOORS — THE GAME ROOM ', 'red'), w) + '\n';
+    let s = '\n';
+    // the arcade marquee — a little ANSI motif over the menu
+    s += center(ansiC('▄▄▄▄▄  ▄▄▄▄▄  ▄▄▄▄▄  ▄▄▄▄▄', 'red'), w) + '\n';
+    s += center(ansiC('█ ◄ █  █ ? █  █ @ █  █ ● █', 'magenta'), w) + '\n';
+    s += center(ansiC('▀▀▀▀▀  ▀▀▀▀▀  ▀▀▀▀▀  ▀▀▀▀▀', 'red'), w) + '\n\n';
+    s += frameTitle(ansiC(' DOORS — THE GAME ROOM ', 'red'), w) + '\n';
     s += frameLine(ansiC('  games for the caller while the lines are busy', 'dim'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
     const doors = [
-      ['FORTUNE', 'door-fortune', 'a cookie from the rack'],
-      ['GUESS', 'door-guess', '1 to 100 — read the box\'s mind'],
-      ['HANGMAN', 'door-hangman', 'six strikes, one word'],
-      ['8-BALL', 'door-eightball', 'ask, shake, receive'],
+      ['◄', 'FORTUNE', 'door-fortune', 'a cookie from the rack', 'amber'],
+      ['?', 'GUESS', 'door-guess', '1 to 100 — read the box\'s mind', 'red'],
+      ['@', 'HANGMAN', 'door-hangman', 'six strikes, one word', 'red'],
+      ['●', '8-BALL', 'door-eightball', 'ask, shake, receive', 'magenta'],
     ];
     doors.forEach((d, i) => {
-      s += frameLine(hitLine(i + 1, ansiC(d[0], 'red'), d[1], '', 'red'), ansiC(d[2], 'gray'), w) + '\n';
+      s += frameLine(hitLine(i + 1, ansiC(d[0] + ' ', d[4]) + ansiC(d[1], 'red'), d[2], '', 'red'), ansiC(d[3], 'gray'), w, i === BBS_UI.barIdx) + '\n';
     });
     // third-party doors — installed .html pages from the rack (max 5 shown)
     const custom = (BBS_UI.doorsList || []).slice(0, 5);
@@ -2497,7 +2808,7 @@
       s += frameLine(ansiC('  THIRD-PARTY — from the door market', 'gray'), ansiC('launches in a tab', 'gray'), w) + '\n';
       custom.forEach((d, i) => {
         s += frameLine(hitLine(5 + i, ansiC(String(d.name).slice(0, 20).toUpperCase(), 'magenta'), 'door-open', d.file, 'magenta'),
-          ansiC(String(d.desc || d.file).slice(0, 26), 'gray'), w) + '\n';
+          ansiC(String(d.desc || d.file).slice(0, 26), 'gray'), w, (4 + i) === BBS_UI.barIdx) + '\n';
       });
     } else {
       s += frameLine(' ', '', w) + '\n';
@@ -2513,12 +2824,12 @@
     const w = BW;
     const text = (BBS_UI.door && BBS_UI.door.text) || pickFortune();
     let s = '\n' + frameTitle(ansiC(' ♦ FORTUNE ', 'amber'), w) + '\n';
-    s += '│' + hl(w) + '│\n';
+    s += hr(w) + '\n';
     for (const line of String(text).split('\n')) {
       for (const seg of wrapText(line, w - 6)) s += '  ' + ansiC(seg, 'amber') + '\n';
       if (!line) s += '\n';
     }
-    s += '│' + hl(w) + '│\n';
+    s += hr(w) + '\n';
     s += frameLine(ansiC('  [R] crack another cookie', 'dim'), '', w) + '\n';
     s += frameClose(w);
     return s;
@@ -2624,11 +2935,129 @@
     if (BBS_UI.searchTerm) s += frameLine(ansiC('  term: "' + BBS_UI.searchTerm + '"', 'dim'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
     if (!hits.length) s += frameLine(ansiC(BBS_UI.searchTerm ? '  no hits — [F] to search again' : '  press F and pick a term', 'dim'), '', w) + '\n';
-    hits.forEach((h, i) => {
+    const srg = listRange(hits.length);
+    listHead(s, w, srg.above, srg.start);
+    for (let i = srg.start; i < srg.end; i++) {
+      const h = hits[i];
       const th = boardTheme(h.board);
       const text = ansiC(th.icon + ' ', th.c) + ansiC(String(h.title || '(shout)').slice(0, 30), th.c) + '  ' + ansiC(String(h.excerpt).slice(0, 24) + '…', 'dim');
-      s += frameLine(hitLine(i + 1, text, 'search-hit', h.board + '|' + (h.thread_id || ''), th.c), '', w) + '\n';
-    });
+      s += frameLine(hitLine(i + 1, text, 'search-hit', h.board + '|' + (h.thread_id || ''), th.c), '', w, i === BBS_UI.barIdx) + '\n';
+    }
+    listFoot(s, w, srg.below, hits.length - srg.end);
+    s += frameClose(w);
+    return s;
+  }
+
+  function renderMail() {
+    BBS_UI.items = [];
+    const w = BW;
+    const m = BBS_UI.mail || {};
+    const msgs = m.messages || [];
+    const mentions = m.mentions || [];
+    let s = '\n' + frameTitle(ansiC(' MAIL — YOUR INBOX ', 'cyan'), w) + '\n';
+    s += frameLine(ansiC('  private messages from the mesh · @-mentions from callers', 'dim'), '', w) + '\n';
+    s += frameLine(' ', '', w) + '\n';
+    const rows = [];
+    mentions.forEach((n) => rows.push({ kind: 'MENTION', from: n.author_host, when: n.created_at, body: n.body || n.excerpt || '', color: 'amber', arg: 'mention:' + n.post_id }));
+    msgs.forEach((dm) => rows.push({ kind: 'DM', from: dm.from_hostname, when: dm.created_at, body: dm.body || '', color: dm.direction === 'outbound' ? 'dim' : 'green', arg: 'dm:' + dm.from_hostname }));
+    if (!rows.length) s += frameLine(ansiC('  the inbox is empty — nobody has written to you yet', 'dim'), '', w) + '\n';
+    const mrg = listRange(rows.length);
+    listHead(s, w, mrg.above, mrg.start);
+    for (let i = mrg.start; i < mrg.end; i++) {
+      const r = rows[i];
+      const text = ansiC('[' + r.kind + '] ', 'gray') + ansiC('<' + bbsShortHost(r.from) + '>', r.color) + '  ' + ansiC(String(r.body).replace(/\s+/g, ' ').slice(0, w - 26), 'white');
+      s += frameLine(hitLine(i + 1, text, 'mail-read', r.arg, r.color), ansiC(fmtWhen(r.when), 'gray'), w, i === BBS_UI.barIdx) + '\n';
+    }
+    listFoot(s, w, mrg.below, rows.length - mrg.end);
+    s += frameLine(' ', '', w) + '\n';
+    s += frameLine(ansiC('  [↵] read · [R] reply (inside a message) · [Q] back', 'dim'), '', w) + '\n';
+    s += frameClose(w);
+    return s;
+  }
+
+  function renderMailRead() {
+    BBS_UI.items = [];
+    const w = BW;
+    const o = BBS_UI.mailOpen || {};
+    let s = '\n' + frameTitle(ansiC(' MAIL — ' + (o.kind === 'mention' ? 'MENTION' : 'MESSAGE') + ' ', 'cyan'), w) + '\n';
+    if (!o.from) { s += frameLine(ansiC('  no message selected', 'dim'), '', w) + '\n'; s += frameClose(w); return s; }
+    s += frameLine(ansiC('  FROM ', 'dim') + ansiC('<' + bbsShortHost(o.from) + '>', o.kind === 'mention' ? 'amber' : 'green'), '', w) + '\n';
+    s += frameLine(ansiC('  DATE ', 'dim') + ansiC(fmtWhen(o.when), 'dim'), '', w) + '\n';
+    s += hr(w) + '\n';
+    for (const line of wrapText(String(o.body || '(empty)'), w - 6)) s += '  ' + esc(line) + '\n';
+    s += hr(w) + '\n';
+    s += frameLine(ansiC('  [R] reply · [Q] back to the inbox', 'dim'), '', w) + '\n';
+    s += frameClose(w);
+    return s;
+  }
+
+  function renderBulletins() {
+    BBS_UI.items = [];
+    const w = BW;
+    const list = BBS_UI.bulletins || [];
+    let s = '\n' + frameTitle(ansiC(' BULLETINS — FROM THE SYSOP ', 'magenta'), w) + '\n';
+    s += frameLine(ansiC('  board-wide announcements, newest first', 'dim'), '', w) + '\n';
+    s += frameLine(' ', '', w) + '\n';
+    if (!list.length) s += frameLine(ansiC('  no bulletins posted yet — press N to post the first', 'dim'), '', w) + '\n';
+    const brg = listRange(list.length);
+    listHead(s, w, brg.above, brg.start);
+    for (let i = brg.start; i < brg.end; i++) {
+      const b = list[i];
+      s += frameLine(hitLine(i + 1, ansiC('● ' + String(b.title).slice(0, 54), 'magenta'), 'bulletin-read', b.id, 'magenta'), ansiC(fmtWhen(b.created_at), 'gray'), w, i === BBS_UI.barIdx) + '\n';
+    }
+    listFoot(s, w, brg.below, list.length - brg.end);
+    s += frameLine(' ', '', w) + '\n';
+    s += frameLine(ansiC('  [N] post a bulletin · [↵] read · [D] delete (on a bulletin)', 'dim'), '', w) + '\n';
+    s += frameClose(w);
+    return s;
+  }
+
+  function renderBulletin() {
+    BBS_UI.items = [];
+    const w = BW;
+    const b = (BBS_UI.bulletins || []).find(x => x.id === BBS_UI.bulletinId);
+    let s = '\n' + frameTitle(ansiC(' BULLETIN ', 'magenta'), w) + '\n';
+    if (!b) { s += frameLine(ansiC('  that bulletin is gone', 'dim'), '', w) + '\n'; s += frameClose(w); return s; }
+    s += frameLine(ansiC('  ' + String(b.title).slice(0, 62), 'magenta'), '', w) + '\n';
+    s += frameLine(ansiC('  from ' + bbsShortHost(b.author) + ' · ' + fmtWhen(b.created_at), 'dim'), '', w) + '\n';
+    s += hr(w) + '\n';
+    for (const line of wrapText(String(b.body || ''), w - 6)) s += '  ' + esc(line) + '\n';
+    s += hr(w) + '\n';
+    s += frameLine(ansiC('  [D] delete this bulletin · [Q] back to the board', 'dim'), '', w) + '\n';
+    s += frameClose(w);
+    return s;
+  }
+
+  function renderLogoff() {
+    BBS_UI.items = [];
+    const w = BW;
+    let s = '\n\n';
+    s += center(ansiC('NO CARRIER', 'red'), w) + '\n\n';
+    s += center(ansiC('THANK YOU FOR CALLING', 'green'), w) + '\n';
+    s += center(ansiC('· the warden mesh · node ' + bbsShortHost(SOCIAL.node || (SOCIAL.self || {}).hostname || 'node') + ' ·', 'dim'), w) + '\n\n';
+    s += centerBlock(bevelText('BYE', 'amber'), w + 2) + '\n\n';
+    s += center('<span class="blink">' + ansiC('[ PRESS ANY KEY TO RETURN TO THE LINE ]', 'white') + '</span>', w);
+    return s;
+  }
+
+  function renderProfile() {
+    BBS_UI.items = [];
+    const w = BW;
+    const p = BBS_UI.profileFull || {};
+    const handle = p.handle || BBS_UI.handle || 'caller';
+    const name = p.name || '(not set — press E)';
+    const bio = p.bio || '(no bio yet — press E)';
+    let s = '\n';
+    s += center(ansiC('YOUR PROFILE', 'amber'), w) + '\n\n';
+    s += frameTitle(ansiC(' @' + handle + ' ', 'cyan'), w) + '\n';
+    s += frameLine(ansiC('  NAME   ', 'dim') + ansiC(name, 'white'), '', w) + '\n';
+    s += frameLine(ansiC('  LEVEL  ', 'dim') + ansiC(String(p.level || 'caller').toUpperCase(), p.level === 'sysop' ? 'red' : 'green') + (p.joined ? ansiC('   joined ' + p.joined, 'gray') : ''), '', w) + '\n';
+    s += frameLine(ansiC('  HANDLE ', 'dim') + ansiC('@' + handle, 'cyan'), '', w) + '\n';
+    s += hr(w) + '\n';
+    s += frameLine(ansiC('  BIO', 'dim'), '', w) + '\n';
+    for (const line of wrapText(bio, w - 6)) s += '  ' + esc(line) + '\n';
+    s += frameLine(' ', '', w) + '\n';
+    s += frameLine(ansiC('  [E] edit profile · [Q] back to the menu', 'dim'), '', w) + '\n';
     s += frameClose(w);
     return s;
   }
@@ -2640,68 +3069,139 @@
     let s = '\n' + frameTitle(ansiC(' NO CARRIER ', 'red'), w) + '\n';
     s += frameLine(ansiC('  ' + host + ' is not answering — the line is dead.', 'red'), '', w) + '\n';
     s += frameLine(' ', '', w) + '\n';
-    s += frameLine(hitLine(1, ansiC('DIAL DIRECTORY', 'amber'), 'dial'), '', w) + '\n';
-    s += frameLine(hitLine(2, ansiC('HANG UP (back to this node)', 'green'), 'hangup'), '', w) + '\n';
+    s += frameLine(hitLine(1, ansiC('DIAL DIRECTORY', 'amber'), 'dial'), '', w, 0 === BBS_UI.barIdx) + '\n';
+    s += frameLine(hitLine(2, ansiC('HANG UP (back to this node)', 'green'), 'hangup'), '', w, 1 === BBS_UI.barIdx) + '\n';
     s += frameClose(w);
     return s;
   }
 
   const RENDER = {
-    welcome: renderWelcome, menu: renderMenu, conferences: renderConferences,
+    connect: renderConnect, welcome: renderWelcome, menu: renderMenu, conferences: renderConferences,
     shout: renderShout, threads: renderThreads, message: renderMessage,
     files: renderFiles, file: renderFile, online: renderOnline,
     callers: renderCallers, colab: renderColab, dial: renderDial,
-    autonomy: renderAutonomy, nocarrier: renderNoCarrier,
+    autonomy: renderAutonomy, logoff: renderLogoff, profile: renderProfile, nocarrier: renderNoCarrier,
+    mail: renderMail, mailread: renderMailRead, bulletins: renderBulletins, bulletin: renderBulletin,
     doors: renderDoors, fortune: renderFortune, guess: renderGuess,
     hangman: renderHangman, eightball: renderEightball,
     sysop: renderSysop, search: renderSearch,
   };
   const KEYS = {
+    connect: 'press enter to log in',
     welcome: 'any key — continue',
-    menu: '[1-9] select · [A] autonomy · [Q] hang up',
-    conferences: '[1-9] open a room · [Q] back',
+    menu: '[↑↓←→] move · [↵] open · [P] profile · [C] theme · [Q] hang up',
+    conferences: '[↑↓←→] move · [↵] open a room · [Q] back',
     shout: '[R] shout · [Q] back',
-    threads: '[1-9] open thread · [N] new thread · [Q] back',
-    message: '[R] reply · [N]ext · [P]rev · [D] del · [Q] back',
-    files: '[1-9] open · [S] save · [U] upload · [Q] back',
+    threads: '[↑/↓] move · [↵] open thread · [N] new · [Q] back',
+    message: '[R] reply · [↑/↓/N/P] next · [D] del · [Q] back',
+    files: '[↑/↓] move · [↵] open · [S] save · [U] upload · [Q] back',
     file: '[D] delete · [I] install .html as a door · [Q] back',
-    online: '[1-9] dial a node · [Q] back',
-    callers: '[1-9] dial a caller · [Q] back',
-    colab: '[T] new task · [1-9] open an artifact · [Q] back',
-    dial: '[1-9] dial · [Q] back',
+    online: '[↑/↓] move · [↵] dial a node · [Q] back',
+    callers: '[↑/↓] move · [↵] dial a caller · [Q] back',
+    colab: '[T] new task · [↑/↓][1-9] open an artifact · [Q] back',
+    dial: '[↑/↓] move · [↵] dial · [Q] back',
     autonomy: '[E] toggle sweep · [A] switch specialist · [Q] back',
-    doors: '[1-9] play a door · [Q] back',
+    logoff: 'any key — return to the line',
+    profile: '[E] edit profile · [Q] back',
+    mail: '[↑/↓] move · [↵] read · [Q] back',
+    mailread: '[R] reply · [Q] back',
+    bulletins: '[↑/↓] move · [↵] read · [N] post · [Q] back',
+    bulletin: '[D] delete · [Q] back',
+    doors: '[↑/↓] move · [↵] play a door · [Q] back',
     fortune: '[R] another cookie · [Q] back',
     guess: 'type a guess · [N] new round · [Q] back',
     hangman: '[A-Z] guess a letter · [N] new word · [Q] back',
     eightball: '[S] shake · [Q] back',
     sysop: '[Q] back',
-    search: '[1-9] open a hit · [F] new search · [Q] back',
+    search: '[↑/↓] move · [↵] open a hit · [F] new search · [Q] back',
   };
 
+  // ── the terminal raster ── every screen composes to exactly 30 rows of 80
+  //    columns: 28 body + 1 prompt + 1 status bar. Nothing scrolls; the same
+  //    row buffer is what an SSH server would later paint as ANSI.
+  const TERM_W = 80, TERM_ROWS = 30, TERM_BODY = TERM_ROWS - 2;
+  function termPad(s, n) { const l = visLen(s); return l >= n ? s : s + ' '.repeat(n - l); }
+  function statusLine() {
+    const host = bbsShortHost(SOCIAL.node && SOCIAL.node !== 'self' ? SOCIAL.node : ((SOCIAL.self || {}).hostname || 'node'));
+    const caller = BBS_UI.handle ? '@' + BBS_UI.handle : '#' + (BBS_UI.callerN || '?');
+    const msgs = (SOCIAL.posts || []).length;
+    const files = (SOCIAL.files || []).length;
+    let time = '';
+    try { time = new Date().toLocaleTimeString([], { hour12: false }); } catch {}
+    const left = ' NODE ' + host + ' · CALLER ' + caller + ' · MSGS ' + msgs + ' · FILES ' + files;
+    const right = time + ' · ' + BBS_THEME.toUpperCase() + ' ';
+    let gap = TERM_W - left.length - right.length;
+    if (gap < 1) gap = 1;
+    const text = (left + ' '.repeat(gap) + right).slice(0, TERM_W);
+    return '<span class="statbar">' + esc(termPad(text, TERM_W)) + '</span>';
+  }
+  const PROMPT_LABEL = { login: 'HANDLE', shout: 'SHOUT', reply: 'REPLY', 'thread-title': 'TITLE', 'thread-body': 'TEXT', colab: 'TASK', 'file-name': 'NAME', 'file-body': 'TEXT', 'guess-num': 'GUESS', eightball: 'ASK', search: 'FIND', 'bulletin-title': 'TITLE', 'bulletin-body': 'TEXT', 'dm-reply': 'REPLY', 'mention-reply': 'REPLY', profile: 'PROFILE' };
+  function promptLine() {
+    if (BBS_UI.prompt) {
+      const inp = $('bbsInput');
+      const val = (inp && inp.value) || '';
+      const label = (PROMPT_LABEL[BBS_UI.prompt.kind] || '') + '>';
+      return ' ' + ansiC(label, 'amber') + ' ' + esc(val) + '<span class="blink">█</span>';
+    }
+    const notice = ($('bbsStatus') ? $('bbsStatus').textContent : '').trim();
+    if (notice && notice !== '—') return ansiC(' ' + notice, 'amber');
+    return ansiC(' ' + (KEYS[SCREEN] || KEYS.menu), 'gray');
+  }
+  function composeTerminal(bodyHtml) {
+    let lines = String(bodyHtml).replace(/\n+$/, '').split('\n');
+    if (lines[0] === '') lines = lines.slice(1);
+    if (lines.length > TERM_BODY) {
+      lines = lines.slice(0, TERM_BODY - 1);
+      lines.push(ansiC('  ▼ more — [↑/↓] move the selection', 'gray'));
+    }
+    while (lines.length < TERM_BODY) lines.push('');
+    return lines.join('\n') + '\n' + promptLine() + '\n' + statusLine();
+  }
+  let bbsDrawTimer = null;
+  function typewriter(html) {
+    if (bbsDrawTimer) clearInterval(bbsDrawTimer);
+    const frame = $('bbsFrame');
+    const lines = String(html).split('\n');
+    let i = 0;
+    frame.innerHTML = '';
+    bbsDrawTimer = setInterval(() => {
+      if (i >= lines.length) {
+        clearInterval(bbsDrawTimer); bbsDrawTimer = null;
+        const led = $('bbsLed'); if (led) led.classList.toggle('busy', !!BBS_UI.colabBusy);
+        return;
+      }
+      frame.innerHTML += lines[i] + '\n';
+      i++;
+    }, 22);
+  }
   function draw() {
     const frame = $('bbsFrame');
     if (!frame) return;
     const dead = SOCIAL_NODE !== 'self' && SOCIAL.online === false &&
-      !['welcome', 'menu', 'dial', 'autonomy', 'colab', 'doors', 'fortune', 'guess', 'hangman', 'eightball', 'sysop'].includes(SCREEN);
-    frame.innerHTML = dead ? renderNoCarrier() : (RENDER[SCREEN] || renderMenu)();
-    frame.scrollTop = 0;
-    $('bbsKeys').textContent = dead ? '[1] dial directory · [2] hang up · [Q] back' : (KEYS[SCREEN] || KEYS.menu);
-    $('bbsCommand').classList.toggle('prompting', !!BBS_UI.prompt);
-    if (!BBS_UI.prompt) $('bbsInput').value = '';
-    // modem activity LED — blinks amber while a colab swarm is on the wire
+      !['connect', 'welcome', 'menu', 'dial', 'autonomy', 'colab', 'doors', 'fortune', 'guess', 'hangman', 'eightball', 'sysop'].includes(SCREEN);
+    const body = dead ? renderNoCarrier() : (RENDER[SCREEN] || renderMenu)();
+    const html = composeTerminal(body);
+    if (BBS_UI.animate && !BBS_UI.prompt && (SCREEN === 'connect' || SCREEN === 'welcome')) {
+      typewriter(html);
+    } else {
+      if (bbsDrawTimer) { clearInterval(bbsDrawTimer); bbsDrawTimer = null; }
+      frame.innerHTML = html;
+    }
+    // modem activity LED — blinks amber while a colab swarm runs or the screen is
+    // still drawing in over the (emulated) line
     const led = $('bbsLed');
-    if (led) led.classList.toggle('busy', !!BBS_UI.colabBusy);
+    if (led) led.classList.toggle('busy', !!BBS_UI.colabBusy || !!bbsDrawTimer);
   }
 
   // ── navigation ──
-  function goto(screen) { SCREEN = screen; draw(); }
+  function goto(screen) { SCREEN = screen; BBS_UI.barIdx = 0; if ($('bbsStatus')) $('bbsStatus').textContent = ''; draw(); }
   function back() {
     const parent = {
-      welcome: 'welcome', menu: 'welcome', conferences: 'menu', shout: 'conferences',
+      connect: 'connect', welcome: 'welcome', menu: 'welcome', logoff: 'connect', conferences: 'menu', shout: 'conferences',
       threads: 'conferences', message: 'threads', files: 'menu', file: 'files',
       online: 'menu', callers: 'menu', colab: 'menu', dial: 'menu', autonomy: 'menu',
       doors: 'menu', sysop: 'menu', search: 'menu',
+      mail: 'menu', mailread: 'mail', bulletins: 'menu', bulletin: 'bulletins', profile: 'menu',
       fortune: 'doors', guess: 'doors', hangman: 'doors', eightball: 'doors',
     };
     goto(parent[SCREEN] || 'menu');
@@ -2740,7 +3240,62 @@
         break;
       }
       case 'sysop': goto('sysop'); break;
+      case 'mail':
+        void (async () => {
+          try { BBS_UI.mail = await api('/api/friends/bbs/mail') || BBS_UI.mail; } catch {}
+          goto('mail');
+        })();
+        break;
+      case 'mail-read': {
+        const [kind, ref] = String(arg || '').split(':');
+        if (kind === 'dm') {
+          const dm = (BBS_UI.mail.messages || []).find(x => x.from_hostname === ref);
+          BBS_UI.mailOpen = { kind: 'dm', from: ref, body: dm ? dm.body : '', when: dm ? dm.created_at : '' };
+        } else if (kind === 'mention') {
+          const n = (BBS_UI.mail.mentions || []).find(x => x.post_id === ref);
+          BBS_UI.mailOpen = { kind: 'mention', from: n ? n.author_host : ref, body: n ? n.body : '', when: n ? n.created_at : '', board: n ? n.board : '', thread_id: n ? n.thread_id : '' };
+        }
+        goto('mailread');
+        break;
+      }
+      case 'mail-reply': {
+        const o = BBS_UI.mailOpen;
+        if (!o || !o.from) break;
+        if (o.kind === 'mention') openPrompt('mention-reply', { placeholder: 'reply to this mention…' });
+        else openPrompt('dm-reply', { placeholder: 'reply to ' + bbsShortHost(o.from) + '…' });
+        break;
+      }
+      case 'bulletins':
+        void (async () => {
+          try { const b = await api('/api/friends/bbs/bulletins'); BBS_UI.bulletins = (b && b.bulletins) || []; } catch {}
+          goto('bulletins');
+        })();
+        break;
+      case 'bulletin-read': BBS_UI.bulletinId = arg; goto('bulletin'); break;
+      case 'bulletin-new': openPrompt('bulletin-title', { placeholder: 'bulletin title…' }); break;
+      case 'bulletin-del': {
+        if (!BBS_UI.bulletinId) break;
+        void (async () => {
+          try {
+            await postJson('/api/friends/bbs/bulletins/' + encodeURIComponent(BBS_UI.bulletinId) + '/delete', {});
+            const b = await api('/api/friends/bbs/bulletins'); BBS_UI.bulletins = (b && b.bulletins) || [];
+            BBS_UI.bulletinId = '';
+            goto('bulletins');
+          } catch (e) { $('bbsStatus').textContent = 'FAILED: ' + e.message; }
+        })();
+        break;
+      }
       case 'search': openPrompt('search', { placeholder: 'search messages…' }); break;
+      case 'profile':
+        void (async () => {
+          try {
+            const p = await api('/api/friends/bbs/profile?handle=' + encodeURIComponent(BBS_UI.handle || ''));
+            if (p && p.ok) { BBS_UI.profileFull = p; BBS_UI.profile = p.bio || p.name || ''; }
+          } catch {}
+          goto('profile');
+        })();
+        break;
+      case 'profile-edit': openPrompt('profile-name', { placeholder: 'your display name…' }); break;
       case 'door-fortune': BBS_UI.door = { kind: 'fortune', text: pickFortune() }; goto('fortune'); break;
       case 'door-guess':
         BBS_UI.door = { kind: 'guess', n: 1 + Math.floor(Math.random() * 100), tries: 0, hint: 'the box has thought of a number from 1 to 100', done: false };
@@ -2860,14 +3415,20 @@
     const inp = $('bbsInput');
     if (!inp) return;
     inp.value = '';
+    // prefill the login handle so Enter → Enter logs straight in
+    if (kind === 'login') { try { inp.value = localStorage.getItem('bbsHandle') || ''; } catch {} }
+    else if (kind === 'profile-name') { inp.value = (BBS_UI.profileFull && BBS_UI.profileFull.name) || ''; }
+    else if (kind === 'profile-bio') { inp.value = (BBS_UI.profileFull && BBS_UI.profileFull.bio) || ''; }
     inp.placeholder = (opts && opts.placeholder) || '>';
     $('bbsCommand').classList.add('prompting');
+    draw();          // render the prompt line immediately
     inp.focus();
   }
   function cancelPrompt() {
     BBS_UI.prompt = null;
     $('bbsCommand').classList.remove('prompting');
     $('bbsInput').value = '';
+    const inp = $('bbsInput'); if (inp) inp.blur();
     draw();
   }
   async function handlePromptSubmit() {
@@ -2878,8 +3439,43 @@
     BBS_UI.prompt = null;
     $('bbsCommand').classList.remove('prompting');
     $('bbsInput').value = '';
+    const _inp = $('bbsInput'); if (_inp) _inp.blur();
     switch (p.kind) {
+      case 'login': {
+        const handle = text.slice(0, 24);
+        BBS_UI.handle = handle;
+        try {
+          localStorage.setItem('bbsHandle', handle);
+          let n = parseInt(localStorage.getItem('bbsCallerN') || '0', 10);
+          if (!isFinite(n)) n = 0;
+          BBS_UI.callerN = n + 1;
+          localStorage.setItem('bbsCallerN', String(BBS_UI.callerN));
+          const callers = JSON.parse(localStorage.getItem('bbsCallers') || '[]');
+          callers.unshift({ handle, when: new Date().toISOString() });
+          callers.splice(20);
+          localStorage.setItem('bbsCallers', JSON.stringify(callers));
+        } catch {}
+        try { const pr = await api('/api/friends/bbs/profile?handle=' + encodeURIComponent(handle)); if (pr && pr.ok) { BBS_UI.profileFull = pr; BBS_UI.profile = pr.bio || pr.name || ''; } } catch {}
+        goto('welcome');
+        break;
+      }
       case 'shout': await bbsPost(text, {}); break;
+      case 'profile-name':
+        BBS_UI.profileFull = BBS_UI.profileFull || {};
+        BBS_UI.profileFull.name = text.slice(0, 60);
+        openPrompt('profile-bio', { placeholder: 'a line about you…' });
+        return;
+      case 'profile-bio': {
+        BBS_UI.profileFull = BBS_UI.profileFull || {};
+        BBS_UI.profileFull.bio = text.slice(0, 280);
+        try {
+          const r = await postJson('/api/friends/bbs/profile', { handle: BBS_UI.handle || 'guest', name: BBS_UI.profileFull.name, bio: BBS_UI.profileFull.bio });
+          if (r && r.ok) { BBS_UI.profileFull = r; BBS_UI.profile = r.bio || r.name || ''; $('bbsStatus').textContent = 'PROFILE SAVED'; }
+          else $('bbsStatus').textContent = 'PROFILE FAILED: ' + ((r && r.error) || 'unknown');
+        } catch (e) { $('bbsStatus').textContent = 'PROFILE FAILED: ' + e.message; }
+        goto('profile');
+        return;
+      }
       case 'reply': if (SOCIAL_THREAD) await bbsPost(text, { thread_id: SOCIAL_THREAD }); break;
       case 'thread-title':
         BBS_UI.threadTitle = text.slice(0, 120);
@@ -2889,6 +3485,35 @@
         await bbsPost(text, { title: BBS_UI.threadTitle });
         BBS_UI.threadTitle = '';
         break;
+      case 'bulletin-title':
+        BBS_UI.threadTitle = text.slice(0, 120); // reuse the scratch field for the title
+        openPrompt('bulletin-body', { placeholder: 'bulletin text…' });
+        return;
+      case 'bulletin-body':
+        await postJson('/api/friends/bbs/bulletins', { title: BBS_UI.threadTitle, body: text });
+        BBS_UI.threadTitle = '';
+        try { const b = await api('/api/friends/bbs/bulletins'); BBS_UI.bulletins = (b && b.bulletins) || []; } catch {}
+        goto('bulletins');
+        return;
+      case 'dm-reply': {
+        const o = BBS_UI.mailOpen || {};
+        try {
+          const r = await postJson('/api/friends/dm', { hostname: o.from, message: text });
+          $('bbsStatus').textContent = (r && r.ok) ? 'DM SENT to ' + bbsShortHost(o.from) : 'FAILED: ' + ((r && r.error) || 'unknown');
+        } catch (e) { $('bbsStatus').textContent = 'FAILED: ' + e.message; }
+        goto('mail');
+        return;
+      }
+      case 'mention-reply': {
+        const o = BBS_UI.mailOpen || {};
+        try {
+          const r = await postJson('/api/friends/bbs/new', { board: o.board, thread_id: o.thread_id, body: text });
+          $('bbsStatus').textContent = (r && r.ok) ? 'REPLY POSTED to ' + bbsShortHost(o.from) : 'FAILED: ' + ((r && r.error) || 'unknown');
+        } catch (e) { $('bbsStatus').textContent = 'FAILED: ' + e.message; }
+        await refreshSocial();
+        goto('mail');
+        return;
+      }
       case 'colab':
         startColab(text.slice(0, 2000));
         return; // the colab screen shows the run live
@@ -2953,6 +3578,39 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
     if (SCREEN === 'welcome') { goto('menu'); e.preventDefault(); return; }
+    if (SCREEN === 'logoff') { goto('connect'); e.preventDefault(); return; }
+    if (SCREEN === 'connect') {
+      if (k === 'Enter') { openPrompt('login', { placeholder: 'your handle…' }); e.preventDefault(); }
+      return;
+    }
+    // lightbar navigation — arrows move the highlight on any list screen, and
+    // double as next/prev while reading a message
+    if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End') {
+      if (SCREEN === 'message') {
+        if (k === 'ArrowDown') runAct('msgnext');
+        else if (k === 'ArrowUp') runAct('msgprev');
+        e.preventDefault();
+        return;
+      }
+      const items = BBS_UI.items || [];
+      if (items.length) {
+        const cols = (SCREEN === 'menu' || SCREEN === 'conferences') ? 3 : 1; // 3-column card grids
+        if (k === 'ArrowUp') BBS_UI.barIdx = (BBS_UI.barIdx - cols + items.length) % items.length;
+        else if (k === 'ArrowDown') BBS_UI.barIdx = (BBS_UI.barIdx + cols) % items.length;
+        else if (k === 'ArrowLeft') BBS_UI.barIdx = (BBS_UI.barIdx - 1 + items.length) % items.length;
+        else if (k === 'ArrowRight') BBS_UI.barIdx = (BBS_UI.barIdx + 1) % items.length;
+        else if (k === 'Home') BBS_UI.barIdx = 0;
+        else if (k === 'End') BBS_UI.barIdx = items.length - 1;
+        draw(); e.preventDefault();
+      }
+      return;
+    }
+    // Enter selects the highlighted item on list screens
+    if (k === 'Enter' && ['menu', 'conferences', 'threads', 'files', 'online', 'callers', 'dial', 'doors', 'search', 'bulletins', 'mail'].includes(SCREEN)) {
+      const items = BBS_UI.items || [];
+      if (items.length) { const it = items[BBS_UI.barIdx] || items[0]; runAct(it.act, it.arg); e.preventDefault(); }
+      return;
+    }
     if (/^[1-9]$/.test(k)) {
       const it = (BBS_UI.items || [])[Number(k) - 1];
       if (it) { runAct(it.act, it.arg); e.preventDefault(); }
@@ -2961,7 +3619,9 @@
     const key = String(k).toLowerCase();
     if (SCREEN === 'menu') {
       if (key === 'a') { goto('autonomy'); e.preventDefault(); }
-      else if (key === 'q') { goto('welcome'); e.preventDefault(); }
+      else if (key === 'c') { cycleTheme(1); draw(); e.preventDefault(); }
+      else if (key === 'b') { BBS_UI.animate = !BBS_UI.animate; $('bbsStatus').textContent = 'BAUD DRAW: ' + (BBS_UI.animate ? 'ON' : 'OFF'); draw(); e.preventDefault(); }
+      else if (key === 'q') { goto('logoff'); e.preventDefault(); }
       return;
     }
     if (key === 'q' || key === 'escape' || key === 'backspace') { back(); e.preventDefault(); return; }
@@ -2988,6 +3648,10 @@
     }
     if (SCREEN === 'eightball' && key === 's') { openPrompt('eightball', { placeholder: 'ask the ball…' }); e.preventDefault(); return; }
     if (SCREEN === 'search' && key === 'f') { runAct('search'); e.preventDefault(); return; }
+    if (SCREEN === 'bulletins' && key === 'n') { runAct('bulletin-new'); e.preventDefault(); return; }
+    if (SCREEN === 'bulletin' && key === 'd') { runAct('bulletin-del'); e.preventDefault(); return; }
+    if (SCREEN === 'mailread' && key === 'r') { runAct('mail-reply'); e.preventDefault(); return; }
+    if (SCREEN === 'profile' && key === 'e') { runAct('profile-edit'); e.preventDefault(); return; }
     if (SCREEN === 'autonomy') {
       if (key === 'e') { runAct('autonomy-toggle'); e.preventDefault(); }
       else if (key === 'a') { runAct('autonomy-agent'); e.preventDefault(); }
@@ -3667,325 +4331,42 @@
     }
   }
 
-  // ============================================================= MARM memory canvas
-  // The MARM dash as native Warden elements — no iframe. Data comes from the
-  // Warden host (/api/marm/*), which reads the MARM store and probes MARM.
-  let marmSearchTimer = null;
-
-  function refreshMarm() {
-    if (!$('view-marm')) return;
-    renderMarmOverview();
-    loadMarmMemories();
-    loadMarmSessions();
-    loadMarmLogs();
-    loadMarmNotebook();
+  // ============================================================= MARM Console (embedded)
+  // The MARM tab embeds MARM's own Console webapp (its full UI, served on
+  // 127.0.0.1:8002 by `marm-memory console`). The Console is loopback-only and
+  // its TrustedHostMiddleware rejects non-loopback hosts, so the iframe src is
+  // a fixed loopback URL — never location.hostname (which would resolve on the
+  // client, not this machine, for a phone/LAN viewer). The status endpoint
+  // reports whether this viewer is local, so remote viewers get a plain note
+  // instead of a dead iframe.
+  function showMarmConsoleFrame() {
+    const chip = $('marmHealth'), frame = $('marmConsoleFrame'), fallback = $('marmConsoleFallback');
+    const meta = document.querySelector('#view-marm .chat-meta-row');
+    chip.textContent = 'ready';
+    fallback.style.display = 'none';
+    frame.style.display = '';
+    if (meta) meta.style.display = 'none';
+    if (!frame.getAttribute('src'))
+      frame.setAttribute('src', 'http://127.0.0.1:8002/');
   }
-
-  async function renderMarmOverview() {
-    const statsEl = $('marmStats');
-    const healthEl = $('marmHealth');
+  async function refreshMarm() {
+    const chip = $('marmHealth'), frame = $('marmConsoleFrame'), fallback = $('marmConsoleFallback');
+    const meta = document.querySelector('#view-marm .chat-meta-row');
+    if (meta) meta.style.display = '';
+    frame.style.display = 'none';
     try {
-      const d = await api('/api/marm/overview');
-      const h = d.health || {};
-      const healthy = h.status === 'healthy';
-      healthEl.textContent = healthy ? ('healthy · ' + (h.version || '')) : 'offline';
-      const s = d.stats || {};
-      const cards = [
-        ['active memories', s.active_memories],
-        ['compacted', s.compacted_sources],
-        ['pending compaction', s.pending_compaction],
-        ['staged', s.staged_compaction],
-        ['sessions', s.sessions],
-        ['log entries', s.log_entries],
-        ['notebook', s.notebook_entries],
-        ['missing embeddings', s.missing_embeddings],
-      ];
-      statsEl.innerHTML = cards.map(([k, v]) =>
-        '<div class="marm-stat"><b>' + esc(v == null ? '—' : String(v)) + '</b><span>' + esc(k) + '</span></div>'
-      ).join('');
-      const sel = $('marmProjectFilter');
-      const prev = sel.value;
-      sel.innerHTML = '<option value="">all projects</option>' + (d.projects || [])
-        .map(p => '<option value="' + escAttr(p) + '">' + esc(p) + '</option>').join('');
-      sel.value = prev;
+      const d = await api('/api/marm-console/status');
+      if (d.up && d.viewerLocal) { showMarmConsoleFrame(); return; }
+      chip.textContent = d.up ? 'desktop-only' : 'offline';
+      fallback.style.display = '';
+      fallback.textContent = d.up
+        ? 'MARM Console is desktop-only — open the dashboard on this machine to use it.'
+        : 'MARM Console is not running. Start it with `marm-memory console`.';
     } catch (e) {
-      statsEl.innerHTML = '<div class="task-empty">MARM store unavailable — ' + esc(e.message) + '</div>';
-      healthEl.textContent = 'offline';
+      chip.textContent = 'error';
+      fallback.style.display = '';
+      fallback.textContent = 'Failed: ' + e.message;
     }
-  }
-
-  async function loadMarmMemories() {
-    const el = $('marmMemoryList');
-    if (!el) return;
-    el.innerHTML = '<div class="task-empty">Loading…</div>';
-    try {
-      const p = new URLSearchParams();
-      const q = $('marmSearch').value.trim();
-      if (q) p.set('q', q);
-      const proj = $('marmProjectFilter').value;
-      if (proj) p.set('project', proj);
-      p.set('role', $('marmRoleFilter').value || 'active');
-      p.set('limit', '50');
-      const d = await api('/api/marm/memories?' + p.toString());
-      const rows = d.memories || [];
-      if (!rows.length) { el.innerHTML = '<div class="task-empty">No memories.</div>'; return; }
-      el.innerHTML = '<div class="task-empty">' + esc(String(d.total)) + ' total — showing ' + rows.length + '</div>' +
-        rows.map(m =>
-          '<div class="activity-item"><div class="row1">' +
-          '<span class="name">' + esc(m.context_type || 'memory') + '</span>' +
-          '<span class="label">' + esc([m.project, m.session_name].filter(Boolean).join(' · ')) + '</span>' +
-          '<span class="ts">' + esc(fmtTime(m.created_at)) + '</span></div>' +
-          '<div class="tools">' + esc((m.content || '').slice(0, 220)) + '</div>' +
-          '<div class="marm-actions"><button class="btn btn-ghost btn-sm marm-del" data-kind="memories" data-id="' + escAttr(m.id) + '">delete</button></div>' +
-          '</div>'
-        ).join('');
-    } catch (e) {
-      el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
-    }
-  }
-
-  async function loadMarmSessions() {
-    const el = $('marmSessionList');
-    if (!el) return;
-    el.innerHTML = '<div class="task-empty">Loading…</div>';
-    try {
-      const d = await api('/api/marm/sessions?limit=15');
-      const rows = d.sessions || [];
-      if (!rows.length) { el.innerHTML = '<div class="task-empty">No sessions.</div>'; return; }
-      el.innerHTML = rows.map(s =>
-        '<div class="activity-item"><div class="row1">' +
-        '<span class="name">' + esc(s.session_name) + '</span>' +
-        '<span class="label">' + (s.marm_active ? 'active' : '') + '</span>' +
-        '<span class="ts">' + esc(fmtTime(s.last_accessed || s.created_at)) + '</span></div>' +
-        '<div class="marm-actions"><button class="btn btn-ghost btn-sm marm-summary" data-name="' + escAttr(s.session_name) + '">summary</button>' +
-        '<button class="btn btn-ghost btn-sm marm-session-del" data-name="' + escAttr(s.session_name) + '">delete</button></div>' +
-        '</div>'
-      ).join('');
-    } catch (e) {
-      el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
-    }
-  }
-
-  async function loadMarmLogs() {
-    const el = $('marmLogList');
-    if (!el) return;
-    el.innerHTML = '<div class="task-empty">Loading…</div>';
-    try {
-      const d = await api('/api/marm/logs?limit=20');
-      const rows = d.logs || [];
-      if (!rows.length) { el.innerHTML = '<div class="task-empty">No log entries.</div>'; return; }
-      el.innerHTML = rows.map(l =>
-        '<div class="activity-item"><div class="row1">' +
-        '<span class="name">' + esc(l.topic || 'log') + '</span>' +
-        '<span class="label">' + esc([l.project, l.session_name].filter(Boolean).join(' · ')) + '</span>' +
-        '<span class="ts">' + esc(fmtTime(l.created_at)) + '</span></div>' +
-        '<div class="tools">' + esc((l.summary || '').slice(0, 200)) + '</div>' +
-        '<div class="marm-actions"><button class="btn btn-ghost btn-sm marm-del" data-kind="logs" data-id="' + escAttr(l.id) + '">delete</button></div>' +
-        '</div>'
-      ).join('');
-    } catch (e) {
-      el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
-    }
-  }
-
-  async function deleteMarmItem(kind, id) {
-    try {
-      await del('/api/marm/' + kind, { ids: [id] });
-    } catch (e) {
-      alert('MARM delete failed: ' + e.message);
-      return;
-    }
-    renderMarmOverview();
-    if (kind === 'memories') loadMarmMemories();
-    else loadMarmLogs();
-  }
-
-  // --- Semantic recall (the live API, not the LIKE search) ---
-  async function marmRecall() {
-    const out = $('marmRecallOut');
-    const q = $('marmRecallQuery').value.trim();
-    if (!q) { out.style.display = 'none'; out.textContent = ''; return; }
-    out.style.display = 'block';
-    out.textContent = 'Thinking…';
-    try {
-      const d = await api('/api/marm/smart-recall', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, session_name: 'main', search_all: true, limit: 8 }),
-      });
-      out.textContent = d.context_summary || d.message || JSON.stringify(d, null, 1);
-    } catch (e) {
-      out.textContent = 'Recall failed: ' + e.message;
-    }
-  }
-
-  // --- Add a memory through the live API ---
-  async function marmAddMemory() {
-    const content = $('marmNewContent').value.trim();
-    if (!content) { alert('Memory content required'); return; }
-    const payload = {
-      content,
-      session_name: $('marmNewSession').value.trim() || 'main',
-      context_type: $('marmNewContext').value.trim() || 'general',
-    };
-    const project = $('marmNewProject').value.trim();
-    if (project) payload.project = project;
-    try {
-      await api('/api/marm/memory', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-    } catch (e) {
-      alert('Save failed: ' + e.message);
-      return;
-    }
-    $('marmNewContent').value = '';
-    renderMarmOverview();
-    loadMarmMemories();
-  }
-
-  // --- Compaction workflow: status → candidates → stage → apply/discard ---
-  async function marmCompaction(action, extra) {
-    const out = $('marmCompactionOut');
-    const chip = $('marmCompactionStatus');
-    out.innerHTML = '<div class="task-empty">Working…</div>';
-    try {
-      const d = await api('/api/marm/compaction', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.assign({ action }, extra || {})),
-      });
-      if (action === 'status') {
-        const c = d.counts || {};
-        chip.textContent = 'pending ' + (c.pending_summary || 0) + ' · staged ' + (c.summary_staged || 0) + ' · applied ' + (c.applied || 0);
-        out.innerHTML = '<div class="task-empty">' + esc(JSON.stringify(d)) + '</div>';
-        return;
-      }
-      if (action === 'candidates') {
-        const rows = d.candidates || [];
-        if (!rows.length) { out.innerHTML = '<div class="task-empty">No compaction candidates right now.</div>'; return; }
-        out.innerHTML = rows.map((c, i) => {
-          const id = escAttr(c.candidate_id || '');
-          return '<div class="activity-item" style="flex-wrap:wrap">' +
-            '<div class="row1" style="flex:1;min-width:100%">' +
-            '<span class="name">candidate</span>' +
-            '<span class="label">' + esc(String(c.memory_count != null ? c.memory_count : '') ) + '</span></div>' +
-            '<div class="tools" style="flex:1">' + esc((c.prompt || JSON.stringify(c)).slice(0, 300)) + '</div>' +
-            '<textarea class="marm-comp-summary" data-cid="' + id + '" rows="2" placeholder="summary for these memories…" style="flex:1;min-width:60%"></textarea>' +
-            '<button class="btn btn-ghost btn-sm marm-comp" data-comp-action="stage" data-comp-id="' + id + '">Stage</button>' +
-            '<button class="btn btn-ghost btn-sm marm-comp" data-comp-action="discard" data-comp-id="' + id + '">Discard</button>' +
-            '</div>';
-        }).join('');
-        return;
-      }
-      if (action === 'review') {
-        const rows = d.proposals || [];
-        if (!rows.length) { out.innerHTML = '<div class="task-empty">Nothing staged.</div>'; return; }
-        out.innerHTML = rows.map(p => {
-          const id = escAttr(p.candidate_id || p.id || '');
-          const summ = esc(p.suggested_summary || p.summary || JSON.stringify(p).slice(0, 200));
-          return '<div class="activity-item" style="flex-wrap:wrap">' +
-            '<div class="tools" style="flex:1;min-width:100%">' + summ.slice(0, 400) + '</div>' +
-            '<button class="btn btn-ghost btn-sm marm-comp" data-comp-action="apply" data-comp-id="' + id + '">Apply</button>' +
-            '<button class="btn btn-ghost btn-sm marm-comp" data-comp-action="discard" data-comp-id="' + id + '">Discard</button>' +
-            '</div>';
-        }).join('');
-        return;
-      }
-      // stage/apply/discard landed — refresh the state
-      marmCompaction('status');
-      renderMarmOverview();
-    } catch (e) {
-      out.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
-    }
-  }
-
-  // --- Notebook (live API: add + show) ---
-  async function loadMarmNotebook() {
-    const el = $('marmNotebookList');
-    if (!el) return;
-    try {
-      const d = await api('/api/marm/notebook', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'show' }),
-      });
-      const rows = d.entries || [];
-      if (!rows.length) { el.innerHTML = '<div class="task-empty">No notebook entries.</div>'; return; }
-      el.innerHTML = rows.map(n =>
-        '<div class="activity-item"><div class="row1">' +
-        '<span class="name">' + esc(n.name || 'entry') + '</span>' +
-        '<span class="ts">' + esc(fmtTime(n.created_at || n.updated_at)) + '</span></div>' +
-        '<div class="tools">' + esc(String(n.data || '').slice(0, 200)) + '</div></div>'
-      ).join('');
-    } catch (e) {
-      el.innerHTML = '<div class="task-empty">' + esc(e.message) + '</div>';
-    }
-  }
-
-  async function marmNotebookAdd() {
-    const name = $('marmNotebookName').value.trim();
-    const data = $('marmNotebookData').value.trim();
-    if (!name || !data) { alert('Entry name and content required'); return; }
-    try {
-      await api('/api/marm/notebook', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'add', name, data }),
-      });
-    } catch (e) {
-      alert('Notebook add failed: ' + e.message);
-      return;
-    }
-    $('marmNotebookName').value = ''; $('marmNotebookData').value = '';
-    loadMarmNotebook();
-  }
-
-  // --- Sessions: create + per-session summary (live API) ---
-  async function marmSessionAdd() {
-    const name = $('marmNewSessionName').value.trim();
-    if (!name) { alert('Session name required'); return; }
-    try {
-      await api('/api/marm/sessions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_name: name }),
-      });
-    } catch (e) {
-      alert('Session create failed: ' + e.message);
-      return;
-    }
-    $('marmNewSessionName').value = '';
-    loadMarmSessions();
-    renderMarmOverview();
-  }
-
-  async function marmShowSummary(name) {
-    const out = $('marmSummaryOut');
-    out.style.display = 'block';
-    out.textContent = 'Summarizing ' + name + '…';
-    try {
-      const d = await api('/api/marm/summary?session_name=' + encodeURIComponent(name));
-      out.textContent = d.summary || JSON.stringify(d, null, 1);
-    } catch (e) {
-      out.textContent = 'Summary failed: ' + e.message;
-    }
-  }
-
-  // --- Log a new entry (live API) ---
-  async function marmAddLog() {
-    const entry = $('marmNewLogEntry').value.trim();
-    if (!entry) { alert('Log entry required'); return; }
-    const payload = { entry };
-    const session = $('marmNewLogSession').value.trim();
-    if (session) payload.session_name = session;
-    try {
-      await api('/api/marm/log-entry', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-    } catch (e) {
-      alert('Log failed: ' + e.message);
-      return;
-    }
-    $('marmNewLogEntry').value = ''; $('marmNewLogSession').value = '';
-    loadMarmLogs();
-    renderMarmOverview();
   }
 
   // ============================================================= Security events
@@ -4219,6 +4600,143 @@
       chip.textContent = 'error';
       fallback.style.display = '';
       fallback.textContent = 'Failed: ' + e.message;
+    }
+  }
+
+  // ── Phone (Twilio voice line) ───────────────────────────────────────────
+  async function refreshPhone() {
+    const pill = $('phone-status-pill');
+    if (!pill) return;
+    try {
+      const d = await api('/api/phone/status');
+      if (!d.ok) { pill.textContent = 'error'; pill.style.background = '#331f10'; return; }
+      pill.textContent = d.running ? 'running' : 'stopped';
+      pill.style.background = d.running ? '#0f331f' : '#331f10';
+      $('phone-line').innerHTML =
+        (d.number ? `<div style="font-size:14px"><b>${esc(d.number)}</b></div>` : '<div>no Twilio number set</div>') +
+        `<div style="margin-top:6px;color:#8b95a5;font-size:11px">public: ${esc(d.publicBase || '—')}</div>`;
+      $('phone-voice').textContent =
+        `STT  ${d.stt.model || '?'} · ${d.stt.device || '?'} · ${d.stt.language || ''}\n` +
+        `TTS  ${d.tts.voice || '?'} · ${d.tts.device || '?'} · ${d.tts.speed || '1.0'}x`;
+      $('phone-call').textContent =
+        `greeting: ${d.greeting || '—'}\nprompt: ${d.prompt || '—'}\npassphrase: ${d.passphraseSet ? 'set' : 'not set'}`;
+      const list = $('phone-calls');
+      const calls = d.calls || [];
+      if (!calls.length) {
+        list.innerHTML = '<div style="color:#666;font-size:12px">No calls recorded yet.</div>';
+      } else {
+        list.innerHTML = calls.map((c) => `
+          <div style="border:1px solid #1c2026;border-radius:8px;padding:8px 10px;font-size:12px;background:#0d1015">
+            <div style="color:#8b95a5;font-size:10px;text-transform:uppercase;letter-spacing:.5px">${esc(c.kind)}</div>
+            <div style="color:#ddd;margin-top:3px;white-space:pre-wrap;word-break:break-word">${esc(c.text || '')}</div>
+          </div>`).join('');
+      }
+    } catch (e) {
+      pill.textContent = 'error';
+      pill.style.background = '#331f10';
+    }
+  }
+  async function phoneControl(action) {
+    const pill = $('phone-status-pill');
+    if (pill) pill.textContent = action + '…';
+    try {
+      const r = await postJson('/api/phone/control', { action });
+      if (!r.ok) { toast(r.error || 'phone control failed', 'error'); }
+      await refreshPhone();
+    } catch (e) {
+      toast('phone control failed: ' + e.message, 'error');
+      await refreshPhone();
+    }
+  }
+
+  // ── Bug Loop (MentaraIQ local-bug-pipeline) ─────────────────────────────
+  function showBugloopFrame() {
+    const chip = $('bugloopStatus'), frame = $('bugloopFrame'), fallback = $('bugloopFallback');
+    chip.textContent = 'ready';
+    fallback.style.display = 'none';
+    frame.style.display = '';
+    if (!frame.getAttribute('src'))
+      frame.setAttribute('src', 'http://' + location.hostname + ':4317/');
+  }
+  // Populate the diagnosis/coding model dropdowns from the LOCAL models Ollama
+  // actually has installed (cloud proxies excluded), reflecting the pipeline's
+  // current config.json selection.
+  async function loadBugloopModels() {
+    const diag = $('bugloopDiagnosisModel'), code = $('bugloopCodingModel'), hint = $('bugloopModelHint');
+    if (!diag || !code) return;
+    try {
+      const d = await api('/api/bugloop/models');
+      const models = d.models || [];
+      const fill = (sel, current) => {
+        sel.innerHTML = '';
+        if (!models.length) { sel.innerHTML = '<option value="">(no local models)</option>'; return; }
+        for (const m of models) {
+          const o = document.createElement('option');
+          o.value = m; o.textContent = m;
+          sel.appendChild(o);
+        }
+        if (current && models.includes(current)) sel.value = current;
+        else if (current) {
+          // Config points at a model that isn't installed locally — surface it
+          // so the stale value is visible and can be changed.
+          const o = document.createElement('option');
+          o.value = current; o.textContent = current + ' (not installed)';
+          sel.appendChild(o);
+          sel.value = current;
+        }
+      };
+      fill(diag, d.diagnosisModel);
+      fill(code, d.codingModel);
+      if (hint) hint.textContent = models.length ? models.length + ' local models · saved to config.json' : 'no local models';
+    } catch (e) {
+      if (hint) hint.textContent = 'model list failed: ' + e.message;
+    }
+  }
+  async function saveBugloopModel(which) {
+    const sel = $(which);
+    if (!sel || !sel.value) return;
+    const key = which === 'bugloopDiagnosisModel' ? 'diagnosisModel' : 'codingModel';
+    try {
+      const r = await postJson('/api/bugloop/config', { [key]: sel.value });
+      if (!r.ok) toast(r.error || 'save failed', 'error');
+      else toast('saved: ' + key + ' → ' + sel.value);
+    } catch (e) {
+      toast('save failed: ' + e.message, 'error');
+    }
+  }
+  async function refreshBugloop() {
+    const chip = $('bugloopStatus'), fallback = $('bugloopFallback');
+    if (!chip) return;
+    loadBugloopModels();
+    try {
+      const d = await api('/api/bugloop/status');
+      if (!d.ok) { chip.textContent = 'error'; fallback.style.display = ''; fallback.textContent = d.error || 'unavailable'; return; }
+      if (!d.dirPresent) {
+        chip.textContent = 'missing';
+        fallback.style.display = '';
+        fallback.textContent = 'Pipeline directory not found: ' + d.dir;
+        return;
+      }
+      if (d.up) { chip.textContent = d.active ? 'running' : 'up'; showBugloopFrame(); return; }
+      chip.textContent = 'stopped';
+      fallback.style.display = '';
+      fallback.textContent = 'Bug loop is stopped. Click Start to launch the MentaraIQ local-bug-pipeline.';
+    } catch (e) {
+      chip.textContent = 'error';
+      fallback.style.display = '';
+      fallback.textContent = 'Failed: ' + e.message;
+    }
+  }
+  async function bugloopControl(action) {
+    const chip = $('bugloopStatus');
+    if (chip) chip.textContent = action + '…';
+    try {
+      const r = await postJson('/api/bugloop/' + action, {});
+      if (!r.ok) toast(r.error || 'bug loop ' + action + ' failed', 'error');
+      await refreshBugloop();
+    } catch (e) {
+      toast('bug loop ' + action + ' failed: ' + e.message, 'error');
+      await refreshBugloop();
     }
   }
 
@@ -4776,6 +5294,62 @@
     }
   }
 
+  // ============================================================= Image Gen
+  function renderImagegenGallery(files) {
+    const g = $('imagegenGallery');
+    if (!g) return;
+    g.innerHTML = (files || []).length
+      ? files.map(f => `<figure class="imagegen-card"><img src="${escAttr(f.url)}" alt="" loading="lazy"><button type="button" class="imagegen-del" data-name="${escAttr(f.name)}" title="Remove this image">×</button><figcaption class="meta" title="${escAttr(f.name)}">${esc(f.name)}</figcaption></figure>`).join('')
+      : '<p class="dim">Nothing generated yet.</p>';
+    qsa('.imagegen-del', g).forEach(btn => btn.addEventListener('click', async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!confirm('Remove ' + btn.dataset.name + '?')) return;
+      try {
+        await del('/api/imagegen/file/' + encodeURIComponent(btn.dataset.name));
+        await refreshImagegen();
+      } catch (err) { toast('Remove failed: ' + err.message, 'error'); }
+    }));
+  }
+  async function refreshImagegen() {
+    try {
+      const d = await api('/api/imagegen/history');
+      renderImagegenGallery(d.files || []);
+    } catch (e) { /* history is optional */ }
+  }
+  async function generateImagegen() {
+    const btn = $('btnImagegen');
+    const st = $('imagegenStatus');
+    if (!btn) return;
+    btn.disabled = true;
+    if (st) st.textContent = 'generating… (this can take a minute)';
+    try {
+      const size = ($('igSize')?.value || '1024x1024').split('x').map(Number);
+      const seedRaw = ($('igSeed')?.value || '').trim();
+      const d = await postJson('/api/imagegen', {
+        prompt: $('igPrompt').value,
+        scene: $('igScene').value,
+        aesthetic: $('igAesthetic').value,
+        location: $('igLocation').value,
+        negative: $('igNegative').value,
+        width: size[0], height: size[1],
+        seed: seedRaw ? Number(seedRaw) : undefined,
+      });
+      if (!d.ok) {
+        if (st) st.textContent = d.error || 'failed';
+        toast(d.error || 'Image generation failed', 'error');
+        return;
+      }
+      if (st) st.textContent = 'done';
+      const res = $('imagegenResult');
+      if (res) res.innerHTML = `<img src="${escAttr(d.url)}" alt="generated image">`;
+      await refreshImagegen();
+    } catch (e) {
+      if (st) st.textContent = 'failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   // ============================================================= Wire-up
   function init() {
     // Load senders from localStorage
@@ -4844,6 +5418,14 @@
     $('btnHelp').addEventListener('click', openHelp);
     $('btnTheme').addEventListener('click', toggleTheme);
     $('btnStop').addEventListener('click', stopAgent);
+    $('btn-phone-start')?.addEventListener('click', () => phoneControl('start'));
+    $('btn-phone-stop')?.addEventListener('click', () => phoneControl('stop'));
+    $('btn-phone-restart')?.addEventListener('click', () => phoneControl('restart'));
+    $('btnBugloopStart')?.addEventListener('click', () => bugloopControl('start'));
+    $('btnBugloopStop')?.addEventListener('click', () => bugloopControl('stop'));
+    $('btnBugloopRefresh')?.addEventListener('click', refreshBugloop);
+    $('bugloopDiagnosisModel')?.addEventListener('change', () => saveBugloopModel('bugloopDiagnosisModel'));
+    $('bugloopCodingModel')?.addEventListener('change', () => saveBugloopModel('bugloopCodingModel'));
     $('btnRestart').addEventListener('click', restartServer);
     $('btnSwitchUser').addEventListener('click', openSwitchUser);
     $('btnNewThought').addEventListener('click', newThought);
@@ -4932,6 +5514,10 @@
       if (e.key === 'Enter') { e.preventDefault(); handlePromptSubmit(); }
       else if (e.key === 'Escape') { e.preventDefault(); cancelPrompt(); }
     });
+    // the prompt line lives IN the terminal grid — mirror the hidden input into it
+    $('bbsInput')?.addEventListener('input', () => {
+      if (STATE.currentView === 'social' && BBS_UI.prompt) draw();
+    });
     // file-area upload — hidden picker opened by [U]; any file type, base64 over the wire
     $('bbsUpload')?.addEventListener('change', async (e) => {
       const f = e.target.files && e.target.files[0];
@@ -4948,6 +5534,7 @@
       await refreshSocial();
     });
     document.addEventListener('keydown', onBbsKey);
+    applyTheme();
     loadBotnet();
 
     // Human presence heartbeat — tells the host whether the human is looking at
@@ -4971,54 +5558,8 @@
     setInterval(presenceTick, 15000);
     presenceTick();
 
-    // MARM canvas — search/filters are debounced; deletes delegated on the view.
+    // MARM Console — the view embeds MARM's own webapp; Refresh re-probes health.
     $('btnMarmRefresh')?.addEventListener('click', refreshMarm);
-    $('marmSearch')?.addEventListener('input', () => {
-      clearTimeout(marmSearchTimer);
-      marmSearchTimer = setTimeout(loadMarmMemories, 300);
-    });
-    $('marmProjectFilter')?.addEventListener('change', loadMarmMemories);
-    $('marmRoleFilter')?.addEventListener('change', loadMarmMemories);
-    $('btnMarmRecall')?.addEventListener('click', marmRecall);
-    $('marmRecallQuery')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') marmRecall(); });
-    $('btnMarmAddMemoryToggle')?.addEventListener('click', () => {
-      const f = $('marmAddMemoryForm');
-      f.style.display = f.style.display === 'none' ? 'block' : 'none';
-    });
-    $('btnMarmAddMemory')?.addEventListener('click', marmAddMemory);
-    $('btnMarmCompStatus')?.addEventListener('click', () => marmCompaction('status'));
-    $('btnMarmCompCandidates')?.addEventListener('click', () => marmCompaction('candidates'));
-    $('btnMarmCompReview')?.addEventListener('click', () => marmCompaction('review'));
-    $('btnMarmNotebookAdd')?.addEventListener('click', marmNotebookAdd);
-    $('btnMarmSessionAdd')?.addEventListener('click', marmSessionAdd);
-    $('btnMarmAddLog')?.addEventListener('click', marmAddLog);
-    $('view-marm')?.addEventListener('click', (e) => {
-      const del2 = e.target.closest('.marm-del');
-      if (del2) { deleteMarmItem(del2.dataset.kind, del2.dataset.id); return; }
-      const comp = e.target.closest('.marm-comp');
-      if (comp) {
-        const act = comp.dataset.compAction;
-        let extra = null;
-        if (act === 'stage') {
-          const ta = document.querySelector('.marm-comp-summary[data-cid="' + CSS.escape(comp.dataset.compId) + '"]');
-          const suggested = ta ? ta.value.trim() : '';
-          if (!suggested) { alert('Write the summary first, then Stage.'); return; }
-          extra = { summaries: [{ candidate_id: comp.dataset.compId, suggested_summary: suggested }] };
-        } else {
-          extra = { candidate_id: comp.dataset.compId };
-        }
-        marmCompaction(act, extra);
-        return;
-      }
-      const sum = e.target.closest('.marm-summary');
-      if (sum) { marmShowSummary(sum.dataset.name); return; }
-      const sd = e.target.closest('.marm-session-del');
-      if (sd) {
-        del('/api/marm/sessions', { names: [sd.dataset.name] })
-          .then(() => { loadMarmSessions(); renderMarmOverview(); })
-          .catch((err) => alert('Session delete failed: ' + err.message));
-      }
-    });
     const btnSec = $('btnRefreshSecurity'); if (btnSec) btnSec.addEventListener('click', refreshSecurity);
     const btnClear = $('btnClearOculusLogs'); if (btnClear) btnClear.addEventListener('click', clearOculusLogs);
 
@@ -5070,6 +5611,8 @@
         startTrainingStep('train', {});
     });
     qsa('#view-training .tr-tab').forEach(b => b.addEventListener('click', () => setTrainingTab(b.dataset.trtab)));
+    $('btnImagegen').addEventListener('click', generateImagegen);
+    refreshImagegen();
     $('botSelect').addEventListener('change', e => { BOT.slug = e.target.value; refreshBot(true); });
     $('botBase').addEventListener('change', paintBotBaseNote);
     $('btnBotSave').addEventListener('click', onBotSave);

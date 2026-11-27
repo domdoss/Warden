@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APP="$HERE/usr/share/warden"
+export PATH="$HERE/usr/bin:$PATH"
+source "$APP/AppRun.common"
+cd "$RUN"
+if curl -fsS --max-time 2 http://127.0.0.1:3200/ >/dev/null 2>&1; then
+  xdg-open http://127.0.0.1:3200/ >/dev/null 2>&1 || true
+  exit 0
+fi
+[ -f "$HOME/.config/warden/provisioned" ] || bash "$APP/provision.sh" --base || true
+exec "$HERE/usr/bin/node" "$RUN/dist/index.js"

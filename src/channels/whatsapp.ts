@@ -44,6 +44,7 @@ export class WhatsAppChannel implements Channel {
 
   private sock!: WASocket;
   private connected = false;
+  private _manualDisconnect = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private _pendingQr: string | null = null;
@@ -74,6 +75,18 @@ export class WhatsAppChannel implements Channel {
 
   getQrStatus(): { qr: string | null; connected: boolean; failed: boolean } {
     return { qr: this._pendingQr, connected: this.connected, failed: this._qrFailed };
+  }
+
+  async disconnect(): Promise<void> {
+    this._manualDisconnect = true;
+    this.connected = false;
+    const sock: any = this.sock;
+    try {
+      if (sock && typeof sock.end === 'function') await sock.end(new Error('channel disconnect'));
+      else if (sock && sock.ws) sock.ws.close();
+    } catch (err) {
+      logger.warn({ err }, 'WhatsApp disconnect failed');
+    }
   }
 
   private async connectInternal(): Promise<void> {
@@ -121,6 +134,7 @@ export class WhatsAppChannel implements Channel {
           { reason, queuedMessages: this.outgoingQueue.length },
           'Connection closed — reconnecting',
         );
+        if (this._manualDisconnect) return;
         this.scheduleReconnect(1);
       } else if (connection === 'open') {
         this.connected = true;
@@ -158,6 +172,9 @@ export class WhatsAppChannel implements Channel {
         }
         const rawJid = msg.key.remoteJid;
         if (!rawJid || rawJid === 'status@broadcast') continue;
+        // Only direct 1:1 chats — skip group chats, broadcast lists, and
+        // WhatsApp newsletters so the deck shows "who messaged me direct".
+        if (rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid.endsWith('@newsletter')) continue;
 
         const timestamp = new Date(
           Number(msg.messageTimestamp) * 1000,
@@ -286,9 +303,11 @@ export class WhatsAppChannel implements Channel {
   }
 
   private scheduleReconnect(attempt: number): void {
+    if (this._manualDisconnect) return;
     const delayMs = Math.min(5000 * Math.pow(2, attempt - 1), 300000);
     logger.info({ attempt, delayMs }, 'Reconnecting...');
     setTimeout(() => {
+      if (this._manualDisconnect) return;
       this.connectInternal().catch((err) => {
         logger.error({ err, attempt }, 'Reconnection attempt failed');
         this.scheduleReconnect(attempt + 1);

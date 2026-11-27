@@ -1,0 +1,9 @@
+[Unit]
+Description=Update MARM memory from git
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=WARDEN_HOME=%h/.local/share/warden
+ExecStart=%h/.local/share/warden/update-marm.sh

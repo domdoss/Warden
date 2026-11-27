@@ -23,6 +23,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
+    "@types/ssh2": "^1.15.6",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "basic-ftp": "^5.2.0",
     "better-sqlite3": "^12.11.1",
@@ -41,6 +42,7 @@
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "sharp": "^0.34.5",
+    "ssh2": "^1.17.0",
     "ws": "^8.18.0",
     "yaml": "^2.8.2",
     "yt-search": "^2.13.1",

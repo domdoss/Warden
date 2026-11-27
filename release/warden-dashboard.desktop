@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Warden
+Comment=Local-first AI assistant — dashboard
+Exec=AppRun
+Icon=warden
+Terminal=false
+Categories=Utility;

@@ -35,7 +35,7 @@ import { marmLogEntries, cleanModelOutput, marmToolCall } from './memory-writeba
 
 export interface TreeNode { n: string; q?: string; c?: TreeNode[]; }
 
-const MTREE_MODEL = process.env.MTREE_MODEL || 'granite4.1:30b';
+const MTREE_MODEL = process.env.MTREE_MODEL || 'granite4.2:30b';
 const CURSOR_KEY = 'mtree:cursor';
 const IDLE_CHECK_MS = 5 * 60 * 1000; // cadence for the idle-gated autostart probe
 const BIG_VRAM = 8 * 1024 ** 3;      // "big" = a model holding ≥8 GB of VRAM

@@ -198,3 +198,25 @@ training/mentara/
 # Warden's integration with it lives in the tracked src/status-server.ts
 # route + dashboard view.
 imagegen/
+
+# ── Not open-sourced ──
+# Android app (separate product) and the Alpha Stack skill (private).
+eyes_ears/dockbox_voice/android/
+data/skills/alpha-stack/
+
+# ── Generated images & build artifacts (never commit) ──
+images/
+out/
+warden.apk
+public/warden.apk
+release/out/
+release/.tools/
+release/AppDir-*/
+warden-android/app/build/
+warden-android/.gradle/
+warden_app/android/.gradle/
+.opencode/
+
+# Generated native lib — rebuild from warden-android/tsnetproxy with gomobile
+warden_app/android/app/libs/*.aar
+warden-android/app/libs/*.aar

@@ -5,10 +5,32 @@ class AppConfig {
   AppConfig._();
 
   // ---- Server ----
-  // Match single.py: no-auth local server
-  static const String defaultServerUrl = 'http://10.0.0.47:3200';
+  // Reached over Tailscale (MagicDNS), so Warden is available on the phone from
+  // anywhere — not just the LAN. Falls back gracefully; the Settings screen can
+  // override this to a LAN IP or a different tailnet node.
+  static const String defaultServerUrl = '';
   static const String defaultJid = 'owner@local';
   static const String defaultSenderName = 'Jarvis';
+
+  // ---- Embedded Tailscale (no separate Tailscale app needed) ----
+  // The APK ships a userspace Tailscale node (tsnet) plus a localhost proxy:
+  // the app talks to http://127.0.0.1:<embeddedProxyPort>, and the node dials
+  // the Warden host over the tailnet. Enrollment key is used once; the node
+  // identity is then stored in the app's private files dir.
+  // Never bake an auth key into source. Supply it via Settings or CI at build
+  // time; the interactive "Sign in with Google" flow works without one.
+  static const String tailscaleAuthKey = '';
+  static const String tailscaleHostname = 'warden-phone';
+
+  static const int embeddedProxyPort = 17800;
+  static const String wardenPeerIp = '<tailnet-ip>';
+  static const int wardenPeerPort = 3200;
+
+  /// Base URL the app uses once the embedded tunnel is up.
+  static const String embeddedServerUrl = 'http://127.0.0.1:$embeddedProxyPort';
+
+  /// Portion of the Warden API used to confirm the tunnel is carrying traffic.
+  static const String embeddedHealthPath = '/api/health';
 
   // ---- Audio ----
   static const int sampleRate = 16000;

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+APP="${APP:?APP not set}"
+WARDEN_HOME="${WARDEN_HOME:-$HOME/.local/share/warden}"
+RUN="${WARDEN_RUN_DIR:-$WARDEN_HOME/run}"
+export WARDEN_HOME RUN WARDEN_INSTALL_DIR="$APP" WORKSPACE_ROOT="${WORKSPACE_ROOT:-$HOME/Warden}"
+mkdir -p "$RUN" "$RUN/data/env" "$RUN/logs" "$RUN/store" "$WORKSPACE_ROOT/groups/main"
+for d in dist node_modules public scripts container satellite; do
+  [ -e "$RUN/$d" ] || ln -s "$APP/$d" "$RUN/$d"
+done
+for f in package.json package-lock.json; do
+  [ -e "$RUN/$f" ] || ln -s "$APP/$f" "$RUN/$f"
+done
+[ -e "$RUN/training" ] || cp -a "$APP/training" "$RUN/training"
+if [ ! -f "$RUN/data/env/env" ]; then
+  cat > "$RUN/data/env/env" <<ENVEOF
+ASSISTANT_NAME=Warden
+TZ=${TZ:-America/Vancouver}
+OLLAMA_URL=http://127.0.0.1:11434
+WORKSPACE_ROOT=$WORKSPACE_ROOT
+ENVEOF
+fi

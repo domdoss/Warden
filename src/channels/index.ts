@@ -15,7 +15,7 @@ import './slack.js';
 import './telegram.js';
 
 // whatsapp
-// import './whatsapp.js';
+import './whatsapp.js';
 
 // web (dashboard direct session — always available)
 import './web.js';

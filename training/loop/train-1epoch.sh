@@ -30,5 +30,14 @@ echo "[train] starting: EPOCHS=1 ./atlasorch.sh ($(date))"
 EPOCHS=1 ./atlasorch.sh
 rc=$?
 echo "[train] atlasorch.sh exited rc=$rc"
-[ $rc -eq 0 ] && echo "[train] DONE — set the Atlas model to orchatlas-ft in the dashboard manually"
+if [ $rc -eq 0 ]; then
+  echo "[train] DONE — switching the seat (Atlas model) to orchatlas-ft"
+  if curl -s -X POST http://127.0.0.1:3200/api/settings \
+      -H 'content-type: application/json' \
+      -d '{"atlasModel":"orchatlas-ft"}'; then
+    echo "[train] seat switched to orchatlas-ft — the system will use the fine-tuned model on the next turn"
+  else
+    echo "[train] WARNING: auto-switch failed — set the Atlas model to orchatlas-ft manually in Settings"
+  fi
+fi
 exit $rc

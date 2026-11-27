@@ -1,0 +1,50 @@
+{"ask":"play a lofi hiphop track on youtube","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":1}
+{"ask":"play the ceo deep focus coding mode playlist","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":2}
+{"ask":"yes with youtube","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":3}
+{"ask":"play a different one","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":4}
+{"ask":"any i dont care just next song","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":5}
+{"ask":"pick another song from the youtube page theres a list of similar songs just pick one","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":6}
+{"ask":"in situations like this with the back and forth, just play a fucking song by any means. Stop reporting you cant. Are you seriously telling me you are unable to navigate youtube and the search field to play a song? Come on","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":7}
+{"ask":"you have the abolity to brose the web","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":8}
+{"ask":"you can navigate chrome with your MCP browser plugin","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":9}
+{"ask":"ok you did it - can you remember that you are able to do web tasks without going back and forth arguing?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":10}
+{"ask":"play some chillstep lofi","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":11}
+{"ask":"hey you have a version on my friend's mac and it seems to be retarded is your codebase doing ok?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":12}
+{"ask":"yeah youre good like if i asked for a hello world website made and opened in my browser you could see it done?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":13}
+{"ask":"have vulkan build a hello world site to fill in the tab","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":14}
+{"ask":"i had vulkan set to the wrong model try again now","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":15}
+{"ask":"no see if vulkan can do it","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":16}
+{"ask":"have vulkan make the html site","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":17}
+{"ask":"crap internet is down can you ping out?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":18}
+{"ask":"internet is back can you have vulkan do the thing?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":19}
+{"ask":"have vulkan make the hello world webpage and display it","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":20}
+{"ask":"just play that deep focus youtue playlist i like","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":21}
+{"ask":"no on my desktop using youtube","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":22}
+{"ask":"ok ask vulkan to make that hello world html file and then you display it on my browser","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":23}
+{"ask":"i want it opened in my browser","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":24}
+{"ask":"http://localhost:8888/home/user/Warden/hello-world.html?port=8889\n\nthats the url you tried to open?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":25}
+{"ask":"open it in my browser you keep failing to do it","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":26}
+{"ask":"open the page in chrome","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":27}
+{"ask":"http://localhost:8888/home/user/Warden/hello-world.html?port=8889\n\nis not the correct URL i would not be asking for something I have already you failed toi do the task","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":28}
+{"ask":"http://localhost:8888/home/user/Warden/hello-world.html?port=8889  gives me This site can’t be reached\nlocalhost refused to connect.\nTry:\n\nChecking the connection\nChecking the proxy and the firewall\nERR_CONNECTION_REFUSED\n\n\nGiving me the same broken link over and over is not what I am asking for","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":29}
+{"ask":"you are just serving the page wrong. Serve the page differently","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":30}
+{"ask":"E2E smoke test: reply with exactly the word ONLINE if you can read this.","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":31}
+{"ask":"list my current work tasks","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":32}
+{"ask":"create a file at /tmp/warden-e2e.txt containing the single line: e2e test passed","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":33}
+{"ask":"create a file at /tmp/warden-e2e.txt with the text: e2e ok","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":34}
+{"ask":"hey youve been in surgery basically all of today are you back>","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":35}
+{"ask":"we fixed qwen give it a go","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":36}
+{"ask":"i just want it opened and displayed in my browser","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":37}
+{"ask":"Create /home/user/Warden/vulkan-test.html with a simple hello world HTML page","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":38}
+{"ask":"open /home/user/Warden/hello-world.html in Chrome","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":39}
+{"ask":"create a work task to review the quarterly budget report","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":40}
+{"ask":"Write a detailed 3-paragraph summary of the history of containerization from chroot to Kubernetes, and save it to ~/Warden/container-history.md","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":41}
+{"ask":"draft a reply to the email from Sarah about rescheduling the Thursday meeting to Friday afternoon, and write the draft to a file","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":42}
+{"ask":"create a work task to book the team offsite venue","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":43}
+{"ask":"create a work task to renew the business license","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":44}
+{"ask":"just look for the youtube mix","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":45}
+{"ask":"this is a youtube request","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":46}
+{"ask":"SEARCH IT YOURSDELF","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":47}
+{"ask":"play a song keep going","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":48}
+{"ask":"you have the chrome mcp server no?","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":49}
+{"ask":"i played one","source":"messages.db","ts":"2026-11-08T01:54:31.463Z","n":50}

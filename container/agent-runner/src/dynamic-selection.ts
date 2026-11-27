@@ -53,7 +53,7 @@ const STOPWORDS = new Set([
     'like', 'want', 'need', 'make', 'made', 'please', 'could', 'should', 'been', 'being', 'does',
     'done', 'here', 'each', 'very', 'more', 'most', 'much', 'many', 'after', 'before', 'where',
     'while', 'these', 'those', 'because', 'between', 'something', 'anything', 'thing', 'things',
-    'give', 'know', 'let', 'lets', 'tell', 'show', 'okay', 'yes', 'no', 'hey', 'hello', 'thanks',
+    'give', 'know', 'let', 'lets', 'tell', 'show', 'put', 'okay', 'yes', 'no', 'hey', 'hello', 'thanks',
     'thank', 'going', 'doing', 'really',
 ]);
 
@@ -116,12 +116,17 @@ export function extractKeywords(messages: ChatMessage[], limit = KEYWORD_LIMIT):
         })();
         // Prior turns' keywords must not follow the user into an unrelated ask:
         // "how much disk space is left" ranked `calendar` top because the
-        // previous turns were about a calendar event (2026-11-13). The latest
-        // ask drives the menu; earlier turns contribute only when the latest is
-        // a bare follow-up ("and the second one?") with no words of its own.
-        const start = latestTokens.length >= 2
-            ? Math.max(0, textTurns.length - 1)
-            : Math.max(0, textTurns.length - CONTEXT_TURNS);
+        // previous turns were about a calendar event (2026-11-13). But a
+        // REFERENTIAL follow-up ("the surrey ones ... go to parm", "do that
+        // again") needs the previous turn's context, or the menu collapses to
+        // one irrelevant tool. Include prior turns when the latest ask points
+        // back at them, and rank latest-only otherwise.
+        const latestText = stripAnchor(textTurns[textTurns.length - 1]?.content || '');
+        const referential = /\b(ones?|those|these|them|that|this|it|same|above|former|latter|first|second|third|previous|again)\b/i.test(latestText)
+            || latestTokens.length < 2;
+        const start = referential
+            ? Math.max(0, textTurns.length - CONTEXT_TURNS)
+            : Math.max(0, textTurns.length - 1);
         const scores = new Map<string, number>();
         const bump = (k: string, by: number) => scores.set(k, (scores.get(k) || 0) + by);
         for (let i = start; i < textTurns.length; i++) {
@@ -148,15 +153,29 @@ interface OllamaToolDef {
     function?: { name?: string; description?: string };
 }
 
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Whole-word/phrase match. Substring matching made "put" hit "input" and
+ *  "read" hit "thread", which ranked chrome-input tools for music asks. */
+function containsWord(text: string, word: string): boolean {
+    try {
+        return new RegExp(`(^|[^a-z0-9])${escapeRegExp(word)}([^a-z0-9]|$)`, 'i').test(text);
+    } catch {
+        return text.includes(word);
+    }
+}
+
 function scoreText(keywords: string[], nameWords: Set<string>, descText: string): number {
     let score = 0;
     for (const kw of keywords) {
         if (kw.includes(' ')) {
-            // bigram: substring match against description / joined name
-            if (descText.includes(kw)) score += SCORE_BIGRAM_MATCH;
+            // bigram: whole-phrase match against description / joined name
+            if (containsWord(descText, kw)) score += SCORE_BIGRAM_MATCH;
         } else {
             if (nameWords.has(kw)) score += SCORE_NAME_MATCH;
-            else if (descText.includes(kw)) score += SCORE_DESC_MATCH;
+            else if (containsWord(descText, kw)) score += SCORE_DESC_MATCH;
         }
     }
     return score;
@@ -177,14 +196,27 @@ const GENERIC_TOOLS = new Set([
     'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'open_app',
 ]);
 
+export interface ScoredTool {
+    name: string;
+    score: number;
+}
+
+/** Is this one of the filesystem/shell tools that score on almost any ask? */
+export function isGenericTool(name: string): boolean {
+    return GENERIC_TOOLS.has(name);
+}
+
 /**
- * Rank tool defs by keyword overlap against tool name (snake_case split) +
- * description. Returns the names of the top-K tools that scored above zero.
+ * Score tool defs by lexical keyword overlap against tool name (the words in a
+ * snake_case/camelCase identifier) + description. Sorted high→low. Exported so
+ * the semantic hybrid ranker can fuse the SAME lexical signal rather than
+ * re-deriving it — name matches stay a strong signal while embeddings add
+ * recall the keyword matcher structurally misses.
  */
-export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = TOOL_TOPK): string[] {
+export function scoreTools(toolDefs: OllamaToolDef[], keywords: string[]): ScoredTool[] {
     try {
         if (!keywords || keywords.length === 0) return [];
-        const scored: Array<{ name: string; score: number }> = [];
+        const scored: ScoredTool[] = [];
         for (const def of toolDefs || []) {
             const name = def?.function?.name;
             if (!name) continue;
@@ -195,14 +227,25 @@ export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = 
         }
         const anySpecific = scored.some((s) => s.score > 0 && !GENERIC_TOOLS.has(s.name));
         const weight = (n: string) => anySpecific && GENERIC_TOOLS.has(n) ? GENERIC_TOOL_WEIGHT : 1;
-        const ranked = scored
-            .map((s) => ({ ...s, rank: s.score * weight(s.name) }))
-            .sort((a, b) => b.rank - a.rank)
-            .slice(0, topK);
-        // One line per turn showing what actually won and at what score — the
-        // only way to see a specific tool losing to a generic one (the youtube
-        // failure ranked #1 in isolation but lost in the live pool).
-        log(`[dynamic-selection] top-${topK}: ${ranked.map((s) => `${s.name}=${s.score}${weight(s.name) < 1 ? '*' : ''}`).join(', ')}${anySpecific ? ' (* generic, halved)' : ''}`);
+        return scored
+            .map((s) => ({ name: s.name, score: s.score * weight(s.name) }))
+            .sort((a, b) => b.score - a.score);
+    } catch (err: any) {
+        log(`[dynamic-selection] scoreTools failed: ${err?.message || err}`);
+        return [];
+    }
+}
+
+/**
+ * Rank tool defs by keyword overlap against tool name (snake_case split) +
+ * description. Returns the names of the top-K tools that scored above zero.
+ */
+export function rankTools(toolDefs: OllamaToolDef[], keywords: string[], topK = TOOL_TOPK): string[] {
+    try {
+        if (!keywords || keywords.length === 0) return [];
+        const ranked = scoreTools(toolDefs, keywords).slice(0, topK);
+        // One line per turn showing what actually won and at what score.
+        log(`[dynamic-selection] top-${topK}: ${ranked.map((s) => `${s.name}=${s.score}`).join(', ')}`);
         return ranked.map((s) => s.name);
     } catch (err: any) {
         log(`[dynamic-selection] rankTools failed: ${err?.message || err}`);

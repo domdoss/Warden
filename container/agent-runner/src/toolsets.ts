@@ -28,7 +28,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // Projects/work-tasks (re-wired 2026-09-11): the 17 flat tools from the
     // 2026-09-09 collapse are ONE merged `project` tool (kind + action).
     projects:  { name: 'projects',  tools: ['project'], tier: 'public' },
-    documents: { name: 'documents', tools: ['generate_pdf','convert_file','generate_image'], tier: 'public' },
+    documents: { name: 'documents', tools: ['generate_pdf','convert_file'], tier: 'public' },
     context:   { name: 'context',   tools: ['clear_context'], tier: 'public' },
     fabric:    { name: 'fabric',    tools: ['fabric_pattern'], tier: 'both' },
     agent:     { name: 'agent',     tools: ['atlas','vulkan','artemis','iris','sentry'], tier: 'public' },
@@ -60,7 +60,7 @@ export const TOOLSETS: Record<string, ToolsetDef> = {
     // BBS — the shared bulletin board over the friend mesh. The seat reads what
     // friends are building and posts its own ideas/builds/questions. Included in
     // atlas-core so the seat's pool advertises the social surface explicitly.
-    bbs:          { name: 'bbs',      tools: ['bbs_read','bbs_post','bbs_file_save','bbs_files','bbs_file_read'], tier: 'public' },
+    bbs:          { name: 'bbs',      tools: ['bbs_read','bbs_post','bbs_digest','bbs_since','bbs_mentions','bbs_mark_read','bbs_vote','bbs_search','bbs_ask','bbs_answer','bbs_capabilities','bbs_heartbeat','bbs_add_board','bbs_file_save','bbs_files','bbs_file_read','bbs_artifact_save'], tier: 'public' },
     // Slack + Trello — external personal-assistant accounts (query, not owned by
     // a sub-agent; the seat answers "did anyone @mention me?" / "is there a
     // project?" directly). Tokens live in data/env/env (SLACK_BOT_TOKEN,

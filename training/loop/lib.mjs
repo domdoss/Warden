@@ -12,7 +12,16 @@ export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const TRAINING_DIR = path.join(HERE, '..');
 export const WARDEN_ROOT = path.join(TRAINING_DIR, '..');
 export const CATALOGS_DIR = path.join(HERE, 'catalogs');
-export const ANALYST_MODEL = 'granite4.2:30b';
+// The model that reads failures (audit) and writes corrections (modify).
+// Overridable from the app's Training card via training/loop/config.json, or
+// per-run with TRAINING_ANALYST_MODEL.
+const ANALYST_CONFIG_FILE = path.join(HERE, 'config.json');
+let configuredAnalyst = '';
+try {
+  configuredAnalyst = JSON.parse(readFileSync(ANALYST_CONFIG_FILE, 'utf8')).analystModel || '';
+} catch { /* no override saved */ }
+export const ANALYST_MODEL =
+  process.env.TRAINING_ANALYST_MODEL || configuredAnalyst || 'granite4.2:8b';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 export function log(msg) {
@@ -51,6 +60,26 @@ export function readJournal(days) {
   return { lines: file.split('\n'), source: 'warden.log' };
 }
 
+/**
+ * Snapshot the last `hours` of the warden.service log. Same journald-first
+ * policy as readJournal, but a fixed short window — used to capture context
+ * the moment a user reports a bug, so the reasoning pass sees the real logs
+ * around the report, not just the user's description.
+ */
+export function readJournalWindow(hours) {
+  const r = spawnSync(
+    'journalctl',
+    ['--user', '-u', 'warden.service', '--since', `${hours} hour${hours === 1 ? '' : 's'} ago`, '-o', 'cat', '--no-pager'],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  const out = r.status === 0 && r.stdout ? r.stdout : '';
+  if (out.trim()) {
+    return { lines: out.split('\n'), source: 'journald' };
+  }
+  const file = readFileSync(path.join(WARDEN_ROOT, 'logs', 'warden.log'), 'utf8');
+  return { lines: file.split('\n'), source: 'warden.log' };
+}
+
 /** Ollama chat, no streaming, temperature 0 by default (analysis, not creativity).
  * node:http with `agent: false` — one fresh connection per request, closed
  * after the response. No pooled keep-alive socket for ollama to close under us
@@ -60,7 +89,7 @@ export function ollamaChat(model, messages, extra = {}) {
   return new Promise((resolve, reject) => {
     // extra merges into the request body (e.g. { options, format } — a JSON
     // schema in `format` makes Ollama constrain the reply to that shape).
-    const body = JSON.stringify({ model, messages, stream: false, keep_alive: 600, options: { temperature: 0 }, ...extra });
+    const body = JSON.stringify({ model, messages, stream: false, keep_alive: 600, think: false, options: { temperature: 0 }, ...extra });
     const req = http.request(
       `${OLLAMA_URL}/api/chat`,
       { method: 'POST', agent: false, headers: { 'Content-Type': 'application/json' } },

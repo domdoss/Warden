@@ -5,6 +5,7 @@ import path from 'node:path';
 import { AgentInput, AgentOutput } from './types.js';
 import { logger } from './logger.js';
 import { getRouterState } from './db.js';
+import { isOpencodeRunner, runOpencodeTurn } from './opencode-runner.js';
 
 // IPC input directory — matches the agent runner's IPC_DIR/input path
 const IPC_INPUT_DIR = path.join(
@@ -894,6 +895,13 @@ export function killCurrentAgent(hard = false): boolean {
 }
 
 export function runAgent(input: AgentRunInput): Promise<AgentOutput> {
+  // OpenCode runner: hand the whole seat turn to OpenCode instead of the
+  // in-process agent-runner. Kept here (not at the call sites) so every seat
+  // path — owner message, friend ask, BotNet sweep — routes the same way.
+  if (isOpencodeRunner()) {
+    return runOpencodeTurn(input);
+  }
+
   return new Promise((resolve) => {
     const callbacks = input.callbacks ?? {};
     userStoppedAgent = false;

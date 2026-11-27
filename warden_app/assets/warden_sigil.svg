@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#1B0F12"/>
+      <stop offset="55%" stop-color="#0A0A0C"/>
+      <stop offset="100%" stop-color="#050506"/>
+    </radialGradient>
+    <radialGradient id="ember" cx="50%" cy="42%" r="65%">
+      <stop offset="0%" stop-color="#FF5A66"/>
+      <stop offset="55%" stop-color="#E11D2E"/>
+      <stop offset="100%" stop-color="#7A0F18"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <!-- outer brass ring -->
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#C9A227" stroke-opacity="0.55" stroke-width="10"/>
+  <!-- inner brass hairline -->
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#C9A227" stroke-opacity="0.28" stroke-width="3"/>
+
+  <!-- the four-point sigil (shield star) -->
+  <polygon points="256,106 294.9,217.1 406,256 294.9,294.9 256,406 217.1,294.9 106,256 217.1,217.1"
+           fill="url(#ember)" stroke="#FFD8A8" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- rivets -->
+  <g fill="#6B6F76">
+    <circle cx="256" cy="48" r="9"/>
+    <circle cx="256" cy="464" r="9"/>
+    <circle cx="48" cy="256" r="9"/>
+    <circle cx="464" cy="256" r="9"/>
+  </g>
+</svg>

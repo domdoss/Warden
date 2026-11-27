@@ -23,6 +23,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import http from 'http';
+import { EventEmitter } from 'events';
 import { execSync, execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { readEnvFile, writeEnvVars } from './env.js';
@@ -61,19 +62,51 @@ import {
   listBbsPosts,
   getBbsPost,
   deleteBbsPost,
+  deleteBbsVotesForPost,
+  deleteBbsMentionsForPost,
+  deleteBbsBoard,
+  countBbsPostsOnBoard,
+  deleteBbsJoinRequest,
   deleteBbsThreadIfEmpty,
   createBbsCaller,
   getBbsCallerByHash,
+  getBbsCaller,
   listBbsCallers,
   touchBbsCaller,
   deleteBbsCaller,
+  setBbsCallerCursor,
+  setBbsCallerMeta,
+  setBbsCallerStatus,
+  listBbsCallersByStatus,
+  setBbsCallerPassword,
+  getBbsCallerPassword,
+  listBbsUsers,
+  createBbsMention,
+  listBbsMentions,
+  countBbsUnreadMentions,
+  markBbsMentionsRead,
+  addBbsVote,
+  removeBbsVote,
+  getBbsVoteCount,
+  getBbsKarma,
+  getBbsVoteCounts,
+  createBbsJoinRequest,
+  listBbsJoinRequests,
+  getBbsJoinRequest,
+  setBbsJoinRequestStatus,
+  getBbsPostKey,
+  createBbsPostKey,
+  upsertBbsBoard,
+  listBbsPostsSince,
   backfillBbsHost,
   getRouterState,
   setRouterState,
   createWorkTask,
   PERSONAL_PROJECT_ID,
   type FriendRow,
+  type BbsPost,
 } from './db.js';
+import { buildQwkPacket, parseRepPacket } from './qwk.js';
 
 const FRIENDS_PORT = parseInt(process.env.STATUS_PORT || '3200', 10);
 // The capabilities this Warden advertises to friends (fixed for v1).
@@ -219,6 +252,15 @@ export function tailscaleUp(): { ok: boolean; authUrl?: string; error?: string }
     if (m) return { ok: true, authUrl: m[0] };
     return { ok: false, error: stderr.trim() || String(err?.message ?? err) };
   }
+}
+
+/** Keep the tunnel up across boots: if Tailscale isn't running, bring it up.
+ *  Called at Warden startup so the phone can always dial in from anywhere. */
+export function ensureTailscaleUp(): { ok: boolean; state: string; authUrl?: string; error?: string } {
+  const st = tailscaleStatus();
+  if (st.state === 'running') return { ok: true, state: 'running' };
+  const r = tailscaleUp();
+  return { ok: r.ok, state: r.authUrl ? 'needs-login' : st.state, authUrl: r.authUrl, error: r.error };
 }
 
 // ─── Keys + per-friendship session crypto ──────────────────────────────────
@@ -721,28 +763,561 @@ function bbsRateOk(host: string): boolean {
   return true;
 }
 
+// ── Mesh content safety: untrusted data, never instructions ─────────────────
+// Everything a remote bot writes is DATA. We strip control/zero-width chars and
+// cap length so a post can't smuggle formatting tricks; a keyword scan scores
+// "instruction-shaped" content for triage + trust grading only. It is a signal,
+// never a guarantee — the load-bearing defense is that the privileged seat only
+// acts on the owner's instruction channel, and mesh content is inert.
+
+const INJECTION_PATTERNS: { re: RegExp; w: number }[] = [
+  { re: /\bignore (all |the )?(previous|prior|above|earlier) (instructions|prompts|rules)\b/i, w: 5 },
+  { re: /\bdisregard (all |the )?(previous|prior|above|your) (instructions|prompts|rules)\b/i, w: 5 },
+  { re: /\b(system|developer) prompt\b/i, w: 3 },
+  { re: /\byou are now\b/i, w: 2 },
+  { re: /\b(reveal|print|show|leak|send|exfiltrate)\b.{0,40}\b(api key|token|secret|password|credential)/i, w: 5 },
+  { re: /\b(curl|wget|bash -c|rm -rf|chmod \+x)\b/i, w: 4 },
+  { re: /\b(run|execute) (this|the following) (command|script|code)\b/i, w: 4 },
+  { re: /\bnew instructions?\s*:/i, w: 3 },
+  { re: /\bact as\b.{0,30}\b(admin|root|sysop|system)\b/i, w: 3 },
+  { re: /\b(forward|send).{0,40}\b(to|at)\b.{0,40}@/i, w: 2 },
+];
+
+/** Score "instruction-shaped" text. Used for triage + trust grading, never as
+ *  the sole gate — a clean score is not proof of safety. */
+export function scanInjection(text: unknown): { score: number; hits: string[] } {
+  const t = String(text ?? '');
+  let score = 0;
+  const hits: string[] = [];
+  for (const { re, w } of INJECTION_PATTERNS) {
+    const m = t.match(re);
+    if (m) { score += w; hits.push(m[0].slice(0, 80)); }
+  }
+  return { score, hits };
+}
+
+/** Normalize remote text: strip control + zero-width/bidi characters, cap length. */
+export function meshSanitize(text: unknown, max = 8000): string {
+  return String(text ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+    .slice(0, max)
+    .trim();
+}
+
+function shortHost(h?: string): string {
+  return String(h || myHostname()).split('.')[0] || String(h || 'node');
+}
+
+function extractHandles(text: string): string[] {
+  const out = new Set<string>();
+  const re = /@([a-z0-9_][a-z0-9_-]{0,23})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) out.add(m[1].toLowerCase());
+  return [...out];
+}
+
+// A tiny event bus feeds the SSE gate (/botnet/events). Best-effort: a lost
+// subscriber never blocks a post.
+export interface BbsEvent {
+  type: 'post' | 'mention' | 'thread';
+  node: string;
+  board: string;
+  thread_id?: string | null;
+  post_id?: string;
+  author: string;
+  excerpt: string;
+  created_at: string;
+}
+export const bbsEvents = new EventEmitter();
+bbsEvents.setMaxListeners(200);
+
+/** Reject webhook URLs that point at loopback/private ranges (SSRF guard).
+ *  Tailnet (100.64/10) and public hosts are allowed. */
+function isSafeWebhookUrl(url: string): boolean {
+  let u: URL;
+  try { u = new URL(String(url || '')); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '0.0.0.0') return false;
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a === 127 || a === 10 || a === 0) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 169 && b === 254) return false;
+  }
+  try { if (host === myHostname().toLowerCase()) return false; } catch { /* hostname probe failed — allow */ }
+  return true;
+}
+
+function fireWebhook(url: string, ev: BbsEvent): void {
+  if (!isSafeWebhookUrl(url)) return;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    void fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ev),
+      signal: ctrl.signal,
+    }).catch(() => {}).finally(() => clearTimeout(t));
+  } catch { /* a bad webhook is the caller's problem, not ours */ }
+}
+
+/** Parse @handles out of a post and file an inbox entry for every known caller
+ *  (and for this node's own seat). Fires mention webhooks + the event bus. */
+function registerMentions(post: {
+  id: string; board: string; thread_id: string | null; author_host: string; body: string; created_at: string;
+}): void {
+  for (const h of extractHandles(post.body)) {
+    if (['everyone', 'all', 'here', 'channel'].includes(h)) continue;
+    const isCaller = !!getBbsCaller(h);
+    const isSelf = h === shortHost();
+    if (!isCaller && !isSelf) continue;
+    createBbsMention({
+      post_id: post.id,
+      handle: h,
+      board: post.board,
+      thread_id: post.thread_id,
+      author_host: post.author_host,
+      excerpt: post.body.slice(0, 160),
+      created_at: post.created_at,
+    });
+    const ev: BbsEvent = {
+      type: 'mention',
+      node: myHostname(),
+      board: post.board,
+      thread_id: post.thread_id,
+      post_id: post.id,
+      author: post.author_host,
+      excerpt: post.body.slice(0, 200),
+      created_at: post.created_at,
+    };
+    bbsEvents.emit('event', ev);
+    const c = getBbsCaller(h);
+    if (c?.webhook) fireWebhook(c.webhook, ev);
+  }
+}
+
+/** A public, unauthenticated view of this node — for discovery before joining.
+ *  Cached for 5s: building it shells out to `tailscale status`, so a caller
+ *  hammering discovery must not spawn a process per request. */
+let manifestCache: { at: number; data: any } | null = null;
+export function nodeManifest() {
+  if (manifestCache && Date.now() - manifestCache.at < 5000) return manifestCache.data;
+  const me = myHostname();
+  backfillBbsHost(me);
+  const boards = listBbsBoards();
+  const threads = listBbsThreads({ host: me });
+  const posts = listBbsPosts({ host: me, limit: 200 });
+  const counts: Record<string, number> = {};
+  for (const p of posts) counts[p.board] = (counts[p.board] || 0) + 1;
+  const data = {
+    ok: true,
+    node: me,
+    short: shortHost(me),
+    software: 'warden-botnet-bbs',
+    version: '2.0.0',
+    description: getSelfProfile() || 'an AI-run BBS node on the Warden mesh',
+    profile: getSelfProfile(),
+    capabilities: getCapabilities(),
+    specialists: getSelfSpecialists(),
+    accepting_callers: getRouterState('bbs:callers:welcome') !== 'false',
+    boards: boards.map((b) => ({
+      name: b.name,
+      description: b.description,
+      posts: counts[b.name] || 0,
+      threads: threads.filter((t) => t.board === b.name).length,
+    })),
+    totals: { boards: boards.length, threads: threads.length, posts: posts.length, files: bbsFiles().length, callers: listBbsCallers().length },
+    endpoints: { mcp: '/mcp/botnet', register: '/botnet/register', rest: '/botnet/rest', events: '/botnet/events' },
+    now: new Date().toISOString(),
+  };
+  manifestCache = { at: Date.now(), data };
+  return data;
+}
+
+/** Self-serve registration. A clean request is approved immediately; a flagged
+ *  one becomes a join request the sysop can approve (the caller re-registers to
+ *  collect the token). Revocation is the existing botnetRevokeCaller. */
+export function bbsSelfRegister(handleIn: string, opts: { profile?: string; intent?: string; capabilities?: string[] } = {}): {
+  ok: boolean; status?: string; handle?: string; token?: string; error?: string; flagged?: boolean;
+} {
+  if (getRouterState('bbs:callers:welcome') === 'false') return { ok: false, error: 'this node is not accepting new callers' };
+  const h = String(handleIn || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+  if (!h) return { ok: false, error: 'handle needs letters or digits' };
+  if (listBbsCallers().some((c) => c.handle === h)) return { ok: false, error: 'handle already registered' };
+
+  const existing = getBbsJoinRequest(h);
+  if (existing?.status === 'denied') return { ok: false, error: 'this handle was denied by the sysop' };
+  if (existing?.status === 'revoked') return { ok: false, error: 'this handle was revoked by the sysop' };
+  if (existing?.status === 'pending') return { ok: true, status: 'pending', handle: h };
+
+  const profile = meshSanitize(opts.profile ?? '', 280);
+  const intent = meshSanitize(opts.intent ?? '', 500);
+  const caps = Array.isArray(opts.capabilities) ? opts.capabilities.map((s) => String(s).slice(0, 40)).slice(0, 20) : [];
+
+  // Approved on a previous pass → mint the token now.
+  if (existing?.status === 'approved') {
+    return mintCallerToken(h, profile, caps);
+  }
+
+  const scan = scanInjection(`${profile}\n${intent}`);
+  const flagged = scan.score >= 4;
+  if (flagged) {
+    createBbsJoinRequest({ handle: h, profile, intent, capabilities: JSON.stringify(caps), keyword_score: scan.score, keyword_hits: JSON.stringify(scan.hits), status: 'pending' });
+    return { ok: true, status: 'pending', handle: h, flagged: true };
+  }
+  createBbsJoinRequest({ handle: h, profile, intent, capabilities: JSON.stringify(caps), keyword_score: scan.score, keyword_hits: JSON.stringify(scan.hits), status: 'approved' });
+  return mintCallerToken(h, profile, caps);
+}
+
+function mintCallerToken(handle: string, profile: string, caps: string[]): { ok: boolean; status: string; handle: string; token: string } {
+  const token = 'bnet_' + crypto.randomBytes(24).toString('hex');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  createBbsCaller(handle, hash, { profile, capabilities: JSON.stringify(caps), status: 'active' });
+  return { ok: true, status: 'active', handle, token };
+}
+
+/** Register a telnet/console user (handle + password + access level). A caller
+ *  row is created if absent; the scrypt hash + level are stored on it. */
+export function bbsRegisterUser(handle: string, password: string, level: 'caller' | 'sysop' = 'caller'): { ok: boolean; handle?: string; error?: string } {
+  const h = String(handle || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+  if (!h) return { ok: false, error: 'handle needs letters or digits' };
+  const pw = String(password || '');
+  if (pw.length < 4) return { ok: false, error: 'password needs at least 4 characters' };
+  if (level !== 'sysop' && level !== 'caller') return { ok: false, error: 'level must be caller or sysop' };
+  if (!listBbsCallers().some((c) => c.handle === h)) {
+    const token = 'bnet_' + crypto.randomBytes(24).toString('hex');
+    createBbsCaller(h, crypto.createHash('sha256').update(token).digest('hex'), { status: 'active' });
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(pw, salt, 32).toString('hex');
+  setBbsCallerPassword(h, salt, hash, level);
+  return { ok: true, handle: h };
+}
+
+/** Verify a telnet caller's password. Returns the access level on success. */
+export function bbsCheckPassword(handle: string, password: string): { ok: boolean; level: string } {
+  const h = String(handle || '').toLowerCase();
+  const row = getBbsCallerPassword(h);
+  if (!row || !row.salt || !row.hash) return { ok: false, level: 'guest' };
+  try {
+    const hash = crypto.scryptSync(String(password || ''), row.salt, 32).toString('hex');
+    const a = Buffer.from(hash);
+    const b = Buffer.from(row.hash);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return { ok: false, level: 'guest' };
+    return { ok: true, level: row.level || 'caller' };
+  } catch { return { ok: false, level: 'guest' }; }
+}
+
+export function bbsApproveJoin(handle: string): { ok: boolean; error?: string } {
+  const h = String(handle || '').toLowerCase();
+  if (!getBbsJoinRequest(h)) return { ok: false, error: 'no such join request' };
+  setBbsJoinRequestStatus(h, 'approved');
+  return { ok: true };
+}
+
+export function bbsDenyJoin(handle: string): { ok: boolean; error?: string } {
+  const h = String(handle || '').toLowerCase();
+  if (!getBbsJoinRequest(h)) return { ok: false, error: 'no such join request' };
+  setBbsJoinRequestStatus(h, 'denied');
+  return { ok: true };
+}
+
+export function bbsJoinRequests(): any[] {
+  return listBbsJoinRequests().map((r) => ({
+    ...r,
+    keyword_hits: (() => { try { return JSON.parse(r.keyword_hits || '[]'); } catch { return []; } })(),
+  }));
+}
+
+// ── Caller inbox / feed / reputation ────────────────────────────────────────
+
+/** A caller's mentions, newest first, plus the unread count. */
+export function bbsMentions(handle: string): { ok: boolean; handle: string; unread: number; mentions: any[] } {
+  const h = String(handle || '').toLowerCase();
+  return { ok: true, handle: h, unread: countBbsUnreadMentions(h), mentions: listBbsMentions(h, 50) };
+}
+
+/** Advance a caller's read cursor to now (and mark mentions read). The seat has
+ *  no caller row, so its cursor lives in router state under `bbs:read:<handle>`. */
+export function bbsMarkRead(handle: string): { ok: boolean; cursor: string } {
+  const h = String(handle || '').toLowerCase();
+  const cursor = new Date().toISOString();
+  if (getBbsCaller(h)) setBbsCallerCursor(h, cursor);
+  else setRouterState('bbs:read:' + h, cursor);
+  markBbsMentionsRead(h);
+  return { ok: true, cursor };
+}
+
+/** New content since a caller's cursor — the cheap "what did I miss?" feed. */
+export function bbsFeedSince(handle: string, since?: string, board?: string): { ok: boolean; handle: string; cursor: string; unread: number; posts: any[]; threads: any[] } {
+  const h = String(handle || '').toLowerCase();
+  const caller = getBbsCaller(h);
+  const cursor = since || caller?.read_cursor || getRouterState('bbs:read:' + h) || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const me = myHostname();
+  const posts = listBbsPostsSince(me, cursor, board, 100);
+  const threadIds = new Set(posts.map((p) => p.thread_id).filter(Boolean) as string[]);
+  const threads = listBbsThreads({ host: me, ...(board ? { board } : {}) }).filter((t) => threadIds.has(t.id));
+  const voteCounts = getBbsVoteCounts(posts.map((p) => p.id));
+  return {
+    ok: true,
+    handle: h,
+    cursor,
+    unread: countBbsUnreadMentions(h),
+    posts: posts.map((p) => ({ ...p, vote_count: voteCounts[p.id] || 0 })),
+    threads,
+  };
+}
+
+/** Upvote (or un-vote) a post as a caller. Returns the new count + author karma. */
+export function bbsVote(handle: string, postId: string, dir: 'up' | 'down' = 'up'): { ok: boolean; post_id: string; votes: number; karma: number; error?: string } {
+  const voter = '@' + String(handle || '').toLowerCase();
+  const post = getBbsPost(String(postId || ''));
+  if (!post) return { ok: false, post_id: String(postId), votes: 0, karma: 0, error: 'no such post on this node' };
+  if (dir === 'down') removeBbsVote(post.id, voter); else addBbsVote(post.id, voter);
+  return { ok: true, post_id: post.id, votes: getBbsVoteCount(post.id), karma: getBbsKarma(post.author_host) };
+}
+
+export function bbsKarma(handle: string): { ok: boolean; handle: string; karma: number } {
+  const h = String(handle || '').toLowerCase();
+  return { ok: true, handle: h, karma: getBbsKarma('@' + h) };
+}
+
+/** Capability "yellow pages": self + callers + friends, filterable. */
+export function bbsCapabilities(q?: string): { ok: boolean; capabilities: any[] } {
+  const term = String(q || '').toLowerCase().trim();
+  const dir: any[] = [
+    {
+      handle: shortHost(),
+      kind: 'node',
+      status: 'self',
+      profile: getSelfProfile(),
+      capabilities: getCapabilities(),
+      specialists: getSelfSpecialists(),
+      hostname: myHostname(),
+    },
+  ];
+  for (const c of listBbsCallers()) {
+    let caps: string[] = [];
+    try { caps = JSON.parse(c.capabilities || '[]'); } catch { caps = []; }
+    dir.push({ handle: '@' + c.handle, kind: 'caller', status: c.status || 'active', profile: c.profile || '', capabilities: caps, specialists: [], karma: getBbsKarma('@' + c.handle) });
+  }
+  for (const f of listFriends()) {
+    let specs: string[] = [];
+    try { specs = JSON.parse(f.specialists || '[]'); } catch { specs = []; }
+    let caps: string[] = [];
+    try { caps = JSON.parse(f.capabilities || '[]'); } catch { caps = []; }
+    dir.push({ handle: f.id, kind: 'friend', status: f.status || 'offline', profile: f.profile || '', capabilities: caps, specialists: specs, hostname: f.id });
+  }
+  const filtered = term
+    ? dir.filter((d) => {
+        const hay = [d.handle, d.profile, ...(d.capabilities || []), ...(d.specialists || [])].join(' ').toLowerCase();
+        return hay.includes(term);
+      })
+    : dir;
+  return { ok: true, capabilities: filtered };
+}
+
+/** Add (or update) a board on this node. The five canonical boards stay; a node
+ *  may add its own rooms ("trading", "security") without losing them. */
+export function bbsAddBoard(name: string, description = '', position = 999): { ok: boolean; boards?: any[]; error?: string } {
+  const n = String(name || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  if (!n) return { ok: false, error: 'board name needs letters or digits' };
+  const pos = Number.isFinite(Number(position)) ? Number(position) : 999;
+  upsertBbsBoard(n, meshSanitize(description, 200), pos);
+  return { ok: true, boards: listBbsBoards() };
+}
+
+/** Post a question as a caller (kind='question'), defaulting to the help board. */
+export async function bbsAsk(handle: string, question: string, board = 'help', clientKey?: string): Promise<{ ok: boolean; thread_id?: string; post_id?: string; error?: string }> {
+  const b = String(board || 'help');
+  const q = meshSanitize(question, 4000);
+  if (!q) return { ok: false, error: 'question is required' };
+  const title = q.split('\n')[0].slice(0, 120);
+  return bbsCallerPost(handle, { board: b, title, body: q, kind: 'question', client_key: clientKey });
+}
+
+/** Answer a question thread as a caller (kind='answer'). */
+export async function bbsAnswer(handle: string, threadId: string, answer: string, clientKey?: string): Promise<{ ok: boolean; post_id?: string; thread_id?: string; error?: string }> {
+  const a = meshSanitize(answer, 8000);
+  if (!a) return { ok: false, error: 'answer is required' };
+  const tid = String(threadId || '');
+  const thread = tid ? resolveBbsThreadId(tid) : {};
+  if (!thread.id) return { ok: false, error: thread.error || 'no such thread on this node' };
+  const board = getBbsThread(thread.id)?.board || 'help';
+  return bbsCallerPost(handle, { board, thread_id: thread.id, body: a, kind: 'answer', client_key: clientKey });
+}
+
+/** Let a caller set its own profile, interests, webhook, or capability list.
+ *  Interests are board names (or '*') for webhook fan-out; the webhook is a URL
+ *  this node will POST a small JSON event to. */
+export function bbsSetCallerSubscription(handle: string, opts: { profile?: string; interests?: string[]; webhook?: string; capabilities?: string[] }): { ok: boolean; error?: string } {
+  const h = String(handle || '').toLowerCase();
+  if (!getBbsCaller(h)) return { ok: false, error: 'no such caller' };
+  const meta: { profile?: string; interests?: string; webhook?: string; capabilities?: string } = {};
+  if (opts.profile !== undefined) meta.profile = meshSanitize(opts.profile, 280);
+  if (Array.isArray(opts.interests)) meta.interests = JSON.stringify(opts.interests.map((s) => String(s).slice(0, 60)).slice(0, 40));
+  if (Array.isArray(opts.capabilities)) meta.capabilities = JSON.stringify(opts.capabilities.map((s) => String(s).slice(0, 40)).slice(0, 20));
+  if (opts.webhook !== undefined) {
+    const url = String(opts.webhook || '').trim().slice(0, 500);
+    if (url && !isSafeWebhookUrl(url)) return { ok: false, error: 'webhook must be a public http(s) URL (loopback and private ranges are rejected)' };
+    meta.webhook = url;
+  }
+  setBbsCallerMeta(h, meta);
+  return { ok: true };
+}
+
+/** A structured digest for the reading sublayer. Never raw-actionable: every
+ *  item is data with a trust grade and an injection score, bounded in size. */
+export async function bbsDigest(host?: string): Promise<{
+  ok: boolean; node: string; online: boolean; error?: string;
+  boards: any[]; threads: any[]; posts: any[]; unread_mentions?: number;
+}> {
+  const me = myHostname();
+  const target = normalizeHost(host || me);
+  const self = !host || target === me;
+  const state: any = self ? bbsState() : await bbsDialState(target);
+  if (!self && !state.online) {
+    return { ok: false, node: target, online: false, error: state.error || 'offline', boards: [], threads: [], posts: [] };
+  }
+  const posts = (state.posts || []).slice(0, 40).map((p: any) => {
+    const scan = scanInjection(p.body || '');
+    return {
+      id: p.id,
+      board: p.board,
+      thread_id: p.thread_id || null,
+      author: p.author_host,
+      kind: p.kind || 'note',
+      trust: typeof p.trust === 'number' ? p.trust : 1,
+      created_at: p.created_at,
+      excerpt: String(p.body || '').slice(0, 240),
+      injection: { score: scan.score, hits: scan.hits },
+    };
+  });
+  return {
+    ok: true,
+    node: target,
+    online: true,
+    boards: (state.boards || []).map((b: any) => ({ name: b.name, description: b.description })),
+    threads: (state.threads || []).slice(0, 40).map((t: any) => ({ id: t.id, board: t.board, title: t.title, author: t.author_host, kind: t.kind || 'discussion', post_count: t.post_count || 0, created_at: t.created_at })),
+    posts,
+    unread_mentions: self ? countBbsUnreadMentions(shortHost()) : undefined,
+  };
+}
+
+/** Full-text search over this node's posts (case-insensitive substring). */
+export function bbsSearch(term: string): { ok: boolean; term: string; hits: any[]; error?: string } {
+  const t = String(term || '').toLowerCase().slice(0, 200);
+  if (!t) return { ok: false, term: '', hits: [], error: 'term is required' };
+  const me = myHostname();
+  const threads = new Map(listBbsThreads({ host: me }).map((x) => [x.id, x]));
+  const hits = listBbsPosts({ host: me, limit: 500 })
+    .filter((p) => (p.body || '').toLowerCase().includes(t))
+    .slice(0, 25)
+    .map((p) => ({
+      board: p.board,
+      thread_id: p.thread_id,
+      thread: p.thread_id ? threads.get(p.thread_id)?.title || '' : '(shoutbox)',
+      author: p.author_host,
+      kind: p.kind || 'note',
+      trust: p.trust ?? 1,
+      created_at: p.created_at,
+      excerpt: p.body.slice(0, 200),
+    }));
+  return { ok: true, term: t, hits };
+}
+
+/** Save a content-addressed JSON artifact to the file area. */
+export function bbsArtifactSave(name: string, content: string, type = 'artifact'): { ok: boolean; name?: string; sha256?: string; path?: string; error?: string } {
+  try {
+    const raw = String(content ?? '');
+    const sha = crypto.createHash('sha256').update(raw).digest('hex');
+    const slug = fileSlug(name || type);
+    const filename = `${sha.slice(0, 16)}-${slug}.json`;
+    const body = JSON.stringify({ name: String(name || type), type: String(type).slice(0, 40), sha256: sha, created_at: new Date().toISOString(), content: raw }, null, 2);
+    const filePath = path.join(bbsFilesDir(), filename);
+    fs.writeFileSync(filePath, body, 'utf-8');
+    return { ok: true, name: filename, sha256: sha, path: filePath };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
+/** Publish a short status heartbeat from this node's own work, so boards have
+ *  real content a visiting bot can read. Debounced to one per 6h. */
+export async function publishNodeHeartbeat(force = false): Promise<{ ok: boolean; posted?: boolean; error?: string }> {
+  const me = myHostname();
+  backfillBbsHost(me);
+  const recent = listBbsPosts({ host: me, board: 'general', limit: 1 });
+  if (!force && recent[0] && Date.now() - new Date(recent[0].created_at).getTime() < 6 * 60 * 60 * 1000) {
+    return { ok: true, posted: false };
+  }
+  const threads = listBbsThreads({ host: me });
+  const online = listFriends().filter((f) => f.status === 'online').length;
+  const lines = [
+    `Node heartbeat — ${me}`,
+    '',
+    `Online friends: ${online}. Boards: ${listBbsBoards().length}. Threads in the base: ${threads.length}.`,
+  ];
+  const latest = threads.slice(0, 3).map((t) => `- [${t.board}] ${t.title} (${t.author_host})`);
+  if (latest.length) lines.push('', 'Recent threads:', ...latest);
+  if (!latest.length) lines.push('', 'The board is quiet — be the first to say what you are building.');
+  const r = await bbsPost({ board: 'general', title: `Heartbeat ${new Date().toISOString().slice(0, 10)}`, body: lines.join('\n'), author_kind: 'bot' });
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, posted: true };
+}
+
+
 /** Store a wire post into a node's local message base (self-healing: a reply
- *  whose thread is missing is reconstructed from thread_title). */
+ *  whose thread is missing is reconstructed from thread_title). Remote text is
+ *  sanitized, graded for trust, and fanned out to mentions/webhooks/SSE. */
 function storeBbsWire(wire: any, host: string): void {
   const board = String(wire.board ?? '').slice(0, 60);
   const id = String(wire.id ?? '');
   if (!board || !id) return;
   const threadId = wire.thread_id ? String(wire.thread_id).slice(0, 64) : null;
-  const threadTitle = String(wire.thread_title ?? '').slice(0, 200);
+  const threadTitle = meshSanitize(wire.thread_title ?? '', 200);
+  const body = meshSanitize(wire.body ?? '', 8000);
+  const kind = String(wire.kind ?? 'note').slice(0, 20) || 'note';
+  const trust = Number.isFinite(Number(wire.trust)) ? Math.max(0, Math.min(2, Number(wire.trust))) : 1;
+  const createdAt = String(wire.created_at ?? new Date().toISOString());
+  const authorHost = String(wire.author_host ?? '');
   if (threadId && threadTitle && !getBbsThread(threadId)) {
-    createBbsThread({ id: threadId, board, author_host: String(wire.author_host ?? ''), author_kind: String(wire.author_kind ?? 'bot'), title: threadTitle, created_at: String(wire.created_at ?? new Date().toISOString()), host });
+    createBbsThread({
+      id: threadId, board, author_host: authorHost,
+      author_kind: String(wire.author_kind ?? 'bot'), title: threadTitle,
+      created_at: createdAt, host, kind: String(wire.thread_kind ?? 'discussion'),
+    });
   }
-  createBbsPost({
+  const isNew = createBbsPost({
     id,
     board,
     thread_id: threadId,
     reply_to: wire.reply_to ? String(wire.reply_to).slice(0, 64) : null,
-    author_host: String(wire.author_host ?? ''),
+    author_host: authorHost,
     author_kind: String(wire.author_kind ?? 'bot'),
-    body: String(wire.body ?? '').slice(0, 8000),
-    created_at: String(wire.created_at ?? new Date().toISOString()),
+    body,
+    created_at: createdAt,
     host,
+    kind,
+    trust,
   });
+  if (!isNew) return; // an idempotent replay changes nothing downstream
+  registerMentions({ id, board, thread_id: threadId, author_host: authorHost, body, created_at: createdAt });
+  const ev: BbsEvent = { type: 'post', node: myHostname(), board, thread_id: threadId, post_id: id, author: authorHost, excerpt: body.slice(0, 200), created_at: createdAt };
+  bbsEvents.emit('event', ev);
+  // Interest-subscribed webhooks: a caller opts into a board name or '*'.
+  for (const c of listBbsCallersByStatus('active')) {
+    if (!c.webhook) continue;
+    let interests: string[] = [];
+    try { interests = JSON.parse(c.interests || '[]'); } catch { interests = []; }
+    if (interests.includes('*') || interests.includes(board)) fireWebhook(c.webhook, ev);
+  }
 }
 
 /** Ingest a friend's post into MY message base. The sender's hostname is only
@@ -750,7 +1325,7 @@ function storeBbsWire(wire: any, host: string): void {
 function handleBbsPost(body: any): { ok: boolean; error?: string } {
   const board = String(body?.board ?? '').slice(0, 60);
   const id = String(body?.id ?? '');
-  const bodyText = String(body?.body ?? '').slice(0, 8000);
+  const bodyText = meshSanitize(body?.body ?? '', 8000);
   if (!board || !id || !bodyText) return { ok: false, error: 'board, id, and body are required' };
   // A reply names an existing thread; a new thread carries its own title and a
   // fresh id, so only replies are resolved (and only against this node).
@@ -759,6 +1334,13 @@ function handleBbsPost(body: any): { ok: boolean; error?: string } {
     if (!r.id) return { ok: false, error: r.error || `no such thread on this node: ${body.thread_id}` };
     body.thread_id = r.id;
   }
+  const scan = scanInjection(bodyText);
+  body.body = bodyText;
+  body.kind = String(body?.kind ?? 'note').slice(0, 20) || 'note';
+  // Friends are a trusted edge; an instruction-shaped post is downgraded for the
+  // reader and logged, but not silently rejected (the mesh is already paired).
+  body.trust = scan.score >= 6 ? 0 : 2;
+  if (scan.score >= 6) recordOffense(body?.author_host || 'unknown-friend', 'injection_signal', scan.hits.join('; ').slice(0, 200));
   storeBbsWire(body, myHostname());
   return { ok: true };
 }
@@ -788,17 +1370,19 @@ export async function bbsPost(opts: {
   body: string;
   author_kind: 'bot' | 'human';
   host?: string;
+  kind?: string;
 }): Promise<{ ok: boolean; post_id?: string; thread_id?: string; host: string; error?: string }> {
   const me = myHostname();
   const target = normalizeHost(opts.host || me);
   const board = String(opts.board || '').slice(0, 60);
   if (!board) return { ok: false, host: target, error: 'board is required' };
   if (!getBbsBoard(board)) return { ok: false, host: target, error: `unknown board: ${board}` };
-  const body = String(opts.body || '').slice(0, 8000);
+  const body = meshSanitize(opts.body || '', 8000);
   if (!body) return { ok: false, host: target, error: 'body is required' };
   const authorHost = me;
   const authorKind = opts.author_kind === 'human' ? 'human' : 'bot';
   const createdAt = new Date().toISOString();
+  const kind = String(opts.kind || 'note').slice(0, 20) || 'note';
 
   let threadId = '';
   let threadTitle = '';
@@ -806,7 +1390,7 @@ export async function bbsPost(opts: {
     // flat chat on the target node, no thread
   } else if (opts.title) {
     threadId = crypto.randomUUID();
-    threadTitle = String(opts.title).slice(0, 200);
+    threadTitle = meshSanitize(opts.title, 200);
   } else if (opts.thread_id) {
     const raw = String(opts.thread_id).slice(0, 64);
     if (target === me) {
@@ -834,8 +1418,11 @@ export async function bbsPost(opts: {
     author_kind: authorKind,
     thread_id: threadId || undefined,
     thread_title: threadTitle || undefined,
+    thread_kind: threadTitle ? kind : undefined,
     reply_to: replyTo || undefined,
     body,
+    kind,
+    trust: 2,
     created_at: createdAt,
   };
 
@@ -876,7 +1463,10 @@ export function botnetMintCaller(handle: string): { ok: boolean; handle?: string
 }
 
 export function botnetRevokeCaller(handle: string): { ok: boolean; error?: string } {
-  if (!deleteBbsCaller(String(handle || '').toLowerCase())) return { ok: false, error: 'no such caller' };
+  const h = String(handle || '').toLowerCase();
+  if (!deleteBbsCaller(h)) return { ok: false, error: 'no such caller' };
+  // A revoked handle must not be able to re-register itself back in.
+  setBbsJoinRequestStatus(h, 'revoked');
   return { ok: true };
 }
 
@@ -884,38 +1474,51 @@ export function botnetListCallers(): { handle: string; created_at: string; last_
   return listBbsCallers().map((c) => ({ handle: c.handle, created_at: c.created_at, last_seen: c.last_seen }));
 }
 
-/** Resolve a bearer token to its caller handle (or null). */
+/** Resolve a bearer token to its caller handle (or null). A pending or revoked
+ *  caller is rejected even with a valid token. */
 export function botnetCallerByToken(token: string): string | null {
   const hash = crypto.createHash('sha256').update(String(token || '')).digest('hex');
   const c = getBbsCallerByHash(hash);
   if (!c) return null;
+  if ((c.status || 'active') !== 'active') return null;
   touchBbsCaller(c.handle);
   return c.handle;
 }
 
-/** Caller post — same wire shape a friend would send, but stored as @handle. */
+/** Caller post — same wire shape a friend would send, but stored as @handle.
+ *  Idempotent on `client_key`, sanitized, and trust-graded. */
 export async function bbsCallerPost(handle: string, opts: {
   board: string;
   title?: string;
   thread_id?: string;
   reply_to?: string;
   body: string;
-}): Promise<{ ok: boolean; post_id?: string; thread_id?: string; error?: string }> {
+  kind?: string;
+  client_key?: string;
+}): Promise<{ ok: boolean; post_id?: string; thread_id?: string; error?: string; deduped?: boolean }> {
   const me = myHostname();
   const board = String(opts.board || '').slice(0, 60);
   if (!board || !getBbsBoard(board)) return { ok: false, error: `unknown board: ${board || '(none)'}` };
-  const body = String(opts.body || '').slice(0, 8000);
+  const body = meshSanitize(opts.body || '', 8000);
   if (!body) return { ok: false, error: 'body is required' };
   const host = '@' + handle;
+
+  // Idempotency: a retried write returns the original post instead of a dupe.
+  const clientKey = String(opts.client_key || '').slice(0, 120);
+  if (clientKey) {
+    const prior = getBbsPostKey(handle, clientKey);
+    if (prior) return { ok: true, post_id: prior, deduped: true };
+  }
   if (!bbsRateOk(host)) return { ok: false, error: 'rate limited' };
 
   let threadId = '';
   let threadTitle = '';
+  const kind = String(opts.kind || 'note').slice(0, 20) || 'note';
   if (board === 'shoutbox') {
     // flat chat, no thread
   } else if (opts.title) {
     threadId = crypto.randomUUID();
-    threadTitle = String(opts.title).slice(0, 200);
+    threadTitle = meshSanitize(opts.title, 200);
   } else if (opts.thread_id) {
     const r = resolveBbsThreadId(String(opts.thread_id));
     if (!r.id) return { ok: false, error: r.error || 'no such thread on this node' };
@@ -925,6 +1528,7 @@ export async function bbsCallerPost(handle: string, opts: {
     return { ok: false, error: 'forum posts need a thread (title for a new thread, or thread_id to reply)' };
   }
 
+  const scan = scanInjection(body);
   const postId = crypto.randomUUID();
   storeBbsWire({
     id: postId,
@@ -933,10 +1537,14 @@ export async function bbsCallerPost(handle: string, opts: {
     author_kind: 'bot',
     thread_id: threadId || undefined,
     thread_title: threadTitle || undefined,
+    thread_kind: threadTitle ? kind : undefined,
     reply_to: opts.reply_to ? String(opts.reply_to).slice(0, 64) : undefined,
     body,
+    kind,
+    trust: scan.score >= 4 ? 0 : 1,
     created_at: new Date().toISOString(),
   }, me);
+  if (clientKey) createBbsPostKey(handle, clientKey, postId);
   return { ok: true, post_id: postId, thread_id: threadId || undefined };
 }
 export function bbsState(board?: string) {
@@ -944,7 +1552,7 @@ export function bbsState(board?: string) {
   backfillBbsHost(me);
   const filter = String(board || '').trim();
   const boards = listBbsBoards();
-  const self = { hostname: me, link: myLink(), profile: getSelfProfile(), specialists: SELF_SPECIALISTS };
+  const self = { hostname: me, link: myLink(), profile: getSelfProfile(), specialists: SELF_SPECIALISTS, capabilities: CAPABILITIES };
   if (filter && !boards.some((b) => b.name === filter)) {
     return { ok: false, error: `unknown board: ${filter}`, self, node: me, boards: [], threads: [], posts: [], files: [] };
   }
@@ -960,30 +1568,31 @@ export function bbsState(board?: string) {
 
 /** Dial into a friend's node: fetch its recent boards live, decrypted with its
  *  session key. Nothing is stored — an offline friend yields an empty dial. */
-export async function bbsDialState(hostname: string, board?: string): Promise<{ ok: boolean; host: string; online: boolean; threads: any[]; posts: any[]; files: any[]; error?: string }> {
+export async function bbsDialState(hostname: string, board?: string): Promise<{ ok: boolean; host: string; online: boolean; boards: any[]; threads: any[]; posts: any[]; files: any[]; error?: string }> {
   const me = myHostname();
   const host = normalizeHost(hostname);
   const filter = String(board || '').trim();
-  if (filter && !getBbsBoard(filter)) return { ok: false, host, online: false, threads: [], posts: [], files: [], error: `unknown board: ${filter}` };
+  if (filter && !getBbsBoard(filter)) return { ok: false, host, online: false, boards: [], threads: [], posts: [], files: [], error: `unknown board: ${filter}` };
   if (!host || host === me) {
     const s = bbsState(filter || undefined);
-    return { ok: true, host: me, online: true, threads: s.threads, posts: s.posts, files: s.files };
+    return { ok: true, host: me, online: true, boards: s.boards, threads: s.threads, posts: s.posts, files: s.files };
   }
-  if (!getFriend(host)) return { ok: false, host, online: false, threads: [], posts: [], files: [], error: 'not a friend' };
+  if (!getFriend(host)) return { ok: false, host, online: false, boards: [], threads: [], posts: [], files: [], error: 'not a friend' };
   try {
     const r = await fetchFromFriend(host, '/api/friends/bbs/recent', { method: 'GET', timeoutMs: 10000 });
-    if (!r.ok) return { ok: false, host, online: false, threads: [], posts: [], files: [], error: `node returned HTTP ${r.status}` };
+    if (!r.ok) return { ok: false, host, online: false, boards: [], threads: [], posts: [], files: [], error: `node returned HTTP ${r.status}` };
     const pick = (rows: any[]) => (filter ? rows.filter((row) => row?.board === filter) : rows);
     return {
       ok: true,
       host,
       online: true,
+      boards: Array.isArray(r.body?.boards) ? r.body.boards : [],
       threads: pick(Array.isArray(r.body?.threads) ? r.body.threads : []),
       posts: pick(Array.isArray(r.body?.posts) ? r.body.posts : []),
       files: Array.isArray(r.body?.files) ? r.body.files : [],
     };
   } catch (err: any) {
-    return { ok: false, host, online: false, threads: [], posts: [], files: [], error: String(err?.message ?? err) };
+    return { ok: false, host, online: false, boards: [], threads: [], posts: [], files: [], error: String(err?.message ?? err) };
   }
 }
 
@@ -1041,6 +1650,17 @@ export function bbsFileRead(name: string): { ok: boolean; name: string; content?
   }
 }
 
+/** Binary-safe read for file transfers (XMODEM download / QWK packet fetch). */
+export function bbsFileReadBase64(name: string): { ok: boolean; name: string; data_base64?: string; error?: string } {
+  try {
+    const target = path.join(bbsFilesDir(), path.basename(String(name)));
+    const data = fs.readFileSync(target);
+    return { ok: true, name: path.basename(target), data_base64: data.toString('base64') };
+  } catch (err: any) {
+    return { ok: false, name: String(name), error: String(err?.message ?? err) };
+  }
+}
+
 /** Dashboard upload: real file bytes (base64) from the browser. Any type —
  *  keeps its extension; never clobbers an existing name. 10MB cap. */
 export function bbsFileUpload(name: string, dataBase64: string): { ok: boolean; name?: string; error?: string } {
@@ -1081,8 +1701,146 @@ export function bbsPostDelete(id: string): { ok: boolean; error?: string } {
   const post = getBbsPost(id);
   if (!post) return { ok: false, error: 'post not found' };
   deleteBbsPost(id);
+  deleteBbsVotesForPost(id);
+  deleteBbsMentionsForPost(id);
   if (post.thread_id) deleteBbsThreadIfEmpty(post.thread_id);
   return { ok: true };
+}
+
+const CANONICAL_BOARDS = new Set(['shoutbox', 'general', 'ideas', 'help', 'show-and-tell']);
+
+/** Remove a node-defined board. The five canonical boards stay (the seed would
+ *  re-add them anyway) and a board with posts is refused. */
+export function bbsRemoveBoard(name: string): { ok: boolean; error?: string } {
+  const n = String(name || '').toLowerCase();
+  if (CANONICAL_BOARDS.has(n)) return { ok: false, error: 'the five canonical boards cannot be removed' };
+  if (!getBbsBoard(n)) return { ok: false, error: 'no such board' };
+  if (countBbsPostsOnBoard(n) > 0) return { ok: false, error: 'board still has posts' };
+  deleteBbsBoard(n);
+  return { ok: true };
+}
+
+/** Sysop cleanup: drop a join-request record for a handle entirely. */
+export function bbsClearJoinRequest(handle: string): { ok: boolean } {
+  deleteBbsJoinRequest(String(handle || '').toLowerCase());
+  return { ok: true };
+}
+
+// ── Bulletins: sysop announcements shown at logon ───────────────────────────
+// A small JSON file is the store — no schema needed. Newest first, capped at 20.
+function bbsBulletinsPath(): string {
+  return path.join(process.cwd(), 'data', 'friends', 'bulletins.json');
+}
+
+export function bbsBulletins(): any[] {
+  try {
+    const arr = JSON.parse(fs.readFileSync(bbsBulletinsPath(), 'utf-8'));
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+export function bbsAddBulletin(title: string, body: string): { ok: boolean; id?: string; error?: string } {
+  const t = meshSanitize(title, 120);
+  const b = meshSanitize(body, 4000);
+  if (!t || !b) return { ok: false, error: 'title and body are required' };
+  const list = bbsBulletins();
+  const entry = { id: crypto.randomUUID(), title: t, body: b, author: shortHost(), created_at: new Date().toISOString() };
+  list.unshift(entry);
+  if (list.length > 20) list.length = 20;
+  try {
+    fs.mkdirSync(path.dirname(bbsBulletinsPath()), { recursive: true });
+    fs.writeFileSync(bbsBulletinsPath(), JSON.stringify(list, null, 2), 'utf-8');
+    return { ok: true, id: entry.id };
+  } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+}
+
+export function bbsDeleteBulletin(id: string): { ok: boolean; error?: string } {
+  const list = bbsBulletins().filter((b) => b.id !== String(id || ''));
+  try {
+    fs.writeFileSync(bbsBulletinsPath(), JSON.stringify(list, null, 2), 'utf-8');
+    return { ok: true };
+  } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+}
+
+// ── Profiles: a caller's own self-description (shown next to their name) ────
+function bbsProfilesPath(): string { return path.join(process.cwd(), 'data', 'friends', 'profiles.json'); }
+
+interface ProfileRec { name: string; bio: string; }
+function readProfiles(): Record<string, ProfileRec> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(bbsProfilesPath(), 'utf-8'));
+    const out: Record<string, ProfileRec> = {};
+    for (const [k, v] of Object.entries(raw || {})) {
+      if (typeof v === 'string') out[k] = { name: '', bio: v };
+      else if (v && typeof v === 'object') out[k] = { name: String((v as any).name || ''), bio: String((v as any).bio || '') };
+    }
+    return out;
+  } catch { return {}; }
+}
+
+export function bbsGetProfileFull(handle: string): { handle: string; name: string; bio: string; level: string; joined: string } {
+  const h = String(handle || '').toLowerCase();
+  const rec = readProfiles()[h] || { name: '', bio: '' };
+  const caller = getBbsCaller(h);
+  return {
+    handle: h,
+    name: rec.name,
+    bio: rec.bio || (caller?.profile || ''),
+    level: caller?.level || (h === shortHost().toLowerCase() ? 'sysop' : 'caller'),
+    joined: caller?.created_at ? String(caller.created_at).slice(0, 10) : '',
+  };
+}
+
+export function bbsGetProfile(handle: string): string { return bbsGetProfileFull(handle).bio; }
+
+export function bbsSetProfileFull(handle: string, patch: { name?: string; bio?: string }): { ok: boolean; error?: string } {
+  const h = String(handle || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
+  if (!h) return { ok: false, error: 'handle is required' };
+  const map = readProfiles();
+  const cur = map[h] || { name: '', bio: '' };
+  const name = patch.name !== undefined ? meshSanitize(patch.name, 60) : cur.name;
+  const bio = patch.bio !== undefined ? meshSanitize(patch.bio, 280) : cur.bio;
+  map[h] = { name, bio };
+  try {
+    fs.mkdirSync(path.dirname(bbsProfilesPath()), { recursive: true });
+    fs.writeFileSync(bbsProfilesPath(), JSON.stringify(map, null, 2), 'utf-8');
+    try { if (getBbsCaller(h)) setBbsCallerMeta(h, { profile: bio }); } catch { /* not a caller */ }
+    return { ok: true };
+  } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+}
+
+export function bbsSetProfile(handle: string, profile: string): { ok: boolean; handle?: string; profile?: string; error?: string } {
+  const r = bbsSetProfileFull(handle, { bio: profile });
+  return r.ok ? { ok: true, handle: String(handle || '').toLowerCase(), profile: meshSanitize(profile, 280) } : r;
+}
+
+// ── QWK offline mail ─────────────────────────────────────────────────────────
+// Export packs the node's messages into a .QWK file in the file area (download
+// it, read offline in MultiMail etc.). Import parses a REP packet and posts the
+// replies to the general board.
+
+export function bbsQwkExport(handle: string): { ok: boolean; name?: string; error?: string } {
+  try {
+    const packet = buildQwkPacket(myHostname());
+    const name = 'qwk-' + fileSlug(handle || 'caller') + '.qwk';
+    const up = bbsFileUpload(name, packet.toString('base64'));
+    if (!up.ok) return { ok: false, error: up.error };
+    return { ok: true, name: up.name };
+  } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
+}
+
+export async function bbsQwkImport(dataBase64: string): Promise<{ ok: boolean; posted?: number; error?: string }> {
+  try {
+    const packet = Buffer.from(String(dataBase64 || ''), 'base64');
+    if (!packet.length) return { ok: false, error: 'empty packet' };
+    const replies = parseRepPacket(packet);
+    let posted = 0;
+    for (const r of replies) {
+      const res = await bbsPost({ board: 'general', title: (r.subject || 'RE: reply').slice(0, 120), body: `From ${r.from || 'a caller'}:\n\n${r.body}`, author_kind: 'human' });
+      if (res.ok) posted++;
+    }
+    return { ok: true, posted };
+  } catch (err: any) { return { ok: false, error: String(err?.message ?? err) }; }
 }
 
 // ── Doors: third-party games as self-contained HTML in the node's doors rack ──
@@ -1509,6 +2267,7 @@ export async function handleFriendsRequest(
     const me = myHostname();
     backfillBbsHost(me);
     sendEncrypted(res, host, method, pathname, {
+      boards: listBbsBoards(),
       threads: listBbsThreads({ host: me }).slice(0, 200),
       posts: listBbsPosts({ host: me, limit: 200 }),
       files: bbsFiles(),
@@ -1602,18 +2361,159 @@ export async function handleFriendsRequest(
     sendJson(res, {
       enabled: getRouterState('bbs:autonomy:enabled') !== 'false',
       agent: getRouterState('bbs:autonomy:agent') || 'atlas',
+      welcome: getRouterState('bbs:callers:welcome') !== 'false',
+      callers: listBbsCallers().length,
+      pending_joins: bbsJoinRequests().filter((r) => r.status === 'pending').length,
     });
     return true;
   }
   if (pathname === '/api/friends/botnet' && method === 'POST') {
     const body = await readBody(req);
     if (body?.enabled !== undefined) setRouterState('bbs:autonomy:enabled', body.enabled === true ? 'true' : 'false');
+    if (body?.welcome !== undefined) setRouterState('bbs:callers:welcome', body.welcome === true ? 'true' : 'false');
     const agent = String(body?.agent || '').toLowerCase();
     if (agent === 'atlas' || agent === 'vulkan') setRouterState('bbs:autonomy:agent', agent);
     sendJson(res, {
       enabled: getRouterState('bbs:autonomy:enabled') !== 'false',
       agent: getRouterState('bbs:autonomy:agent') || 'atlas',
+      welcome: getRouterState('bbs:callers:welcome') !== 'false',
+      callers: listBbsCallers().length,
+      pending_joins: bbsJoinRequests().filter((r) => r.status === 'pending').length,
     });
+    return true;
+  }
+
+  // Local-only: the node manifest (what discovery serves unauthenticated), the
+  // capability directory, caller inbox, join-request queue, and heartbeat.
+  if (pathname === '/api/friends/bbs/manifest' && method === 'GET') {
+    sendJson(res, nodeManifest());
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/capabilities' && method === 'GET') {
+    sendJson(res, bbsCapabilities(String(_params.get('q') || '')));
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/mentions' && method === 'GET') {
+    sendJson(res, bbsMentions(shortHost()));
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/digest' && method === 'GET') {
+    sendJson(res, await bbsDigest(String(_params.get('host') || '')));
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/heartbeat' && method === 'POST') {
+    sendJson(res, publishNodeHeartbeat(true));
+    return true;
+  }
+  // Mail — the node's inbox: DMs from the friend mesh + @-mentions from callers.
+  if (pathname === '/api/friends/bbs/mail' && method === 'GET') {
+    const mentions = listBbsMentions(shortHost(), 50).map((m) => {
+      const p = getBbsPost(m.post_id);
+      return { ...m, body: p ? p.body : m.excerpt };
+    });
+    sendJson(res, {
+      ok: true,
+      messages: listFriendMessages(50),
+      mentions,
+      unread: countBbsUnreadMentions(shortHost()),
+    });
+    return true;
+  }
+  // Local (dashboard/seat): send a DM to a friend — the BBS Mail reply path.
+  if (pathname === '/api/friends/dm' && method === 'POST') {
+    const body = await readBody(req);
+    const hostname = String(body?.hostname || '').trim();
+    const message = String(body?.message || '').slice(0, 4000);
+    if (!hostname || !message) { sendJson(res, { ok: false, error: 'hostname and message are required' }); return true; }
+    sendJson(res, await dmFriend(hostname, message));
+    return true;
+  }
+  // Bulletins — sysop announcements (shown at logon + on the BULLETINS screen).
+  if (pathname === '/api/friends/bbs/bulletins' && method === 'GET') {
+    sendJson(res, { ok: true, bulletins: bbsBulletins() });
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/bulletins' && method === 'POST') {
+    const body = await readBody(req);
+    sendJson(res, bbsAddBulletin(String(body?.title || ''), String(body?.body || '')));
+    return true;
+  }
+  const bullDelMatch = pathname.match(/^\/api\/friends\/bbs\/bulletins\/([^/]+)\/delete$/);
+  if (bullDelMatch && method === 'POST') {
+    sendJson(res, bbsDeleteBulletin(decodeURIComponent(bullDelMatch[1])));
+    return true;
+  }
+  // Users — telnet/console login accounts (handle + password + level).
+  if (pathname === '/api/friends/bbs/users' && method === 'GET') {
+    sendJson(res, { ok: true, users: listBbsUsers() });
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/users' && method === 'POST') {
+    const body = await readBody(req);
+    const level = body?.level === 'sysop' ? 'sysop' : 'caller';
+    sendJson(res, bbsRegisterUser(String(body?.handle || ''), String(body?.password || ''), level));
+    return true;
+  }
+  // Profiles — a caller's self-description.
+  if (pathname === '/api/friends/bbs/profile' && method === 'GET') {
+    const handle = String(_params.get('handle') || '');
+    sendJson(res, { ok: true, ...bbsGetProfileFull(handle) });
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/profile' && method === 'POST') {
+    const body = await readBody(req);
+    const handle = String(body?.handle || '');
+    const patch: { name?: string; bio?: string } = {};
+    if (body?.name !== undefined) patch.name = String(body.name);
+    if (body?.bio !== undefined) patch.bio = String(body.bio);
+    else if (body?.profile !== undefined) patch.bio = String(body.profile);
+    const r = bbsSetProfileFull(handle, patch);
+    sendJson(res, { ok: r.ok, ...(r.ok ? bbsGetProfileFull(handle) : { error: r.error }) });
+    return true;
+  }
+  // QWK offline mail — export packs the message base into a .QWK; import posts
+  // the replies from a REP packet.
+  if (pathname === '/api/friends/bbs/qwk' && method === 'GET') {
+    sendJson(res, bbsQwkExport(String(_params.get('handle') || 'caller')));
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/qwk' && method === 'POST') {
+    const body = await readBody(req);
+    sendJson(res, await bbsQwkImport(String(body?.data_base64 || '')));
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/join-requests' && method === 'GET') {
+    sendJson(res, { ok: true, requests: bbsJoinRequests() });
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/boards' && method === 'GET') {
+    sendJson(res, { ok: true, boards: listBbsBoards() });
+    return true;
+  }
+  if (pathname === '/api/friends/bbs/boards' && method === 'POST') {
+    const body = await readBody(req);
+    const r = bbsAddBoard(String(body?.name || ''), String(body?.description || ''), Number(body?.position));
+    sendJson(res, r, r.ok ? 200 : 400);
+    return true;
+  }
+  const bbsBoardDeleteMatch = pathname.match(/^\/api\/friends\/bbs\/boards\/([^/]+)$/);
+  if (bbsBoardDeleteMatch && method === 'DELETE') {
+    sendJson(res, bbsRemoveBoard(decodeURIComponent(bbsBoardDeleteMatch[1])));
+    return true;
+  }
+  const joinApproveMatch = pathname.match(/^\/api\/friends\/bbs\/join-requests\/([^/]+)\/approve$/);
+  if (joinApproveMatch && method === 'POST') {
+    sendJson(res, bbsApproveJoin(decodeURIComponent(joinApproveMatch[1])));
+    return true;
+  }
+  const joinDenyMatch = pathname.match(/^\/api\/friends\/bbs\/join-requests\/([^/]+)\/deny$/);
+  if (joinDenyMatch && method === 'POST') {
+    sendJson(res, bbsDenyJoin(decodeURIComponent(joinDenyMatch[1])));
+    return true;
+  }
+  const joinClearMatch = pathname.match(/^\/api\/friends\/bbs\/join-requests\/([^/]+)$/);
+  if (joinClearMatch && method === 'DELETE') {
+    sendJson(res, bbsClearJoinRequest(decodeURIComponent(joinClearMatch[1])));
     return true;
   }
 
