@@ -35,18 +35,6 @@ sudo pacman -S --needed --noconfirm \
   scrot \
   xclip
 
-# PIM hub — Kontact integration. Radicale is the local CalDAV/CardDAV
-# server (single source of truth for calendar/contacts/todos); install.sh
-# provisions a user systemd service for it only when the binary is present,
-# so it must be installed here or the Kontact features silently no-op.
-# kdepim-runtime ships the Akonadi DAV groupware resource that Kontact uses
-# to mount Radicale's collections; kontact is the shell (harmless if already
-# installed, --needed skips it).
-sudo pacman -S --needed --noconfirm \
-  radicale \
-  akonadi \
-  kdepim-runtime \
-  kontact
 
 # Python (voice + security apps) and the native headers/libraries their pip
 # packages build or run against: portaudio for pyaudio, ffmpeg for

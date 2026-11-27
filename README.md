@@ -697,7 +697,6 @@ The Telegram bot is **single-owner by design** — it only talks to one chat. Th
 | LLM Routing | Native Ollama HTTP by default; optional credential proxy (`src/credential-proxy.ts`) for Anthropic format translation |
 | Messaging | grammy (Telegram), Baileys (WhatsApp), Slack SDK |
 | Email | IMAP via imapflow, SMTP via nodemailer |
-| Calendar/Contacts | CalDAV/CardDAV via Radicale, synced with KDE Kontact |
 | Voice | Whisper (STT), Kokoro or Orpheus (TTS) |
 | Logging | Pino |
 | Process | Single Node.js process, agent-runner as persistent child |
@@ -738,7 +737,7 @@ On Arch Linux (the primary target):
 bash install-deps.sh
 ```
 
-This installs Node.js, npm, git, build tools, poppler, tmux, sqlite, Radicale, KDE PIM integration, and desktop-control utilities (`xdotool`, `ydotool`, `wtype`, `grim`, clipboard tools, etc.). It also enables `loginctl linger` so user systemd services keep running after logout.
+This installs Node.js, npm, git, build tools, poppler, tmux, sqlite, and desktop-control utilities (`xdotool`, `ydotool`, `wtype`, `grim`, clipboard tools, etc.). It also enables `loginctl linger` so user systemd services keep running after logout.
 
 On other distros, install the equivalents manually. The key binaries Warden expects are:
 
@@ -746,7 +745,6 @@ On other distros, install the equivalents manually. The key binaries Warden expe
 - `poppler` (for `pdftotext`)
 - `tmux`, `sqlite3`
 - `xdotool`, `ydotool`, `wtype`, `grim`, `wl-clipboard`, `xclip`, `scrot`
-- `radicale`, `akonadi`, `kdepim-runtime`, `kontact` (for calendar/contacts; optional)
 
 For the browser capability (optional): your normal **Google Chrome**, plus `npm install -g mcp-chrome-bridge` and the unpacked `chrome-mcp-server-1.0.0/` extension from this repo loaded via `chrome://extensions` → *Load unpacked*. No system Chromium and no CDP flags needed — the extension bridge is the only path.
 

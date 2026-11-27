@@ -377,26 +377,6 @@
   function injectExternalToggle() {
     const view = $('view-accounts');
     if (!view || $('pimExternalSection')) return;
-    const wrap = document.createElement('div');
-    wrap.className = 'account-section';
-    wrap.id = 'pimExternalSection';
-    wrap.innerHTML =
-      '<div class="account-section-head"><h3>PIM Routing</h3><span class="dim">Radicale / Kontact</span></div>'
-      + '<div class="account-list" style="padding:10px">'
-      + '<label class="inline" style="display:flex;gap:8px;align-items:center;cursor:pointer">'
-      + '<input type="checkbox" id="pimExternalToggle"> Route PIM to external apps (Radicale/Kontact)'
-      + '</label>'
-      + '<div class="dim" style="font-size:11px;margin-top:6px">When on, calendar/contacts/todos sync to Kontact via the local Radicale hub instead of being stored internally. Toggle is UI-only for now — deeper routing is wired separately.</div>'
-      + '</div>';
-    view.querySelector('.accounts-grid').appendChild(wrap);
-    const cb = $('pimExternalToggle');
-    cb.checked = localStorage.getItem('jarvis-pim-external') === '1';
-    cb.addEventListener('change', () => {
-      localStorage.setItem('jarvis-pim-external', cb.checked ? '1' : '0');
-      toast(cb.checked ? 'PIM routing: external (Kontact)' : 'PIM routing: internal', 'info');
-      updateExternalBadges();
-    });
-  }
   function externalOn() { return localStorage.getItem('jarvis-pim-external') === '1'; }
   function updateExternalBadges() {
     const badge = $('calKontactBadge');
@@ -416,8 +396,6 @@
     injectToast();
     bindCalendar();
     bindEmail();
-    injectExternalToggle();
-    updateExternalBadges();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

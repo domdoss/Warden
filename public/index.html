@@ -47,14 +47,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 00-4 4v1a4 4 0 00-3 6.5A4 4 0 0012 21a4 4 0 007-6.5A4 4 0 0016 8V7a4 4 0 00-4-4z"/><circle cx="12" cy="12" r="2"/></svg>
         <span class="rail-label">MARM</span>
       </button>
-      <button class="rail-btn rail-btn-red" data-view="android" data-tip="Android">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>
-        <span class="rail-label">Android</span>
-      </button>
-      <button class="rail-btn rail-btn-red" data-view="alphastack" data-tip="Alpha Stack">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-6 4 3 5-8 5 5"/><path d="M3 21h18"/></svg>
-        <span class="rail-label">Alpha Stack</span>
-      </button>
       <button class="rail-btn" data-view="imagegen" data-tip="Image Gen">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
         <span class="rail-label">Image Gen</span>
@@ -360,7 +352,6 @@
       <section class="view" id="view-calendar">
         <div class="chat-meta-row">
           <span class="chip" id="calTitle">Calendar</span>
-          <span class="dim hidden" id="calKontactBadge" style="margin-left:6px">synced to Kontact via Radicale</span>
           <span class="spacer"></span>
           <button class="btn btn-primary btn-sm" id="btnCalNew">+ New Event</button>
           <button class="btn btn-ghost btn-sm" id="btnCalSelect">Calendars</button>
@@ -610,19 +601,6 @@
       </section>
 
       <!-- ===== Training view ===== -->
-      <!-- ===== Alpha Stack view — embeds the stack's own webapp (127.0.0.1:8765) ===== -->
-      <section class="view" id="view-alphastack">
-        <div class="chat-meta-row">
-          <span class="chip">alpha stack</span>
-          <span class="chip" id="alphaStackStatus">…</span>
-          <span class="spacer"></span>
-          <button class="btn btn-ghost btn-sm" id="btnAlphaStackRefresh">Refresh</button>
-        </div>
-        <div style="flex:1;min-height:0;display:flex;flex-direction:column">
-          <iframe id="alphaStackFrame" title="Alpha Stack webapp" style="flex:1;width:100%;border:0;display:none;background:var(--bg,#111)"></iframe>
-          <div id="alphaStackFallback" class="dim mono" style="font-size:12px;padding:14px;overflow-y:auto"></div>
-        </div>
-      </section>
 
       <!-- ===== MARM view — embeds MARM's own Console webapp (127.0.0.1:8002) ===== -->
       <section class="view" id="view-marm">
@@ -1249,51 +1227,6 @@ Write what you want the AI to do periodically. For example:
         </div>
       </section>
 
-      <section class="view" id="view-android">
-        <div class="view-header">
-          <h2 class="view-title">Android</h2>
-          <div style="display:flex;gap:8px;align-items:center">
-            <span id="mobile-status-pill" style="padding:3px 10px;border-radius:999px;background:#222;font-size:12px">off</span>
-            <button class="btn btn-sm" id="btn-mobile-connect">Connect phone</button>
-            <button class="btn btn-accent btn-sm" id="btn-mobile-start">Start loop</button>
-            <button class="btn btn-sm" id="btn-mobile-stop">Stop loop</button>
-          </div>
-        </div>
-        <div class="view-body-padded" style="display:grid;grid-template-columns:340px 1fr;gap:20px;align-items:start">
-          <div>
-            <div class="info-banner info-banner-subtle" id="mobile-device">Checking device…</div>
-            <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
-              <input id="mobile-address" placeholder="ip:port (blank = find automatically)" autocomplete="off" spellcheck="false"
-                style="flex:1;min-width:0;background:#0b0d10;border:1px solid #222;color:#ddd;padding:6px;border-radius:6px;font-size:12px">
-            </div>
-            <div style="margin-top:12px;border:1px solid #222;border-radius:12px;overflow:hidden;background:#000">
-              <img id="mobile-frame" alt="phone screen" style="display:block;width:100%;height:auto" src="/api/mobile/frame">
-            </div>
-            <div style="margin-top:8px;font-size:12px;color:#888" id="mobile-meta"></div>
-            <h3 class="alarm-cal-heading" style="margin-top:16px">Objective</h3>
-            <div id="mobile-objective" style="font-size:12px;color:#bbb;white-space:pre-wrap;max-height:240px;overflow:auto"></div>
-          </div>
-          <div>
-            <h3 class="alarm-cal-heading">Talent</h3>
-            <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-              <select id="talent-select" style="flex:1;background:#0b0d10;border:1px solid #222;color:#ddd;padding:6px;border-radius:6px;font-size:12px"></select>
-              <button class="btn btn-sm" id="btn-talent-new">+ New</button>
-            </div>
-            <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-              <select id="talent-skill-picker" style="flex:1;background:#0b0d10;border:1px solid #222;color:#777;padding:6px;border-radius:6px;font-size:12px"></select>
-            </div>
-            <div id="mobile-loop-editor" style="display:none;flex-direction:column;gap:6px;border:1px solid #1c2026;border-radius:8px;padding:8px;font-size:12px"></div>
-            <h3 class="alarm-cal-heading" style="margin-top:16px">Activity</h3>
-            <div id="mobile-journal" style="display:flex;flex-direction:column;gap:6px;height:340px;overflow:auto;border:1px solid #1c2026;border-radius:10px;padding:10px"></div>
-            <div style="margin-top:14px;display:flex;flex-direction:column;gap:6px;border:1px solid #181c22;border-radius:10px;padding:9px 10px;background:#0d1015">
-              <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#8b95a5;line-height:1"><span style="width:38px;letter-spacing:.5px">CPU</span><canvas id="sys-cpu" width="260" height="18" style="flex:1;height:18px;background:#0b0d10;border-radius:3px"></canvas><span id="sys-cpu-v" style="width:36px;text-align:right;color:#cbd5e1">0%</span></div>
-              <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#8b95a5;line-height:1"><span style="width:38px;letter-spacing:.5px">GPU 0</span><canvas id="sys-gpu0" width="260" height="18" style="flex:1;height:18px;background:#0b0d10;border-radius:3px"></canvas><span id="sys-gpu0-v" style="width:36px;text-align:right;color:#cbd5e1">0%</span></div>
-              <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#8b95a5;line-height:1"><span style="width:38px;letter-spacing:.5px">GPU 1</span><canvas id="sys-gpu1" width="260" height="18" style="flex:1;height:18px;background:#0b0d10;border-radius:3px"></canvas><span id="sys-gpu1-v" style="width:36px;text-align:right;color:#cbd5e1">0%</span></div>
-              <div style="font-size:10px;color:#5f6b7a;margin-top:1px" id="sys-mem"></div>
-            </div>
-          </div>
-        </div>
-      </section>
 
       <!-- Logs (chat history browser) -->
 
@@ -1799,6 +1732,5 @@ In parallel, delegate to Atlas: (1) screenshot example.com, AND
 <script src="/js/app.js?v=20261126g"></script>
 <script src="/js/userdash-utils.js"></script>
 <script src="/js/userdash-extras.js"></script>
-<script src="/js/mobile.js"></script>
 </body>
 </html>

@@ -116,11 +116,16 @@ install_training() {
   say "training pipeline ready at $t"
 }
 
+MARM_ON="${WARDEN_PROVISION_MARM:-1}"
+BROWSER_ON="${WARDEN_PROVISION_BROWSER:-1}"
+base() {
+  if [ "$MARM_ON" = "1" ]; then install_marm; install_marm_autoupdate; fi
+  if [ "$BROWSER_ON" = "1" ]; then install_playwright; install_chrome_mcp; fi
+}
 case "$MODE" in
   --training) install_training ;;
-  --all) install_marm; install_marm_autoupdate; install_playwright; install_chrome_mcp; install_training ;;
-  *) install_marm; install_marm_autoupdate; install_playwright; install_chrome_mcp
-     [ "${WARDEN_PROVISION_TRAINING:-0}" = "1" ] && install_training || true ;;
+  --all) base; [ "${WARDEN_PROVISION_TRAINING:-0}" = "1" ] && install_training || true ;;
+  *) base; [ "${WARDEN_PROVISION_TRAINING:-0}" = "1" ] && install_training || true ;;
 esac
 
 mkdir -p "$HOME/.config/warden"

@@ -54,13 +54,7 @@ rsync_payload() {
   if [ -d "$ROOT/container/agent-runner/node_modules" ]; then
     rsync -a "$ROOT/container/agent-runner/node_modules/" "$app/container/agent-runner/node_modules/"
   fi
-  local apk
-  apk="$(ls -t "$ROOT/warden_app/build/app/outputs/flutter-apk/app-release.apk" "$ROOT/warden.apk" "$ROOT/public/warden.apk" 2>/dev/null | head -1)"
-  if [ -n "$apk" ]; then
-    cp -f "$apk" "$app/warden.apk"
-    cp -f "$apk" "$app/public/warden.apk"
-  fi
-  cp -f "$REL/provision.sh" "$REL/update-marm.sh" "$REL/AppRun.common" "$app/"
+  cp -f "$REL/provision.sh" "$REL/update-marm.sh" "$REL/AppRun.common" "$REL/onboard.mjs" "$app/"
   cp -f "$REL"/warden-autoupdate-marm.* "$app/"
   chmod +x "$app/provision.sh" "$app/update-marm.sh"
   printf 'version=%s\nbuilt=%s\nui=%s\n' "$VER" "$STAMP" "$UI" > "$app/VERSION"

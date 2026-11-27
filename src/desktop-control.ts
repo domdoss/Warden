@@ -242,7 +242,7 @@ function parseSwayTree(stdout: string): WindowInfo[] {
 /**
  * wmctrl -l output format:
  * `0x00800004  0 the user Terminal`
- * Columns: id, desktop, "<host> <title>" (the remainder is the host-prefixed
+ * Columns: id, desktop, "localhost <title>" (the remainder is the host-prefixed
  * window title). We keep the full remainder as both title and app — wmctrl
  * does not expose the application class.
  */

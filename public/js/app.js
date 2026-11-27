@@ -274,7 +274,6 @@
     else if (name === 'skills') { refreshSkills(); refreshMcp(); }
     else if (name === 'activity') refreshActivity();
     else if (name === 'training') setTrainingTab(STATE.trainingTab || 'loop');
-    else if (name === 'alphastack') refreshAlphaStack();
     else if (name === 'imagegen') refreshImagegen();
     else if (name === 'marm') refreshMarm();
     else if (name === 'security') refreshSecurity();
@@ -4558,51 +4557,6 @@
   // 127.0.0.1:8765). The webapp is spawned on demand by the server — we just
   // check it's up, start it if not, then load the iframe. The src is set once
   // so re-opening the view doesn't reload the webapp out from under the user.
-  function showAlphaStackFrame() {
-    const chip = $('alphaStackStatus'), frame = $('alphaStackFrame'), fallback = $('alphaStackFallback');
-    const meta = document.querySelector('#view-alphastack .chat-meta-row');
-    chip.textContent = 'ready';
-    fallback.style.display = 'none';
-    frame.style.display = '';
-    // Hide Warden's chip/refresh row while live — the webapp has its own
-    // top chrome, and a second header is what made it read as a frame.
-    if (meta) meta.style.display = 'none';
-    // Use the dashboard's own hostname, not a hardcoded localhost: the
-    // dashboard is reached from other devices (phone), where localhost
-    // would point at the phone itself and the iframe would die.
-    // ?embed=1 → webapp hides its own sidebar (no dashboard-in-dashboard);
-    // &theme= → webapp matches Warden's theme (synced live on toggle below).
-    if (!frame.getAttribute('src'))
-      frame.setAttribute('src', 'http://' + location.hostname + ':8765/?embed=1&theme='
-        + (document.documentElement.getAttribute('data-theme') || 'dark'));
-  }
-  async function refreshAlphaStack() {
-    const chip = $('alphaStackStatus'), fallback = $('alphaStackFallback');
-    // (Re)show the chip/refresh row while checking; showAlphaStackFrame hides
-    // it again once the webapp is live.
-    const meta = document.querySelector('#view-alphastack .chat-meta-row');
-    if (meta) meta.style.display = '';
-    try {
-      const d = await api('/api/alphastack/status');
-      if (!d.ok) { chip.textContent = 'error'; fallback.style.display = ''; fallback.textContent = d.error || 'unavailable'; return; }
-      if (d.webappUp) { showAlphaStackFrame(); return; }
-      chip.textContent = 'starting webapp…';
-      fallback.style.display = '';
-      fallback.textContent = 'Starting the alpha-stack webapp…';
-      const s = await postJson('/api/alphastack/webapp/start', {});
-      if (!s.ok) {
-        chip.textContent = 'webapp down';
-        fallback.textContent = s.error || 'failed to start the webapp';
-        return;
-      }
-      showAlphaStackFrame();
-    } catch (e) {
-      chip.textContent = 'error';
-      fallback.style.display = '';
-      fallback.textContent = 'Failed: ' + e.message;
-    }
-  }
-
   // ── Phone (Twilio voice line) ───────────────────────────────────────────
   async function refreshPhone() {
     const pill = $('phone-status-pill');
@@ -5372,7 +5326,7 @@
       const sheet = $('navSheet');
       if (!sheet) return;
       const body = sheet.querySelector('.navsheet-body');
-      const PRIMARY = ['chat', 'alphastack', 'talk'];
+      const PRIMARY = ['chat', 'talk'];
       const svgOf = (btn) => { const s = btn.querySelector('svg'); return s ? s.outerHTML : ''; };
       qsa('.rail-nav > *').forEach(el => {
         if (el.classList.contains('rail-group-label')) {
@@ -5598,11 +5552,6 @@
       }
     });
     $('btnRefreshLogs').addEventListener('click', refreshProcessLogs);
-    $('btnAlphaStackRefresh').addEventListener('click', async () => {
-      await refreshAlphaStack();
-      const frame = $('alphaStackFrame');
-      if (frame.getAttribute('src')) frame.setAttribute('src', frame.getAttribute('src')); // force a reload
-    });
     $('btnTrainingAudit').addEventListener('click', () => startTrainingStep('audit', { days: parseInt($('trainingDays').value, 10) || 3 }));
     $('btnTrainingModify').addEventListener('click', () => startTrainingStep('modify', {}));
     $('trainingFailSearch').addEventListener('input', e => { TRAINING_FILTER.q = e.target.value.trim(); renderTrainingFailures(); });

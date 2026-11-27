@@ -405,7 +405,7 @@ function createSchema(database: Database.Database): void {
       created_at TEXT NOT NULL
     );
     -- P2P text-file sharing: a friend hands over a text file (idea / note /
-    -- code). Content is written to data/friends/inbox/<host>/<file> so it is a
+    -- code). Content is written to data/friends/inbox/localhost/<file> so it is a
     -- real file the seat can Grep/Read; this row just indexes it.
     CREATE TABLE IF NOT EXISTS friend_files (
       id TEXT PRIMARY KEY,

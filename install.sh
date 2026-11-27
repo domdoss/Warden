@@ -179,12 +179,6 @@ TZ=UTC
 #SLACK_BOT_TOKEN=
 #SLACK_TEAM_ID=
 
-# PIM hub (Radicale CalDAV/CardDAV). Uncomment if you use calendar/contacts.
-#RADICALE_URL=http://127.0.0.1:5232
-#RADICALE_USER=
-#RADICALE_PASS=
-#RADICALE_CAL_COLLECTION=warden-calendar
-#RADICALE_CARD_COLLECTION=warden-contacts
 
 # Browser capability: needs NO config here. It is your real Chrome + the
 # chrome-mcp-server extension + the mcp-chrome-bridge native host (12306),
@@ -237,35 +231,11 @@ install_venv "$INSTALL_DIR/eyes_ears" "$INSTALL_DIR/eyes_ears/requirements.txt" 
 # ── Services (systemd user units) ────────────────────────────────────
 mkdir -p ~/.config/systemd/user
 
-# Radicale PIM hub (calendar/contacts/todos) — only if installed.
-if command -v radicale >/dev/null; then
-    mkdir -p ~/.config/radicale ~/.local/share/radicale/collections
-    if [ ! -f ~/.config/radicale/config ]; then
-        printf '[server]\nhosts = 127.0.0.1:5232\n\n[auth]\ntype = none\n\n[rights]\ntype = authenticated\n\n[storage]\nfilesystem_folder = ~/.local/share/radicale/collections\n' > ~/.config/radicale/config
-    fi
-    cat > ~/.config/systemd/user/radicale.service <<'RADEOF'
-[Unit]
-Description=Radicale CalDAV/CardDAV server (Warden PIM hub)
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/radicale
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-RADEOF
-    systemctl --user daemon-reload
-    systemctl --user enable --now radicale 2>/dev/null || true
-    echo "  Radicale PIM hub running on 127.0.0.1:5232"
-fi
-
 NODE_BIN="$(command -v node)"
 cat > ~/.config/systemd/user/warden.service <<EOF
 [Unit]
 Description=Warden Personal AI Assistant
-After=network.target graphical-session.target radicale.service
-Wants=radicale.service
+After=network.target graphical-session.target
 PartOf=graphical-session.target
 
 [Service]

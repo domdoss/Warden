@@ -275,7 +275,6 @@ import { encryptApiKey } from './encryption.js';
 import httpProxy from 'http-proxy';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawnPty, nodePtyIsAvailable, type PtySession } from './pty-server.js';
-import { handleMobileRequest, initMobile } from './mobile.js';
 import { handleSysRequest } from './sysview.js';
 
 // Quick HTTP probe — confirms an in-container service is actually serving,
@@ -3689,7 +3688,6 @@ export function startStatusServer(d: StatusDeps): void {
       // Browser-driving MCP gate: stateless front for the extension bridge's
       // single slot (see browser-mcp-gate.ts). Mounted before everything else.
       if (pathname === '/mcp/browser') return await handleBrowserMcp(req, res);
-      if (pathname.startsWith('/api/mobile')) return await handleMobileRequest(req, res, pathname);
       if (pathname === '/api/sys') return await handleSysRequest(req, res, pathname);
       // --- Dropped route trees (single-user Warden: no admin, no per-user APIs) ---
       // The old multi-user / admin / group / company / work-task / session-link
@@ -3885,7 +3883,7 @@ export function startStatusServer(d: StatusDeps): void {
       }
       // POST /api/digest/generate?span=hourly|daily|weekly — run the iris-digest-<span>
       // task NOW through the same grounded path as the cron (buildDigestContext:
-      // real calendar/tasks/bio/weather/notes, not Iris's Radicale-dependent tools).
+      // real calendar/tasks/bio/weather/notes).
       // Returns immediately; Iris compiles async and POSTs to /api/summaries, so the
       // client polls /api/summaries for the fresh digest to land.
       if (req.method === 'POST' && pathname === '/api/digest/generate') {
@@ -4586,66 +4584,6 @@ export function startStatusServer(d: StatusDeps): void {
             return error(res, 'unknown chatbot route');
           }
           return error(res, 'unknown training route');
-        } catch (err: any) {
-          return json(res, { ok: false, error: String(err?.message ?? err) });
-        }
-      }
-      // Alpha Stack (2026-09-22): the trading research stack copied from the
-      // old home into /opt/Warden/trading. The dashboard view embeds the
-      // stack's OWN webapp (trading/webapp — stdlib server bound to 0.0.0.0
-      // so the dashboard's mobile/LAN clients reach it; probed here on the
-      // loopback). The webapp is not a daemon: it is spawned on
-      // demand by the start route below (same detached-spawn pattern as the
-      // training loop steps) and the status route reports whether it is up.
-      const alphastackWebappUp = async () => {
-        try {
-          const resp = await fetch('http://127.0.0.1:8765/api/status', { signal: AbortSignal.timeout(1000) });
-          return resp.ok;
-        } catch { return false; }
-      };
-      if (pathname === '/api/alphastack/status' && req.method === 'GET') {
-        try {
-          const root = path.join(process.cwd(), 'trading');
-          const exists = (p: string) => fs.existsSync(p);
-          const inventory = {
-            root,
-            rootPresent: exists(root),
-            venvPython: exists(path.join(root, 'bin', 'python')),
-            webapp: exists(path.join(root, 'webapp', 'app.py')),
-          };
-          return json(res, { ok: true, webappUp: await alphastackWebappUp(), inventory });
-        } catch (err: any) {
-          return json(res, { ok: false, error: String(err?.message ?? err) });
-        }
-      }
-      if (pathname === '/api/alphastack/webapp/start' && req.method === 'POST') {
-        try {
-          if (await alphastackWebappUp()) return json(res, { ok: true, up: true, note: 'already running' });
-          const root = path.join(process.cwd(), 'trading');
-          const py = path.join(root, 'bin', 'python');
-          const script = path.join(root, 'webapp', 'app.py');
-          if (!fs.existsSync(py) || !fs.existsSync(script))
-            return json(res, { ok: false, error: 'trading venv or webapp missing' });
-          // A wedged instance that still holds 8765 without serving would block
-          // the fresh spawn — kill any stale copy first (it is a plain stdlib
-          // server; state lives on disk, so a restart loses nothing).
-          try { spawnSync('pkill', ['-f', 'webapp/app.py'], { stdio: 'ignore' }); } catch {}
-          fs.mkdirSync(path.join(root, 'logs'), { recursive: true });
-          const out = fs.openSync(path.join(root, 'logs', 'webapp.log'), 'a');
-          const child = spawn(py, [script], { detached: true, stdio: ['ignore', out, out], cwd: root });
-          child.unref();
-          fs.closeSync(out);
-          logger.info({ pid: child.pid }, 'alpha-stack webapp started');
-          // Bounded readiness wait — the stdlib server binds in well under a
-          // second; never hand back "started" for a server that never came up.
-          let up = false;
-          for (let i = 0; i < 10 && !up; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-            up = await alphastackWebappUp();
-          }
-          return up
-            ? json(res, { ok: true, up: true, pid: child.pid })
-            : json(res, { ok: false, error: 'webapp did not come up within 5s — check trading/logs/webapp.log' });
         } catch (err: any) {
           return json(res, { ok: false, error: String(err?.message ?? err) });
         }
@@ -5763,7 +5701,6 @@ export function startStatusServer(d: StatusDeps): void {
     logger.info({ port: STATUS_PORT, host: bindHost }, 'Warden Dashboard started');
     try { ensureHeartbeatTask(); } catch (e) { logger.warn({ err: e }, 'Heartbeat seed failed'); }
     try { ensureBlogAutoposterTask(); } catch (e) { logger.warn({ err: e }, 'Blog autoposter seed failed'); }
-    try { initMobile(); } catch (e) { logger.warn({ err: e }, 'mobile init failed'); }
   });
 
   // Hourly cleanup of expired user sessions removed (multi-user session table gone).

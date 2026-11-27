@@ -580,7 +580,7 @@ async function runTask(
  * panel). Reuses runTask, which prepends buildDigestContext — so a manual
  * digest gets the SAME grounding as a scheduled one: real calendar + work
  * tasks + bio + weather + notes pulled from the DB (not Iris's own tools,
- * which hit Radicale and fail when Kontact isn't provisioned). The prompt is
+ * which fail when the calendar provider isn't configured). The prompt is
  * injected into the owner chat and the seat routes it to Iris.
  *
  * runTask reschedules a cron task to computeNextRun (the next cron time
